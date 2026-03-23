@@ -1,0 +1,185 @@
+/* TipTap / ProseMirror editor styles for MiNotes blocks */
+
+.block-content .ProseMirror {
+  outline: none;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--text-primary);
+  min-height: 1.4em;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.block-content .ProseMirror p {
+  margin: 0;
+}
+
+/* Placeholder */
+.block-content .ProseMirror p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  color: var(--text-muted);
+  pointer-events: none;
+  float: left;
+  height: 0;
+}
+
+/* Inline formatting */
+.block-content .ProseMirror strong {
+  font-weight: 700;
+}
+
+.block-content .ProseMirror em {
+  font-style: italic;
+}
+
+.block-content .ProseMirror s {
+  text-decoration: line-through;
+  color: var(--text-muted);
+}
+
+.block-content .ProseMirror code {
+  background: var(--bg-surface);
+  border-radius: 3px;
+  padding: 0.1em 0.3em;
+  font-size: 0.9em;
+  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+}
+
+.block-content .ProseMirror mark {
+  background: rgba(249, 226, 175, 0.25);
+  color: var(--warning);
+  border-radius: 2px;
+  padding: 0 0.1em;
+}
+
+/* Headings */
+.block-content .ProseMirror h1 {
+  font-size: 1.5em;
+  font-weight: 700;
+  margin: 0.2em 0;
+  line-height: 1.3;
+}
+
+.block-content .ProseMirror h2 {
+  font-size: 1.3em;
+  font-weight: 600;
+  margin: 0.15em 0;
+  line-height: 1.3;
+}
+
+.block-content .ProseMirror h3 {
+  font-size: 1.15em;
+  font-weight: 600;
+  margin: 0.1em 0;
+  line-height: 1.4;
+}
+
+.block-content .ProseMirror h4 {
+  font-size: 1em;
+  font-weight: 600;
+  margin: 0.1em 0;
+}
+
+/* Lists */
+.block-content .ProseMirror ul,
+.block-content .ProseMirror ol {
+  padding-left: 1.5em;
+  margin: 0.15em 0;
+}
+
+.block-content .ProseMirror li {
+  margin: 0.05em 0;
+}
+
+.block-content .ProseMirror li p {
+  margin: 0;
+}
+
+/* Task list */
+.block-content .ProseMirror ul[data-type="taskList"] {
+  list-style: none;
+  padding-left: 0;
+}
+
+.block-content .ProseMirror ul[data-type="taskList"] li {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4em;
+}
+
+.block-content .ProseMirror ul[data-type="taskList"] li > label {
+  flex-shrink: 0;
+  margin-top: 0.25em;
+}
+
+.block-content .ProseMirror ul[data-type="taskList"] li > label input[type="checkbox"] {
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.block-content .ProseMirror ul[data-type="taskList"] li > div {
+  flex: 1;
+}
+
+.block-content .ProseMirror ul[data-type="taskList"] li[data-checked="true"] > div {
+  text-decoration: line-through;
+  color: var(--text-muted);
+}
+
+/* Blockquote */
+.block-content .ProseMirror blockquote {
+  border-left: 3px solid var(--border);
+  padding-left: 1em;
+  color: var(--text-secondary);
+  margin: 0.3em 0;
+}
+
+.block-content .ProseMirror blockquote p {
+  margin: 0;
+}
+
+/* Code block */
+.block-content .ProseMirror pre {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.75em 1em;
+  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+  font-size: 0.85em;
+  line-height: 1.5;
+  overflow-x: auto;
+  margin: 0.3em 0;
+}
+
+.block-content .ProseMirror pre code {
+  background: none;
+  border-radius: 0;
+  padding: 0;
+  font-size: inherit;
+}
+
+/* Horizontal rule */
+.block-content .ProseMirror hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 0.5em 0;
+}
+
+/* Wiki link node */
+.block-content .ProseMirror .wiki-link {
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: none;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+.block-content .ProseMirror .wiki-link:hover {
+  text-decoration: underline;
+  color: var(--accent-hover);
+}
+
+/* Selection and focus */
+.block-content .ProseMirror ::selection {
+  background: rgba(137, 180, 250, 0.3);
+}
