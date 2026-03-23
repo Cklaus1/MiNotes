@@ -1,6 +1,7 @@
 pub mod aliases;
 pub mod blocks;
 pub mod cards;
+pub mod crdt;
 pub mod events;
 pub mod export;
 pub mod favorites;
@@ -12,5 +13,6 @@ pub mod pages;
 pub mod properties;
 pub mod schemas;
 pub mod sync;
+pub mod highlights;
 pub mod plugins;
 pub mod templates;

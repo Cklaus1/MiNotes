@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use minotes_core::db::Database;
-use minotes_core::models::{Block, Card, GraphInfo, Page, PageTree, Plugin, Property, SrsStats, Template};
+use minotes_core::models::{Block, Card, GraphInfo, Highlight, Page, PageTree, Plugin, Property, SrsStats, SyncStatus, Template, VersionInfo};
 use minotes_core::repo::graph::GraphStats;
 use minotes_core::repo::graphs;
 use serde::Serialize;
@@ -575,6 +575,99 @@ fn get_current_graph(state: State<'_, AppState>) -> Result<String, String> {
     Ok(current.clone())
 }
 
+// ── PDF Highlight Commands (F-013) ──
+
+#[tauri::command]
+fn create_highlight(
+    state: State<'_, AppState>,
+    pdf_path: String,
+    page_num: i32,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    color: String,
+    text: Option<String>,
+    note: Option<String>,
+) -> Result<Highlight, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.create_highlight(
+        &pdf_path,
+        page_num,
+        x, y, width, height,
+        &color,
+        text.as_deref(),
+        note.as_deref(),
+        "user",
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_highlights(state: State<'_, AppState>, pdf_path: String) -> Result<Vec<Highlight>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.get_highlights(&pdf_path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn update_highlight_note(state: State<'_, AppState>, id: String, note: String) -> Result<Highlight, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+    db.update_highlight_note(&uuid, &note, "user")
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_highlight(state: State<'_, AppState>, id: String) -> Result<bool, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+    db.delete_highlight(&uuid, "user").map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn search_highlights(state: State<'_, AppState>, query: String) -> Result<Vec<Highlight>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.search_highlights(&query).map_err(|e| e.to_string())
+}
+
+// ── CRDT Sync Commands (F-015) ──
+
+#[tauri::command]
+fn get_sync_status(state: State<'_, AppState>) -> Result<SyncStatus, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.get_sync_status().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn sync_page(state: State<'_, AppState>, page_id: String) -> Result<Vec<u8>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let uuid = uuid::Uuid::parse_str(&page_id).map_err(|e| e.to_string())?;
+    db.page_to_automerge(&uuid).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_version_history(
+    state: State<'_, AppState>,
+    page_id: String,
+    limit: Option<usize>,
+) -> Result<Vec<VersionInfo>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let uuid = uuid::Uuid::parse_str(&page_id).map_err(|e| e.to_string())?;
+    db.get_version_history(&uuid, limit).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn restore_version(
+    state: State<'_, AppState>,
+    page_id: String,
+    version_hash: String,
+) -> Result<(), String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let uuid = uuid::Uuid::parse_str(&page_id).map_err(|e| e.to_string())?;
+    db.restore_version(&uuid, &version_hash, "user")
+        .map_err(|e| e.to_string())
+}
+
 // ── Web Clipper API (F-021) ──
 
 #[tauri::command]
@@ -692,6 +785,15 @@ pub fn run() {
             delete_graph_cmd,
             get_current_graph,
             clip_content,
+            create_highlight,
+            get_highlights,
+            update_highlight_note,
+            delete_highlight,
+            search_highlights,
+            get_sync_status,
+            sync_page,
+            get_version_history,
+            restore_version,
             undo,
         ])
         .run(tauri::generate_context!())

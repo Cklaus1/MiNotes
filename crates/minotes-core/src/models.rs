@@ -3,6 +3,22 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncStatus {
+    pub total_pages: i64,
+    pub synced_pages: i64,
+    pub pending_changes: i64,
+    pub last_sync: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VersionInfo {
+    pub hash: String,
+    pub timestamp: DateTime<Utc>,
+    pub actor: String,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Folder {
     pub id: Uuid,
     pub name: String,
@@ -168,6 +184,26 @@ pub struct GraphInfo {
     pub path: String,
     pub size_bytes: u64,
     pub modified_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Highlight {
+    pub id: Uuid,
+    pub pdf_path: String,
+    pub page_num: i32,
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+    pub color: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub block_id: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

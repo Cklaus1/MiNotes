@@ -12,6 +12,7 @@ interface Props {
   onQuery?: () => void;
   onReview?: () => void;
   onPlugins?: () => void;
+  onSync?: () => void;
 }
 
 interface SearchResult {
@@ -28,7 +29,7 @@ interface Command {
 
 export default function SearchPanel({
   open, onClose, onPageClick,
-  onToggleTheme, onNewPage, onJournal, onGraph, onQuery, onReview, onPlugins,
+  onToggleTheme, onNewPage, onJournal, onGraph, onQuery, onReview, onPlugins, onSync,
 }: Props) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
@@ -47,8 +48,9 @@ export default function SearchPanel({
     { id: "query", label: "Open SQL Query Panel", shortcut: "Ctrl+Q", action: () => onQuery?.() },
     { id: "review", label: "Open Flashcard Review", shortcut: "Ctrl+R", action: () => onReview?.() },
     { id: "plugins", label: "Manage Plugins", action: () => onPlugins?.() },
+    { id: "sync", label: "Sync & Version History", action: () => onSync?.() },
     { id: "export-markdown", label: "Export Markdown", action: () => alert("Markdown export coming soon.") },
-  ], [onToggleTheme, onNewPage, onJournal, onGraph, onQuery, onReview, onPlugins]);
+  ], [onToggleTheme, onNewPage, onJournal, onGraph, onQuery, onReview, onPlugins, onSync]);
 
   const filteredCommands = useMemo(() => {
     if (!isCommandMode) return [];

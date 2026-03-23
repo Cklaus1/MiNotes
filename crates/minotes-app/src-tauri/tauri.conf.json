@@ -10,6 +10,7 @@
     "beforeBuildCommand": "npm run build"
   },
   "app": {
+    "withGlobalTauri": true,
     "windows": [
       {
         "title": "MiNotes",
@@ -23,6 +24,14 @@
     ],
     "security": {
       "csp": null
+    }
+  },
+  "bundle": {
+    "iOS": {
+      "minimumSystemVersion": "15.0"
+    },
+    "android": {
+      "minSdkVersion": 24
     }
   },
   "plugins": {

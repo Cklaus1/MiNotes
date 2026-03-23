@@ -8,6 +8,9 @@ import GraphView from "./components/GraphView";
 import ReviewPanel from "./components/ReviewPanel";
 import PluginManager from "./components/PluginManager";
 import Whiteboard from "./components/Whiteboard";
+import SyncPanel from "./components/SyncPanel";
+import PdfViewer from "./components/PdfViewer";
+import MobileNav from "./components/MobileNav";
 import * as api from "./lib/api";
 import { initTheme, toggleTheme } from "./lib/theme";
 
@@ -20,7 +23,10 @@ export default function App() {
   const [reviewOpen, setReviewOpen] = useState(false);
   const [pluginsOpen, setPluginsOpen] = useState(false);
   const [whiteboardOpen, setWhiteboardOpen] = useState(false);
+  const [syncOpen, setSyncOpen] = useState(false);
+  const [pdfViewerPath, setPdfViewerPath] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [mobileTab, setMobileTab] = useState("pages");
 
   const refresh = useCallback(async () => {
     try {
@@ -161,6 +167,12 @@ export default function App() {
         e.preventDefault();
         setWhiteboardOpen(prev => !prev);
       }
+      // Cmd/Ctrl+P — open PDF
+      if ((e.metaKey || e.ctrlKey) && e.key === "p") {
+        e.preventDefault();
+        const path = prompt("PDF file path:");
+        if (path?.trim()) setPdfViewerPath(path.trim());
+      }
       // Ctrl+Shift+T — toggle theme
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === "T") {
         e.preventDefault();
@@ -189,6 +201,12 @@ export default function App() {
         refreshKey={refreshKey}
       />
       <div className="main" style={{ position: "relative" }}>
+        {pdfViewerPath && (
+          <PdfViewer
+            filePath={pdfViewerPath}
+            onClose={() => setPdfViewerPath(null)}
+          />
+        )}
         {whiteboardOpen && (
           <Whiteboard onClose={() => setWhiteboardOpen(false)} />
         )}
@@ -226,6 +244,7 @@ export default function App() {
         onQuery={() => { setQueryOpen(prev => !prev); setSearchOpen(false); }}
         onReview={() => { setReviewOpen(prev => !prev); setSearchOpen(false); }}
         onPlugins={() => { setPluginsOpen(prev => !prev); setSearchOpen(false); }}
+        onSync={() => { setSyncOpen(prev => !prev); setSearchOpen(false); }}
       />
       <QueryPanel
         open={queryOpen}
@@ -239,6 +258,22 @@ export default function App() {
       <PluginManager
         open={pluginsOpen}
         onClose={() => setPluginsOpen(false)}
+      />
+      <SyncPanel
+        open={syncOpen}
+        onClose={() => setSyncOpen(false)}
+        currentPageId={activePage?.page.id ?? null}
+        onPageRestored={() => {
+          if (activePage) openPage(activePage.page.id);
+        }}
+      />
+      <MobileNav
+        activeTab={mobileTab}
+        onPagesClick={() => setMobileTab("pages")}
+        onJournalClick={() => { setMobileTab("journal"); openJournal(); }}
+        onSearchClick={() => { setMobileTab("search"); setSearchOpen(true); }}
+        onGraphClick={() => { setMobileTab("graph"); setGraphOpen(prev => !prev); }}
+        onMenuClick={() => setMobileTab("menu")}
       />
     </div>
   );

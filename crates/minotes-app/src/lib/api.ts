@@ -347,6 +347,74 @@ export const clipContent = (
   tags?: string[],
 ) => invoke<Page>("clip_content", { title, content, url, tags });
 
+// PDF Highlights (F-013)
+export interface Highlight {
+  id: string;
+  pdf_path: string;
+  page_num: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  color: string;
+  text?: string;
+  note?: string;
+  block_id?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export const createHighlight = (
+  pdfPath: string,
+  pageNum: number,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  color: string,
+  text?: string,
+  note?: string,
+) => invoke<Highlight>("create_highlight", { pdfPath, pageNum, x, y, width, height, color, text, note });
+
+export const getHighlights = (pdfPath: string) =>
+  invoke<Highlight[]>("get_highlights", { pdfPath });
+
+export const updateHighlightNote = (id: string, note: string) =>
+  invoke<Highlight>("update_highlight_note", { id, note });
+
+export const deleteHighlight = (id: string) =>
+  invoke<boolean>("delete_highlight", { id });
+
+export const searchHighlights = (query: string) =>
+  invoke<Highlight[]>("search_highlights", { query });
+
+// CRDT Sync (F-015)
+export interface SyncStatus {
+  total_pages: number;
+  synced_pages: number;
+  pending_changes: number;
+  last_sync: string | null;
+}
+
+export interface VersionInfo {
+  hash: string;
+  timestamp: string;
+  actor: string;
+  message: string | null;
+}
+
+export const getSyncStatus = () =>
+  invoke<SyncStatus>("get_sync_status");
+
+export const syncPage = (pageId: string) =>
+  invoke<number[]>("sync_page", { pageId });
+
+export const getVersionHistory = (pageId: string, limit?: number) =>
+  invoke<VersionInfo[]>("get_version_history", { pageId, limit });
+
+export const restoreVersion = (pageId: string, versionHash: string) =>
+  invoke<void>("restore_version", { pageId, versionHash });
+
 // Undo
 export const undo = () =>
   invoke<number | null>("undo");

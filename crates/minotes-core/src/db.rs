@@ -164,6 +164,31 @@ CREATE TABLE IF NOT EXISTS plugin_storage (
     value       TEXT,
     PRIMARY KEY(plugin_name, key)
 );
+
+CREATE TABLE IF NOT EXISTS highlights (
+    id          TEXT PRIMARY KEY,
+    pdf_path    TEXT NOT NULL,
+    page_num    INTEGER NOT NULL,
+    x           REAL NOT NULL,
+    y           REAL NOT NULL,
+    width       REAL NOT NULL,
+    height      REAL NOT NULL,
+    color       TEXT NOT NULL DEFAULT 'yellow',
+    text        TEXT,
+    note        TEXT,
+    block_id    TEXT REFERENCES blocks(id) ON DELETE SET NULL,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_highlights_pdf ON highlights(pdf_path);
+
+CREATE TABLE IF NOT EXISTS sync_state (
+    page_id     TEXT PRIMARY KEY REFERENCES pages(id) ON DELETE CASCADE,
+    doc_bytes   BLOB NOT NULL,
+    peer_state  BLOB,
+    last_sync   TEXT,
+    updated_at  TEXT NOT NULL
+);
 ";
 
 const FTS_SCHEMA: &str = "

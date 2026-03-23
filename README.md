@@ -104,6 +104,33 @@ minotes events --since 0 --follow
 | `Ctrl+J` | Open today's journal |
 | `Ctrl+N` | Create new page |
 
+## Mobile
+
+MiNotes uses Tauri 2, which supports iOS and Android from the same codebase. The mobile UI adapts automatically: the sidebar collapses to a top panel on narrow screens, and a bottom tab bar provides quick access to Pages, Journal, Search, Graph, and Menu.
+
+### Requirements
+
+- **Android**: Android SDK (API 24+), Android Studio, NDK
+- **iOS**: Xcode 15+, macOS
+
+### Build Commands
+
+```bash
+# Android
+cd crates/minotes-app
+npm run tauri android init   # first-time setup
+npm run tauri android dev    # development
+npm run tauri android build  # release APK/AAB
+
+# iOS
+cd crates/minotes-app
+npm run tauri ios init       # first-time setup
+npm run tauri ios dev        # development (requires Xcode)
+npm run tauri ios build      # release IPA
+```
+
+See the [Tauri 2 Mobile prerequisites](https://v2.tauri.app/start/prerequisites/) for detailed environment setup.
+
 ## Data Storage
 
 All data is stored locally in SQLite at `~/.minotes/default.db`. No cloud services, no telemetry, no external API calls.
