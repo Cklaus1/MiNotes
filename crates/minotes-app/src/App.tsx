@@ -14,6 +14,7 @@ import MobileNav from "./components/MobileNav";
 import ObsidianPluginBrowser from "./components/ObsidianPluginBrowser";
 import CssSnippetManager from "./components/CssSnippetManager";
 import CustomViewContainer from "./components/CustomViewContainer";
+import SettingsPanel from "./components/SettingsPanel";
 import * as api from "./lib/api";
 import { initTheme, toggleTheme } from "./lib/theme";
 import { loadEnabledSnippets } from "./lib/cssLoader";
@@ -30,6 +31,7 @@ export default function App() {
   const [syncOpen, setSyncOpen] = useState(false);
   const [obsidianPluginsOpen, setObsidianPluginsOpen] = useState(false);
   const [cssManagerOpen, setCssManagerOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [pdfViewerPath, setPdfViewerPath] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [mobileTab, setMobileTab] = useState("pages");
@@ -186,6 +188,11 @@ export default function App() {
         e.preventDefault();
         toggleTheme();
       }
+      // Ctrl+, — settings
+      if ((e.metaKey || e.ctrlKey) && e.key === ",") {
+        e.preventDefault();
+        setSettingsOpen(prev => !prev);
+      }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
@@ -208,7 +215,7 @@ export default function App() {
         onGraphClick={() => setGraphOpen(prev => !prev)}
         refreshKey={refreshKey}
       />
-      <div className="main" style={{ position: "relative" }}>
+      <div className="main workspace-split mod-root" style={{ position: "relative" }}>
         {pdfViewerPath && (
           <PdfViewer
             filePath={pdfViewerPath}
@@ -262,6 +269,8 @@ export default function App() {
         onPlugins={() => { setPluginsOpen(prev => !prev); setSearchOpen(false); }}
         onSync={() => { setSyncOpen(prev => !prev); setSearchOpen(false); }}
         onObsidianPlugins={() => { setObsidianPluginsOpen(prev => !prev); setSearchOpen(false); }}
+        onCssManager={() => { setCssManagerOpen(prev => !prev); setSearchOpen(false); }}
+        onSettings={() => { setSettingsOpen(prev => !prev); setSearchOpen(false); }}
       />
       <QueryPanel
         open={queryOpen}
@@ -279,6 +288,14 @@ export default function App() {
       <ObsidianPluginBrowser
         open={obsidianPluginsOpen}
         onClose={() => setObsidianPluginsOpen(false)}
+      />
+      <CssSnippetManager
+        open={cssManagerOpen}
+        onClose={() => setCssManagerOpen(false)}
+      />
+      <SettingsPanel
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
       />
       <SyncPanel
         open={syncOpen}

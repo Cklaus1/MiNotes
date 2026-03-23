@@ -244,7 +244,7 @@ export default function PageView({
         </div>
       )}
 
-      <div className="content">
+      <div className="content view-content markdown-source-view">
         <div className="block-list">
           {blocks.length === 0 && (
             <div style={{ color: "var(--text-muted)", padding: "8px 0" }}>

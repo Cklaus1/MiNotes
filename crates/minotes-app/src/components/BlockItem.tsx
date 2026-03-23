@@ -1,9 +1,13 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, lazy, Suspense } from "react";
 import { EditorContent } from "@tiptap/react";
 import type { Block, Property } from "../lib/api";
 import * as api from "../lib/api";
 import { useBlockEditor } from "../editor";
+import { getSettings } from "../lib/settings";
 import "../editor/editor.css";
+
+// Lazy-load CM6 editor — only downloaded when obsidianEditorEnabled
+const CM6BlockEditor = lazy(() => import("../editor/CM6BlockEditor"));
 
 interface Props {
   block: Block;
@@ -13,6 +17,10 @@ interface Props {
 }
 
 export default function BlockItem({ block, onUpdate, onDelete, onPageLinkClick }: Props) {
+  const settings = getSettings();
+  const [editorMode, setEditorMode] = useState<"minotes" | "obsidian">(
+    settings.obsidianEditorEnabled ? settings.defaultEditorMode : "minotes"
+  );
   const [properties, setProperties] = useState<Property[]>([]);
   const [addingProp, setAddingProp] = useState(false);
   const [newKey, setNewKey] = useState("");
@@ -20,7 +28,7 @@ export default function BlockItem({ block, onUpdate, onDelete, onPageLinkClick }
   const [editingProp, setEditingProp] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
 
-  const editor = useBlockEditor({
+  const tiptapEditor = useBlockEditor({
     content: block.content,
     onSave: (markdown) => {
       if (markdown !== block.content.trim()) {
@@ -30,19 +38,37 @@ export default function BlockItem({ block, onUpdate, onDelete, onPageLinkClick }
     onPageLinkClick,
   });
 
-  // Sync external content changes
+  // Sync external content changes for TipTap
   useEffect(() => {
-    if (!editor) return;
-    const currentMarkdown = ((editor.storage as any).markdown?.getMarkdown() ?? "").trim();
+    if (!tiptapEditor || editorMode !== "minotes") return;
+    const currentMarkdown = ((tiptapEditor.storage as any).markdown?.getMarkdown() ?? "").trim();
     if (block.content.trim() !== currentMarkdown) {
-      editor.commands.setContent(block.content);
+      tiptapEditor.commands.setContent(block.content);
     }
-  }, [block.content, editor]);
+  }, [block.content, tiptapEditor, editorMode]);
 
   // Load properties
   useEffect(() => {
     api.getProperties(block.id).then(setProperties).catch(() => {});
   }, [block.id]);
+
+  // Listen for settings changes
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (!detail.obsidianEditorEnabled) {
+        setEditorMode("minotes");
+      }
+    };
+    window.addEventListener("minotes-settings-changed", handler);
+    return () => window.removeEventListener("minotes-settings-changed", handler);
+  }, []);
+
+  const handleCM6Save = (content: string) => {
+    if (content !== block.content.trim()) {
+      onUpdate(block.id, content);
+    }
+  };
 
   const handleAddProperty = async () => {
     const k = newKey.trim();
@@ -70,7 +96,36 @@ export default function BlockItem({ block, onUpdate, onDelete, onPageLinkClick }
 
   return (
     <div className="block">
-      <EditorContent editor={editor} className="block-content" />
+      {/* Editor mode toggle — only shown when obsidian editor is enabled in settings */}
+      {settings.obsidianEditorEnabled && (
+        <div className="editor-mode-toggle">
+          <button
+            className={`editor-mode-btn ${editorMode === "minotes" ? "active" : ""}`}
+            onClick={() => setEditorMode("minotes")}
+            title="Rich text editor (TipTap)"
+          >
+            Mi
+          </button>
+          <button
+            className={`editor-mode-btn ${editorMode === "obsidian" ? "active" : ""}`}
+            onClick={() => setEditorMode("obsidian")}
+            title="Source editor (CodeMirror 6)"
+          >
+            Ob
+          </button>
+        </div>
+      )}
+
+      {/* Editor content */}
+      {editorMode === "minotes" ? (
+        <EditorContent editor={tiptapEditor} className="block-content" />
+      ) : (
+        <Suspense fallback={<div className="block-content" style={{ color: "var(--text-muted)" }}>Loading source editor...</div>}>
+          <CM6BlockEditor content={block.content} onSave={handleCM6Save} />
+        </Suspense>
+      )}
+
+      {/* Properties */}
       {(properties.length > 0 || addingProp) && (
         <div className="block-properties">
           {properties.map(prop => (
@@ -96,12 +151,7 @@ export default function BlockItem({ block, onUpdate, onDelete, onPageLinkClick }
                   {prop.value || "—"}
                 </span>
               )}
-              <span
-                className="prop-delete"
-                onClick={() => handleDeleteProperty(prop.key)}
-              >
-                ×
-              </span>
+              <span className="prop-delete" onClick={() => handleDeleteProperty(prop.key)}>×</span>
             </span>
           ))}
           {addingProp && (

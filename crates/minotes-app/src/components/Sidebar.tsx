@@ -72,7 +72,7 @@ export default function Sidebar({
   };
 
   return (
-    <div className="sidebar">
+    <div className="sidebar workspace-ribbon">
       <div className="sidebar-header">
         <h1>MiNotes</h1>
         <div style={{ display: "flex", gap: 4 }}>
