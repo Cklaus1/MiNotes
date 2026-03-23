@@ -54,6 +54,16 @@ export default function Sidebar({
     }
   };
 
+  const handleDropOnRoot = async (e: React.DragEvent) => {
+    e.preventDefault();
+    e.currentTarget.classList.remove("drop-target");
+    const pageId = e.dataTransfer.getData("text/page-id");
+    if (pageId) {
+      await api.movePageToFolder(pageId, undefined);
+      loadTree();
+    }
+  };
+
   return (
     <div className="sidebar">
       <div className="sidebar-header">
@@ -129,27 +139,28 @@ export default function Sidebar({
               />
             ))}
 
-            {/* Root pages (not in any folder) */}
-            {treeData.root_pages.filter(p => !p.is_journal).length > 0 && (
-              <>
-                <div className="sidebar-section-title">
-                  Pages ({treeData.root_pages.filter(p => !p.is_journal).length})
-                </div>
-                {treeData.root_pages.filter(p => !p.is_journal).map(page => (
-                  <div
-                    key={page.id}
-                    className={`page-item ${activePage?.id === page.id ? "active" : ""}`}
-                    onClick={() => onPageClick(page.id)}
-                    onContextMenu={e => {
-                      e.preventDefault();
-                      if (confirm(`Delete "${page.title}"?`)) onDeletePage(page.id);
-                    }}
-                  >
-                    {page.icon ?? "📄"} {page.title}
-                  </div>
-                ))}
-              </>
-            )}
+            {/* Root pages drop zone */}
+            <div
+              className="root-drop-zone"
+              onDragOver={e => { e.preventDefault(); e.currentTarget.classList.add("drop-target"); }}
+              onDragLeave={e => e.currentTarget.classList.remove("drop-target")}
+              onDrop={handleDropOnRoot}
+            >
+              <div className="sidebar-section-title">
+                Pages ({treeData.root_pages.filter(p => !p.is_journal).length})
+                <span className="drop-hint"> — drop here for root</span>
+              </div>
+              {treeData.root_pages.filter(p => !p.is_journal).map(page => (
+                <DraggablePage
+                  key={page.id}
+                  page={page}
+                  activePage={activePage}
+                  depth={0}
+                  onPageClick={onPageClick}
+                  onDeletePage={onDeletePage}
+                />
+              ))}
+            </div>
           </>
         )}
 
@@ -183,7 +194,39 @@ export default function Sidebar({
   );
 }
 
-// Recursive folder component
+// Draggable page item
+function DraggablePage({
+  page, activePage, depth, onPageClick, onDeletePage,
+}: {
+  page: Page;
+  activePage: Page | null;
+  depth: number;
+  onPageClick: (id: string) => void;
+  onDeletePage: (id: string) => void;
+}) {
+  return (
+    <div
+      className={`page-item ${activePage?.id === page.id ? "active" : ""}`}
+      style={{ paddingLeft: 16 + depth * 16 }}
+      draggable
+      onDragStart={e => {
+        e.dataTransfer.setData("text/page-id", page.id);
+        e.dataTransfer.effectAllowed = "move";
+        e.currentTarget.classList.add("dragging");
+      }}
+      onDragEnd={e => e.currentTarget.classList.remove("dragging")}
+      onClick={() => onPageClick(page.id)}
+      onContextMenu={e => {
+        e.preventDefault();
+        if (confirm(`Delete "${page.title}"?`)) onDeletePage(page.id);
+      }}
+    >
+      {page.icon ?? "📄"} {page.title}
+    </div>
+  );
+}
+
+// Recursive folder component with drop target
 function FolderItem({
   folder, activePage, depth, onPageClick, onDeletePage, onRefresh,
 }: {
@@ -195,6 +238,7 @@ function FolderItem({
   onRefresh: () => void;
 }) {
   const [collapsed, setCollapsed] = useState(folder.collapsed);
+  const [dragOver, setDragOver] = useState(false);
 
   const handleDeleteFolder = async (e: React.MouseEvent) => {
     e.preventDefault();
@@ -205,13 +249,27 @@ function FolderItem({
     }
   };
 
+  const handleDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragOver(false);
+    const pageId = e.dataTransfer.getData("text/page-id");
+    if (pageId) {
+      await api.movePageToFolder(pageId, folder.id);
+      onRefresh();
+    }
+  };
+
   return (
     <>
       <div
-        className="folder-item"
+        className={`folder-item ${dragOver ? "drop-target" : ""}`}
         style={{ paddingLeft: 16 + depth * 16 }}
         onClick={() => setCollapsed(!collapsed)}
         onContextMenu={handleDeleteFolder}
+        onDragOver={e => { e.preventDefault(); e.stopPropagation(); setDragOver(true); }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={handleDrop}
       >
         <span className="folder-toggle">{collapsed ? "▶" : "▼"}</span>
         <span>{folder.icon ?? "📁"} {folder.name}</span>
@@ -231,18 +289,14 @@ function FolderItem({
             />
           ))}
           {folder.pages.map(page => (
-            <div
+            <DraggablePage
               key={page.id}
-              className={`page-item ${activePage?.id === page.id ? "active" : ""}`}
-              style={{ paddingLeft: 32 + depth * 16 }}
-              onClick={() => onPageClick(page.id)}
-              onContextMenu={e => {
-                e.preventDefault();
-                if (confirm(`Delete "${page.title}"?`)) onDeletePage(page.id);
-              }}
-            >
-              {page.icon ?? "📄"} {page.title}
-            </div>
+              page={page}
+              activePage={activePage}
+              depth={depth + 1}
+              onPageClick={onPageClick}
+              onDeletePage={onDeletePage}
+            />
           ))}
         </>
       )}

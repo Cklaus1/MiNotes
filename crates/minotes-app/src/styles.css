@@ -326,6 +326,43 @@ body {
   font-weight: 400;
 }
 
+/* Drag and Drop */
+.page-item[draggable="true"] {
+  cursor: grab;
+}
+
+.page-item.dragging {
+  opacity: 0.4;
+}
+
+.drop-target {
+  background: rgba(137, 180, 250, 0.15) !important;
+  border: 1px dashed var(--accent) !important;
+  border-radius: 4px;
+}
+
+.folder-item.drop-target {
+  background: rgba(137, 180, 250, 0.2) !important;
+  color: var(--accent) !important;
+}
+
+.root-drop-zone {
+  min-height: 32px;
+}
+
+.drop-hint {
+  display: none;
+  font-weight: 400;
+  font-size: 10px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.root-drop-zone.drop-target .drop-hint {
+  display: inline;
+  color: var(--accent);
+}
+
 /* Command Palette */
 .command-palette-overlay {
   position: fixed;
