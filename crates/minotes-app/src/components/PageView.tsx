@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback } from "react";
 import type { PageTree } from "../lib/api";
 import BlockItem from "./BlockItem";
+import BacklinksPanel from "./BacklinksPanel";
 
 interface Props {
   pageTree: PageTree;
@@ -39,13 +40,19 @@ export default function PageView({
   return (
     <>
       <div className="main-header">
-        <h2>{page.icon ?? ""} {page.title}</h2>
+        <h2>{page.icon ?? (page.is_journal ? "📅" : "")} {page.title}</h2>
         <span className="page-meta">
           {blocks.length} blocks · Updated {formatDate(page.updated_at)}
         </span>
       </div>
       <div className="content">
         <div className="block-list">
+          {blocks.length === 0 && (
+            <div style={{ color: "var(--text-muted)", padding: "8px 0" }}>
+              No blocks yet. Add one below.
+            </div>
+          )}
+
           {blocks.map(block => (
             <BlockItem
               key={block.id}
@@ -60,7 +67,7 @@ export default function PageView({
             <input
               ref={inputRef}
               className="search-input"
-              placeholder="Add a block..."
+              placeholder="Add a block... (supports [[wiki links]])"
               value={newContent}
               onChange={e => setNewContent(e.target.value)}
               onKeyDown={e => e.key === "Enter" && handleAdd()}
@@ -68,6 +75,8 @@ export default function PageView({
             />
             <button className="btn btn-primary" onClick={handleAdd}>Add</button>
           </div>
+
+          <BacklinksPanel pageId={page.id} onPageClick={onPageLinkClick} />
         </div>
       </div>
     </>
