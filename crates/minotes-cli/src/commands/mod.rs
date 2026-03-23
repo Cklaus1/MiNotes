@@ -9,3 +9,4 @@ pub mod page;
 pub mod property;
 pub mod query;
 pub mod search;
+pub mod sync;

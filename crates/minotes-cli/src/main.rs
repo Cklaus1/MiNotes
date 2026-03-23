@@ -110,6 +110,18 @@ enum Commands {
         #[command(subcommand)]
         cmd: ImportCmd,
     },
+    /// Sync a directory tree with the database (bidirectional)
+    #[command(name = "sync-dir")]
+    SyncDir {
+        /// Directory path to sync
+        dir: String,
+        /// Delete pages from DB if their source file is gone
+        #[arg(long)]
+        delete_missing: bool,
+        /// Write DB changes back to the filesystem
+        #[arg(long)]
+        write_back: bool,
+    },
     /// Rebuild the full-text search index
     Reindex,
     /// Show graph statistics
@@ -158,6 +170,9 @@ fn main() {
         Commands::Graph { cmd } => commands::graph::run(&db, cmd),
         Commands::Export { cmd } => commands::export::run_export(&db, cmd),
         Commands::Import { cmd } => commands::export::run_import(&db, cmd, &cli.actor),
+        Commands::SyncDir { dir, delete_missing, write_back } => {
+            commands::sync::run(&db, &dir, &cli.actor, delete_missing, write_back)
+        }
         Commands::Reindex => run_reindex(&db),
         Commands::Stats => run_stats(&db),
         Commands::BatchCreate { page } => run_batch_create(&db, &page, &cli.actor),

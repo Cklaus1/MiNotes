@@ -6,3 +6,4 @@ pub mod graph;
 pub mod links;
 pub mod pages;
 pub mod properties;
+pub mod sync;
