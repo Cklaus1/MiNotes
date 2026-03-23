@@ -350,6 +350,14 @@ body {
   min-height: 32px;
 }
 
+.page-item.drop-above {
+  border-top: 2px solid var(--accent) !important;
+}
+
+.page-item.drop-below {
+  border-bottom: 2px solid var(--accent) !important;
+}
+
 .drop-hint {
   display: none;
   font-weight: 400;

@@ -158,6 +158,8 @@ export default function Sidebar({
                   depth={0}
                   onPageClick={onPageClick}
                   onDeletePage={onDeletePage}
+                  siblings={treeData.root_pages.filter(p => !p.is_journal)}
+                  onRefresh={loadTree}
                 />
               ))}
             </div>
@@ -194,27 +196,69 @@ export default function Sidebar({
   );
 }
 
-// Draggable page item
+// Draggable page item with reorder drop zones
 function DraggablePage({
-  page, activePage, depth, onPageClick, onDeletePage,
+  page, activePage, depth, onPageClick, onDeletePage, siblings, onRefresh,
 }: {
   page: Page;
   activePage: Page | null;
   depth: number;
   onPageClick: (id: string) => void;
   onDeletePage: (id: string) => void;
+  siblings: Page[];
+  onRefresh: () => void;
 }) {
+  const [dropPosition, setDropPosition] = useState<"above" | "below" | null>(null);
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const rect = e.currentTarget.getBoundingClientRect();
+    const midY = rect.top + rect.height / 2;
+    setDropPosition(e.clientY < midY ? "above" : "below");
+  };
+
+  const handleDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDropPosition(null);
+
+    const draggedId = e.dataTransfer.getData("text/page-id");
+    if (!draggedId || draggedId === page.id) return;
+
+    // Calculate new position based on drop location
+    const idx = siblings.findIndex(p => p.id === page.id);
+    let newPos: number;
+
+    if (dropPosition === "above") {
+      const prevPos = idx > 0 ? siblings[idx - 1].position : 0;
+      newPos = (prevPos + page.position) / 2;
+    } else {
+      const nextPos = idx < siblings.length - 1 ? siblings[idx + 1].position : page.position + 1;
+      newPos = (page.position + nextPos) / 2;
+    }
+
+    // Move to same folder first (if coming from different folder)
+    await api.movePageToFolder(draggedId, page.folder_id ?? undefined);
+    await api.reorderPage(draggedId, newPos);
+    onRefresh();
+  };
+
   return (
     <div
-      className={`page-item ${activePage?.id === page.id ? "active" : ""}`}
+      className={`page-item ${activePage?.id === page.id ? "active" : ""} ${dropPosition === "above" ? "drop-above" : ""} ${dropPosition === "below" ? "drop-below" : ""}`}
       style={{ paddingLeft: 16 + depth * 16 }}
       draggable
       onDragStart={e => {
         e.dataTransfer.setData("text/page-id", page.id);
+        e.dataTransfer.setData("text/page-folder", page.folder_id ?? "");
         e.dataTransfer.effectAllowed = "move";
         e.currentTarget.classList.add("dragging");
       }}
-      onDragEnd={e => e.currentTarget.classList.remove("dragging")}
+      onDragEnd={e => { e.currentTarget.classList.remove("dragging"); setDropPosition(null); }}
+      onDragOver={handleDragOver}
+      onDragLeave={() => setDropPosition(null)}
+      onDrop={handleDrop}
       onClick={() => onPageClick(page.id)}
       onContextMenu={e => {
         e.preventDefault();
@@ -296,6 +340,8 @@ function FolderItem({
               depth={depth + 1}
               onPageClick={onPageClick}
               onDeletePage={onDeletePage}
+              siblings={folder.pages}
+              onRefresh={onRefresh}
             />
           ))}
         </>

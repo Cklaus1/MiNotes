@@ -202,6 +202,14 @@ fn move_page_to_folder(
 }
 
 #[tauri::command]
+fn reorder_page(state: State<'_, AppState>, id: String, new_position: f64) -> Result<Page, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+    db.reorder_page(&uuid, new_position, "user")
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn delete_folder(state: State<'_, AppState>, id: String) -> Result<bool, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
     let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
@@ -234,6 +242,7 @@ pub fn run() {
             get_folder_tree,
             create_folder,
             move_page_to_folder,
+            reorder_page,
             delete_folder,
         ])
         .run(tauri::generate_context!())

@@ -157,8 +157,8 @@ impl Database {
     pub fn get_pages_in_folder(&self, folder_id: Option<&Uuid>) -> Result<Vec<Page>> {
         let folder_str = folder_id.map(|f| f.to_string());
         let mut stmt = self.conn.prepare(
-            "SELECT id, title, icon, folder_id, is_journal, journal_date, created_at, updated_at
-             FROM pages WHERE folder_id IS ?1 ORDER BY title",
+            "SELECT id, title, icon, folder_id, position, is_journal, journal_date, created_at, updated_at
+             FROM pages WHERE folder_id IS ?1 ORDER BY position, title",
         )?;
         let rows = stmt.query_map(rusqlite::params![folder_str], |row| row_to_page_with_folder(row))?;
         let mut pages = Vec::new();
@@ -217,18 +217,20 @@ fn row_to_folder_sqlite(row: &rusqlite::Row<'_>) -> rusqlite::Result<Folder> {
 }
 
 fn row_to_page_with_folder(row: &rusqlite::Row<'_>) -> rusqlite::Result<Page> {
+    // Columns: id, title, icon, folder_id, position, is_journal, journal_date, created_at, updated_at
     let id_str: String = row.get(0)?;
     let folder_str: Option<String> = row.get(3)?;
-    let journal_date_str: Option<String> = row.get(5)?;
-    let created_str: String = row.get(6)?;
-    let updated_str: String = row.get(7)?;
+    let journal_date_str: Option<String> = row.get(6)?;
+    let created_str: String = row.get(7)?;
+    let updated_str: String = row.get(8)?;
 
     Ok(Page {
         id: Uuid::parse_str(&id_str).unwrap_or_default(),
         title: row.get(1)?,
         icon: row.get(2)?,
         folder_id: folder_str.and_then(|s| Uuid::parse_str(&s).ok()),
-        is_journal: row.get::<_, i32>(4)? != 0,
+        position: row.get(4)?,
+        is_journal: row.get::<_, i32>(5)? != 0,
         journal_date: journal_date_str.and_then(|s| chrono::NaiveDate::parse_from_str(&s, "%Y-%m-%d").ok()),
         created_at: chrono::DateTime::parse_from_rfc3339(&created_str)
             .map(|dt| dt.with_timezone(&chrono::Utc))

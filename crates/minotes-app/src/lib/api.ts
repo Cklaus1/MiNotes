@@ -4,6 +4,8 @@ export interface Page {
   id: string;
   title: string;
   icon?: string;
+  folder_id?: string;
+  position: number;
   is_journal: boolean;
   journal_date?: string;
   created_at: string;
@@ -124,6 +126,9 @@ export const createFolder = (name: string, parentId?: string) =>
 
 export const movePageToFolder = (pageId: string, folderId?: string) =>
   invoke<Page>("move_page_to_folder", { pageId, folderId });
+
+export const reorderPage = (id: string, newPosition: number) =>
+  invoke<Page>("reorder_page", { id, newPosition });
 
 export const deleteFolder = (id: string) =>
   invoke<boolean>("delete_folder", { id });

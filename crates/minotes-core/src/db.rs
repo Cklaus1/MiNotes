@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS pages (
     title       TEXT NOT NULL UNIQUE,
     icon        TEXT,
     folder_id   TEXT REFERENCES folders(id) ON DELETE SET NULL,
+    position    REAL NOT NULL DEFAULT 0,
     is_journal  INTEGER NOT NULL DEFAULT 0,
     journal_date TEXT,
     created_at  TEXT NOT NULL,
