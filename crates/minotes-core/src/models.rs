@@ -100,3 +100,27 @@ pub struct PageTree {
     pub page: Page,
     pub blocks: Vec<Block>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Card {
+    pub id: Uuid,
+    pub block_id: Uuid,
+    pub card_type: String,
+    pub due: DateTime<Utc>,
+    pub stability: f64,
+    pub difficulty: f64,
+    pub reps: i32,
+    pub lapses: i32,
+    pub state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_review: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SrsStats {
+    pub due_count: i64,
+    pub reviewed_today: i64,
+    pub total_cards: i64,
+}

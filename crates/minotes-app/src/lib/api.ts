@@ -97,6 +97,27 @@ export const getBacklinks = (pageId: string) =>
 export const getGraphStats = () =>
   invoke<GraphStats>("get_graph_stats");
 
+// Graph data
+export interface GraphNode {
+  id: string;
+  title: string;
+  block_count: number;
+  link_count: number;
+}
+
+export interface GraphEdge {
+  source: string;
+  target: string;
+  weight: number;
+}
+
+export interface GraphData {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+}
+
+export const getGraphData = () => invoke<GraphData>("get_graph_data");
+
 // Unlinked references
 export const getUnlinkedReferences = (pageId: string) =>
   invoke<Block[]>("get_unlinked_references", { pageId });
@@ -171,3 +192,54 @@ export const getProperties = (entityId: string) =>
 
 export const deleteProperty = (entityId: string, key: string) =>
   invoke<boolean>("delete_property", { entityId, key });
+
+// SRS Cards
+export interface Card {
+  id: string;
+  block_id: string;
+  card_type: string;
+  due: string;
+  stability: number;
+  difficulty: number;
+  reps: number;
+  lapses: number;
+  state: string;
+  last_review?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SrsStats {
+  due_count: number;
+  reviewed_today: number;
+  total_cards: number;
+}
+
+export const createCard = (blockId: string, cardType: string) =>
+  invoke<Card>("create_card", { blockId, cardType });
+
+export const getDueCards = (limit?: number) =>
+  invoke<Card[]>("get_due_cards", { limit: limit ?? 50 });
+
+export const reviewCard = (cardId: string, rating: string) =>
+  invoke<Card>("review_card", { cardId, rating });
+
+export const getSrsStats = () =>
+  invoke<SrsStats>("get_srs_stats");
+
+export const deleteCard = (cardId: string) =>
+  invoke<boolean>("delete_card", { cardId });
+
+// Favorites
+export const addFavorite = (pageId: string) =>
+  invoke<void>("add_favorite", { pageId });
+
+export const removeFavorite = (pageId: string) =>
+  invoke<boolean>("remove_favorite", { pageId });
+
+export const listFavorites = () =>
+  invoke<Page[]>("list_favorites");
+
+// Block move
+export const moveBlock = (id: string, newParent: string, position: number) =>
+  invoke<Block>("move_block", { id, newParent, position });

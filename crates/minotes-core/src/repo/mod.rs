@@ -1,6 +1,8 @@
 pub mod blocks;
+pub mod cards;
 pub mod events;
 pub mod export;
+pub mod favorites;
 pub mod folders;
 pub mod graph;
 pub mod links;

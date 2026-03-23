@@ -179,6 +179,81 @@
   color: var(--accent-hover);
 }
 
+/* Syntax highlighting (lowlight / highlight.js compatible tokens) */
+.block-content .ProseMirror pre .hljs-keyword,
+.block-content .ProseMirror pre .hljs-selector-tag,
+.block-content .ProseMirror pre .hljs-built_in { color: #cba6f7; }
+.block-content .ProseMirror pre .hljs-string,
+.block-content .ProseMirror pre .hljs-attr { color: #a6e3a1; }
+.block-content .ProseMirror pre .hljs-comment,
+.block-content .ProseMirror pre .hljs-quote { color: #6c7086; font-style: italic; }
+.block-content .ProseMirror pre .hljs-number,
+.block-content .ProseMirror pre .hljs-literal { color: #fab387; }
+.block-content .ProseMirror pre .hljs-function,
+.block-content .ProseMirror pre .hljs-title { color: #89b4fa; }
+.block-content .ProseMirror pre .hljs-type,
+.block-content .ProseMirror pre .hljs-class { color: #f9e2af; }
+.block-content .ProseMirror pre .hljs-variable { color: #f38ba8; }
+.block-content .ProseMirror pre .hljs-meta { color: #74c7ec; }
+.block-content .ProseMirror pre .hljs-tag { color: #89dceb; }
+.block-content .ProseMirror pre .hljs-name { color: #cba6f7; }
+
+/* Code block language label */
+.block-content .ProseMirror pre code::before {
+  content: attr(class);
+  display: block;
+  font-size: 0.7em;
+  color: var(--text-muted);
+  margin-bottom: 0.3em;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* Tables */
+.block-content .ProseMirror table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0.3em 0;
+  font-size: 0.9em;
+}
+
+.block-content .ProseMirror th,
+.block-content .ProseMirror td {
+  border: 1px solid var(--border);
+  padding: 6px 10px;
+  text-align: left;
+  min-width: 60px;
+}
+
+.block-content .ProseMirror th {
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.block-content .ProseMirror td {
+  background: var(--bg-primary);
+}
+
+.block-content .ProseMirror .selectedCell {
+  background: rgba(137, 180, 250, 0.15);
+}
+
+.block-content .ProseMirror .column-resize-handle {
+  position: absolute;
+  right: -2px;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  background: var(--accent);
+  cursor: col-resize;
+}
+
+.block-content .ProseMirror .tableWrapper {
+  overflow-x: auto;
+  margin: 0.3em 0;
+}
+
 /* Selection and focus */
 .block-content .ProseMirror ::selection {
   background: rgba(137, 180, 250, 0.3);

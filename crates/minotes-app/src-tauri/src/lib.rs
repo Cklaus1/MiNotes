@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use minotes_core::db::Database;
-use minotes_core::models::{Block, Page, PageTree, Property};
+use minotes_core::models::{Block, Card, Page, PageTree, Property, SrsStats};
 use minotes_core::repo::graph::GraphStats;
 use serde::Serialize;
 use tauri::State;
@@ -135,6 +135,46 @@ fn get_unlinked_references(state: State<'_, AppState>, page_id: String) -> Resul
     let db = state.db.lock().map_err(|e| e.to_string())?;
     let uuid = uuid::Uuid::parse_str(&page_id).map_err(|e| e.to_string())?;
     db.get_unlinked_references(&uuid).map_err(|e| e.to_string())
+}
+
+#[derive(Debug, Serialize)]
+struct FrontendGraphNode {
+    id: String,
+    title: String,
+    block_count: i64,
+    link_count: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct FrontendGraphEdge {
+    source: String,
+    target: String,
+    weight: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct FrontendGraphData {
+    nodes: Vec<FrontendGraphNode>,
+    edges: Vec<FrontendGraphEdge>,
+}
+
+#[tauri::command]
+fn get_graph_data(state: State<'_, AppState>) -> Result<FrontendGraphData, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let data = db.get_graph_data().map_err(|e| e.to_string())?;
+    Ok(FrontendGraphData {
+        nodes: data.nodes.into_iter().map(|n| FrontendGraphNode {
+            id: n.id.to_string(),
+            title: n.title,
+            block_count: n.block_count,
+            link_count: n.link_count,
+        }).collect(),
+        edges: data.edges.into_iter().map(|e| FrontendGraphEdge {
+            source: e.from_page.to_string(),
+            target: e.to_page.to_string(),
+            weight: e.link_count,
+        }).collect(),
+    })
 }
 
 #[tauri::command]
@@ -272,6 +312,79 @@ fn delete_folder(state: State<'_, AppState>, id: String) -> Result<bool, String>
     db.delete_folder(&uuid, "user").map_err(|e| e.to_string())
 }
 
+// ── SRS Card Commands ──
+
+#[tauri::command]
+fn create_card(state: State<'_, AppState>, block_id: String, card_type: String) -> Result<Card, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let uuid = uuid::Uuid::parse_str(&block_id).map_err(|e| e.to_string())?;
+    db.create_card(&uuid, &card_type, "user").map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_due_cards(state: State<'_, AppState>, limit: Option<i64>) -> Result<Vec<Card>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.get_due_cards(limit.unwrap_or(50)).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn review_card(state: State<'_, AppState>, card_id: String, rating: String) -> Result<Card, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let uuid = uuid::Uuid::parse_str(&card_id).map_err(|e| e.to_string())?;
+    db.review_card(&uuid, &rating, "user").map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_srs_stats(state: State<'_, AppState>) -> Result<SrsStats, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.get_srs_stats().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_card(state: State<'_, AppState>, card_id: String) -> Result<bool, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let uuid = uuid::Uuid::parse_str(&card_id).map_err(|e| e.to_string())?;
+    db.delete_card(&uuid, "user").map_err(|e| e.to_string())
+}
+
+// ── Favorite Commands ──
+
+#[tauri::command]
+fn add_favorite(state: State<'_, AppState>, page_id: String) -> Result<(), String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let uuid = uuid::Uuid::parse_str(&page_id).map_err(|e| e.to_string())?;
+    db.add_favorite(&uuid, "user").map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn remove_favorite(state: State<'_, AppState>, page_id: String) -> Result<bool, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let uuid = uuid::Uuid::parse_str(&page_id).map_err(|e| e.to_string())?;
+    db.remove_favorite(&uuid).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_favorites(state: State<'_, AppState>) -> Result<Vec<Page>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.list_favorites().map_err(|e| e.to_string())
+}
+
+// ── Block Move Command ──
+
+#[tauri::command]
+fn move_block(
+    state: State<'_, AppState>,
+    id: String,
+    new_parent: String,
+    position: f64,
+) -> Result<Block, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+    let parent_uuid = uuid::Uuid::parse_str(&new_parent).map_err(|e| e.to_string())?;
+    db.move_block(&uuid, &parent_uuid, position, "user")
+        .map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let path = db_path();
@@ -291,9 +404,11 @@ pub fn run() {
             create_block,
             update_block,
             delete_block,
+            move_block,
             search_blocks,
             get_backlinks,
             get_unlinked_references,
+            get_graph_data,
             get_graph_stats,
             run_query,
             get_journal,
@@ -305,6 +420,14 @@ pub fn run() {
             set_property,
             get_properties,
             delete_property,
+            create_card,
+            get_due_cards,
+            review_card,
+            get_srs_stats,
+            delete_card,
+            add_favorite,
+            remove_favorite,
+            list_favorites,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

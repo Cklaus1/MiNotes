@@ -83,6 +83,29 @@ CREATE INDEX IF NOT EXISTS idx_links_to_block ON links(to_block);
 CREATE INDEX IF NOT EXISTS idx_properties_entity ON properties(entity_id);
 CREATE INDEX IF NOT EXISTS idx_events_entity ON events(entity_type, entity_id);
 CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type);
+
+CREATE TABLE IF NOT EXISTS cards (
+    id          TEXT PRIMARY KEY,
+    block_id    TEXT NOT NULL REFERENCES blocks(id) ON DELETE CASCADE,
+    card_type   TEXT NOT NULL DEFAULT 'basic',
+    due         TEXT NOT NULL,
+    stability   REAL NOT NULL DEFAULT 0.0,
+    difficulty  REAL NOT NULL DEFAULT 0.0,
+    reps        INTEGER NOT NULL DEFAULT 0,
+    lapses      INTEGER NOT NULL DEFAULT 0,
+    state       TEXT NOT NULL DEFAULT 'new',
+    last_review TEXT,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_cards_due ON cards(due);
+CREATE INDEX IF NOT EXISTS idx_cards_block ON cards(block_id);
+
+CREATE TABLE IF NOT EXISTS favorites (
+    page_id     TEXT PRIMARY KEY REFERENCES pages(id) ON DELETE CASCADE,
+    position    REAL NOT NULL DEFAULT 0,
+    created_at  TEXT NOT NULL
+);
 ";
 
 const FTS_SCHEMA: &str = "

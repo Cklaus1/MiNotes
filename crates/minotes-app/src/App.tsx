@@ -4,6 +4,8 @@ import PageView from "./components/PageView";
 import EmptyState from "./components/EmptyState";
 import SearchPanel from "./components/SearchPanel";
 import QueryPanel from "./components/QueryPanel";
+import GraphView from "./components/GraphView";
+import ReviewPanel from "./components/ReviewPanel";
 import * as api from "./lib/api";
 
 export default function App() {
@@ -11,6 +13,8 @@ export default function App() {
   const [stats, setStats] = useState<api.GraphStats | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [queryOpen, setQueryOpen] = useState(false);
+  const [graphOpen, setGraphOpen] = useState(false);
+  const [reviewOpen, setReviewOpen] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
 
   const refresh = useCallback(async () => {
@@ -115,6 +119,16 @@ export default function App() {
         e.preventDefault();
         setQueryOpen(prev => !prev);
       }
+      // Cmd/Ctrl+G — graph view
+      if ((e.metaKey || e.ctrlKey) && e.key === "g") {
+        e.preventDefault();
+        setGraphOpen(prev => !prev);
+      }
+      // Cmd/Ctrl+R — review panel
+      if ((e.metaKey || e.ctrlKey) && e.key === "r") {
+        e.preventDefault();
+        setReviewOpen(prev => !prev);
+      }
       // Cmd/Ctrl+N — new page
       if ((e.metaKey || e.ctrlKey) && e.key === "n") {
         e.preventDefault();
@@ -140,9 +154,16 @@ export default function App() {
         onDeletePage={deletePage}
         onJournalClick={() => openJournal()}
         onSearchClick={() => setSearchOpen(true)}
+        onGraphClick={() => setGraphOpen(prev => !prev)}
         refreshKey={refreshKey}
       />
-      <div className="main">
+      <div className="main" style={{ position: "relative" }}>
+        {graphOpen && (
+          <GraphView
+            onPageClick={(id) => { openPage(id); setGraphOpen(false); }}
+            onClose={() => setGraphOpen(false)}
+          />
+        )}
         {activePage ? (
           <PageView
             pageTree={activePage}
@@ -165,6 +186,10 @@ export default function App() {
         open={queryOpen}
         onClose={() => setQueryOpen(false)}
         onPageClick={(id) => { openPage(id); setQueryOpen(false); }}
+      />
+      <ReviewPanel
+        open={reviewOpen}
+        onClose={() => setReviewOpen(false)}
       />
     </div>
   );

@@ -10,12 +10,13 @@ interface Props {
   onDeletePage: (id: string) => void;
   onJournalClick: () => void;
   onSearchClick: () => void;
+  onGraphClick: () => void;
   refreshKey: number;
 }
 
 export default function Sidebar({
   activePage, stats, onPageClick, onCreatePage, onDeletePage,
-  onJournalClick, onSearchClick, refreshKey,
+  onJournalClick, onSearchClick, onGraphClick, refreshKey,
 }: Props) {
   const [newTitle, setNewTitle] = useState("");
   const [showCreate, setShowCreate] = useState(false);
@@ -23,6 +24,7 @@ export default function Sidebar({
   const [showFolderCreate, setShowFolderCreate] = useState(false);
   const [treeData, setTreeData] = useState<FolderTreeRoot | null>(null);
   const [journals, setJournals] = useState<Page[]>([]);
+  const [favorites, setFavorites] = useState<Page[]>([]);
 
   const loadTree = useCallback(async () => {
     try {
@@ -30,6 +32,8 @@ export default function Sidebar({
       setTreeData(tree);
       const pages = await api.listPages(200);
       setJournals(pages.filter(p => p.is_journal).slice(0, 7));
+      const favs = await api.listFavorites();
+      setFavorites(favs);
     } catch (e) {
       console.error("Failed to load folder tree:", e);
     }
@@ -124,6 +128,25 @@ export default function Sidebar({
       )}
 
       <div className="sidebar-section">
+        {favorites.length > 0 && (
+          <>
+            <div className="sidebar-section-title">Favorites ({favorites.length})</div>
+            {favorites.map(page => (
+              <div
+                key={page.id}
+                className={`page-item ${activePage?.id === page.id ? "active" : ""}`}
+                onClick={() => onPageClick(page.id)}
+                onContextMenu={e => {
+                  e.preventDefault();
+                  api.removeFavorite(page.id).then(loadTree);
+                }}
+              >
+                ⭐ {page.title}
+              </div>
+            ))}
+          </>
+        )}
+
         {treeData && (
           <>
             {/* Folder tree */}
@@ -190,7 +213,15 @@ export default function Sidebar({
             <span>{stats.links} links</span>
           </>
         )}
-        <span className="shortcut-hint" style={{ marginLeft: "auto" }}>Ctrl+K</span>
+        <button
+          className="btn btn-sm"
+          onClick={onGraphClick}
+          title="Graph view (Ctrl+G)"
+          style={{ marginLeft: "auto" }}
+        >
+          Graph
+        </button>
+        <span className="shortcut-hint">Ctrl+K</span>
       </div>
     </div>
   );
