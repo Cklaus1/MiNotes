@@ -3,11 +3,38 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Folder {
+    pub id: Uuid,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    pub position: f64,
+    pub collapsed: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Folder with its children (for tree rendering).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FolderTree {
+    #[serde(flatten)]
+    pub folder: Folder,
+    pub children: Vec<FolderTree>,
+    pub pages: Vec<Page>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Page {
     pub id: Uuid,
     pub title: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub folder_id: Option<Uuid>,
     pub is_journal: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub journal_date: Option<NaiveDate>,

@@ -5,10 +5,24 @@ use rusqlite::Connection;
 use crate::error::Result;
 
 const SCHEMA: &str = "
+CREATE TABLE IF NOT EXISTS folders (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL,
+    parent_id   TEXT REFERENCES folders(id) ON DELETE CASCADE,
+    icon        TEXT,
+    color       TEXT,
+    position    REAL NOT NULL DEFAULT 0,
+    collapsed   INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL,
+    UNIQUE(name, parent_id)
+);
+
 CREATE TABLE IF NOT EXISTS pages (
     id          TEXT PRIMARY KEY,
     title       TEXT NOT NULL UNIQUE,
     icon        TEXT,
+    folder_id   TEXT REFERENCES folders(id) ON DELETE SET NULL,
     is_journal  INTEGER NOT NULL DEFAULT 0,
     journal_date TEXT,
     created_at  TEXT NOT NULL,
@@ -58,6 +72,8 @@ CREATE TABLE IF NOT EXISTS events (
     created_at  TEXT NOT NULL
 );
 
+CREATE INDEX IF NOT EXISTS idx_folders_parent ON folders(parent_id);
+CREATE INDEX IF NOT EXISTS idx_pages_folder ON pages(folder_id);
 CREATE INDEX IF NOT EXISTS idx_blocks_page_id ON blocks(page_id);
 CREATE INDEX IF NOT EXISTS idx_blocks_parent_id ON blocks(parent_id);
 CREATE INDEX IF NOT EXISTS idx_links_from_block ON links(from_block);

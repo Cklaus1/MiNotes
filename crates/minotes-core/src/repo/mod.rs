@@ -1,6 +1,7 @@
 pub mod blocks;
 pub mod events;
 pub mod export;
+pub mod folders;
 pub mod graph;
 pub mod links;
 pub mod pages;

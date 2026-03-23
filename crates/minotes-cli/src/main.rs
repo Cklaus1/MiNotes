@@ -9,8 +9,8 @@ mod commands;
 mod output;
 
 use commands::{
-    block::BlockCmd, export::{ExportCmd, ImportCmd}, graph::GraphCmd,
-    journal::JournalCmd, page::PageCmd, property::PropertyCmd,
+    block::BlockCmd, export::{ExportCmd, ImportCmd}, folder::FolderCmd,
+    graph::GraphCmd, journal::JournalCmd, page::PageCmd, property::PropertyCmd,
 };
 
 #[derive(Parser)]
@@ -39,6 +39,11 @@ enum Commands {
     Block {
         #[command(subcommand)]
         cmd: BlockCmd,
+    },
+    /// Manage folders
+    Folder {
+        #[command(subcommand)]
+        cmd: FolderCmd,
     },
     /// Manage properties on blocks and pages
     Property {
@@ -131,6 +136,7 @@ fn main() {
     let exit_code = match cli.command {
         Commands::Page { cmd } => commands::page::run(&db, cmd, &cli.actor),
         Commands::Block { cmd } => commands::block::run(&db, cmd, &cli.actor),
+        Commands::Folder { cmd } => commands::folder::run(&db, cmd, &cli.actor),
         Commands::Property { cmd } => commands::property::run(&db, cmd, &cli.actor),
         Commands::Search { query, limit } => commands::search::run(&db, &query, limit),
         Commands::Journal { date, cmd } => match cmd {

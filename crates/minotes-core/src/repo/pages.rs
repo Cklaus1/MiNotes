@@ -23,12 +23,13 @@ impl Database {
         }
 
         self.conn.execute(
-            "INSERT INTO pages (id, title, icon, is_journal, journal_date, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO pages (id, title, icon, folder_id, is_journal, journal_date, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             rusqlite::params![
                 id.to_string(),
                 title,
                 icon,
+                Option::<String>::None,
                 is_journal as i32,
                 journal_date.map(|d| d.to_string()),
                 now.to_rfc3339(),
@@ -40,6 +41,7 @@ impl Database {
             id,
             title: title.to_string(),
             icon: icon.map(String::from),
+            folder_id: None,
             is_journal,
             journal_date,
             created_at: now,
@@ -53,7 +55,7 @@ impl Database {
     pub fn get_page(&self, id: &Uuid) -> Result<Option<Page>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT id, title, icon, is_journal, journal_date, created_at, updated_at FROM pages WHERE id = ?1")?;
+            .prepare("SELECT id, title, icon, folder_id, is_journal, journal_date, created_at, updated_at FROM pages WHERE id = ?1")?;
         let mut rows = stmt.query(rusqlite::params![id.to_string()])?;
         match rows.next()? {
             Some(row) => Ok(Some(row_to_page(row)?)),
@@ -64,7 +66,7 @@ impl Database {
     pub fn get_page_by_title(&self, title: &str) -> Result<Option<Page>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT id, title, icon, is_journal, journal_date, created_at, updated_at FROM pages WHERE title = ?1")?;
+            .prepare("SELECT id, title, icon, folder_id, is_journal, journal_date, created_at, updated_at FROM pages WHERE title = ?1")?;
         let mut rows = stmt.query(rusqlite::params![title])?;
         match rows.next()? {
             Some(row) => Ok(Some(row_to_page(row)?)),
@@ -75,7 +77,7 @@ impl Database {
     pub fn list_pages(&self, limit: Option<i64>) -> Result<Vec<Page>> {
         let limit = limit.unwrap_or(100);
         let mut stmt = self.conn.prepare(
-            "SELECT id, title, icon, is_journal, journal_date, created_at, updated_at FROM pages ORDER BY updated_at DESC LIMIT ?1",
+            "SELECT id, title, icon, folder_id, is_journal, journal_date, created_at, updated_at FROM pages ORDER BY updated_at DESC LIMIT ?1",
         )?;
         let rows = stmt.query_map(rusqlite::params![limit], |row| {
             row_to_page_sqlite(row)
@@ -120,16 +122,19 @@ fn row_to_page(row: &rusqlite::Row<'_>) -> Result<Page> {
 }
 
 fn row_to_page_sqlite(row: &rusqlite::Row<'_>) -> rusqlite::Result<Page> {
+    // Columns: id, title, icon, folder_id, is_journal, journal_date, created_at, updated_at
     let id_str: String = row.get(0)?;
-    let journal_date_str: Option<String> = row.get(4)?;
-    let created_str: String = row.get(5)?;
-    let updated_str: String = row.get(6)?;
+    let folder_str: Option<String> = row.get(3)?;
+    let journal_date_str: Option<String> = row.get(5)?;
+    let created_str: String = row.get(6)?;
+    let updated_str: String = row.get(7)?;
 
     Ok(Page {
         id: Uuid::parse_str(&id_str).unwrap_or_default(),
         title: row.get(1)?,
         icon: row.get(2)?,
-        is_journal: row.get::<_, i32>(3)? != 0,
+        folder_id: folder_str.and_then(|s| Uuid::parse_str(&s).ok()),
+        is_journal: row.get::<_, i32>(4)? != 0,
         journal_date: journal_date_str.and_then(|s| NaiveDate::parse_from_str(&s, "%Y-%m-%d").ok()),
         created_at: chrono::DateTime::parse_from_rfc3339(&created_str)
             .map(|dt| dt.with_timezone(&Utc))
