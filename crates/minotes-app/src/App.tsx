@@ -6,6 +6,7 @@ import SearchPanel from "./components/SearchPanel";
 import QueryPanel from "./components/QueryPanel";
 import GraphView from "./components/GraphView";
 import ReviewPanel from "./components/ReviewPanel";
+import PluginManager from "./components/PluginManager";
 import * as api from "./lib/api";
 import { initTheme, toggleTheme } from "./lib/theme";
 
@@ -16,6 +17,7 @@ export default function App() {
   const [queryOpen, setQueryOpen] = useState(false);
   const [graphOpen, setGraphOpen] = useState(false);
   const [reviewOpen, setReviewOpen] = useState(false);
+  const [pluginsOpen, setPluginsOpen] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
 
   const refresh = useCallback(async () => {
@@ -202,6 +204,7 @@ export default function App() {
         onGraph={() => { setGraphOpen(prev => !prev); setSearchOpen(false); }}
         onQuery={() => { setQueryOpen(prev => !prev); setSearchOpen(false); }}
         onReview={() => { setReviewOpen(prev => !prev); setSearchOpen(false); }}
+        onPlugins={() => { setPluginsOpen(prev => !prev); setSearchOpen(false); }}
       />
       <QueryPanel
         open={queryOpen}
@@ -211,6 +214,10 @@ export default function App() {
       <ReviewPanel
         open={reviewOpen}
         onClose={() => setReviewOpen(false)}
+      />
+      <PluginManager
+        open={pluginsOpen}
+        onClose={() => setPluginsOpen(false)}
       />
     </div>
   );

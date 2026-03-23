@@ -11,6 +11,7 @@ interface Props {
   onGraph?: () => void;
   onQuery?: () => void;
   onReview?: () => void;
+  onPlugins?: () => void;
 }
 
 interface SearchResult {

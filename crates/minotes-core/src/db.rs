@@ -143,6 +143,27 @@ CREATE TABLE IF NOT EXISTS classes (
     description TEXT,
     created_at  TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS plugins (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL UNIQUE,
+    version     TEXT NOT NULL DEFAULT '0.1.0',
+    description TEXT,
+    author      TEXT,
+    enabled     INTEGER NOT NULL DEFAULT 1,
+    permissions TEXT,
+    config      TEXT,
+    entry_point TEXT,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS plugin_storage (
+    plugin_name TEXT NOT NULL,
+    key         TEXT NOT NULL,
+    value       TEXT,
+    PRIMARY KEY(plugin_name, key)
+);
 ";
 
 const FTS_SCHEMA: &str = "

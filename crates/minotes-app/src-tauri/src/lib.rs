@@ -2,20 +2,26 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use minotes_core::db::Database;
-use minotes_core::models::{Block, Card, Page, PageTree, Property, SrsStats, Template};
+use minotes_core::models::{Block, Card, GraphInfo, Page, PageTree, Plugin, Property, SrsStats, Template};
 use minotes_core::repo::graph::GraphStats;
+use minotes_core::repo::graphs;
 use serde::Serialize;
 use tauri::State;
 
 struct AppState {
     db: Mutex<Database>,
+    current_graph: Mutex<String>,
 }
 
-fn db_path() -> PathBuf {
+fn base_dir() -> PathBuf {
     let home = dirs_next().unwrap_or_else(|| PathBuf::from("."));
     let dir = home.join(".minotes");
     std::fs::create_dir_all(&dir).ok();
-    dir.join("default.db")
+    dir
+}
+
+fn db_path() -> PathBuf {
+    base_dir().join("default.db")
 }
 
 fn dirs_next() -> Option<PathBuf> {
@@ -429,6 +435,27 @@ fn delete_template(state: State<'_, AppState>, name: String) -> Result<bool, Str
     db.delete_template(&name, "user").map_err(|e| e.to_string())
 }
 
+// ── Export/Import Commands ──
+
+#[tauri::command]
+fn export_opml(state: State<'_, AppState>) -> Result<String, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.export_opml().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn export_json(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.export_json().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn publish_site(state: State<'_, AppState>, output_dir: String) -> Result<Vec<String>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.publish_static_site(std::path::Path::new(&output_dir))
+        .map_err(|e| e.to_string())
+}
+
 // ── Block Move Command ──
 
 #[tauri::command]
@@ -445,6 +472,153 @@ fn move_block(
         .map_err(|e| e.to_string())
 }
 
+// ── Plugin Commands ──
+
+#[tauri::command]
+fn list_plugins(state: State<'_, AppState>) -> Result<Vec<Plugin>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.list_plugins().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn register_plugin(
+    state: State<'_, AppState>,
+    name: String,
+    version: String,
+    description: Option<String>,
+    author: Option<String>,
+) -> Result<Plugin, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.register_plugin(
+        &name,
+        &version,
+        description.as_deref(),
+        author.as_deref(),
+        None,
+        None,
+        "user",
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn enable_plugin(state: State<'_, AppState>, name: String) -> Result<Plugin, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.enable_plugin(&name).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn disable_plugin(state: State<'_, AppState>, name: String) -> Result<Plugin, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.disable_plugin(&name).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn uninstall_plugin(state: State<'_, AppState>, name: String) -> Result<bool, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.uninstall_plugin(&name).map_err(|e| e.to_string())
+}
+
+// ── Multi-Graph Management (F-020) ──
+
+#[tauri::command]
+fn list_graphs() -> Result<Vec<GraphInfo>, String> {
+    let dir = base_dir();
+    graphs::list_graphs(&dir).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn switch_graph(state: State<'_, AppState>, name: String) -> Result<bool, String> {
+    let dir = base_dir();
+    let new_path = dir.join(format!("{name}.db"));
+    if !new_path.exists() {
+        return Err(format!("Graph '{name}' does not exist"));
+    }
+    let new_db = Database::open(&new_path).map_err(|e| e.to_string())?;
+    let mut db = state.db.lock().map_err(|e| e.to_string())?;
+    *db = new_db;
+    let mut current = state.current_graph.lock().map_err(|e| e.to_string())?;
+    *current = name;
+    Ok(true)
+}
+
+#[tauri::command]
+fn create_graph_cmd(name: String) -> Result<GraphInfo, String> {
+    let dir = base_dir();
+    graphs::create_graph(&dir, &name).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_graph_cmd(state: State<'_, AppState>, name: String) -> Result<bool, String> {
+    // Prevent deleting the currently active graph
+    let current = state.current_graph.lock().map_err(|e| e.to_string())?;
+    if *current == name {
+        return Err("Cannot delete the currently active graph. Switch to another graph first.".to_string());
+    }
+    drop(current);
+
+    let dir = base_dir();
+    graphs::delete_graph(&dir, &name).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_current_graph(state: State<'_, AppState>) -> Result<String, String> {
+    let current = state.current_graph.lock().map_err(|e| e.to_string())?;
+    Ok(current.clone())
+}
+
+// ── Web Clipper API (F-021) ──
+
+#[tauri::command]
+fn clip_content(
+    state: State<'_, AppState>,
+    title: String,
+    content: String,
+    url: Option<String>,
+    tags: Option<Vec<String>>,
+) -> Result<Page, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+
+    // Create the page
+    let page = db
+        .create_page(&title, None, false, None, "clipper")
+        .map_err(|e| e.to_string())?;
+
+    // Add URL as a property if provided
+    if let Some(ref u) = url {
+        db.set_property(&page.id, "page", "url", u, "url", "clipper")
+            .map_err(|e| e.to_string())?;
+    }
+
+    // Add tags as properties
+    if let Some(ref tag_list) = tags {
+        for tag in tag_list {
+            db.set_property(&page.id, "page", &format!("tag:{tag}"), tag, "tag", "clipper")
+                .map_err(|e| e.to_string())?;
+        }
+    }
+
+    // Split content into blocks by double newlines (paragraphs)
+    let paragraphs: Vec<&str> = content
+        .split("\n\n")
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    for paragraph in &paragraphs {
+        db.create_block(&page.id, paragraph, None, None, "clipper")
+            .map_err(|e| e.to_string())?;
+    }
+
+    // If no paragraphs were found but content is non-empty, create a single block
+    if paragraphs.is_empty() && !content.trim().is_empty() {
+        db.create_block(&page.id, content.trim(), None, None, "clipper")
+            .map_err(|e| e.to_string())?;
+    }
+
+    Ok(page)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let path = db_path();
@@ -454,6 +628,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(AppState {
             db: Mutex::new(db),
+            current_graph: Mutex::new("default".to_string()),
         })
         .invoke_handler(tauri::generate_handler![
             list_pages,
@@ -495,6 +670,20 @@ pub fn run() {
             list_templates,
             apply_template,
             delete_template,
+            export_opml,
+            export_json,
+            publish_site,
+            list_plugins,
+            register_plugin,
+            enable_plugin,
+            disable_plugin,
+            uninstall_plugin,
+            list_graphs,
+            switch_graph,
+            create_graph_cmd,
+            delete_graph_cmd,
+            get_current_graph,
+            clip_content,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

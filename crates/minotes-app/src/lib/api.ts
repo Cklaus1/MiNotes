@@ -275,3 +275,74 @@ export const applyTemplate = (pageId: string, templateName: string) =>
 
 export const deleteTemplate = (name: string) =>
   invoke<boolean>("delete_template", { name });
+
+// Export / Publish
+export const exportOpml = () =>
+  invoke<string>("export_opml");
+
+export const exportJson = () =>
+  invoke<any>("export_json");
+
+export const publishSite = (outputDir: string) =>
+  invoke<string[]>("publish_site", { outputDir });
+
+// Plugins
+export interface Plugin {
+  id: string;
+  name: string;
+  version: string;
+  description?: string;
+  author?: string;
+  enabled: boolean;
+  permissions?: string;
+  config?: string;
+  entry_point?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export const listPlugins = () =>
+  invoke<Plugin[]>("list_plugins");
+
+export const registerPlugin = (name: string, version: string, description?: string, author?: string) =>
+  invoke<Plugin>("register_plugin", { name, version, description, author });
+
+export const enablePlugin = (name: string) =>
+  invoke<Plugin>("enable_plugin", { name });
+
+export const disablePlugin = (name: string) =>
+  invoke<Plugin>("disable_plugin", { name });
+
+export const uninstallPlugin = (name: string) =>
+  invoke<boolean>("uninstall_plugin", { name });
+
+// Multi-Graph Management (F-020)
+export interface GraphInfo {
+  name: string;
+  path: string;
+  size_bytes: number;
+  modified_at: string;
+}
+
+export const listGraphs = () =>
+  invoke<GraphInfo[]>("list_graphs");
+
+export const switchGraph = (name: string) =>
+  invoke<boolean>("switch_graph", { name });
+
+export const createGraph = (name: string) =>
+  invoke<GraphInfo>("create_graph_cmd", { name });
+
+export const deleteGraph = (name: string) =>
+  invoke<boolean>("delete_graph_cmd", { name });
+
+export const getCurrentGraph = () =>
+  invoke<string>("get_current_graph");
+
+// Web Clipper API (F-021)
+export const clipContent = (
+  title: string,
+  content: string,
+  url?: string,
+  tags?: string[],
+) => invoke<Page>("clip_content", { title, content, url, tags });

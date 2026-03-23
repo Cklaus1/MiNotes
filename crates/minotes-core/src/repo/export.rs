@@ -244,6 +244,158 @@ impl Database {
 
         Ok(format!("Imported {count} blocks into '{title}'"))
     }
+
+    /// Import an Org-mode file, converting headings and content to pages and blocks.
+    pub fn import_org_file(&self, file_path: &Path, actor: &str) -> Result<String> {
+        let content = fs::read_to_string(file_path)
+            .map_err(|e| crate::error::Error::InvalidInput(format!("Read failed: {e}")))?;
+
+        let title = file_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("Untitled")
+            .to_string();
+
+        let page = if let Some(existing) = self.get_page_by_title(&title)? {
+            existing
+        } else {
+            self.create_page(&title, None, false, None, actor)?
+        };
+
+        let mut count = 0;
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            // Convert org headings (* / ** / ***) to markdown headings
+            let clean = if trimmed.starts_with("*** ") {
+                format!("### {}", &trimmed[4..])
+            } else if trimmed.starts_with("** ") {
+                format!("## {}", &trimmed[3..])
+            } else if trimmed.starts_with("* ") {
+                format!("# {}", &trimmed[2..])
+            } else if trimmed.starts_with("- ") || trimmed.starts_with("+ ") {
+                trimmed.to_string()
+            } else if trimmed.starts_with("#+") {
+                // Skip org-mode directives
+                continue;
+            } else {
+                trimmed.to_string()
+            };
+            if !clean.is_empty() {
+                self.create_block(&page.id, &clean, None, None, actor)?;
+                count += 1;
+            }
+        }
+
+        Ok(format!("Imported {count} blocks from org-mode into '{title}'"))
+    }
+
+    /// Export a page to Org-mode format.
+    pub fn export_org(&self, page_id: &uuid::Uuid) -> Result<String> {
+        let page = self.get_page(page_id)?
+            .ok_or_else(|| crate::error::Error::NotFound("Page not found".into()))?;
+        let blocks = self.get_page_blocks(page_id)?;
+        let properties = self.get_properties(page_id)?;
+
+        let mut org = String::new();
+        // Org-mode properties drawer
+        if !properties.is_empty() {
+            org.push_str(":PROPERTIES:\n");
+            org.push_str(&format!(":TITLE: {}\n", page.title));
+            for prop in &properties {
+                if let Some(ref v) = prop.value {
+                    org.push_str(&format!(":{}: {v}\n", prop.key.to_uppercase()));
+                }
+            }
+            org.push_str(":END:\n\n");
+        }
+
+        for block in &blocks {
+            let c = &block.content;
+            // Convert markdown headings back to org
+            if c.starts_with("### ") {
+                org.push_str(&format!("*** {}\n", &c[4..]));
+            } else if c.starts_with("## ") {
+                org.push_str(&format!("** {}\n", &c[3..]));
+            } else if c.starts_with("# ") {
+                org.push_str(&format!("* {}\n", &c[2..]));
+            } else {
+                org.push_str(&format!("{c}\n"));
+            }
+        }
+
+        Ok(org)
+    }
+
+    /// Generate a static HTML site from the graph.
+    pub fn publish_static_site(&self, output_dir: &Path) -> Result<Vec<String>> {
+        fs::create_dir_all(output_dir)
+            .map_err(|e| crate::error::Error::InvalidInput(format!("Cannot create dir: {e}")))?;
+
+        let pages = self.list_pages(Some(10000))?;
+        let mut published = Vec::new();
+
+        // Write index.html
+        let mut index_html = String::new();
+        index_html.push_str("<!DOCTYPE html><html><head><meta charset=\"utf-8\">\n");
+        index_html.push_str("<title>MiNotes</title>\n");
+        index_html.push_str("<style>body{font-family:system-ui;max-width:800px;margin:0 auto;padding:20px;background:#1e1e2e;color:#cdd6f4}");
+        index_html.push_str("a{color:#89b4fa}h1{border-bottom:1px solid #45475a;padding-bottom:8px}");
+        index_html.push_str("ul{list-style:none;padding:0}li{padding:4px 0}</style>\n");
+        index_html.push_str("</head><body>\n<h1>MiNotes</h1>\n<ul>\n");
+        for page in &pages {
+            if page.is_journal { continue; }
+            let slug = sanitize_filename(&page.title);
+            index_html.push_str(&format!("<li><a href=\"{slug}.html\">{}</a></li>\n", xml_escape(&page.title)));
+        }
+        index_html.push_str("</ul>\n</body></html>");
+        let index_path = output_dir.join("index.html");
+        fs::write(&index_path, &index_html)
+            .map_err(|e| crate::error::Error::InvalidInput(format!("Write failed: {e}")))?;
+        published.push("index.html".to_string());
+
+        // Write individual page HTMLs
+        for page in &pages {
+            let blocks = self.get_page_blocks(&page.id)?;
+            let slug = sanitize_filename(&page.title);
+
+            let mut html = String::new();
+            html.push_str("<!DOCTYPE html><html><head><meta charset=\"utf-8\">\n");
+            html.push_str(&format!("<title>{}</title>\n", xml_escape(&page.title)));
+            html.push_str("<style>body{font-family:system-ui;max-width:800px;margin:0 auto;padding:20px;background:#1e1e2e;color:#cdd6f4}");
+            html.push_str("a{color:#89b4fa}pre{background:#181825;padding:12px;border-radius:6px;overflow-x:auto}");
+            html.push_str("code{background:#313244;padding:2px 4px;border-radius:3px}</style>\n");
+            html.push_str("</head><body>\n");
+            html.push_str(&format!("<p><a href=\"index.html\">← Back</a></p>\n"));
+            html.push_str(&format!("<h1>{}</h1>\n", xml_escape(&page.title)));
+
+            for block in &blocks {
+                let escaped = xml_escape(&block.content);
+                // Simple markdown-to-HTML conversion for publishing
+                if escaped.starts_with("# ") {
+                    html.push_str(&format!("<h2>{}</h2>\n", &escaped[2..]));
+                } else if escaped.starts_with("## ") {
+                    html.push_str(&format!("<h3>{}</h3>\n", &escaped[3..]));
+                } else if escaped.starts_with("- [ ] ") {
+                    html.push_str(&format!("<p>☐ {}</p>\n", &escaped[6..]));
+                } else if escaped.starts_with("- [x] ") {
+                    html.push_str(&format!("<p>☑ {}</p>\n", &escaped[6..]));
+                } else {
+                    html.push_str(&format!("<p>{escaped}</p>\n"));
+                }
+            }
+
+            html.push_str("</body></html>");
+            let file_path = output_dir.join(format!("{slug}.html"));
+            fs::write(&file_path, &html)
+                .map_err(|e| crate::error::Error::InvalidInput(format!("Write failed: {e}")))?;
+            published.push(format!("{slug}.html"));
+        }
+
+        Ok(published)
+    }
 }
 
 fn xml_escape(s: &str) -> String {
