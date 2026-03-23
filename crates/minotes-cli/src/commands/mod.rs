@@ -1,5 +1,7 @@
 pub mod block;
 pub mod events;
+pub mod export;
+pub mod graph;
 pub mod journal;
 pub mod links;
 pub mod page;

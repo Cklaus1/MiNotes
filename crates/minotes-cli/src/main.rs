@@ -8,7 +8,10 @@ use minotes_core::db::Database;
 mod commands;
 mod output;
 
-use commands::{block::BlockCmd, journal::JournalCmd, page::PageCmd, property::PropertyCmd};
+use commands::{
+    block::BlockCmd, export::{ExportCmd, ImportCmd}, graph::GraphCmd,
+    journal::JournalCmd, page::PageCmd, property::PropertyCmd,
+};
 
 #[derive(Parser)]
 #[command(name = "minotes", version, about = "Local-first knowledge management CLI")]
@@ -87,6 +90,23 @@ enum Commands {
         /// Page title or UUID
         id: String,
     },
+    /// Graph data and analysis
+    Graph {
+        #[command(subcommand)]
+        cmd: GraphCmd,
+    },
+    /// Export graph data
+    Export {
+        #[command(subcommand)]
+        cmd: ExportCmd,
+    },
+    /// Import data into graph
+    Import {
+        #[command(subcommand)]
+        cmd: ImportCmd,
+    },
+    /// Rebuild the full-text search index
+    Reindex,
     /// Show graph statistics
     Stats,
     /// Batch create blocks from stdin (JSON array)
@@ -129,11 +149,35 @@ fn main() {
         Commands::Query { sql } => commands::query::run(&db, &sql),
         Commands::Backlinks { id } => commands::links::run_backlinks(&db, &id),
         Commands::ForwardLinks { id } => commands::links::run_forward_links(&db, &id),
+        Commands::Graph { cmd } => commands::graph::run(&db, cmd),
+        Commands::Export { cmd } => commands::export::run_export(&db, cmd),
+        Commands::Import { cmd } => commands::export::run_import(&db, cmd, &cli.actor),
+        Commands::Reindex => run_reindex(&db),
         Commands::Stats => run_stats(&db),
         Commands::BatchCreate { page } => run_batch_create(&db, &page, &cli.actor),
     };
 
     process::exit(exit_code);
+}
+
+fn run_reindex(db: &Database) -> i32 {
+    let r = || -> minotes_core::error::Result<()> {
+        // Rebuild FTS index from scratch
+        db.conn.execute_batch("DELETE FROM blocks_fts;")?;
+        db.conn.execute_batch(
+            "INSERT INTO blocks_fts(rowid, content) SELECT rowid, content FROM blocks;",
+        )?;
+        let count: i64 = db.conn.query_row("SELECT COUNT(*) FROM blocks_fts", [], |r| r.get(0))?;
+        output::print_json(&serde_json::json!({
+            "message": "Reindex complete",
+            "blocks_indexed": count,
+        }));
+        Ok(())
+    };
+    match r() {
+        Ok(_) => 0,
+        Err(e) => { output::print_error(&e.to_string()); 1 }
+    }
 }
 
 fn run_stats(db: &Database) -> i32 {
