@@ -38,6 +38,17 @@ export interface Link {
   created_at: string;
 }
 
+export interface Property {
+  id: string;
+  entity_id: string;
+  entity_type: string;
+  key: string;
+  value?: string;
+  value_type: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface GraphStats {
   pages: number;
   blocks: number;
@@ -132,3 +143,18 @@ export const reorderPage = (id: string, newPosition: number) =>
 
 export const deleteFolder = (id: string) =>
   invoke<boolean>("delete_folder", { id });
+
+// Properties
+export const setProperty = (
+  entityId: string,
+  entityType: string,
+  key: string,
+  value: string,
+  valueType?: string,
+) => invoke<Property>("set_property", { entityId, entityType, key, value, valueType });
+
+export const getProperties = (entityId: string) =>
+  invoke<Property[]>("get_properties", { entityId });
+
+export const deleteProperty = (entityId: string, key: string) =>
+  invoke<boolean>("delete_property", { entityId, key });

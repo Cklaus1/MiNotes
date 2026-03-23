@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use minotes_core::db::Database;
-use minotes_core::models::{Block, Page, PageTree};
+use minotes_core::models::{Block, Page, PageTree, Property};
 use minotes_core::repo::graph::GraphStats;
 use serde::Serialize;
 use tauri::State;
@@ -209,6 +209,49 @@ fn reorder_page(state: State<'_, AppState>, id: String, new_position: f64) -> Re
         .map_err(|e| e.to_string())
 }
 
+// ── Property Commands ──
+
+#[tauri::command]
+fn set_property(
+    state: State<'_, AppState>,
+    entity_id: String,
+    entity_type: String,
+    key: String,
+    value: String,
+    value_type: Option<String>,
+) -> Result<Property, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let uuid = uuid::Uuid::parse_str(&entity_id).map_err(|e| e.to_string())?;
+    db.set_property(
+        &uuid,
+        &entity_type,
+        &key,
+        &value,
+        &value_type.unwrap_or_else(|| "text".to_string()),
+        "user",
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_properties(state: State<'_, AppState>, entity_id: String) -> Result<Vec<Property>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let uuid = uuid::Uuid::parse_str(&entity_id).map_err(|e| e.to_string())?;
+    db.get_properties(&uuid).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_property(
+    state: State<'_, AppState>,
+    entity_id: String,
+    key: String,
+) -> Result<bool, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let uuid = uuid::Uuid::parse_str(&entity_id).map_err(|e| e.to_string())?;
+    db.delete_property(&uuid, &key, "user")
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn delete_folder(state: State<'_, AppState>, id: String) -> Result<bool, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
@@ -244,6 +287,9 @@ pub fn run() {
             move_page_to_folder,
             reorder_page,
             delete_folder,
+            set_property,
+            get_properties,
+            delete_property,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

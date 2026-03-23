@@ -456,3 +456,166 @@ body {
   border-radius: 3px;
   font-family: monospace;
 }
+
+/* ── Properties ── */
+
+.block-properties {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 2px 0 2px 20px;
+}
+
+.prop-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.prop-chip-new {
+  gap: 4px;
+}
+
+.prop-key {
+  color: var(--text-muted);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.prop-key::after {
+  content: ":";
+  margin-right: 3px;
+}
+
+.prop-value {
+  color: var(--text-secondary);
+  cursor: pointer;
+  min-width: 20px;
+}
+
+.prop-value:hover {
+  color: var(--accent);
+}
+
+.prop-delete {
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  margin-left: 2px;
+  opacity: 0;
+  transition: opacity 0.1s;
+}
+
+.prop-chip:hover .prop-delete {
+  opacity: 1;
+}
+
+.prop-delete:hover {
+  color: var(--danger);
+}
+
+.prop-edit-input {
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--accent);
+  color: var(--text-primary);
+  font-size: 11px;
+  padding: 0 2px;
+  outline: none;
+  width: 60px;
+  font-family: inherit;
+}
+
+.prop-add-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0 4px;
+  opacity: 0;
+  transition: opacity 0.1s;
+}
+
+.block:hover > .prop-add-btn {
+  opacity: 0.6;
+}
+
+.prop-add-btn:hover {
+  opacity: 1 !important;
+  color: var(--accent);
+}
+
+/* Page properties */
+
+.prop-toggle-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 13px;
+  margin-left: 8px;
+  padding: 2px 4px;
+}
+
+.prop-toggle-btn:hover {
+  color: var(--accent);
+}
+
+.page-properties {
+  padding: 8px 32px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-secondary);
+}
+
+.page-properties-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.page-properties-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.page-properties-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.page-prop-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.page-prop-row .prop-key {
+  min-width: 80px;
+}
+
+.page-prop-row .prop-delete {
+  opacity: 0;
+}
+
+.page-prop-row:hover .prop-delete {
+  opacity: 1;
+}
+
+.page-prop-input {
+  width: 200px;
+  font-size: 13px;
+}
