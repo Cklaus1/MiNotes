@@ -3,3 +3,5 @@
 *.db-wal
 *.db-shm
 .minotes.db
+node_modules
+dist

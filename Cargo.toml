@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/minotes-core", "crates/minotes-cli"]
+members = ["crates/minotes-core", "crates/minotes-cli", "crates/minotes-app/src-tauri"]
 
 [workspace.dependencies]
 rusqlite = { version = "0.33", features = ["bundled"] }
