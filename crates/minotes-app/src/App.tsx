@@ -3,12 +3,14 @@ import Sidebar from "./components/Sidebar";
 import PageView from "./components/PageView";
 import EmptyState from "./components/EmptyState";
 import SearchPanel from "./components/SearchPanel";
+import QueryPanel from "./components/QueryPanel";
 import * as api from "./lib/api";
 
 export default function App() {
   const [activePage, setActivePage] = useState<api.PageTree | null>(null);
   const [stats, setStats] = useState<api.GraphStats | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
+  const [queryOpen, setQueryOpen] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
 
   const refresh = useCallback(async () => {
@@ -41,9 +43,9 @@ export default function App() {
     }
   }, [refresh, openPage]);
 
-  const openJournal = useCallback(async () => {
+  const openJournal = useCallback(async (date?: string) => {
     try {
-      const tree = await api.getJournal();
+      const tree = await api.getJournal(date);
       setActivePage(tree);
       await refresh();
     } catch (e) {
@@ -108,6 +110,11 @@ export default function App() {
         e.preventDefault();
         openJournal();
       }
+      // Cmd/Ctrl+Q — query panel
+      if ((e.metaKey || e.ctrlKey) && e.key === "q") {
+        e.preventDefault();
+        setQueryOpen(prev => !prev);
+      }
       // Cmd/Ctrl+N — new page
       if ((e.metaKey || e.ctrlKey) && e.key === "n") {
         e.preventDefault();
@@ -131,7 +138,7 @@ export default function App() {
         onPageClick={openPage}
         onCreatePage={createPage}
         onDeletePage={deletePage}
-        onJournalClick={openJournal}
+        onJournalClick={() => openJournal()}
         onSearchClick={() => setSearchOpen(true)}
         refreshKey={refreshKey}
       />
@@ -143,6 +150,7 @@ export default function App() {
             onUpdateBlock={updateBlock}
             onDeleteBlock={deleteBlock}
             onPageLinkClick={openPage}
+            onJournalNav={openJournal}
           />
         ) : (
           <EmptyState onCreatePage={createPage} />
@@ -152,6 +160,11 @@ export default function App() {
         open={searchOpen}
         onClose={() => setSearchOpen(false)}
         onPageClick={(id) => { openPage(id); setSearchOpen(false); }}
+      />
+      <QueryPanel
+        open={queryOpen}
+        onClose={() => setQueryOpen(false)}
+        onPageClick={(id) => { openPage(id); setQueryOpen(false); }}
       />
     </div>
   );

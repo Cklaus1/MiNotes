@@ -3,6 +3,7 @@ import type { PageTree, Property } from "../lib/api";
 import * as api from "../lib/api";
 import BlockItem from "./BlockItem";
 import BacklinksPanel from "./BacklinksPanel";
+import UnlinkedRefsPanel from "./UnlinkedRefsPanel";
 
 interface Props {
   pageTree: PageTree;
@@ -10,10 +11,11 @@ interface Props {
   onUpdateBlock: (id: string, content: string) => void;
   onDeleteBlock: (id: string) => void;
   onPageLinkClick: (title: string) => void;
+  onJournalNav?: (date: string) => void;
 }
 
 export default function PageView({
-  pageTree, onCreateBlock, onUpdateBlock, onDeleteBlock, onPageLinkClick,
+  pageTree, onCreateBlock, onUpdateBlock, onDeleteBlock, onPageLinkClick, onJournalNav,
 }: Props) {
   const { page, blocks } = pageTree;
   const [newContent, setNewContent] = useState("");
@@ -77,10 +79,28 @@ export default function PageView({
     }
   };
 
+  // Journal date navigation helpers
+  const getJournalDate = () => page.journal_date ?? null;
+
+  const shiftDate = (days: number) => {
+    const d = getJournalDate();
+    if (!d || !onJournalNav) return;
+    const date = new Date(d + "T00:00:00");
+    date.setDate(date.getDate() + days);
+    onJournalNav(date.toISOString().slice(0, 10));
+  };
+
   return (
     <>
       <div className="main-header">
         <h2>{page.icon ?? (page.is_journal ? "📅" : "")} {page.title}</h2>
+        {page.is_journal && onJournalNav && (
+          <div className="journal-nav">
+            <button className="btn btn-sm" onClick={() => shiftDate(-1)}>← Prev</button>
+            <button className="btn btn-sm" onClick={() => onJournalNav(new Date().toISOString().slice(0, 10))}>Today</button>
+            <button className="btn btn-sm" onClick={() => shiftDate(1)}>Next →</button>
+          </div>
+        )}
         <span className="page-meta">
           {blocks.length} blocks · Updated {formatDate(page.updated_at)}
           <button
@@ -197,6 +217,7 @@ export default function PageView({
           </div>
 
           <BacklinksPanel pageId={page.id} onPageClick={onPageLinkClick} />
+          <UnlinkedRefsPanel pageId={page.id} pageTitle={page.title} onPageClick={onPageLinkClick} />
         </div>
       </div>
     </>

@@ -135,6 +135,12 @@ body {
 .main-header .page-meta {
   font-size: 12px;
   color: var(--text-muted);
+  margin-left: auto;
+}
+
+.journal-nav {
+  display: flex;
+  gap: 4px;
 }
 
 .content {
@@ -618,4 +624,143 @@ body {
 .page-prop-input {
   width: 200px;
   font-size: 13px;
+}
+
+/* ── Unlinked References ── */
+
+.unlinked-refs {
+  margin-top: 16px;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+
+.unlinked-refs-toggle {
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-muted);
+  user-select: none;
+}
+
+.unlinked-refs-toggle:hover {
+  color: var(--text-secondary);
+}
+
+.unlinked-refs mark {
+  background: rgba(249, 226, 175, 0.25);
+  color: var(--warning);
+  border-radius: 2px;
+  padding: 0 2px;
+}
+
+/* ── Query Panel ── */
+
+.query-panel {
+  width: 700px;
+  max-height: 80vh;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.4);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.query-panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.query-examples {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 8px 16px;
+}
+
+.query-example-btn {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  padding: 3px 8px;
+  cursor: pointer;
+}
+
+.query-example-btn:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.query-input {
+  width: 100%;
+  padding: 12px 16px;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: "JetBrains Mono", "Fira Code", monospace;
+  font-size: 13px;
+  outline: none;
+  resize: vertical;
+}
+
+.query-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+}
+
+.query-error {
+  padding: 8px 16px;
+  color: var(--danger);
+  font-size: 13px;
+  background: rgba(243, 139, 168, 0.1);
+  border-top: 1px solid var(--danger);
+}
+
+.query-results {
+  overflow: auto;
+  max-height: 400px;
+}
+
+.query-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.query-table th {
+  text-align: left;
+  padding: 6px 12px;
+  background: var(--bg-surface);
+  color: var(--text-muted);
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  position: sticky;
+  top: 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.query-table td {
+  padding: 5px 12px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-secondary);
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.query-table tr:hover td {
+  background: var(--bg-surface);
 }

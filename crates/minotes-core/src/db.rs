@@ -125,6 +125,55 @@ impl Database {
         Ok(db)
     }
 
+    /// Execute a read-only SQL query and return results as JSON.
+    /// Only SELECT statements are allowed.
+    pub fn run_query(&self, sql: &str) -> Result<serde_json::Value> {
+        let trimmed = sql.trim();
+        if !trimmed.to_uppercase().starts_with("SELECT") {
+            return Err(crate::error::Error::InvalidInput(
+                "Only SELECT queries are allowed".to_string(),
+            ));
+        }
+
+        let mut stmt = self.conn.prepare(trimmed)?;
+        let col_count = stmt.column_count();
+        let col_names: Vec<String> = (0..col_count)
+            .map(|i| stmt.column_name(i).unwrap_or("?").to_string())
+            .collect();
+
+        let rows = stmt.query_map([], |row| {
+            let mut obj = serde_json::Map::new();
+            for i in 0..col_count {
+                let val: rusqlite::types::Value = row.get(i)?;
+                let json_val = match val {
+                    rusqlite::types::Value::Null => serde_json::Value::Null,
+                    rusqlite::types::Value::Integer(n) => serde_json::Value::Number(n.into()),
+                    rusqlite::types::Value::Real(f) => {
+                        serde_json::Number::from_f64(f)
+                            .map(serde_json::Value::Number)
+                            .unwrap_or(serde_json::Value::Null)
+                    }
+                    rusqlite::types::Value::Text(s) => serde_json::Value::String(s),
+                    rusqlite::types::Value::Blob(b) => {
+                        serde_json::Value::String(format!("<blob {} bytes>", b.len()))
+                    }
+                };
+                obj.insert(col_names[i].clone(), json_val);
+            }
+            Ok(serde_json::Value::Object(obj))
+        })?;
+
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row.map_err(crate::error::Error::Database)?);
+        }
+
+        Ok(serde_json::json!({
+            "columns": col_names,
+            "rows": results,
+        }))
+    }
+
     fn init(&self) -> Result<()> {
         self.conn.execute_batch("PRAGMA journal_mode=WAL;")?;
         self.conn.execute_batch("PRAGMA foreign_keys=ON;")?;

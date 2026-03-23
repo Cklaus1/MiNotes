@@ -97,6 +97,19 @@ export const getBacklinks = (pageId: string) =>
 export const getGraphStats = () =>
   invoke<GraphStats>("get_graph_stats");
 
+// Unlinked references
+export const getUnlinkedReferences = (pageId: string) =>
+  invoke<Block[]>("get_unlinked_references", { pageId });
+
+// Query engine
+export interface QueryResult {
+  columns: string[];
+  rows: Record<string, any>[];
+}
+
+export const runQuery = (sql: string) =>
+  invoke<QueryResult>("run_query", { sql });
+
 // Journal
 export const getJournal = (date?: string) =>
   invoke<PageTree>("get_journal", { date });

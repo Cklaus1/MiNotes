@@ -131,9 +131,22 @@ fn get_backlinks(state: State<'_, AppState>, page_id: String) -> Result<Vec<Link
 }
 
 #[tauri::command]
+fn get_unlinked_references(state: State<'_, AppState>, page_id: String) -> Result<Vec<Block>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let uuid = uuid::Uuid::parse_str(&page_id).map_err(|e| e.to_string())?;
+    db.get_unlinked_references(&uuid).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn get_graph_stats(state: State<'_, AppState>) -> Result<GraphStats, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
     db.get_graph_stats().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn run_query(state: State<'_, AppState>, sql: String) -> Result<serde_json::Value, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.run_query(&sql).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -280,7 +293,9 @@ pub fn run() {
             delete_block,
             search_blocks,
             get_backlinks,
+            get_unlinked_references,
             get_graph_stats,
+            run_query,
             get_journal,
             get_folder_tree,
             create_folder,
