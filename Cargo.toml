@@ -1,0 +1,11 @@
+[workspace]
+resolver = "2"
+members = ["crates/minotes-core", "crates/minotes-cli"]
+
+[workspace.dependencies]
+rusqlite = { version = "0.33", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v7", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "2"
