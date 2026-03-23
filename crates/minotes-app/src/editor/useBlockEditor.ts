@@ -14,6 +14,7 @@ import { TableHeader } from "@tiptap/extension-table-header";
 import { common, createLowlight } from "lowlight";
 import { Markdown } from "tiptap-markdown";
 import { WikiLinkNode } from "./WikiLinkNode";
+import { SlashCommands } from "./slashCommands";
 
 const lowlight = createLowlight(common);
 
@@ -53,6 +54,7 @@ export function useBlockEditor({ content, onSave, onPageLinkClick }: UseBlockEdi
         transformCopiedText: true,
       }),
       WikiLinkNode.configure({ onPageLinkClick }),
+      SlashCommands,
     ],
     content,
     editorProps: {

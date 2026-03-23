@@ -97,6 +97,34 @@ impl Database {
         Ok(md)
     }
 
+    /// Export entire graph as OPML (outline format).
+    pub fn export_opml(&self) -> Result<String> {
+        let pages = self.list_pages(Some(10000))?;
+        let mut opml = String::new();
+        opml.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+        opml.push_str("<opml version=\"2.0\">\n");
+        opml.push_str("  <head>\n");
+        opml.push_str("    <title>MiNotes Export</title>\n");
+        opml.push_str(&format!("    <dateCreated>{}</dateCreated>\n", chrono::Utc::now().to_rfc2822()));
+        opml.push_str("  </head>\n");
+        opml.push_str("  <body>\n");
+
+        for page in &pages {
+            let blocks = self.get_page_blocks(&page.id)?;
+            let escaped_title = xml_escape(&page.title);
+            opml.push_str(&format!("    <outline text=\"{}\">\n", escaped_title));
+            for block in &blocks {
+                let escaped = xml_escape(&block.content);
+                opml.push_str(&format!("      <outline text=\"{}\"/>\n", escaped));
+            }
+            opml.push_str("    </outline>\n");
+        }
+
+        opml.push_str("  </body>\n");
+        opml.push_str("</opml>\n");
+        Ok(opml)
+    }
+
     /// Export entire graph as a single JSON object.
     pub fn export_json(&self) -> Result<serde_json::Value> {
         let pages = self.list_pages(Some(10000))?;
@@ -216,6 +244,14 @@ impl Database {
 
         Ok(format!("Imported {count} blocks into '{title}'"))
     }
+}
+
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
 }
 
 fn sanitize_filename(name: &str) -> String {

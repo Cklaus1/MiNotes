@@ -7,6 +7,7 @@ import QueryPanel from "./components/QueryPanel";
 import GraphView from "./components/GraphView";
 import ReviewPanel from "./components/ReviewPanel";
 import * as api from "./lib/api";
+import { initTheme, toggleTheme } from "./lib/theme";
 
 export default function App() {
   const [activePage, setActivePage] = useState<api.PageTree | null>(null);
@@ -101,6 +102,11 @@ export default function App() {
     }
   }, [activePage, refresh]);
 
+  // Initialize theme on mount
+  useEffect(() => {
+    initTheme();
+  }, []);
+
   // Keyboard shortcuts
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -134,6 +140,11 @@ export default function App() {
         e.preventDefault();
         const title = prompt("Page title:");
         if (title?.trim()) createPage(title.trim());
+      }
+      // Ctrl+Shift+T — toggle theme
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === "T") {
+        e.preventDefault();
+        toggleTheme();
       }
     };
     window.addEventListener("keydown", handler);
@@ -181,6 +192,16 @@ export default function App() {
         open={searchOpen}
         onClose={() => setSearchOpen(false)}
         onPageClick={(id) => { openPage(id); setSearchOpen(false); }}
+        onToggleTheme={() => { toggleTheme(); setSearchOpen(false); }}
+        onNewPage={() => {
+          setSearchOpen(false);
+          const title = prompt("Page title:");
+          if (title?.trim()) createPage(title.trim());
+        }}
+        onJournal={() => { openJournal(); setSearchOpen(false); }}
+        onGraph={() => { setGraphOpen(prev => !prev); setSearchOpen(false); }}
+        onQuery={() => { setQueryOpen(prev => !prev); setSearchOpen(false); }}
+        onReview={() => { setReviewOpen(prev => !prev); setSearchOpen(false); }}
       />
       <QueryPanel
         open={queryOpen}

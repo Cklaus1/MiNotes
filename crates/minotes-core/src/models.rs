@@ -124,3 +124,40 @@ pub struct SrsStats {
     pub reviewed_today: i64,
     pub total_cards: i64,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PropertySchema {
+    pub id: Uuid,
+    pub name: String,
+    pub value_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub options: Option<String>,
+    pub required: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_val: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub class_name: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Class {
+    pub id: Uuid,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_class: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Template {
+    pub id: Uuid,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub content: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}

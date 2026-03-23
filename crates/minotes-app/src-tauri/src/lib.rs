@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use minotes_core::db::Database;
-use minotes_core::models::{Block, Card, Page, PageTree, Property, SrsStats};
+use minotes_core::models::{Block, Card, Page, PageTree, Property, SrsStats, Template};
 use minotes_core::repo::graph::GraphStats;
 use serde::Serialize;
 use tauri::State;
@@ -369,6 +369,66 @@ fn list_favorites(state: State<'_, AppState>) -> Result<Vec<Page>, String> {
     db.list_favorites().map_err(|e| e.to_string())
 }
 
+// ── Alias Commands ──
+
+#[tauri::command]
+fn add_alias(state: State<'_, AppState>, page_id: String, alias: String) -> Result<(), String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let uuid = uuid::Uuid::parse_str(&page_id).map_err(|e| e.to_string())?;
+    db.add_alias(&uuid, &alias, "user").map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn remove_alias(state: State<'_, AppState>, alias: String) -> Result<bool, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.remove_alias(&alias, "user").map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_aliases(state: State<'_, AppState>, page_id: String) -> Result<Vec<String>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let uuid = uuid::Uuid::parse_str(&page_id).map_err(|e| e.to_string())?;
+    db.get_aliases(&uuid).map_err(|e| e.to_string())
+}
+
+// ── Template Commands ──
+
+#[tauri::command]
+fn create_template(
+    state: State<'_, AppState>,
+    name: String,
+    description: Option<String>,
+    content: String,
+) -> Result<Template, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.create_template(&name, description.as_deref(), &content, "user")
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_templates(state: State<'_, AppState>) -> Result<Vec<Template>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.list_templates().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn apply_template(
+    state: State<'_, AppState>,
+    page_id: String,
+    template_name: String,
+) -> Result<Vec<Block>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let uuid = uuid::Uuid::parse_str(&page_id).map_err(|e| e.to_string())?;
+    db.apply_template(&uuid, &template_name, "user")
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_template(state: State<'_, AppState>, name: String) -> Result<bool, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.delete_template(&name, "user").map_err(|e| e.to_string())
+}
+
 // ── Block Move Command ──
 
 #[tauri::command]
@@ -428,6 +488,13 @@ pub fn run() {
             add_favorite,
             remove_favorite,
             list_favorites,
+            add_alias,
+            remove_alias,
+            get_aliases,
+            create_template,
+            list_templates,
+            apply_template,
+            delete_template,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

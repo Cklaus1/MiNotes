@@ -27,6 +27,9 @@ export default function PageView({
   const [newValue, setNewValue] = useState("");
   const [editingProp, setEditingProp] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
+  const [aliases, setAliases] = useState<string[]>([]);
+  const [addingAlias, setAddingAlias] = useState(false);
+  const [newAlias, setNewAlias] = useState("");
 
   // Load page properties
   useEffect(() => {
@@ -35,6 +38,29 @@ export default function PageView({
       if (props.length > 0) setShowProps(true);
     }).catch(() => {});
   }, [page.id]);
+
+  // Load aliases
+  useEffect(() => {
+    api.getAliases(page.id).then(setAliases).catch(() => {});
+  }, [page.id]);
+
+  const handleAddAlias = async () => {
+    const a = newAlias.trim();
+    if (!a) return;
+    try {
+      await api.addAlias(page.id, a);
+      setAliases(prev => [...prev, a]);
+      setNewAlias("");
+      setAddingAlias(false);
+    } catch {}
+  };
+
+  const handleRemoveAlias = async (alias: string) => {
+    try {
+      await api.removeAlias(alias);
+      setAliases(prev => prev.filter(a => a !== alias));
+    } catch {}
+  };
 
   const handleAdd = useCallback(() => {
     if (newContent.trim()) {
@@ -112,6 +138,39 @@ export default function PageView({
           </button>
         </span>
       </div>
+
+      {(aliases.length > 0 || addingAlias) && (
+        <div className="page-aliases">
+          <span className="page-aliases-label">Aliases:</span>
+          {aliases.map(alias => (
+            <span key={alias} className="alias-chip">
+              {alias}
+              <span className="alias-remove" onClick={() => handleRemoveAlias(alias)}>×</span>
+            </span>
+          ))}
+          {addingAlias ? (
+            <input
+              className="alias-input"
+              placeholder="alias..."
+              value={newAlias}
+              onChange={e => setNewAlias(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === "Enter") handleAddAlias();
+                if (e.key === "Escape") { setAddingAlias(false); setNewAlias(""); }
+              }}
+              onBlur={() => { if (!newAlias.trim()) setAddingAlias(false); }}
+              autoFocus
+            />
+          ) : (
+            <button className="alias-add-btn" onClick={() => setAddingAlias(true)} title="Add alias">+</button>
+          )}
+        </div>
+      )}
+      {aliases.length === 0 && !addingAlias && (
+        <div className="page-aliases">
+          <button className="alias-add-btn" onClick={() => setAddingAlias(true)} title="Add alias" style={{ fontSize: 11, opacity: 0.5 }}>+ alias</button>
+        </div>
+      )}
 
       {showProps && (
         <div className="page-properties">

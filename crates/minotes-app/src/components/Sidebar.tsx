@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import type { Page, GraphStats, FolderTree, FolderTreeRoot } from "../lib/api";
 import * as api from "../lib/api";
+import { getTheme, toggleTheme } from "../lib/theme";
 
 interface Props {
   activePage: Page | null;
@@ -22,6 +23,7 @@ export default function Sidebar({
   const [showCreate, setShowCreate] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
   const [showFolderCreate, setShowFolderCreate] = useState(false);
+  const [themeIcon, setThemeIcon] = useState(getTheme() === "dark" ? "\u263E" : "\u263C");
   const [treeData, setTreeData] = useState<FolderTreeRoot | null>(null);
   const [journals, setJournals] = useState<Page[]>([]);
   const [favorites, setFavorites] = useState<Page[]>([]);
@@ -215,9 +217,16 @@ export default function Sidebar({
         )}
         <button
           className="btn btn-sm"
+          onClick={() => { toggleTheme(); setThemeIcon(getTheme() === "dark" ? "\u263C" : "\u263E"); }}
+          title="Toggle theme (Ctrl+Shift+T)"
+          style={{ marginLeft: "auto" }}
+        >
+          {themeIcon}
+        </button>
+        <button
+          className="btn btn-sm"
           onClick={onGraphClick}
           title="Graph view (Ctrl+G)"
-          style={{ marginLeft: "auto" }}
         >
           Graph
         </button>

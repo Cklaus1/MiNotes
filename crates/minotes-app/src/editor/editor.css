@@ -258,3 +258,70 @@
 .block-content .ProseMirror ::selection {
   background: rgba(137, 180, 250, 0.3);
 }
+
+/* Slash command menu */
+.slash-menu {
+  background: var(--bg-secondary, #1e1e2e);
+  border: 1px solid var(--border, #45475a);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  padding: 4px;
+  min-width: 200px;
+  max-height: 320px;
+  overflow-y: auto;
+  z-index: 50;
+}
+
+.slash-menu-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-primary, #cdd6f4);
+  cursor: pointer;
+  text-align: left;
+  font-size: 13px;
+  line-height: 1.4;
+  gap: 1px;
+}
+
+.slash-menu-item:hover,
+.slash-menu-item.active {
+  background: var(--accent, #89b4fa);
+  color: var(--bg-primary, #1e1e2e);
+}
+
+.slash-menu-item.active .slash-menu-item-description,
+.slash-menu-item:hover .slash-menu-item-description {
+  color: var(--bg-secondary, #313244);
+}
+
+.slash-menu-item-title {
+  font-weight: 600;
+}
+
+.slash-menu-item-description {
+  font-size: 11px;
+  color: var(--text-muted, #6c7086);
+}
+
+.slash-menu-empty {
+  padding: 8px 10px;
+  color: var(--text-muted, #6c7086);
+  font-size: 13px;
+}
+
+/* Tippy overrides for slash menu */
+.tippy-box[data-theme="slash-menu"] {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+
+.tippy-box {
+  max-width: none !important;
+}

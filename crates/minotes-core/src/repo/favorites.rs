@@ -6,7 +6,7 @@ use crate::error::{Error, Result};
 use crate::models::Page;
 
 impl Database {
-    pub fn add_favorite(&self, page_id: &Uuid, actor: &str) -> Result<()> {
+    pub fn add_favorite(&self, page_id: &Uuid, _actor: &str) -> Result<()> {
         let now = Utc::now();
         let max_pos: Option<f64> = self.conn.query_row(
             "SELECT MAX(position) FROM favorites",

@@ -80,7 +80,23 @@ impl Database {
         let mut rows = stmt.query(rusqlite::params![title])?;
         match rows.next()? {
             Some(row) => Ok(Some(row_to_page(row)?)),
-            None => Ok(None),
+            None => {
+                // Fall back to alias lookup
+                let page_id: Option<String> = self
+                    .conn
+                    .query_row(
+                        "SELECT page_id FROM page_aliases WHERE alias = ?1",
+                        rusqlite::params![title],
+                        |row| row.get(0),
+                    )
+                    .ok();
+                if let Some(pid) = page_id {
+                    if let Ok(uuid) = Uuid::parse_str(&pid) {
+                        return self.get_page(&uuid);
+                    }
+                }
+                Ok(None)
+            }
         }
     }
 

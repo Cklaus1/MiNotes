@@ -243,3 +243,35 @@ export const listFavorites = () =>
 // Block move
 export const moveBlock = (id: string, newParent: string, position: number) =>
   invoke<Block>("move_block", { id, newParent, position });
+
+// Aliases
+export const addAlias = (pageId: string, alias: string) =>
+  invoke<void>("add_alias", { pageId, alias });
+
+export const removeAlias = (alias: string) =>
+  invoke<boolean>("remove_alias", { alias });
+
+export const getAliases = (pageId: string) =>
+  invoke<string[]>("get_aliases", { pageId });
+
+// Templates
+export interface Template {
+  id: string;
+  name: string;
+  description?: string;
+  content: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export const createTemplate = (name: string, content: string, description?: string) =>
+  invoke<Template>("create_template", { name, description, content });
+
+export const listTemplates = () =>
+  invoke<Template[]>("list_templates");
+
+export const applyTemplate = (pageId: string, templateName: string) =>
+  invoke<Block[]>("apply_template", { pageId, templateName });
+
+export const deleteTemplate = (name: string) =>
+  invoke<boolean>("delete_template", { name });

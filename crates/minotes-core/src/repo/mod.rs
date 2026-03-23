@@ -1,3 +1,4 @@
+pub mod aliases;
 pub mod blocks;
 pub mod cards;
 pub mod events;
@@ -8,4 +9,6 @@ pub mod graph;
 pub mod links;
 pub mod pages;
 pub mod properties;
+pub mod schemas;
 pub mod sync;
+pub mod templates;

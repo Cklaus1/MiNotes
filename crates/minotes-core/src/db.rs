@@ -106,6 +106,43 @@ CREATE TABLE IF NOT EXISTS favorites (
     position    REAL NOT NULL DEFAULT 0,
     created_at  TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS page_aliases (
+    id          TEXT PRIMARY KEY,
+    page_id     TEXT NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
+    alias       TEXT NOT NULL UNIQUE,
+    created_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_aliases_page ON page_aliases(page_id);
+
+CREATE TABLE IF NOT EXISTS templates (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL UNIQUE,
+    description TEXT,
+    content     TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS property_schemas (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL UNIQUE,
+    value_type  TEXT NOT NULL DEFAULT 'text',
+    options     TEXT,
+    required    INTEGER NOT NULL DEFAULT 0,
+    default_val TEXT,
+    class_name  TEXT,
+    created_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_schemas_class ON property_schemas(class_name);
+
+CREATE TABLE IF NOT EXISTS classes (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL UNIQUE,
+    parent_class TEXT,
+    description TEXT,
+    created_at  TEXT NOT NULL
+);
 ";
 
 const FTS_SCHEMA: &str = "
