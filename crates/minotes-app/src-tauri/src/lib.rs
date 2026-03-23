@@ -668,6 +668,20 @@ fn restore_version(
         .map_err(|e| e.to_string())
 }
 
+// ── Plugin Storage Commands ──
+
+#[tauri::command]
+fn plugin_storage_get(state: State<'_, AppState>, plugin_name: String, key: String) -> Result<Option<String>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.plugin_storage_get(&plugin_name, &key).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn plugin_storage_set(state: State<'_, AppState>, plugin_name: String, key: String, value: String) -> Result<(), String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.plugin_storage_set(&plugin_name, &key, &value).map_err(|e| e.to_string())
+}
+
 // ── Web Clipper API (F-021) ──
 
 #[tauri::command]
@@ -794,6 +808,8 @@ pub fn run() {
             sync_page,
             get_version_history,
             restore_version,
+            plugin_storage_get,
+            plugin_storage_set,
             undo,
         ])
         .run(tauri::generate_context!())

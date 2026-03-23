@@ -11,6 +11,7 @@ import Whiteboard from "./components/Whiteboard";
 import SyncPanel from "./components/SyncPanel";
 import PdfViewer from "./components/PdfViewer";
 import MobileNav from "./components/MobileNav";
+import ObsidianPluginBrowser from "./components/ObsidianPluginBrowser";
 import * as api from "./lib/api";
 import { initTheme, toggleTheme } from "./lib/theme";
 
@@ -24,6 +25,7 @@ export default function App() {
   const [pluginsOpen, setPluginsOpen] = useState(false);
   const [whiteboardOpen, setWhiteboardOpen] = useState(false);
   const [syncOpen, setSyncOpen] = useState(false);
+  const [obsidianPluginsOpen, setObsidianPluginsOpen] = useState(false);
   const [pdfViewerPath, setPdfViewerPath] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [mobileTab, setMobileTab] = useState("pages");
@@ -245,6 +247,7 @@ export default function App() {
         onReview={() => { setReviewOpen(prev => !prev); setSearchOpen(false); }}
         onPlugins={() => { setPluginsOpen(prev => !prev); setSearchOpen(false); }}
         onSync={() => { setSyncOpen(prev => !prev); setSearchOpen(false); }}
+        onObsidianPlugins={() => { setObsidianPluginsOpen(prev => !prev); setSearchOpen(false); }}
       />
       <QueryPanel
         open={queryOpen}
@@ -258,6 +261,10 @@ export default function App() {
       <PluginManager
         open={pluginsOpen}
         onClose={() => setPluginsOpen(false)}
+      />
+      <ObsidianPluginBrowser
+        open={obsidianPluginsOpen}
+        onClose={() => setObsidianPluginsOpen(false)}
       />
       <SyncPanel
         open={syncOpen}

@@ -13,6 +13,7 @@ interface Props {
   onReview?: () => void;
   onPlugins?: () => void;
   onSync?: () => void;
+  onObsidianPlugins?: () => void;
 }
 
 interface SearchResult {
@@ -29,7 +30,7 @@ interface Command {
 
 export default function SearchPanel({
   open, onClose, onPageClick,
-  onToggleTheme, onNewPage, onJournal, onGraph, onQuery, onReview, onPlugins, onSync,
+  onToggleTheme, onNewPage, onJournal, onGraph, onQuery, onReview, onPlugins, onSync, onObsidianPlugins,
 }: Props) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
@@ -50,7 +51,8 @@ export default function SearchPanel({
     { id: "plugins", label: "Manage Plugins", action: () => onPlugins?.() },
     { id: "sync", label: "Sync & Version History", action: () => onSync?.() },
     { id: "export-markdown", label: "Export Markdown", action: () => alert("Markdown export coming soon.") },
-  ], [onToggleTheme, onNewPage, onJournal, onGraph, onQuery, onReview, onPlugins, onSync]);
+    { id: "obsidian-plugins", label: "Obsidian Plugins", action: () => onObsidianPlugins?.() },
+  ], [onToggleTheme, onNewPage, onJournal, onGraph, onQuery, onReview, onPlugins, onSync, onObsidianPlugins]);
 
   const filteredCommands = useMemo(() => {
     if (!isCommandMode) return [];
