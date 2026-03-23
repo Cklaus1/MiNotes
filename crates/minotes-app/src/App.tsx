@@ -12,8 +12,11 @@ import SyncPanel from "./components/SyncPanel";
 import PdfViewer from "./components/PdfViewer";
 import MobileNav from "./components/MobileNav";
 import ObsidianPluginBrowser from "./components/ObsidianPluginBrowser";
+import CssSnippetManager from "./components/CssSnippetManager";
+import CustomViewContainer from "./components/CustomViewContainer";
 import * as api from "./lib/api";
 import { initTheme, toggleTheme } from "./lib/theme";
+import { loadEnabledSnippets } from "./lib/cssLoader";
 
 export default function App() {
   const [activePage, setActivePage] = useState<api.PageTree | null>(null);
@@ -26,9 +29,11 @@ export default function App() {
   const [whiteboardOpen, setWhiteboardOpen] = useState(false);
   const [syncOpen, setSyncOpen] = useState(false);
   const [obsidianPluginsOpen, setObsidianPluginsOpen] = useState(false);
+  const [cssManagerOpen, setCssManagerOpen] = useState(false);
   const [pdfViewerPath, setPdfViewerPath] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [mobileTab, setMobileTab] = useState("pages");
+  const [customViews, setCustomViews] = useState<Array<{ type: string; displayText: string; containerEl: HTMLElement }>>([]);
 
   const refresh = useCallback(async () => {
     try {
@@ -114,9 +119,10 @@ export default function App() {
     }
   }, [activePage, refresh]);
 
-  // Initialize theme on mount
+  // Initialize theme and CSS snippets on mount
   useEffect(() => {
     initTheme();
+    loadEnabledSnippets();
   }, []);
 
   // Keyboard shortcuts
@@ -190,7 +196,7 @@ export default function App() {
   }, [refresh]);
 
   return (
-    <div className="app">
+    <div className="app workspace">
       <Sidebar
         activePage={activePage?.page ?? null}
         stats={stats}
@@ -216,6 +222,14 @@ export default function App() {
           <GraphView
             onPageClick={(id) => { openPage(id); setGraphOpen(false); }}
             onClose={() => setGraphOpen(false)}
+          />
+        )}
+        {customViews.length > 0 && (
+          <CustomViewContainer
+            views={customViews}
+            onClose={(type) => {
+              setCustomViews(prev => prev.filter(v => v.type !== type));
+            }}
           />
         )}
         {activePage ? (

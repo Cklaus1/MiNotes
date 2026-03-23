@@ -207,6 +207,16 @@ pub struct Highlight {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CssSnippet {
+    pub id: Uuid,
+    pub name: String,
+    pub css: String,
+    pub enabled: bool,
+    pub source: String, // "custom" | "obsidian"
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Plugin {
     pub id: Uuid,
     pub name: String,

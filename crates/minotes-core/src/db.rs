@@ -189,6 +189,15 @@ CREATE TABLE IF NOT EXISTS sync_state (
     last_sync   TEXT,
     updated_at  TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS css_snippets (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL UNIQUE,
+    css         TEXT NOT NULL,
+    enabled     INTEGER NOT NULL DEFAULT 1,
+    source      TEXT NOT NULL DEFAULT 'custom',
+    created_at  TEXT NOT NULL
+);
 ";
 
 const FTS_SCHEMA: &str = "

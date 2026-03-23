@@ -52,6 +52,10 @@ export class Plugin extends Component {
     this.app._registerSettingTab(this.manifest.id, tab);
   }
 
+  registerView(type: string, creator: (leaf: any) => any): void {
+    this.app.workspace.registerViewType(type, creator);
+  }
+
   addRibbonIcon(icon: string, title: string, callback: (evt: MouseEvent) => void): HTMLElement {
     // Return a dummy element — ribbon icons map to command palette entries
     this.addCommand({ id: `ribbon-${icon}`, name: title, callback: callback as () => void });

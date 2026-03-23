@@ -1,3 +1,5 @@
+import type { ItemView } from './ItemView';
+
 export interface PluginManifest {
   id: string;
   name: string;
@@ -21,4 +23,13 @@ export interface Command {
 export interface EditorPosition {
   line: number;
   ch: number;
+}
+
+export interface ViewCreator {
+  (leaf: WorkspaceLeafInstance): ItemView;
+}
+
+export interface WorkspaceLeafInstance {
+  view: ItemView | null;
+  containerEl: HTMLElement;
 }

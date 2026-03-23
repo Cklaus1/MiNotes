@@ -415,6 +415,31 @@ export const getVersionHistory = (pageId: string, limit?: number) =>
 export const restoreVersion = (pageId: string, versionHash: string) =>
   invoke<void>("restore_version", { pageId, versionHash });
 
+// CSS Snippets
+export interface CssSnippet {
+  id: string;
+  name: string;
+  css: string;
+  enabled: boolean;
+  source: string;
+  created_at: string;
+}
+
+export const addCssSnippet = (name: string, css: string, source?: string) =>
+  invoke<CssSnippet>("add_css_snippet", { name, css, source: source ?? "custom" });
+
+export const listCssSnippets = () =>
+  invoke<CssSnippet[]>("list_css_snippets");
+
+export const toggleCssSnippet = (name: string) =>
+  invoke<CssSnippet>("toggle_css_snippet", { name });
+
+export const deleteCssSnippet = (name: string) =>
+  invoke<boolean>("delete_css_snippet", { name });
+
+export const getEnabledCssSnippets = () =>
+  invoke<CssSnippet[]>("get_enabled_css_snippets");
+
 // Undo
 export const undo = () =>
   invoke<number | null>("undo");

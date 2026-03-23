@@ -2022,3 +2022,100 @@ body {
   from { opacity: 0; transform: translateY(10px); }
   to { opacity: 1; transform: translateY(0); }
 }
+
+/* Custom View Container (Obsidian plugin views) */
+.custom-view-container {
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  min-height: 200px;
+  max-height: 50vh;
+}
+
+.custom-view-tabs {
+  display: flex;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+}
+
+.custom-view-tab {
+  padding: 6px 12px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  border-right: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.custom-view-tab.active {
+  background: var(--bg-primary);
+  color: var(--accent);
+}
+
+.custom-view-tab-close {
+  font-size: 14px;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.custom-view-tab:hover .custom-view-tab-close {
+  opacity: 0.7;
+}
+
+.custom-view-tab-close:hover {
+  opacity: 1;
+  color: var(--danger);
+}
+
+.custom-view-content {
+  flex: 1;
+  overflow: auto;
+  background: var(--bg-primary);
+  padding: 8px;
+}
+
+/* Obsidian-compatible class names for plugin views */
+.workspace-leaf-content { width: 100%; height: 100%; }
+.view-content { width: 100%; height: 100%; }
+
+/* Obsidian CSS class compatibility aliases */
+.app { /* also matches .workspace */ }
+.main { /* also matches .workspace-split */ }
+.content { /* also matches .markdown-source-view */ }
+.sidebar { /* also matches .workspace-ribbon, .workspace-tabs */ }
+
+/* ── Obsidian CSS Snippet Compatibility ── */
+/* Map Obsidian body classes for theme detection */
+body.theme-dark { /* matches our dark theme */ }
+body.theme-light { /* matches our light theme */ }
+
+/* Obsidian-compatible CSS custom properties that many themes use */
+:root, [data-theme="dark"] {
+  --background-primary: var(--bg-primary);
+  --background-secondary: var(--bg-secondary);
+  --background-modifier-border: var(--border);
+  --text-normal: var(--text-primary);
+  --text-muted: var(--text-muted);
+  --text-faint: var(--text-muted);
+  --text-accent: var(--accent);
+  --text-accent-hover: var(--accent-hover);
+  --interactive-accent: var(--accent);
+  --interactive-accent-hover: var(--accent-hover);
+}
+
+[data-theme="light"] {
+  --background-primary: var(--bg-primary);
+  --background-secondary: var(--bg-secondary);
+  --background-modifier-border: var(--border);
+  --text-normal: var(--text-primary);
+  --text-muted: var(--text-muted);
+  --text-faint: var(--text-muted);
+  --text-accent: var(--accent);
+  --text-accent-hover: var(--accent-hover);
+  --interactive-accent: var(--accent);
+  --interactive-accent-hover: var(--accent-hover);
+}

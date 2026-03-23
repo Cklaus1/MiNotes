@@ -15,4 +15,5 @@ pub mod schemas;
 pub mod sync;
 pub mod highlights;
 pub mod plugins;
+pub mod snippets;
 pub mod templates;

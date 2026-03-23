@@ -5,6 +5,8 @@ export function getTheme(): "dark" | "light" {
 export function setTheme(theme: "dark" | "light") {
   localStorage.setItem("minotes-theme", theme);
   document.documentElement.setAttribute("data-theme", theme);
+  document.body.classList.remove("theme-dark", "theme-light");
+  document.body.classList.add(`theme-${theme}`);
 }
 
 export function toggleTheme() {
@@ -12,5 +14,8 @@ export function toggleTheme() {
 }
 
 export function initTheme() {
-  document.documentElement.setAttribute("data-theme", getTheme());
+  const theme = getTheme();
+  document.documentElement.setAttribute("data-theme", theme);
+  document.body.classList.remove("theme-dark", "theme-light");
+  document.body.classList.add(`theme-${theme}`);
 }

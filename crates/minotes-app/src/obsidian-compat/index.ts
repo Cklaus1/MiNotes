@@ -11,3 +11,4 @@ export { Menu, MenuItem } from './Menu';
 export { Events } from './Events';
 export type { EventRef } from './Events';
 export type { Command, PluginManifest } from './types';
+export { ItemView, MarkdownRenderChild } from './ItemView';

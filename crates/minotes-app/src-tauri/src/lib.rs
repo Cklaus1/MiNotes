@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use minotes_core::db::Database;
-use minotes_core::models::{Block, Card, GraphInfo, Highlight, Page, PageTree, Plugin, Property, SrsStats, SyncStatus, Template, VersionInfo};
+use minotes_core::models::{Block, Card, CssSnippet, GraphInfo, Highlight, Page, PageTree, Plugin, Property, SrsStats, SyncStatus, Template, VersionInfo};
 use minotes_core::repo::graph::GraphStats;
 use minotes_core::repo::graphs;
 use serde::Serialize;
@@ -682,6 +682,38 @@ fn plugin_storage_set(state: State<'_, AppState>, plugin_name: String, key: Stri
     db.plugin_storage_set(&plugin_name, &key, &value).map_err(|e| e.to_string())
 }
 
+// ── CSS Snippet Commands ──
+
+#[tauri::command]
+fn add_css_snippet(state: State<'_, AppState>, name: String, css: String, source: String) -> Result<CssSnippet, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.add_snippet(&name, &css, &source, "user").map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_css_snippets(state: State<'_, AppState>) -> Result<Vec<CssSnippet>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.list_snippets().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn toggle_css_snippet(state: State<'_, AppState>, name: String) -> Result<CssSnippet, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.toggle_snippet(&name).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_css_snippet(state: State<'_, AppState>, name: String) -> Result<bool, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.delete_snippet(&name).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_enabled_css_snippets(state: State<'_, AppState>) -> Result<Vec<CssSnippet>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.get_enabled_snippets().map_err(|e| e.to_string())
+}
+
 // ── Web Clipper API (F-021) ──
 
 #[tauri::command]
@@ -810,6 +842,11 @@ pub fn run() {
             restore_version,
             plugin_storage_get,
             plugin_storage_set,
+            add_css_snippet,
+            list_css_snippets,
+            toggle_css_snippet,
+            delete_css_snippet,
+            get_enabled_css_snippets,
             undo,
         ])
         .run(tauri::generate_context!())
