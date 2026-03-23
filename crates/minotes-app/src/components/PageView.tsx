@@ -117,7 +117,7 @@ export default function PageView({
   };
 
   return (
-    <>
+    <div className="page-view">
       <div className="main-header">
         <h2>{page.icon ?? (page.is_journal ? "📅" : "")} {page.title}</h2>
         {page.is_journal && onJournalNav && (
@@ -279,6 +279,6 @@ export default function PageView({
           <UnlinkedRefsPanel pageId={page.id} pageTitle={page.title} onPageClick={onPageLinkClick} />
         </div>
       </div>
-    </>
+    </div>
   );
 }

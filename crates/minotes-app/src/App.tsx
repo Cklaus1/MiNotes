@@ -49,7 +49,9 @@ export default function App() {
 
   const openPage = useCallback(async (titleOrId: string) => {
     try {
+      console.log("[openPage]", titleOrId);
       const tree = await api.getPageTree(titleOrId);
+      console.log("[openPage] got tree:", tree.page.title, "blocks:", tree.blocks.length);
       setActivePage(tree);
       setRefreshKey(k => k + 1);
     } catch (e) {
