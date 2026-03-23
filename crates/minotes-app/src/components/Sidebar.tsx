@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import type { Page, GraphStats, FolderTree, FolderTreeRoot } from "../lib/api";
 import * as api from "../lib/api";
 import { getTheme, toggleTheme } from "../lib/theme";
+import GraphSwitcher from "./GraphSwitcher";
 
 interface Props {
   activePage: Page | null;
@@ -83,6 +84,8 @@ export default function Sidebar({
           </button>
         </div>
       </div>
+
+      <GraphSwitcher onSwitch={loadTree} />
 
       {showCreate && (
         <div className="sidebar-actions">

@@ -456,6 +456,14 @@ fn publish_site(state: State<'_, AppState>, output_dir: String) -> Result<Vec<St
         .map_err(|e| e.to_string())
 }
 
+// ── Undo Command ──
+
+#[tauri::command]
+fn undo(state: State<'_, AppState>) -> Result<Option<i64>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.undo_last("user").map_err(|e| e.to_string())
+}
+
 // ── Block Move Command ──
 
 #[tauri::command]
@@ -684,6 +692,7 @@ pub fn run() {
             delete_graph_cmd,
             get_current_graph,
             clip_content,
+            undo,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

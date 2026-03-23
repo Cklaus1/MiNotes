@@ -28,7 +28,7 @@ interface Command {
 
 export default function SearchPanel({
   open, onClose, onPageClick,
-  onToggleTheme, onNewPage, onJournal, onGraph, onQuery, onReview,
+  onToggleTheme, onNewPage, onJournal, onGraph, onQuery, onReview, onPlugins,
 }: Props) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
@@ -46,8 +46,9 @@ export default function SearchPanel({
     { id: "graph", label: "Open Graph View", shortcut: "Ctrl+G", action: () => onGraph?.() },
     { id: "query", label: "Open SQL Query Panel", shortcut: "Ctrl+Q", action: () => onQuery?.() },
     { id: "review", label: "Open Flashcard Review", shortcut: "Ctrl+R", action: () => onReview?.() },
+    { id: "plugins", label: "Manage Plugins", action: () => onPlugins?.() },
     { id: "export-markdown", label: "Export Markdown", action: () => alert("Markdown export coming soon.") },
-  ], [onToggleTheme, onNewPage, onJournal, onGraph, onQuery, onReview]);
+  ], [onToggleTheme, onNewPage, onJournal, onGraph, onQuery, onReview, onPlugins]);
 
   const filteredCommands = useMemo(() => {
     if (!isCommandMode) return [];

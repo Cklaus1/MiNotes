@@ -7,6 +7,7 @@ import QueryPanel from "./components/QueryPanel";
 import GraphView from "./components/GraphView";
 import ReviewPanel from "./components/ReviewPanel";
 import PluginManager from "./components/PluginManager";
+import Whiteboard from "./components/Whiteboard";
 import * as api from "./lib/api";
 import { initTheme, toggleTheme } from "./lib/theme";
 
@@ -18,6 +19,7 @@ export default function App() {
   const [graphOpen, setGraphOpen] = useState(false);
   const [reviewOpen, setReviewOpen] = useState(false);
   const [pluginsOpen, setPluginsOpen] = useState(false);
+  const [whiteboardOpen, setWhiteboardOpen] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
 
   const refresh = useCallback(async () => {
@@ -137,11 +139,27 @@ export default function App() {
         e.preventDefault();
         setReviewOpen(prev => !prev);
       }
+      // Cmd/Ctrl+Z — undo (only when not inside editor)
+      if ((e.metaKey || e.ctrlKey) && e.key === "z" && !e.shiftKey) {
+        const target = e.target as HTMLElement;
+        if (!target.closest(".ProseMirror")) {
+          e.preventDefault();
+          api.undo().then(() => {
+            if (activePage) openPage(activePage.page.id);
+            refresh();
+          });
+        }
+      }
       // Cmd/Ctrl+N — new page
       if ((e.metaKey || e.ctrlKey) && e.key === "n") {
         e.preventDefault();
         const title = prompt("Page title:");
         if (title?.trim()) createPage(title.trim());
+      }
+      // Cmd/Ctrl+W — whiteboard
+      if ((e.metaKey || e.ctrlKey) && e.key === "w") {
+        e.preventDefault();
+        setWhiteboardOpen(prev => !prev);
       }
       // Ctrl+Shift+T — toggle theme
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === "T") {
@@ -171,6 +189,9 @@ export default function App() {
         refreshKey={refreshKey}
       />
       <div className="main" style={{ position: "relative" }}>
+        {whiteboardOpen && (
+          <Whiteboard onClose={() => setWhiteboardOpen(false)} />
+        )}
         {graphOpen && (
           <GraphView
             onPageClick={(id) => { openPage(id); setGraphOpen(false); }}

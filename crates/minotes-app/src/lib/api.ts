@@ -346,3 +346,7 @@ export const clipContent = (
   url?: string,
   tags?: string[],
 ) => invoke<Page>("clip_content", { title, content, url, tags });
+
+// Undo
+export const undo = () =>
+  invoke<number | null>("undo");
