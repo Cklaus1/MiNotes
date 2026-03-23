@@ -87,3 +87,43 @@ export const getGraphStats = () =>
 // Journal
 export const getJournal = (date?: string) =>
   invoke<PageTree>("get_journal", { date });
+
+// Folders
+export interface Folder {
+  id: string;
+  name: string;
+  parent_id?: string;
+  icon?: string;
+  color?: string;
+  position: number;
+  collapsed: boolean;
+}
+
+export interface FolderTree {
+  id: string;
+  name: string;
+  parent_id?: string;
+  icon?: string;
+  color?: string;
+  position: number;
+  collapsed: boolean;
+  children: FolderTree[];
+  pages: Page[];
+}
+
+export interface FolderTreeRoot {
+  folders: FolderTree[];
+  root_pages: Page[];
+}
+
+export const getFolderTree = () =>
+  invoke<FolderTreeRoot>("get_folder_tree");
+
+export const createFolder = (name: string, parentId?: string) =>
+  invoke<Folder>("create_folder", { name, parentId });
+
+export const movePageToFolder = (pageId: string, folderId?: string) =>
+  invoke<Page>("move_page_to_folder", { pageId, folderId });
+
+export const deleteFolder = (id: string) =>
+  invoke<boolean>("delete_folder", { id });

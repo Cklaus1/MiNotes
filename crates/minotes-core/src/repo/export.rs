@@ -5,54 +5,96 @@ use crate::db::Database;
 use crate::error::Result;
 
 impl Database {
-    /// Export entire graph as markdown files into a directory.
+    /// Export entire graph as markdown files into a directory,
+    /// mirroring the folder hierarchy as real filesystem directories.
     pub fn export_markdown(&self, output_dir: &Path) -> Result<Vec<String>> {
         fs::create_dir_all(output_dir)
             .map_err(|e| crate::error::Error::InvalidInput(format!("Cannot create dir: {e}")))?;
+
+        // Build a map of folder_id -> filesystem path
+        let mut folder_paths: std::collections::HashMap<String, std::path::PathBuf> =
+            std::collections::HashMap::new();
+        self.build_folder_paths(output_dir, None, &mut folder_paths)?;
 
         let pages = self.list_pages(Some(10000))?;
         let mut exported = Vec::new();
 
         for page in &pages {
-            let blocks = self.get_page_blocks(&page.id)?;
-            let properties = self.get_properties(&page.id)?;
+            // Determine target directory from folder_id
+            let target_dir = match &page.folder_id {
+                Some(fid) => folder_paths
+                    .get(&fid.to_string())
+                    .cloned()
+                    .unwrap_or_else(|| output_dir.to_path_buf()),
+                None => output_dir.to_path_buf(),
+            };
+            fs::create_dir_all(&target_dir)
+                .map_err(|e| crate::error::Error::InvalidInput(format!("Cannot create dir: {e}")))?;
 
-            let mut md = String::new();
+            let md = self.render_page_markdown(page)?;
 
-            // YAML frontmatter for properties
-            if !properties.is_empty() || page.is_journal {
-                md.push_str("---\n");
-                md.push_str(&format!("title: \"{}\"\n", page.title));
-                if page.is_journal {
-                    md.push_str("type: journal\n");
-                    if let Some(ref d) = page.journal_date {
-                        md.push_str(&format!("date: {d}\n"));
-                    }
-                }
-                for prop in &properties {
-                    if let Some(ref v) = prop.value {
-                        md.push_str(&format!("{}: {v}\n", prop.key));
-                    }
-                }
-                md.push_str("---\n\n");
-            }
-
-            // Render blocks as bullet list (respecting nesting via parent_id)
-            for block in &blocks {
-                let depth = if block.parent_id.is_some() { 1 } else { 0 };
-                let indent = "  ".repeat(depth);
-                md.push_str(&format!("{indent}- {}\n", block.content));
-            }
-
-            // Sanitize title for filename
-            let filename = page.title.replace('/', "_").replace('\\', "_");
-            let filepath = output_dir.join(format!("{filename}.md"));
+            let filename = sanitize_filename(&page.title);
+            let filepath = target_dir.join(format!("{filename}.md"));
             fs::write(&filepath, &md)
                 .map_err(|e| crate::error::Error::InvalidInput(format!("Write failed: {e}")))?;
             exported.push(filepath.display().to_string());
         }
 
         Ok(exported)
+    }
+
+    /// Recursively build folder_id -> filesystem path mapping.
+    fn build_folder_paths(
+        &self,
+        base: &Path,
+        parent_id: Option<&uuid::Uuid>,
+        map: &mut std::collections::HashMap<String, std::path::PathBuf>,
+    ) -> Result<()> {
+        let folders = self.list_folders(parent_id)?;
+        for folder in &folders {
+            let dir_name = sanitize_filename(&folder.name);
+            let dir_path = base.join(&dir_name);
+            fs::create_dir_all(&dir_path)
+                .map_err(|e| crate::error::Error::InvalidInput(format!("Cannot create dir: {e}")))?;
+            map.insert(folder.id.to_string(), dir_path.clone());
+            self.build_folder_paths(&dir_path, Some(&folder.id), map)?;
+        }
+        Ok(())
+    }
+
+    /// Render a page as markdown with YAML frontmatter.
+    fn render_page_markdown(&self, page: &crate::models::Page) -> Result<String> {
+        let blocks = self.get_page_blocks(&page.id)?;
+        let properties = self.get_properties(&page.id)?;
+
+        let mut md = String::new();
+
+        // YAML frontmatter
+        if !properties.is_empty() || page.is_journal || page.folder_id.is_some() {
+            md.push_str("---\n");
+            md.push_str(&format!("title: \"{}\"\n", page.title));
+            if page.is_journal {
+                md.push_str("type: journal\n");
+                if let Some(ref d) = page.journal_date {
+                    md.push_str(&format!("date: {d}\n"));
+                }
+            }
+            for prop in &properties {
+                if let Some(ref v) = prop.value {
+                    md.push_str(&format!("{}: {v}\n", prop.key));
+                }
+            }
+            md.push_str("---\n\n");
+        }
+
+        // Render blocks as bullet list
+        for block in &blocks {
+            let depth = if block.parent_id.is_some() { 1 } else { 0 };
+            let indent = "  ".repeat(depth);
+            md.push_str(&format!("{indent}- {}\n", block.content));
+        }
+
+        Ok(md)
     }
 
     /// Export entire graph as a single JSON object.
@@ -176,6 +218,18 @@ impl Database {
     }
 }
 
+fn sanitize_filename(name: &str) -> String {
+    name.replace('/', "_")
+        .replace('\\', "_")
+        .replace(':', "_")
+        .replace('*', "_")
+        .replace('?', "_")
+        .replace('"', "_")
+        .replace('<', "_")
+        .replace('>', "_")
+        .replace('|', "_")
+}
+
 fn strip_frontmatter(content: &str) -> Vec<&str> {
     let lines: Vec<&str> = content.lines().collect();
     if lines.first().map(|l| l.trim()) == Some("---") {
@@ -237,5 +291,37 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let result = db.import_markdown_file(&file, None, "user").unwrap();
         assert!(result.contains("3 blocks"));
+    }
+
+    #[test]
+    fn test_export_respects_folder_hierarchy() {
+        let db = Database::open_in_memory().unwrap();
+
+        // Create folder structure: Work > Projects
+        let work = db.create_folder("Work", None, None, None, "user").unwrap();
+        let projects = db.create_folder("Projects", Some(&work.id), None, None, "user").unwrap();
+
+        // Create pages in different locations
+        let root_page = db.create_page("README", None, false, None, "user").unwrap();
+        db.create_block(&root_page.id, "Root page", None, None, "user").unwrap();
+
+        let work_page = db.create_page("Q1 Goals", None, false, None, "user").unwrap();
+        db.move_page_to_folder(&work_page.id, Some(&work.id), "user").unwrap();
+        db.create_block(&work_page.id, "Hit targets", None, None, "user").unwrap();
+
+        let proj_page = db.create_page("Alpha", None, false, None, "user").unwrap();
+        db.move_page_to_folder(&proj_page.id, Some(&projects.id), "user").unwrap();
+        db.create_block(&proj_page.id, "Project Alpha notes", None, None, "user").unwrap();
+
+        let dir = temp_dir();
+        let exported = db.export_markdown(dir.path()).unwrap();
+        assert_eq!(exported.len(), 3);
+
+        // Verify filesystem structure
+        assert!(dir.path().join("README.md").exists(), "Root page should be at root");
+        assert!(dir.path().join("Work").is_dir(), "Work folder should exist");
+        assert!(dir.path().join("Work/Q1 Goals.md").exists(), "Q1 Goals should be in Work/");
+        assert!(dir.path().join("Work/Projects").is_dir(), "Projects subfolder should exist");
+        assert!(dir.path().join("Work/Projects/Alpha.md").exists(), "Alpha should be in Work/Projects/");
     }
 }

@@ -155,6 +155,59 @@ fn get_journal(state: State<'_, AppState>, date: Option<String>) -> Result<PageT
     Ok(PageTree { page, blocks })
 }
 
+// ── Folder Commands ──
+
+#[tauri::command]
+fn get_folder_tree(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let tree = db.get_folder_tree().map_err(|e| e.to_string())?;
+    let root_pages = db.get_pages_in_folder(None).map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({
+        "folders": tree,
+        "root_pages": root_pages,
+    }))
+}
+
+#[tauri::command]
+fn create_folder(
+    state: State<'_, AppState>,
+    name: String,
+    parent_id: Option<String>,
+) -> Result<minotes_core::models::Folder, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let parent_uuid = parent_id
+        .as_ref()
+        .map(|p| uuid::Uuid::parse_str(p))
+        .transpose()
+        .map_err(|e| e.to_string())?;
+    db.create_folder(&name, parent_uuid.as_ref(), None, None, "user")
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn move_page_to_folder(
+    state: State<'_, AppState>,
+    page_id: String,
+    folder_id: Option<String>,
+) -> Result<Page, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let page_uuid = uuid::Uuid::parse_str(&page_id).map_err(|e| e.to_string())?;
+    let folder_uuid = folder_id
+        .as_ref()
+        .map(|f| uuid::Uuid::parse_str(f))
+        .transpose()
+        .map_err(|e| e.to_string())?;
+    db.move_page_to_folder(&page_uuid, folder_uuid.as_ref(), "user")
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_folder(state: State<'_, AppState>, id: String) -> Result<bool, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+    db.delete_folder(&uuid, "user").map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let path = db_path();
@@ -178,6 +231,10 @@ pub fn run() {
             get_backlinks,
             get_graph_stats,
             get_journal,
+            get_folder_tree,
+            create_folder,
+            move_page_to_folder,
+            delete_folder,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

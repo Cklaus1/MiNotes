@@ -294,6 +294,38 @@ body {
   color: var(--accent);
 }
 
+/* Folders */
+.folder-item {
+  padding: 6px 16px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 500;
+  transition: background 0.1s;
+  user-select: none;
+}
+
+.folder-item:hover {
+  background: var(--bg-surface);
+  color: var(--text-primary);
+}
+
+.folder-toggle {
+  font-size: 9px;
+  width: 12px;
+  color: var(--text-muted);
+}
+
+.folder-count {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
 /* Command Palette */
 .command-palette-overlay {
   position: fixed;

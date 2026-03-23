@@ -6,19 +6,18 @@ import SearchPanel from "./components/SearchPanel";
 import * as api from "./lib/api";
 
 export default function App() {
-  const [pages, setPages] = useState<api.Page[]>([]);
   const [activePage, setActivePage] = useState<api.PageTree | null>(null);
   const [stats, setStats] = useState<api.GraphStats | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
 
-  const loadPages = useCallback(async () => {
+  const refresh = useCallback(async () => {
     try {
-      const p = await api.listPages();
-      setPages(p);
       const s = await api.getGraphStats();
       setStats(s);
+      setRefreshKey(k => k + 1);
     } catch (e) {
-      console.error("Failed to load pages:", e);
+      console.error("Failed to refresh:", e);
     }
   }, []);
 
@@ -26,9 +25,7 @@ export default function App() {
     try {
       const tree = await api.getPageTree(titleOrId);
       setActivePage(tree);
-      // Refresh page list in case new pages were auto-created via [[links]]
-      const p = await api.listPages();
-      setPages(p);
+      setRefreshKey(k => k + 1);
     } catch (e) {
       console.error("Failed to open page:", e);
     }
@@ -37,22 +34,22 @@ export default function App() {
   const createPage = useCallback(async (title: string) => {
     try {
       const page = await api.createPage(title);
-      await loadPages();
+      await refresh();
       await openPage(page.id);
     } catch (e) {
       console.error("Failed to create page:", e);
     }
-  }, [loadPages, openPage]);
+  }, [refresh, openPage]);
 
   const openJournal = useCallback(async () => {
     try {
       const tree = await api.getJournal();
       setActivePage(tree);
-      await loadPages();
+      await refresh();
     } catch (e) {
       console.error("Failed to open journal:", e);
     }
-  }, [loadPages]);
+  }, [refresh]);
 
   const createBlock = useCallback(async (content: string) => {
     if (!activePage) return;
@@ -92,11 +89,11 @@ export default function App() {
       if (activePage?.page.id === id) {
         setActivePage(null);
       }
-      await loadPages();
+      await refresh();
     } catch (e) {
       console.error("Failed to delete page:", e);
     }
-  }, [activePage, loadPages]);
+  }, [activePage, refresh]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -123,13 +120,12 @@ export default function App() {
   }, [openJournal, createPage]);
 
   useEffect(() => {
-    loadPages();
-  }, [loadPages]);
+    refresh();
+  }, [refresh]);
 
   return (
     <div className="app">
       <Sidebar
-        pages={pages}
         activePage={activePage?.page ?? null}
         stats={stats}
         onPageClick={openPage}
@@ -137,6 +133,7 @@ export default function App() {
         onDeletePage={deletePage}
         onJournalClick={openJournal}
         onSearchClick={() => setSearchOpen(true)}
+        refreshKey={refreshKey}
       />
       <div className="main">
         {activePage ? (
