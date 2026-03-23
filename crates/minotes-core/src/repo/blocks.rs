@@ -3,9 +3,37 @@ use uuid::Uuid;
 
 use crate::db::Database;
 use crate::error::{Error, Result};
+use crate::links::{extract_links, ParsedLink};
 use crate::models::Block;
 
 impl Database {
+    /// Sync the links table for a block by parsing its content for [[page links]] and ((block refs)).
+    fn sync_block_links(&self, block_id: &Uuid, content: &str, actor: &str) -> Result<()> {
+        // Remove old links from this block
+        self.conn.execute(
+            "DELETE FROM links WHERE from_block = ?1",
+            rusqlite::params![block_id.to_string()],
+        )?;
+
+        let parsed = extract_links(content);
+        for link in parsed {
+            match link {
+                ParsedLink::PageLink(title) => {
+                    // Auto-create page if it doesn't exist
+                    let page = if let Some(p) = self.get_page_by_title(&title)? {
+                        p
+                    } else {
+                        self.create_page(&title, None, false, None, actor)?
+                    };
+                    self.create_link(block_id, Some(&page.id), None, "reference", actor)?;
+                }
+                ParsedLink::BlockRef(target_id) => {
+                    self.create_link(block_id, None, Some(&target_id), "reference", actor)?;
+                }
+            }
+        }
+        Ok(())
+    }
     pub fn create_block(
         &self,
         page_id: &Uuid,
@@ -57,6 +85,7 @@ impl Database {
         };
 
         self.emit_event("block.created", &block.id, "block", &block, actor)?;
+        self.sync_block_links(&block.id, content, actor)?;
         Ok(block)
     }
 
@@ -86,6 +115,9 @@ impl Database {
             .get_block(id)?
             .ok_or_else(|| Error::NotFound(format!("Block {id}")))?;
         self.emit_event("block.updated", &block.id, "block", &block, actor)?;
+        if content.is_some() {
+            self.sync_block_links(&block.id, &block.content, actor)?;
+        }
         Ok(block)
     }
 
