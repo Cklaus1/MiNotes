@@ -1,6 +1,7 @@
 import { Extension } from "@tiptap/react";
 import { ReactRenderer } from "@tiptap/react";
 import Suggestion, { type SuggestionOptions, type SuggestionProps } from "@tiptap/suggestion";
+import { PluginKey } from "@tiptap/pm/state";
 import tippy, { type Instance as TippyInstance } from "tippy.js";
 import { BlockRefMenu } from "./BlockRefMenu";
 import { search } from "../lib/api";
@@ -101,6 +102,7 @@ export const BlockRefSuggestion = Extension.create({
   addProseMirrorPlugins() {
     return [
       Suggestion({
+        pluginKey: new PluginKey("blockRefSuggestion"),
         editor: this.editor,
         ...this.options.suggestion,
       }),
