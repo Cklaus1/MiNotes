@@ -381,14 +381,20 @@ export default function PageView({
       newPos = (target.position + next) / 2;
     }
 
-    // Optimistic update
+    // Optimistic update — update position and re-sort
     setLocalBlocks(prev =>
-      prev.map(b => b.id === draggedBlockId ? { ...b, parent_id: target.parent_id, position: newPos } : b)
+      prev
+        .map(b => b.id === draggedBlockId ? { ...b, parent_id: target.parent_id, position: newPos } : b)
+        .sort((a, b) => a.position - b.position)
     );
 
     // Persist — reorderBlock handles null parent_id for root-level blocks
-    await api.reorderBlock(draggedBlockId, target.parent_id ?? undefined, newPos);
-    onRefreshPage();
+    try {
+      await api.reorderBlock(draggedBlockId, target.parent_id ?? undefined, newPos);
+    } catch (e) {
+      console.error("reorder_block failed:", e);
+      onRefreshPage(); // Revert optimistic update on failure
+    }
   }, [blocks, onRefreshPage]);
 
   // Build block tree structure for computing depth and children info
