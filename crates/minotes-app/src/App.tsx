@@ -36,6 +36,7 @@ export default function App() {
   const [refreshKey, setRefreshKey] = useState(0);
   const [mobileTab, setMobileTab] = useState("pages");
   const [customViews, setCustomViews] = useState<Array<{ type: string; displayText: string; containerEl: HTMLElement }>>([]);
+  const [lastError, setLastError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -49,23 +50,31 @@ export default function App() {
 
   const openPage = useCallback(async (titleOrId: string) => {
     try {
+      setLastError(null);
       console.log("[openPage]", titleOrId);
       const tree = await api.getPageTree(titleOrId);
       console.log("[openPage] got tree:", tree.page.title, "blocks:", tree.blocks.length);
       setActivePage(tree);
       setRefreshKey(k => k + 1);
-    } catch (e) {
-      console.error("Failed to open page:", e);
+    } catch (e: any) {
+      const msg = typeof e === "string" ? e : e?.message ?? JSON.stringify(e);
+      console.error("Failed to open page:", msg);
+      setLastError(`openPage failed: ${msg}`);
     }
   }, []);
 
   const createPage = useCallback(async (title: string) => {
     try {
+      setLastError(null);
+      console.log("[createPage]", title);
       const page = await api.createPage(title);
+      console.log("[createPage] created:", page.id, page.title);
       await refresh();
       await openPage(page.id);
-    } catch (e) {
-      console.error("Failed to create page:", e);
+    } catch (e: any) {
+      const msg = typeof e === "string" ? e : e?.message ?? JSON.stringify(e);
+      console.error("Failed to create page:", msg);
+      setLastError(`createPage failed: ${msg}`);
     }
   }, [refresh, openPage]);
 
@@ -219,6 +228,11 @@ export default function App() {
         refreshKey={refreshKey}
       />
       <div className="main workspace-split mod-root" style={{ position: "relative" }}>
+        {lastError && (
+          <div style={{ background: "#f38ba8", color: "#1e1e2e", padding: "8px 16px", fontSize: 13, fontWeight: 600 }}>
+            {lastError}
+          </div>
+        )}
         {pdfViewerPath && (
           <PdfViewer
             filePath={pdfViewerPath}
