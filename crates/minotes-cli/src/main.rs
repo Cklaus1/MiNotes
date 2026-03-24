@@ -12,6 +12,7 @@ use commands::{
     block::BlockCmd, export::{ExportCmd, ImportCmd}, folder::FolderCmd,
     graph::GraphCmd, journal::JournalCmd, page::PageCmd, property::PropertyCmd,
 };
+use output::Format;
 
 #[derive(Parser)]
 #[command(name = "minotes", version, about = "Local-first knowledge management CLI")]
@@ -23,6 +24,10 @@ struct Cli {
     /// Actor name for event attribution
     #[arg(long, default_value = "user")]
     actor: String,
+
+    /// Output format: json, text, md, csv, opml
+    #[arg(long, short, default_value = "json")]
+    format: Format,
 
     #[command(subcommand)]
     command: Commands,
@@ -145,17 +150,19 @@ fn main() {
         }
     };
 
+    let fmt = &cli.format;
+
     let exit_code = match cli.command {
-        Commands::Page { cmd } => commands::page::run(&db, cmd, &cli.actor),
-        Commands::Block { cmd } => commands::block::run(&db, cmd, &cli.actor),
+        Commands::Page { cmd } => commands::page::run(&db, cmd, &cli.actor, fmt),
+        Commands::Block { cmd } => commands::block::run(&db, cmd, &cli.actor, fmt),
         Commands::Folder { cmd } => commands::folder::run(&db, cmd, &cli.actor),
         Commands::Property { cmd } => commands::property::run(&db, cmd, &cli.actor),
-        Commands::Search { query, limit } => commands::search::run(&db, &query, limit),
+        Commands::Search { query, limit } => commands::search::run(&db, &query, limit, fmt),
         Commands::Journal { date, cmd } => match cmd {
             Some(JournalCmd::Create { content, date: d }) => {
                 commands::journal::run_create(&db, &content, d.as_deref(), &cli.actor)
             }
-            None => commands::journal::run_get(&db, date.as_deref(), &cli.actor),
+            None => commands::journal::run_get(&db, date.as_deref(), &cli.actor, fmt),
         },
         Commands::Events { since, types, limit, follow } => {
             if follow {
@@ -174,7 +181,7 @@ fn main() {
             commands::sync::run(&db, &dir, &cli.actor, delete_missing, write_back)
         }
         Commands::Reindex => run_reindex(&db),
-        Commands::Stats => run_stats(&db),
+        Commands::Stats => run_stats(&db, fmt),
         Commands::BatchCreate { page } => run_batch_create(&db, &page, &cli.actor),
     };
 
@@ -183,7 +190,6 @@ fn main() {
 
 fn run_reindex(db: &Database) -> i32 {
     let r = || -> minotes_core::error::Result<()> {
-        // Rebuild FTS index from scratch
         db.conn.execute_batch("DELETE FROM blocks_fts;")?;
         db.conn.execute_batch(
             "INSERT INTO blocks_fts(rowid, content) SELECT rowid, content FROM blocks;",
@@ -201,7 +207,7 @@ fn run_reindex(db: &Database) -> i32 {
     }
 }
 
-fn run_stats(db: &Database) -> i32 {
+fn run_stats(db: &Database, fmt: &Format) -> i32 {
     let r = || -> minotes_core::error::Result<()> {
         let pages: i64 = db.conn.query_row("SELECT COUNT(*) FROM pages", [], |r| r.get(0))?;
         let blocks: i64 = db.conn.query_row("SELECT COUNT(*) FROM blocks", [], |r| r.get(0))?;
@@ -209,13 +215,32 @@ fn run_stats(db: &Database) -> i32 {
         let events: i64 = db.conn.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))?;
         let properties: i64 = db.conn.query_row("SELECT COUNT(*) FROM properties", [], |r| r.get(0))?;
 
-        output::print_json(&serde_json::json!({
-            "pages": pages,
-            "blocks": blocks,
-            "links": links,
-            "properties": properties,
-            "events": events,
-        }));
+        match fmt {
+            Format::Text | Format::Md => {
+                println!("Pages:      {}", pages);
+                println!("Blocks:     {}", blocks);
+                println!("Links:      {}", links);
+                println!("Properties: {}", properties);
+                println!("Events:     {}", events);
+            }
+            Format::Csv => {
+                println!("metric,count");
+                println!("pages,{}", pages);
+                println!("blocks,{}", blocks);
+                println!("links,{}", links);
+                println!("properties,{}", properties);
+                println!("events,{}", events);
+            }
+            _ => {
+                output::print_json(&serde_json::json!({
+                    "pages": pages,
+                    "blocks": blocks,
+                    "links": links,
+                    "properties": properties,
+                    "events": events,
+                }));
+            }
+        }
         Ok(())
     };
     match r() {
@@ -272,7 +297,6 @@ fn run_events_follow(db: &Database, since: Option<i64>, types: Option<&str>) -> 
     let type_list: Option<Vec<&str>> = types.map(|t| t.split(',').collect());
     let mut cursor = since.unwrap_or(0);
 
-    // Get current max event ID as starting point if no --since given
     if since.is_none() {
         if let Ok(max_id) = db.conn.query_row("SELECT COALESCE(MAX(id), 0) FROM events", [], |r| r.get::<_, i64>(0)) {
             cursor = max_id;
@@ -286,7 +310,6 @@ fn run_events_follow(db: &Database, since: Option<i64>, types: Option<&str>) -> 
         match db.get_events(Some(cursor), type_refs.as_deref(), Some(100)) {
             Ok(events) => {
                 for event in &events {
-                    // Events come in DESC order, print in ASC
                     println!("{}", serde_json::to_string(event).unwrap_or_default());
                     if event.id > cursor {
                         cursor = event.id;

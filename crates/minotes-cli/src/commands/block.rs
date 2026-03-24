@@ -2,7 +2,7 @@ use clap::Subcommand;
 use minotes_core::db::Database;
 use uuid::Uuid;
 
-use crate::output::{print_error, print_json, print_message};
+use crate::output::{self, Format, print_error, print_json, print_message};
 
 #[derive(Subcommand)]
 pub enum BlockCmd {
@@ -55,10 +55,9 @@ pub enum BlockCmd {
     },
 }
 
-pub fn run(db: &Database, cmd: BlockCmd, actor: &str) -> i32 {
+pub fn run(db: &Database, cmd: BlockCmd, actor: &str, fmt: &Format) -> i32 {
     match cmd {
         BlockCmd::Create { page, content, parent, position } => {
-            // Resolve page by title or UUID
             let page_id = resolve_page_id(db, &page);
             let Some(page_id) = page_id else {
                 print_error(&format!("Page not found: {page}"));
@@ -66,7 +65,13 @@ pub fn run(db: &Database, cmd: BlockCmd, actor: &str) -> i32 {
             };
             let parent_id = parent.as_ref().and_then(|p| Uuid::parse_str(p).ok());
             match db.create_block(&page_id, &content, parent_id.as_ref(), position, actor) {
-                Ok(block) => { print_json(&block); 0 }
+                Ok(block) => {
+                    match fmt {
+                        Format::Text | Format::Md => output::print_block_text(&block),
+                        _ => print_json(&block),
+                    }
+                    0
+                }
                 Err(e) => { print_error(&e.to_string()); 1 }
             }
         }
@@ -76,7 +81,13 @@ pub fn run(db: &Database, cmd: BlockCmd, actor: &str) -> i32 {
                 return 1;
             };
             match db.get_block(&uuid) {
-                Ok(Some(block)) => { print_json(&block); 0 }
+                Ok(Some(block)) => {
+                    match fmt {
+                        Format::Text | Format::Md => output::print_block_text(&block),
+                        _ => print_json(&block),
+                    }
+                    0
+                }
                 Ok(None) => { print_error(&format!("Block not found: {id}")); 2 }
                 Err(e) => { print_error(&e.to_string()); 1 }
             }
@@ -122,7 +133,14 @@ pub fn run(db: &Database, cmd: BlockCmd, actor: &str) -> i32 {
                 return 1;
             };
             match db.get_children(&uuid) {
-                Ok(blocks) => { print_json(&blocks); 0 }
+                Ok(blocks) => {
+                    match fmt {
+                        Format::Text | Format::Md => output::print_blocks_list_text(&blocks),
+                        Format::Csv => output::print_blocks_list_csv(&blocks),
+                        _ => print_json(&blocks),
+                    }
+                    0
+                }
                 Err(e) => { print_error(&e.to_string()); 1 }
             }
         }

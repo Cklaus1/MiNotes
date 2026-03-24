@@ -2,7 +2,7 @@ use chrono::{Local, NaiveDate};
 use clap::Subcommand;
 use minotes_core::db::Database;
 
-use crate::output::{print_error, print_json};
+use crate::output::{self, Format, print_error, print_json};
 
 #[derive(Subcommand)]
 pub enum JournalCmd {
@@ -17,7 +17,7 @@ pub enum JournalCmd {
 }
 
 /// Get or create today's (or specified date's) journal page.
-pub fn run_get(db: &Database, date: Option<&str>, actor: &str) -> i32 {
+pub fn run_get(db: &Database, date: Option<&str>, actor: &str, fmt: &Format) -> i32 {
     let d = match parse_date(date) {
         Ok(d) => d,
         Err(e) => { print_error(&e); return 1; }
@@ -28,7 +28,13 @@ pub fn run_get(db: &Database, date: Option<&str>, actor: &str) -> i32 {
         Ok(Some(page)) => {
             let blocks = db.get_page_blocks(&page.id).unwrap_or_default();
             let tree = minotes_core::models::PageTree { page, blocks };
-            print_json(&tree);
+            match fmt {
+                Format::Text => output::print_page_tree_text(&tree),
+                Format::Md => output::print_page_tree_md(&tree),
+                Format::Csv => output::print_page_tree_csv(&tree),
+                Format::Opml => output::print_page_tree_opml(&tree),
+                Format::Json => print_json(&tree),
+            }
             0
         }
         Ok(None) => {
@@ -36,7 +42,13 @@ pub fn run_get(db: &Database, date: Option<&str>, actor: &str) -> i32 {
             match db.create_page(&title, None, true, Some(d), actor) {
                 Ok(page) => {
                     let tree = minotes_core::models::PageTree { page, blocks: vec![] };
-                    print_json(&tree);
+                    match fmt {
+                        Format::Text => output::print_page_tree_text(&tree),
+                        Format::Md => output::print_page_tree_md(&tree),
+                        Format::Csv => output::print_page_tree_csv(&tree),
+                        Format::Opml => output::print_page_tree_opml(&tree),
+                        Format::Json => print_json(&tree),
+                    }
                     0
                 }
                 Err(e) => { print_error(&e.to_string()); 1 }
