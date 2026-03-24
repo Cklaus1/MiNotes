@@ -5,11 +5,24 @@ import { PluginKey } from "@tiptap/pm/state";
 import tippy, { type Instance as TippyInstance } from "tippy.js";
 import { SlashMenu, type SlashMenuItem } from "./SlashMenu";
 
-// Module-level ref that useBlockEditor sets before creating the editor
+/*
+ * Slash commands use two strategies:
+ * 1. Markdown-based (headings): save "# text" via onSlashCommand callback
+ * 2. Editor-based (lists, hr): use TipTap API then save the resulting markdown
+ *
+ * For strategy 2, we use the editor directly then call onSlashSave
+ * to persist whatever the editor now contains.
+ */
+
 let slashCommandCallback: ((markdown: string) => void) | null = null;
+let slashSaveCallback: (() => void) | null = null;
 
 export function setSlashCommandCallback(cb: (markdown: string) => void) {
   slashCommandCallback = cb;
+}
+
+export function setSlashSaveCallback(cb: () => void) {
+  slashSaveCallback = cb;
 }
 
 function getTextBeforeSlash(editor: any, range: { from: number; to: number }): string {
@@ -25,7 +38,7 @@ function getTextBeforeSlash(editor: any, range: { from: number; to: number }): s
 const COMMANDS: SlashMenuItem[] = [
   {
     title: "Heading 1",
-    description: "Large heading",
+    description: "large heading",
     command: ({ editor, range }) => {
       const text = getTextBeforeSlash(editor, range);
       slashCommandCallback?.(`# ${text}`);
@@ -33,7 +46,7 @@ const COMMANDS: SlashMenuItem[] = [
   },
   {
     title: "Heading 2",
-    description: "Medium heading",
+    description: "medium heading",
     command: ({ editor, range }) => {
       const text = getTextBeforeSlash(editor, range);
       slashCommandCallback?.(`## ${text}`);
@@ -41,7 +54,7 @@ const COMMANDS: SlashMenuItem[] = [
   },
   {
     title: "Heading 3",
-    description: "Small heading",
+    description: "small heading",
     command: ({ editor, range }) => {
       const text = getTextBeforeSlash(editor, range);
       slashCommandCallback?.(`### ${text}`);
@@ -51,39 +64,40 @@ const COMMANDS: SlashMenuItem[] = [
     title: "Bullet List",
     description: "list bullet unordered",
     command: ({ editor, range }) => {
-      const text = getTextBeforeSlash(editor, range);
-      slashCommandCallback?.(`- ${text}`);
+      editor.chain().focus().deleteRange(range).toggleBulletList().run();
+      slashSaveCallback?.();
     },
   },
   {
     title: "Todo List",
     description: "task checkbox todo",
     command: ({ editor, range }) => {
-      const text = getTextBeforeSlash(editor, range);
-      slashCommandCallback?.(`- [ ] ${text}`);
+      editor.chain().focus().deleteRange(range).toggleTaskList().run();
+      slashSaveCallback?.();
     },
   },
   {
     title: "Code Block",
     description: "code snippet",
     command: ({ editor, range }) => {
-      const text = getTextBeforeSlash(editor, range);
-      slashCommandCallback?.("```\n" + (text || "") + "\n```");
+      editor.chain().focus().deleteRange(range).toggleCodeBlock().run();
+      slashSaveCallback?.();
     },
   },
   {
     title: "Quote",
     description: "blockquote",
     command: ({ editor, range }) => {
-      const text = getTextBeforeSlash(editor, range);
-      slashCommandCallback?.(`> ${text}`);
+      editor.chain().focus().deleteRange(range).toggleBlockquote().run();
+      slashSaveCallback?.();
     },
   },
   {
     title: "Divider",
     description: "horizontal line separator",
-    command: () => {
-      slashCommandCallback?.("---");
+    command: ({ editor, range }) => {
+      editor.chain().focus().deleteRange(range).setHorizontalRule().run();
+      slashSaveCallback?.();
     },
   },
 ];

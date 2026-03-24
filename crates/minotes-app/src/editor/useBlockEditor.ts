@@ -15,7 +15,7 @@ import { common, createLowlight } from "lowlight";
 import { Markdown } from "tiptap-markdown";
 import { WikiLinkNode } from "./WikiLinkNode";
 import { BlockRefNode } from "./BlockRefNode";
-import { SlashCommands, setSlashCommandCallback } from "./slashCommands";
+import { SlashCommands, setSlashCommandCallback, setSlashSaveCallback } from "./slashCommands";
 import { PageLinkSuggestion } from "./PageLinkSuggestion";
 import { BlockRefSuggestion } from "./BlockRefSuggestion";
 
@@ -76,9 +76,20 @@ export function useBlockEditor({
   onOutdentRef.current = onOutdent;
   onSlashCommandRef.current = onSlashCommand;
 
-  // Set the module-level callback for slash commands
+  // Set the module-level callbacks for slash commands
   setSlashCommandCallback((md: string) => {
     onSlashCommandRef.current?.(md);
+  });
+  setSlashSaveCallback(() => {
+    // Save whatever the editor currently contains (after TipTap commands ran)
+    setTimeout(() => {
+      const ed = editorInstanceRef.current;
+      if (ed) {
+        const md = (ed.storage as any).markdown?.getMarkdown?.() ?? "";
+        contentRef.current = md.trim();
+        onSaveRef.current(md.trim());
+      }
+    }, 20);
   });
 
   const editor = useEditor({

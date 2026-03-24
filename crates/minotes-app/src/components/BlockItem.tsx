@@ -93,17 +93,10 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
     onSlashCommand: (newMarkdown: string) => {
       // Save to backend + update local state (triggers re-render → setContent)
       onUpdate(block.id, newMarkdown);
-      // Re-focus the editor after content updates
+      // Re-focus after content re-renders
       setTimeout(() => {
-        if (editorRef.current) {
-          // Focus at the end of actual content, not after trailing newlines
-          editorRef.current.commands.focus();
-          // Move cursor to end of content
-          const doc = editorRef.current.state.doc;
-          const endPos = doc.content.size - 1;
-          editorRef.current.commands.setTextSelection(Math.max(1, endPos));
-        }
-      }, 120);
+        editorRef.current?.commands.focus("end");
+      }, 150);
     },
   });
 
