@@ -15,7 +15,7 @@ import { common, createLowlight } from "lowlight";
 import { Markdown } from "tiptap-markdown";
 import { WikiLinkNode } from "./WikiLinkNode";
 import { BlockRefNode } from "./BlockRefNode";
-import { SlashCommands } from "./slashCommands";
+import { SlashCommands, setSlashCommandCallback } from "./slashCommands";
 import { PageLinkSuggestion } from "./PageLinkSuggestion";
 import { BlockRefSuggestion } from "./BlockRefSuggestion";
 
@@ -34,6 +34,7 @@ interface UseBlockEditorOptions {
   onPasteMultiline?: (lines: string[]) => void;
   onIndent?: () => void;
   onOutdent?: () => void;
+  onSlashCommand?: (newMarkdown: string) => void;
 }
 
 export function useBlockEditor({
@@ -49,6 +50,7 @@ export function useBlockEditor({
   onPasteMultiline,
   onIndent,
   onOutdent,
+  onSlashCommand,
 }: UseBlockEditorOptions) {
   const onSaveRef = useRef(onSave);
   const contentRef = useRef(content);
@@ -60,6 +62,7 @@ export function useBlockEditor({
   const onPasteMultilineRef = useRef(onPasteMultiline);
   const onIndentRef = useRef(onIndent);
   const onOutdentRef = useRef(onOutdent);
+  const onSlashCommandRef = useRef(onSlashCommand);
   const editorInstanceRef = useRef<any>(null);
   onSaveRef.current = onSave;
   contentRef.current = content;
@@ -71,6 +74,12 @@ export function useBlockEditor({
   onPasteMultilineRef.current = onPasteMultiline;
   onIndentRef.current = onIndent;
   onOutdentRef.current = onOutdent;
+  onSlashCommandRef.current = onSlashCommand;
+
+  // Set the module-level callback for slash commands
+  setSlashCommandCallback((md: string) => {
+    onSlashCommandRef.current?.(md);
+  });
 
   const editor = useEditor({
     extensions: [

@@ -5,77 +5,12 @@ import { PluginKey } from "@tiptap/pm/state";
 import tippy, { type Instance as TippyInstance } from "tippy.js";
 import { SlashMenu, type SlashMenuItem } from "./SlashMenu";
 
-/*
- * Slash commands use editor.commands.setContent() to replace the entire
- * block content with markdown. The tiptap-markdown extension intercepts
- * setContent and parses markdown → ProseMirror nodes. This ensures
- * headings, lists, etc. render correctly AND survive the save cycle.
- */
+// Module-level ref that useBlockEditor sets before creating the editor
+let slashCommandCallback: ((markdown: string) => void) | null = null;
 
-const COMMANDS: SlashMenuItem[] = [
-  {
-    title: "Heading 1",
-    description: "Large heading",
-    command: ({ editor, range }) => {
-      const existingText = getTextBeforeSlash(editor, range);
-      editor.commands.setContent(`# ${existingText || ""}`);
-    },
-  },
-  {
-    title: "Heading 2",
-    description: "Medium heading",
-    command: ({ editor, range }) => {
-      const existingText = getTextBeforeSlash(editor, range);
-      editor.commands.setContent(`## ${existingText || ""}`);
-    },
-  },
-  {
-    title: "Heading 3",
-    description: "Small heading",
-    command: ({ editor, range }) => {
-      const existingText = getTextBeforeSlash(editor, range);
-      editor.commands.setContent(`### ${existingText || ""}`);
-    },
-  },
-  {
-    title: "Bullet List",
-    description: "Start a list",
-    command: ({ editor, range }) => {
-      const existingText = getTextBeforeSlash(editor, range);
-      editor.commands.setContent(`- ${existingText || ""}`);
-    },
-  },
-  {
-    title: "Task List",
-    description: "Checklist",
-    command: ({ editor, range }) => {
-      const existingText = getTextBeforeSlash(editor, range);
-      editor.commands.setContent(`- [ ] ${existingText || ""}`);
-    },
-  },
-  {
-    title: "Code Block",
-    description: "Code snippet",
-    command: ({ editor, range }) => {
-      editor.commands.setContent("```\n\n```");
-    },
-  },
-  {
-    title: "Blockquote",
-    description: "Quote",
-    command: ({ editor, range }) => {
-      const existingText = getTextBeforeSlash(editor, range);
-      editor.commands.setContent(`> ${existingText || ""}`);
-    },
-  },
-  {
-    title: "Divider",
-    description: "Horizontal line",
-    command: ({ editor, range }) => {
-      editor.commands.setContent("---");
-    },
-  },
-];
+export function setSlashCommandCallback(cb: (markdown: string) => void) {
+  slashCommandCallback = cb;
+}
 
 function getTextBeforeSlash(editor: any, range: { from: number; to: number }): string {
   try {
@@ -86,6 +21,72 @@ function getTextBeforeSlash(editor: any, range: { from: number; to: number }): s
   } catch {}
   return "";
 }
+
+const COMMANDS: SlashMenuItem[] = [
+  {
+    title: "Heading 1",
+    description: "Large heading",
+    command: ({ editor, range }) => {
+      const text = getTextBeforeSlash(editor, range);
+      slashCommandCallback?.(`# ${text}`);
+    },
+  },
+  {
+    title: "Heading 2",
+    description: "Medium heading",
+    command: ({ editor, range }) => {
+      const text = getTextBeforeSlash(editor, range);
+      slashCommandCallback?.(`## ${text}`);
+    },
+  },
+  {
+    title: "Heading 3",
+    description: "Small heading",
+    command: ({ editor, range }) => {
+      const text = getTextBeforeSlash(editor, range);
+      slashCommandCallback?.(`### ${text}`);
+    },
+  },
+  {
+    title: "Bullet List",
+    description: "Start a list",
+    command: ({ editor, range }) => {
+      const text = getTextBeforeSlash(editor, range);
+      slashCommandCallback?.(`- ${text}`);
+    },
+  },
+  {
+    title: "Task List",
+    description: "Checklist",
+    command: ({ editor, range }) => {
+      const text = getTextBeforeSlash(editor, range);
+      slashCommandCallback?.(`- [ ] ${text}`);
+    },
+  },
+  {
+    title: "Code Block",
+    description: "Code snippet",
+    command: ({ editor, range }) => {
+      const text = getTextBeforeSlash(editor, range);
+      slashCommandCallback?.("```\n" + (text || "") + "\n```");
+    },
+  },
+  {
+    title: "Blockquote",
+    description: "Quote",
+    command: ({ editor, range }) => {
+      const text = getTextBeforeSlash(editor, range);
+      slashCommandCallback?.(`> ${text}`);
+    },
+  },
+  {
+    title: "Divider",
+    description: "Horizontal line",
+    command: () => {
+      slashCommandCallback?.("---");
+    },
+  },
+];
 
 export const SlashCommands = Extension.create({
   name: "slashCommands",

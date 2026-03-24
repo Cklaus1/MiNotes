@@ -90,6 +90,10 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
     onPasteMultiline: onPasteMultiline ? (lines) => onPasteMultiline(block.id, lines) : undefined,
     onIndent: onIndent ? () => onIndent(block.id) : undefined,
     onOutdent: onOutdent ? () => onOutdent(block.id) : undefined,
+    onSlashCommand: (newMarkdown: string) => {
+      // Save the new markdown content directly, then update the editor
+      onUpdate(block.id, newMarkdown);
+    },
   });
 
   const editorRef = useRef(tiptapEditor);
