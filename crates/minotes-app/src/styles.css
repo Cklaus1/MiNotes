@@ -182,20 +182,51 @@ body {
 }
 
 .block {
-  padding: 4px 0 4px 20px;
+  padding: 6px 0 6px 24px;
   position: relative;
-  min-height: 28px;
+  min-height: 32px;
+  border-left: 2px solid transparent;
+  border-radius: 2px;
+  transition: background 0.1s, border-color 0.15s;
 }
 
+/* Bullet dot */
 .block::before {
   content: "";
   position: absolute;
-  left: 6px;
-  top: 12px;
-  width: 5px;
-  height: 5px;
+  left: 7px;
+  top: 14px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   background: var(--text-muted);
+  transition: background 0.1s;
+  cursor: pointer;
+  z-index: 2;
+}
+
+/* Hover: subtle background + brighter bullet */
+.block:hover {
+  background: rgba(49, 50, 68, 0.3);
+}
+
+.block:hover::before {
+  background: var(--text-secondary);
+}
+
+/* Active/focused block: left accent border */
+.block:focus-within {
+  border-left-color: var(--accent);
+}
+
+.block:focus-within::before {
+  background: var(--accent);
+}
+
+/* Block selection highlight */
+.block.selected {
+  background: rgba(137, 180, 250, 0.12);
+  border-left-color: var(--accent);
 }
 
 .block-content {
@@ -214,6 +245,42 @@ body {
 .block-content:empty::before {
   content: "Type something...";
   color: var(--text-muted);
+}
+
+/* Indent guides for nested blocks */
+.block[data-depth="1"] { margin-left: 24px; }
+.block[data-depth="2"] { margin-left: 48px; }
+.block[data-depth="3"] { margin-left: 72px; }
+.block[data-depth="4"] { margin-left: 96px; }
+
+/* Collapse toggle for parent blocks */
+.block-collapse {
+  position: absolute;
+  left: -4px;
+  top: 10px;
+  width: 16px;
+  height: 16px;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 10px;
+  cursor: pointer;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 2px;
+  opacity: 0;
+  transition: opacity 0.1s;
+}
+
+.block:hover .block-collapse {
+  opacity: 1;
+}
+
+.block-collapse:hover {
+  background: var(--bg-surface);
+  color: var(--text-primary);
 }
 
 /* Wiki links in content */
@@ -2284,6 +2351,42 @@ body.theme-light { /* matches our light theme */ }
 
 /* ── CM6 Editor ── */
 
+/* Block context menu */
+.block-context-menu {
+  position: fixed;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  padding: 4px;
+  min-width: 180px;
+  z-index: 1000;
+}
+
+.block-context-menu-item {
+  display: block;
+  width: 100%;
+  padding: 6px 12px;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.block-context-menu-item:hover {
+  background: var(--accent);
+  color: var(--bg-primary);
+}
+
+.block-context-menu-sep {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 0;
+}
+
 /* Shortcuts grid in settings */
 .shortcuts-grid {
   display: flex;
@@ -2314,6 +2417,49 @@ body.theme-light { /* matches our light theme */ }
 .shortcut-desc {
   font-size: 13px;
   color: var(--text-secondary);
+}
+
+/* ── Animations ── */
+
+@keyframes block-appear {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes scale-in {
+  from { opacity: 0; transform: scale(0.95); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+.block {
+  animation: block-appear 0.15s ease-out;
+}
+
+.command-palette-overlay {
+  animation: fade-in 0.1s ease-out;
+}
+
+.command-palette,
+.query-panel,
+.settings-panel,
+.plugin-manager {
+  animation: scale-in 0.15s ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .block,
+  .command-palette-overlay,
+  .command-palette,
+  .query-panel,
+  .settings-panel,
+  .plugin-manager {
+    animation: none;
+  }
 }
 
 .cm6-editor { min-height: 1.6em; }

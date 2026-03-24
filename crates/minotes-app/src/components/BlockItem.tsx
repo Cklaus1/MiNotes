@@ -1,4 +1,4 @@
-import { useEffect, useState, lazy, Suspense } from "react";
+import { useEffect, useState, lazy, Suspense, forwardRef, useImperativeHandle } from "react";
 import { EditorContent } from "@tiptap/react";
 import type { Block, Property } from "../lib/api";
 import * as api from "../lib/api";
@@ -9,14 +9,25 @@ import "../editor/editor.css";
 // Lazy-load CM6 editor — only downloaded when obsidianEditorEnabled
 const CM6BlockEditor = lazy(() => import("../editor/CM6BlockEditor"));
 
+export interface BlockItemHandle {
+  focus: (position?: "start" | "end") => void;
+}
+
 interface Props {
   block: Block;
   onUpdate: (id: string, content: string) => void;
   onDelete: (id: string) => void;
   onPageLinkClick: (title: string) => void;
+  onEnter?: (blockId: string, contentAfterCursor: string) => void;
+  onBackspaceAtStart?: (blockId: string, content: string) => void;
+  onArrowUp?: (blockId: string) => void;
+  onArrowDown?: (blockId: string) => void;
 }
 
-export default function BlockItem({ block, onUpdate, onDelete, onPageLinkClick }: Props) {
+const BlockItem = forwardRef<BlockItemHandle, Props>(({
+  block, onUpdate, onDelete, onPageLinkClick,
+  onEnter, onBackspaceAtStart, onArrowUp, onArrowDown,
+}, ref) => {
   const settings = getSettings();
   const [editorMode, setEditorMode] = useState<"minotes" | "obsidian">(
     settings.obsidianEditorEnabled ? settings.defaultEditorMode : "minotes"
@@ -28,6 +39,21 @@ export default function BlockItem({ block, onUpdate, onDelete, onPageLinkClick }
   const [editingProp, setEditingProp] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
 
+  const handleToggleTodo = () => {
+    const content = block.content;
+    let newContent: string;
+    if (content.startsWith("DONE ")) {
+      newContent = content.slice(5); // Remove DONE prefix
+    } else if (content.startsWith("DOING ")) {
+      newContent = "DONE " + content.slice(6);
+    } else if (content.startsWith("TODO ")) {
+      newContent = "DOING " + content.slice(5);
+    } else {
+      newContent = "TODO " + content;
+    }
+    onUpdate(block.id, newContent);
+  };
+
   const tiptapEditor = useBlockEditor({
     content: block.content,
     onSave: (markdown) => {
@@ -36,7 +62,18 @@ export default function BlockItem({ block, onUpdate, onDelete, onPageLinkClick }
       }
     },
     onPageLinkClick,
+    onEnter: onEnter ? (contentAfterCursor) => onEnter(block.id, contentAfterCursor) : undefined,
+    onBackspaceAtStart: onBackspaceAtStart ? (content) => onBackspaceAtStart(block.id, content) : undefined,
+    onArrowUp: onArrowUp ? () => onArrowUp(block.id) : undefined,
+    onArrowDown: onArrowDown ? () => onArrowDown(block.id) : undefined,
+    onToggleTodo: handleToggleTodo,
   });
+
+  useImperativeHandle(ref, () => ({
+    focus: (position: "start" | "end" = "end") => {
+      tiptapEditor?.commands.focus(position);
+    },
+  }));
 
   // Sync external content changes for TipTap
   useEffect(() => {
@@ -196,4 +233,8 @@ export default function BlockItem({ block, onUpdate, onDelete, onPageLinkClick }
       </button>
     </div>
   );
-}
+});
+
+BlockItem.displayName = "BlockItem";
+
+export default BlockItem;

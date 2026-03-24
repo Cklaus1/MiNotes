@@ -15,6 +15,7 @@ import { common, createLowlight } from "lowlight";
 import { Markdown } from "tiptap-markdown";
 import { WikiLinkNode } from "./WikiLinkNode";
 import { SlashCommands } from "./slashCommands";
+import { PageLinkSuggestion } from "./PageLinkSuggestion";
 
 const lowlight = createLowlight(common);
 
@@ -22,13 +23,37 @@ interface UseBlockEditorOptions {
   content: string;
   onSave: (markdown: string) => void;
   onPageLinkClick: (title: string) => void;
+  onEnter?: (contentAfterCursor: string) => void;
+  onBackspaceAtStart?: (content: string) => void;
+  onArrowUp?: () => void;
+  onArrowDown?: () => void;
+  onToggleTodo?: () => void;
 }
 
-export function useBlockEditor({ content, onSave, onPageLinkClick }: UseBlockEditorOptions) {
+export function useBlockEditor({
+  content,
+  onSave,
+  onPageLinkClick,
+  onEnter,
+  onBackspaceAtStart,
+  onArrowUp,
+  onArrowDown,
+  onToggleTodo,
+}: UseBlockEditorOptions) {
   const onSaveRef = useRef(onSave);
   const contentRef = useRef(content);
+  const onEnterRef = useRef(onEnter);
+  const onBackspaceAtStartRef = useRef(onBackspaceAtStart);
+  const onArrowUpRef = useRef(onArrowUp);
+  const onArrowDownRef = useRef(onArrowDown);
+  const onToggleTodoRef = useRef(onToggleTodo);
   onSaveRef.current = onSave;
   contentRef.current = content;
+  onEnterRef.current = onEnter;
+  onBackspaceAtStartRef.current = onBackspaceAtStart;
+  onArrowUpRef.current = onArrowUp;
+  onArrowDownRef.current = onArrowDown;
+  onToggleTodoRef.current = onToggleTodo;
 
   const editor = useEditor({
     extensions: [
@@ -55,17 +80,126 @@ export function useBlockEditor({ content, onSave, onPageLinkClick }: UseBlockEdi
       }),
       WikiLinkNode.configure({ onPageLinkClick }),
       SlashCommands,
+      PageLinkSuggestion,
     ],
     content,
     editorProps: {
       attributes: {
         class: "block-editor-prosemirror",
       },
-      handleKeyDown(_view, event) {
+      handleKeyDown(view, event) {
         if (event.key === "Escape") {
-          _view.dom.blur();
+          view.dom.blur();
           return true;
         }
+
+        // Ctrl+Enter — cycle TODO state
+        if (event.key === "Enter" && (event.ctrlKey || event.metaKey) && onToggleTodoRef.current) {
+          event.preventDefault();
+          onToggleTodoRef.current();
+          return true;
+        }
+
+        // Enter — split block (unless Shift, or inside list/code/table/blockquote)
+        if (event.key === "Enter" && !event.shiftKey && onEnterRef.current) {
+          const { state } = view;
+          const { $from } = state.selection;
+          const parentNode = $from.node($from.depth);
+          const grandparent = $from.depth > 1 ? $from.node($from.depth - 1) : null;
+
+          if (
+            parentNode.type.name === "listItem" ||
+            parentNode.type.name === "codeBlock" ||
+            parentNode.type.name === "taskItem" ||
+            grandparent?.type.name === "table" ||
+            grandparent?.type.name === "blockquote"
+          ) {
+            return false;
+          }
+
+          event.preventDefault();
+
+          // Get markdown content after cursor by slicing the doc
+          const from = state.selection.from;
+          const docEnd = state.doc.content.size - 1; // -1 for the closing paragraph tag
+
+          // Extract text after cursor from the current editor state
+          let contentAfterCursor = "";
+          if (from < docEnd) {
+            // Get the text content from cursor to end
+            contentAfterCursor = state.doc.textBetween(from, docEnd, "\n", "");
+            // Delete everything after cursor
+            const tr = state.tr.delete(from, docEnd);
+            view.dispatch(tr);
+          }
+
+          onEnterRef.current(contentAfterCursor);
+          return true;
+        }
+
+        // Backspace at position 0 — merge with previous block
+        if (event.key === "Backspace" && onBackspaceAtStartRef.current) {
+          const { state } = view;
+          const { from, empty } = state.selection;
+          if (empty && from <= 1) {
+            event.preventDefault();
+            // Get current markdown content via the editor instance
+            // We need to access the editor — use a small workaround via the dom
+            const editorEl = view.dom.closest(".tiptap");
+            const editorInstance = (editorEl as any)?.__tiptapEditor;
+            let md = "";
+            if (editorInstance) {
+              md = (editorInstance.storage as any).markdown?.getMarkdown() ?? "";
+            } else {
+              // Fallback: get text content from ProseMirror doc
+              md = state.doc.textContent;
+            }
+            onBackspaceAtStartRef.current(md);
+            return true;
+          }
+        }
+
+        // ArrowUp on first line — move to previous block
+        if (event.key === "ArrowUp" && onArrowUpRef.current) {
+          const { state } = view;
+          const { from } = state.selection;
+          try {
+            const coords = view.coordsAtPos(from);
+            const startCoords = view.coordsAtPos(1);
+            if (Math.abs(coords.top - startCoords.top) < 2) {
+              onArrowUpRef.current();
+              return true;
+            }
+          } catch {
+            // If coordsAtPos fails (empty doc), treat as first line
+            if (from <= 1) {
+              onArrowUpRef.current();
+              return true;
+            }
+          }
+        }
+
+        // ArrowDown on last line — move to next block
+        if (event.key === "ArrowDown" && onArrowDownRef.current) {
+          const { state } = view;
+          const { from } = state.selection;
+          const docEnd = state.doc.content.size - 1;
+          try {
+            const coords = view.coordsAtPos(from);
+            const endCoords = view.coordsAtPos(docEnd);
+            if (Math.abs(coords.top - endCoords.top) < 2) {
+              onArrowDownRef.current();
+              return true;
+            }
+          } catch {
+            // If coordsAtPos fails (empty doc), treat as last line
+            if (from >= docEnd || docEnd <= 1) {
+              onArrowDownRef.current();
+              return true;
+            }
+          }
+        }
+
         return false;
       },
     },

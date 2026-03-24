@@ -209,9 +209,10 @@ export default function App() {
     return () => window.removeEventListener("keydown", handler);
   }, [openJournal, createPage]);
 
+  // UX-009: Journal as default landing — open today's journal on mount
   useEffect(() => {
-    refresh();
-  }, [refresh]);
+    refresh().then(() => openJournal());
+  }, []);
 
   return (
     <div className="app workspace">
@@ -259,11 +260,11 @@ export default function App() {
         {activePage ? (
           <PageView
             pageTree={activePage}
-            onCreateBlock={createBlock}
             onUpdateBlock={updateBlock}
             onDeleteBlock={deleteBlock}
             onPageLinkClick={openPage}
             onJournalNav={openJournal}
+            onRefreshPage={() => openPage(activePage.page.id)}
           />
         ) : (
           <EmptyState onCreatePage={createPage} />

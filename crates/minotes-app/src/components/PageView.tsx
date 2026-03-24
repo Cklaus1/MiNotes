@@ -2,24 +2,23 @@ import { useState, useRef, useCallback, useEffect } from "react";
 import type { PageTree, Property } from "../lib/api";
 import * as api from "../lib/api";
 import BlockItem from "./BlockItem";
+import type { BlockItemHandle } from "./BlockItem";
 import BacklinksPanel from "./BacklinksPanel";
 import UnlinkedRefsPanel from "./UnlinkedRefsPanel";
 
 interface Props {
   pageTree: PageTree;
-  onCreateBlock: (content: string) => void;
   onUpdateBlock: (id: string, content: string) => void;
   onDeleteBlock: (id: string) => void;
   onPageLinkClick: (title: string) => void;
   onJournalNav?: (date: string) => void;
+  onRefreshPage: () => void;
 }
 
 export default function PageView({
-  pageTree, onCreateBlock, onUpdateBlock, onDeleteBlock, onPageLinkClick, onJournalNav,
+  pageTree, onUpdateBlock, onDeleteBlock, onPageLinkClick, onJournalNav, onRefreshPage,
 }: Props) {
   const { page, blocks } = pageTree;
-  const [newContent, setNewContent] = useState("");
-  const inputRef = useRef<HTMLInputElement>(null);
   const [pageProps, setPageProps] = useState<Property[]>([]);
   const [showProps, setShowProps] = useState(false);
   const [addingProp, setAddingProp] = useState(false);
@@ -30,6 +29,8 @@ export default function PageView({
   const [aliases, setAliases] = useState<string[]>([]);
   const [addingAlias, setAddingAlias] = useState(false);
   const [newAlias, setNewAlias] = useState("");
+  const [focusBlockIndex, setFocusBlockIndex] = useState<number | null>(null);
+  const blockRefs = useRef<Array<BlockItemHandle | null>>([]);
 
   // Load page properties
   useEffect(() => {
@@ -43,6 +44,33 @@ export default function PageView({
   useEffect(() => {
     api.getAliases(page.id).then(setAliases).catch(() => {});
   }, [page.id]);
+
+  // Auto-create empty block on empty pages
+  useEffect(() => {
+    if (blocks.length === 0) {
+      api.createBlock(page.id, "").then(() => onRefreshPage());
+    }
+  }, [page.id, blocks.length]);
+
+  // Auto-focus on page open (UX-004)
+  const prevPageIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (page.id !== prevPageIdRef.current) {
+      prevPageIdRef.current = page.id;
+      if (blocks.length > 0 && focusBlockIndex === null) {
+        const targetIdx = page.is_journal ? blocks.length - 1 : 0;
+        setFocusBlockIndex(targetIdx);
+      }
+    }
+  }, [page.id, blocks.length]);
+
+  // Execute focus when focusBlockIndex changes
+  useEffect(() => {
+    if (focusBlockIndex !== null && blockRefs.current[focusBlockIndex]) {
+      blockRefs.current[focusBlockIndex]?.focus();
+      setFocusBlockIndex(null);
+    }
+  }, [focusBlockIndex, blocks]);
 
   const handleAddAlias = async () => {
     const a = newAlias.trim();
@@ -61,14 +89,6 @@ export default function PageView({
       setAliases(prev => prev.filter(a => a !== alias));
     } catch {}
   };
-
-  const handleAdd = useCallback(() => {
-    if (newContent.trim()) {
-      onCreateBlock(newContent.trim());
-      setNewContent("");
-      inputRef.current?.focus();
-    }
-  }, [newContent, onCreateBlock]);
 
   const handleAddPageProp = async () => {
     const k = newKey.trim();
@@ -116,10 +136,60 @@ export default function PageView({
     onJournalNav(date.toISOString().slice(0, 10));
   };
 
+  // UX-001: Seamless block creation
+  const handleEnter = async (blockId: string, contentAfterCursor: string) => {
+    const idx = blocks.findIndex(b => b.id === blockId);
+    if (idx === -1) return;
+    const currentBlock = blocks[idx];
+
+    // If there's content after the cursor, update the current block to remove it
+    if (contentAfterCursor) {
+      const contentBefore = currentBlock.content.slice(
+        0,
+        currentBlock.content.length - contentAfterCursor.length,
+      );
+      await api.updateBlock(blockId, contentBefore);
+    }
+
+    // Create new block with the split content
+    await api.createBlock(page.id, contentAfterCursor);
+    onRefreshPage();
+    setFocusBlockIndex(idx + 1);
+  };
+
+  const handleBackspaceAtStart = async (blockId: string, content: string) => {
+    const idx = blocks.findIndex(b => b.id === blockId);
+    if (idx <= 0) return; // Can't merge first block
+    const prevBlock = blocks[idx - 1];
+    const mergedContent = prevBlock.content + (content ? "\n" + content : "");
+    await api.updateBlock(prevBlock.id, mergedContent);
+    await api.deleteBlock(blockId);
+    onRefreshPage();
+    setFocusBlockIndex(idx - 1);
+  };
+
+  const handleArrowUp = (blockId: string) => {
+    const idx = blocks.findIndex(b => b.id === blockId);
+    if (idx > 0) setFocusBlockIndex(idx - 1);
+  };
+
+  const handleArrowDown = (blockId: string) => {
+    const idx = blocks.findIndex(b => b.id === blockId);
+    if (idx < blocks.length - 1) setFocusBlockIndex(idx + 1);
+  };
+
+  // Ensure blockRefs array is properly sized
+  useEffect(() => {
+    blockRefs.current = blockRefs.current.slice(0, blocks.length);
+    while (blockRefs.current.length < blocks.length) {
+      blockRefs.current.push(null);
+    }
+  }, [blocks.length]);
+
   return (
     <div className="page-view">
       <div className="main-header">
-        <h2>{page.icon ?? (page.is_journal ? "📅" : "")} {page.title}</h2>
+        <h2>{page.icon ?? (page.is_journal ? "\u{1F4C5}" : "")} {page.title}</h2>
         {page.is_journal && onJournalNav && (
           <div className="journal-nav">
             <button className="btn btn-sm" onClick={() => shiftDate(-1)}>← Prev</button>
@@ -246,34 +316,20 @@ export default function PageView({
 
       <div className="content view-content markdown-source-view">
         <div className="block-list">
-          {blocks.length === 0 && (
-            <div style={{ color: "var(--text-muted)", padding: "8px 0" }}>
-              No blocks yet. Add one below.
-            </div>
-          )}
-
-          {blocks.map(block => (
+          {blocks.map((block, idx) => (
             <BlockItem
               key={block.id}
+              ref={(el) => { blockRefs.current[idx] = el; }}
               block={block}
               onUpdate={onUpdateBlock}
               onDelete={onDeleteBlock}
               onPageLinkClick={onPageLinkClick}
+              onEnter={handleEnter}
+              onBackspaceAtStart={handleBackspaceAtStart}
+              onArrowUp={handleArrowUp}
+              onArrowDown={handleArrowDown}
             />
           ))}
-
-          <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
-            <input
-              ref={inputRef}
-              className="search-input"
-              placeholder="Add a block... (supports [[wiki links]])"
-              value={newContent}
-              onChange={e => setNewContent(e.target.value)}
-              onKeyDown={e => e.key === "Enter" && handleAdd()}
-              style={{ flex: 1 }}
-            />
-            <button className="btn btn-primary" onClick={handleAdd}>Add</button>
-          </div>
 
           <BacklinksPanel pageId={page.id} onPageClick={onPageLinkClick} />
           <UnlinkedRefsPanel pageId={page.id} pageTitle={page.title} onPageClick={onPageLinkClick} />
