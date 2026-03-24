@@ -310,7 +310,7 @@ export default function App() {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [openJournal, createPage]);
+  }, [openJournal, createPage, activePage, whiteboardId]);
 
   // UX-009: Journal as default landing + UX-017: Onboarding tutorial on first launch
   useEffect(() => {

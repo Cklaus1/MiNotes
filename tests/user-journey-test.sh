@@ -1043,9 +1043,10 @@ R=$(api "getCurrentPage()" | tr -d '"')
 BLOCK_COUNT=$(api "getBlockCount()" | tr -d '"')
 
 step "I open mind map with Ctrl+M"
-$AB press "Control+m" 2>/dev/null; sleep 2
+ev "document.activeElement?.blur()" > /dev/null 2>&1; sleep 0.3
+$AB press "Control+m" 2>/dev/null; sleep 3
 S=$(snap)
-echo "$S" | grep -qi "Close\|Fit\|Horizontal\|LR\|PNG\|SVG" && pass "Mind map overlay opens" || fail "Mind map didn't open" ""
+echo "$S" | grep -qi "Close\|Fit\|LR\|PNG\|SVG" && pass "Mind map overlay opens" || fail "Mind map didn't open" ""
 
 step "I see nodes in the mind map"
 NODE_COUNT=$(ev "document.querySelectorAll('.mm-node').length" | tr -d '"')
@@ -1070,7 +1071,8 @@ S=$(snap)
 echo "$S" | grep -qi "Getting Started" && pass "Back to page after close" || fail "Not back to page" ""
 
 step "I reopen and right-click a node for context menu"
-$AB press "Control+m" 2>/dev/null; sleep 2
+ev "document.activeElement?.blur()" > /dev/null 2>&1; sleep 0.3
+$AB press "Control+m" 2>/dev/null; sleep 3
 # Right-click any non-root node
 ev "(()=>{
   const nodes = document.querySelectorAll('.mm-node:not(.mm-root)');
