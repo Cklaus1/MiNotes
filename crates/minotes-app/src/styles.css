@@ -179,44 +179,42 @@ body {
 /* Blocks */
 .block-list {
   max-width: 720px;
-  /* Continuous vertical tree line on the left connecting all blocks */
-  border-left: 1px solid var(--text-muted);
-  margin-left: 9px;
+  margin-left: 4px;
   padding-left: 0;
 }
 
 .block {
-  padding: 5px 0 5px 20px;
+  padding: 5px 0 5px 24px;
   position: relative;
   min-height: 30px;
-  border-left: 2px solid transparent;
-  transition: background 0.1s, border-color 0.15s;
+  transition: background 0.1s;
 }
 
-/* Bullet dot — always visible */
+/* Vertical tree line — runs full height of each block, creating continuous line */
+.block::after {
+  content: "";
+  position: absolute;
+  left: 3px;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--text-muted);
+}
+
+/* Bullet dot — always visible, sits on top of tree line */
 .block::before {
   content: "";
   position: absolute;
-  left: 4px;
-  top: 12px;
+  left: 0;
+  top: 11px;
   width: 7px;
   height: 7px;
   border-radius: 50%;
   background: var(--text-secondary);
-  transition: background 0.15s, transform 0.15s;
+  border: 1px solid var(--bg-primary);
+  transition: background 0.15s, transform 0.15s, border-color 0.15s;
   cursor: pointer;
   z-index: 2;
-}
-
-/* Horizontal connector from tree line to bullet — always visible */
-.block::after {
-  content: "";
-  position: absolute;
-  left: -1px;
-  top: 15px;
-  width: 5px;
-  height: 1px;
-  background: var(--text-muted);
 }
 
 /* Hover: highlight background + brighter bullet */
@@ -226,6 +224,7 @@ body {
 
 .block:hover::before {
   background: var(--accent);
+  border-color: var(--accent);
   transform: scale(1.3);
 }
 
@@ -233,13 +232,17 @@ body {
   background: var(--accent);
 }
 
-/* Active/focused block: accent border + bullet */
+/* Active/focused block: accent line + bullet + subtle bg */
 .block:focus-within {
-  border-left-color: var(--accent);
   background: rgba(137, 180, 250, 0.05);
 }
 
 .block:focus-within::before {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.block:focus-within::after {
   background: var(--accent);
 }
 
