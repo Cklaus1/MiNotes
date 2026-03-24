@@ -19,9 +19,11 @@ interface Props {
   depth?: number;
   hasChildren?: boolean;
   dataBlockId?: string;
+  selected?: boolean;
   onUpdate: (id: string, content: string) => void;
   onDelete: (id: string) => void;
   onPageLinkClick: (title: string, shiftKey?: boolean) => void;
+  onBlockRefClick?: (blockId: string) => void;
   onEnter?: (blockId: string, contentAfterCursor: string) => void;
   onBackspaceAtStart?: (blockId: string, content: string) => void;
   onArrowUp?: (blockId: string) => void;
@@ -32,12 +34,13 @@ interface Props {
   onDuplicate?: (blockId: string) => void;
   onToggleCollapse?: (blockId: string) => void;
   onZoomIn?: () => void;
+  onShiftClick?: (blockId: string) => void;
 }
 
 const BlockItem = forwardRef<BlockItemHandle, Props>(({
-  block, depth = 0, hasChildren = false, dataBlockId, onUpdate, onDelete, onPageLinkClick,
-  onEnter, onBackspaceAtStart, onArrowUp, onArrowDown, onPasteMultiline,
-  onIndent, onOutdent, onDuplicate, onToggleCollapse, onZoomIn,
+  block, depth = 0, hasChildren = false, dataBlockId, selected = false, onUpdate, onDelete, onPageLinkClick,
+  onBlockRefClick, onEnter, onBackspaceAtStart, onArrowUp, onArrowDown, onPasteMultiline,
+  onIndent, onOutdent, onDuplicate, onToggleCollapse, onZoomIn, onShiftClick,
 }, ref) => {
   const settings = getSettings();
   const [editorMode, setEditorMode] = useState<"minotes" | "obsidian">(
@@ -74,6 +77,7 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
       }
     },
     onPageLinkClick,
+    onBlockRefClick,
     onEnter: onEnter ? (contentAfterCursor) => onEnter(block.id, contentAfterCursor) : undefined,
     onBackspaceAtStart: onBackspaceAtStart ? (content) => onBackspaceAtStart(block.id, content) : undefined,
     onArrowUp: onArrowUp ? () => onArrowUp(block.id) : undefined,
@@ -153,10 +157,16 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
 
   return (
     <div
-      className="block"
+      className={`block${selected ? " selected" : ""}`}
       data-depth={depth > 0 ? String(depth) : undefined}
       data-block-id={dataBlockId ?? block.id}
       onContextMenu={handleContextMenu}
+      onClick={(e) => {
+        if (e.shiftKey && onShiftClick) {
+          e.preventDefault();
+          onShiftClick(block.id);
+        }
+      }}
     >
       {/* Zoom trigger on bullet for blocks with children */}
       {hasChildren && onZoomIn && (

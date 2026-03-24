@@ -14,8 +14,10 @@ import { TableHeader } from "@tiptap/extension-table-header";
 import { common, createLowlight } from "lowlight";
 import { Markdown } from "tiptap-markdown";
 import { WikiLinkNode } from "./WikiLinkNode";
+import { BlockRefNode } from "./BlockRefNode";
 import { SlashCommands } from "./slashCommands";
 import { PageLinkSuggestion } from "./PageLinkSuggestion";
+import { BlockRefSuggestion } from "./BlockRefSuggestion";
 
 const lowlight = createLowlight(common);
 
@@ -23,6 +25,7 @@ interface UseBlockEditorOptions {
   content: string;
   onSave: (markdown: string) => void;
   onPageLinkClick: (title: string, shiftKey?: boolean) => void;
+  onBlockRefClick?: (blockId: string) => void;
   onEnter?: (contentAfterCursor: string) => void;
   onBackspaceAtStart?: (content: string) => void;
   onArrowUp?: () => void;
@@ -37,6 +40,7 @@ export function useBlockEditor({
   content,
   onSave,
   onPageLinkClick,
+  onBlockRefClick,
   onEnter,
   onBackspaceAtStart,
   onArrowUp,
@@ -91,8 +95,10 @@ export function useBlockEditor({
         transformCopiedText: true,
       }),
       WikiLinkNode.configure({ onPageLinkClick }),
+      BlockRefNode.configure({ onBlockRefClick: onBlockRefClick ?? (() => {}) }),
       SlashCommands,
       PageLinkSuggestion,
+      BlockRefSuggestion,
     ],
     content,
     editorProps: {
@@ -277,7 +283,7 @@ export function useBlockEditor({
         onSaveRef.current(normalized);
       }
     },
-  }, [onPageLinkClick]);
+  }, [onPageLinkClick, onBlockRefClick]);
 
   // Sync external content changes (e.g. after backend refresh)
   useEffect(() => {

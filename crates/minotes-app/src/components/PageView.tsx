@@ -5,6 +5,8 @@ import BlockItem from "./BlockItem";
 import type { BlockItemHandle } from "./BlockItem";
 import BacklinksPanel from "./BacklinksPanel";
 import UnlinkedRefsPanel from "./UnlinkedRefsPanel";
+import LinkPreview from "./LinkPreview";
+import { undoStack } from "../lib/undoStack";
 
 interface Props {
   pageTree: PageTree;
@@ -32,6 +34,9 @@ export default function PageView({
   const [addingAlias, setAddingAlias] = useState(false);
   const [newAlias, setNewAlias] = useState("");
   const [focusBlockIndex, setFocusBlockIndex] = useState<number | null>(null);
+  const [linkPreview, setLinkPreview] = useState<{ pageName: string; x: number; y: number } | null>(null);
+  const [selectedBlockIds, setSelectedBlockIds] = useState<Set<string>>(new Set());
+  const [selectionAnchor, setSelectionAnchor] = useState<number | null>(null);
   const blockRefs = useRef<Array<BlockItemHandle | null>>([]);
 
   // Load page properties
@@ -73,6 +78,28 @@ export default function PageView({
       setFocusBlockIndex(null);
     }
   }, [focusBlockIndex, blocks]);
+
+  // UX-014: Link preview on Ctrl+hover
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (!e.ctrlKey && !e.metaKey) {
+        setLinkPreview(null);
+        return;
+      }
+      const target = e.target as HTMLElement;
+      const wikiLink = target.closest('.wiki-link');
+      if (wikiLink) {
+        const pageName = wikiLink.getAttribute('data-page-name') || wikiLink.textContent;
+        if (pageName) {
+          setLinkPreview({ pageName, x: e.clientX + 10, y: e.clientY + 10 });
+        }
+      } else {
+        setLinkPreview(null);
+      }
+    };
+    document.addEventListener('mousemove', handler);
+    return () => document.removeEventListener('mousemove', handler);
+  }, []);
 
   const handleAddAlias = async () => {
     const a = newAlias.trim();
@@ -154,7 +181,8 @@ export default function PageView({
     }
 
     // Create new block with the split content
-    await api.createBlock(page.id, contentAfterCursor);
+    const newBlock = await api.createBlock(page.id, contentAfterCursor);
+    undoStack.push({ type: 'create', blockId: newBlock.id, pageId: page.id, newContent: contentAfterCursor, timestamp: Date.now() });
     onRefreshPage();
     setFocusBlockIndex(idx + 1);
   };
@@ -162,8 +190,10 @@ export default function PageView({
   const handleBackspaceAtStart = async (blockId: string, content: string) => {
     const idx = blocks.findIndex(b => b.id === blockId);
     if (idx <= 0) return; // Can't merge first block
+    const block = blocks[idx];
     const prevBlock = blocks[idx - 1];
     const mergedContent = prevBlock.content + (content ? "\n" + content : "");
+    undoStack.push({ type: 'delete', blockId, pageId: page.id, deletedBlock: { content: block.content, parentId: block.parent_id, position: block.position }, timestamp: Date.now() });
     await api.updateBlock(prevBlock.id, mergedContent);
     await api.deleteBlock(blockId);
     onRefreshPage();
@@ -385,6 +415,84 @@ export default function PageView({
     return () => window.removeEventListener("keydown", handler);
   }, [zoomedBlockId, blocks]);
 
+  // UX-013: Multi-block selection — shift-click handler
+  const handleShiftClick = useCallback((blockId: string) => {
+    const clickedIdx = filteredVisibleBlocks.findIndex(b => b.id === blockId);
+    if (clickedIdx === -1) return;
+    const anchor = selectionAnchor ?? focusBlockIndex ?? 0;
+    const start = Math.min(anchor, clickedIdx);
+    const end = Math.max(anchor, clickedIdx);
+    const ids = new Set(filteredVisibleBlocks.slice(start, end + 1).map(b => b.id));
+    setSelectedBlockIds(ids);
+    setSelectionAnchor(anchor);
+  }, [filteredVisibleBlocks, selectionAnchor, focusBlockIndex]);
+
+  // UX-013: Block ref click handler — navigate to the block's page
+  const handleBlockRefClick = useCallback((blockId: string) => {
+    // Try to find the block in current page first
+    const localBlock = blocks.find(b => b.id === blockId);
+    if (localBlock) {
+      const idx = filteredVisibleBlocks.findIndex(b => b.id === blockId);
+      if (idx !== -1) {
+        setFocusBlockIndex(idx);
+      }
+      return;
+    }
+    // If not local, try to navigate to the block's page via search
+    api.search(blockId, 1).then(results => {
+      if (results.length > 0) {
+        api.getPageTree(results[0].page_id).then(tree => {
+          onPageLinkClick(tree.page.title);
+        }).catch(() => {});
+      }
+    }).catch(() => {});
+  }, [blocks, filteredVisibleBlocks, onPageLinkClick]);
+
+  // UX-013: Batch operations on multi-block selection
+  const deleteSelected = useCallback(async () => {
+    for (const id of selectedBlockIds) {
+      await api.deleteBlock(id);
+    }
+    setSelectedBlockIds(new Set());
+    setSelectionAnchor(null);
+    onRefreshPage();
+  }, [selectedBlockIds, onRefreshPage]);
+
+  const copySelected = useCallback(() => {
+    const text = filteredVisibleBlocks
+      .filter(b => selectedBlockIds.has(b.id))
+      .map(b => b.content)
+      .join("\n");
+    navigator.clipboard.writeText(text);
+  }, [filteredVisibleBlocks, selectedBlockIds]);
+
+  // UX-013: Keyboard handler for batch operations on selection
+  useEffect(() => {
+    if (selectedBlockIds.size === 0) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Delete" || e.key === "Backspace") {
+        e.preventDefault();
+        deleteSelected();
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key === "c") {
+        e.preventDefault();
+        copySelected();
+      }
+      if (e.key === "Escape") {
+        setSelectedBlockIds(new Set());
+        setSelectionAnchor(null);
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [selectedBlockIds, deleteSelected, copySelected]);
+
+  // Clear multi-block selection when page changes
+  useEffect(() => {
+    setSelectedBlockIds(new Set());
+    setSelectionAnchor(null);
+  }, [page.id]);
+
   return (
     <div className="page-view">
       <div className="main-header">
@@ -538,9 +646,11 @@ export default function PageView({
               block={block}
               depth={blockTreeInfo.getDepth(block.id)}
               dataBlockId={block.id}
+              selected={selectedBlockIds.has(block.id)}
               onUpdate={onUpdateBlock}
               onDelete={onDeleteBlock}
               onPageLinkClick={handlePageLinkClick}
+              onBlockRefClick={handleBlockRefClick}
               onEnter={handleEnter}
               onBackspaceAtStart={handleBackspaceAtStart}
               onArrowUp={handleArrowUp}
@@ -552,6 +662,7 @@ export default function PageView({
               onToggleCollapse={toggleCollapse}
               onZoomIn={() => setZoomedBlockId(block.id)}
               hasChildren={blockTreeInfo.hasChildren(block.id)}
+              onShiftClick={handleShiftClick}
             />
           ))}
 
@@ -563,6 +674,15 @@ export default function PageView({
           )}
         </div>
       </div>
+      {linkPreview && (
+        <LinkPreview
+          pageName={linkPreview.pageName}
+          x={linkPreview.x}
+          y={linkPreview.y}
+          onClose={() => setLinkPreview(null)}
+          onPageClick={onPageLinkClick}
+        />
+      )}
     </div>
   );
 }

@@ -20,6 +20,7 @@ import * as api from "./lib/api";
 import { initTheme, toggleTheme } from "./lib/theme";
 import { loadEnabledSnippets } from "./lib/cssLoader";
 import { isOnboardingComplete, markOnboardingComplete, TUTORIAL_BLOCKS } from "./lib/onboarding";
+import { executeUndo, executeRedo } from "./lib/undoManager";
 
 export default function App() {
   const [activePage, setActivePage] = useState<api.PageTree | null>(null);
@@ -188,11 +189,19 @@ export default function App() {
         const target = e.target as HTMLElement;
         if (!target.closest(".ProseMirror")) {
           e.preventDefault();
-          api.undo().then(() => {
+          executeUndo().then(() => {
             if (activePage) openPage(activePage.page.id);
             refresh();
           });
         }
+      }
+      // Cmd/Ctrl+Shift+Z — redo
+      if ((e.metaKey || e.ctrlKey) && e.key === "z" && e.shiftKey) {
+        e.preventDefault();
+        executeRedo().then(() => {
+          if (activePage) openPage(activePage.page.id);
+          refresh();
+        });
       }
       // Cmd/Ctrl+N — new page
       if ((e.metaKey || e.ctrlKey) && e.key === "n") {

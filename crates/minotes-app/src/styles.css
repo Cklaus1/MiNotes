@@ -2550,3 +2550,49 @@ body.theme-light { /* matches our light theme */ }
 .block-zoom-trigger:hover {
   background: rgba(137, 180, 250, 0.15);
 }
+
+/* ── Link Preview (UX-014) ── */
+
+.link-preview {
+  position: fixed;
+  width: 300px;
+  max-height: 200px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  padding: 10px;
+  z-index: 1000;
+  overflow-y: auto;
+  animation: scale-in 0.1s ease-out;
+}
+
+.link-preview-title {
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--accent);
+  cursor: pointer;
+  margin-bottom: 6px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+.link-preview-title:hover { text-decoration: underline; }
+
+.link-preview-block {
+  font-size: 12px;
+  color: var(--text-secondary);
+  padding: 2px 0;
+  line-height: 1.4;
+}
+
+.link-preview-more {
+  font-size: 11px;
+  color: var(--text-muted);
+  padding-top: 4px;
+}
+
+.link-preview-loading, .link-preview-empty {
+  font-size: 12px;
+  color: var(--text-muted);
+}
