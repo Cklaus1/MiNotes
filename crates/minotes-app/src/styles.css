@@ -179,14 +179,17 @@ body {
 /* Blocks */
 .block-list {
   max-width: 720px;
+  /* Continuous vertical tree line on the left connecting all blocks */
+  border-left: 1px solid var(--border);
+  margin-left: 9px;
+  padding-left: 0;
 }
 
 .block {
-  padding: 6px 0 6px 24px;
+  padding: 5px 0 5px 20px;
   position: relative;
-  min-height: 32px;
+  min-height: 30px;
   border-left: 2px solid transparent;
-  border-radius: 2px;
   transition: background 0.1s, border-color 0.15s;
 }
 
@@ -194,32 +197,49 @@ body {
 .block::before {
   content: "";
   position: absolute;
-  left: 7px;
-  top: 14px;
+  left: 5px;
+  top: 13px;
   width: 6px;
   height: 6px;
   border-radius: 50%;
   background: var(--text-muted);
-  transition: background 0.1s;
+  transition: background 0.15s;
   cursor: pointer;
   z-index: 2;
 }
 
+/* Horizontal connector from tree line to bullet */
+.block::after {
+  content: "";
+  position: absolute;
+  left: -1px;
+  top: 15px;
+  width: 6px;
+  height: 1px;
+  background: var(--border);
+}
+
 /* Hover: subtle background + brighter bullet */
 .block:hover {
-  background: rgba(49, 50, 68, 0.3);
+  background: rgba(49, 50, 68, 0.25);
 }
 
 .block:hover::before {
-  background: var(--text-secondary);
+  background: var(--accent);
+  transform: scale(1.2);
 }
 
-/* Active/focused block: left accent border */
+/* Active/focused block: accent border + bullet */
 .block:focus-within {
   border-left-color: var(--accent);
+  background: rgba(137, 180, 250, 0.05);
 }
 
 .block:focus-within::before {
+  background: var(--accent);
+}
+
+.block:focus-within::after {
   background: var(--accent);
 }
 
@@ -235,7 +255,7 @@ body {
   color: var(--text-primary);
   white-space: pre-wrap;
   outline: none;
-  min-height: 1.6em;
+  min-height: 1.5em;
 }
 
 .block-content:focus {
@@ -247,38 +267,38 @@ body {
   color: var(--text-muted);
 }
 
-/* Indent guides for nested blocks */
-.block[data-depth="1"] { margin-left: 24px; }
-.block[data-depth="2"] { margin-left: 48px; }
-.block[data-depth="3"] { margin-left: 72px; }
-.block[data-depth="4"] { margin-left: 96px; }
+/* Indent levels for nested blocks — each level gets its own tree line */
+.block[data-depth="1"] { margin-left: 22px; border-left-color: transparent; }
+.block[data-depth="2"] { margin-left: 44px; border-left-color: transparent; }
+.block[data-depth="3"] { margin-left: 66px; border-left-color: transparent; }
+.block[data-depth="4"] { margin-left: 88px; border-left-color: transparent; }
 
-/* Vertical indent guide lines */
-.block[data-depth]::after {
-  content: "";
-  position: absolute;
-  left: -12px;
-  top: 0;
-  bottom: 0;
-  width: 1px;
-  background: var(--border);
-  opacity: 0.5;
+/* Nested blocks get their own vertical tree line */
+.block[data-depth="1"],
+.block[data-depth="2"],
+.block[data-depth="3"],
+.block[data-depth="4"] {
+  box-shadow: -22px 0 0 -10.5px var(--border);
 }
 
-.block[data-depth="2"]::after { left: -12px; }
-.block[data-depth="3"]::after {
-  left: -12px;
-  box-shadow: -24px 0 0 0 rgba(69, 71, 90, 0.5);
+/* Additional tree lines for deeper levels */
+.block[data-depth="2"] {
+  box-shadow:
+    -22px 0 0 -10.5px var(--border),
+    -44px 0 0 -10.5px var(--border);
 }
-.block[data-depth="4"]::after {
-  left: -12px;
-  box-shadow: -24px 0 0 0 rgba(69, 71, 90, 0.5), -48px 0 0 0 rgba(69, 71, 90, 0.5);
+.block[data-depth="3"] {
+  box-shadow:
+    -22px 0 0 -10.5px var(--border),
+    -44px 0 0 -10.5px var(--border),
+    -66px 0 0 -10.5px var(--border);
 }
-
-/* Hide guide on root level blocks */
-.block:not([data-depth])::after,
-.block[data-depth="0"]::after {
-  display: none;
+.block[data-depth="4"] {
+  box-shadow:
+    -22px 0 0 -10.5px var(--border),
+    -44px 0 0 -10.5px var(--border),
+    -66px 0 0 -10.5px var(--border),
+    -88px 0 0 -10.5px var(--border);
 }
 
 /* Collapse toggle for parent blocks */
