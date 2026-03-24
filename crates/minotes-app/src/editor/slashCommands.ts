@@ -10,56 +10,81 @@ const COMMANDS: SlashMenuItem[] = [
     title: "Heading 1",
     description: "Large heading",
     command: ({ editor, range }) => {
-      editor.chain().focus().deleteRange(range).setHeading({ level: 1 }).run();
+      editor.chain().focus().deleteRange(range).run();
+      // Small delay to let the deletion settle, then apply heading
+      setTimeout(() => {
+        editor.chain().focus().setHeading({ level: 1 }).run();
+      }, 10);
     },
   },
   {
     title: "Heading 2",
     description: "Medium heading",
     command: ({ editor, range }) => {
-      editor.chain().focus().deleteRange(range).setHeading({ level: 2 }).run();
+      editor.chain().focus().deleteRange(range).run();
+      setTimeout(() => {
+        editor.chain().focus().setHeading({ level: 2 }).run();
+      }, 10);
     },
   },
   {
     title: "Heading 3",
     description: "Small heading",
     command: ({ editor, range }) => {
-      editor.chain().focus().deleteRange(range).setHeading({ level: 3 }).run();
+      editor.chain().focus().deleteRange(range).run();
+      setTimeout(() => {
+        editor.chain().focus().setHeading({ level: 3 }).run();
+      }, 10);
     },
   },
   {
     title: "Bullet List",
     description: "Start a list",
     command: ({ editor, range }) => {
-      editor.chain().focus().deleteRange(range).toggleBulletList().run();
+      editor.chain().focus().deleteRange(range).run();
+      setTimeout(() => {
+        editor.chain().focus().toggleBulletList().run();
+      }, 10);
     },
   },
   {
     title: "Task List",
     description: "Checklist",
     command: ({ editor, range }) => {
-      editor.chain().focus().deleteRange(range).toggleTaskList().run();
+      editor.chain().focus().deleteRange(range).run();
+      setTimeout(() => {
+        editor.chain().focus().toggleTaskList().run();
+      }, 10);
     },
   },
   {
     title: "Code Block",
     description: "Code snippet",
     command: ({ editor, range }) => {
-      editor.chain().focus().deleteRange(range).toggleCodeBlock().run();
+      editor.chain().focus().deleteRange(range).run();
+      setTimeout(() => {
+        editor.chain().focus().toggleCodeBlock().run();
+      }, 10);
     },
   },
   {
     title: "Blockquote",
     description: "Quote",
     command: ({ editor, range }) => {
-      editor.chain().focus().deleteRange(range).toggleBlockquote().run();
+      editor.chain().focus().deleteRange(range).run();
+      setTimeout(() => {
+        editor.chain().focus().toggleBlockquote().run();
+      }, 10);
     },
   },
   {
     title: "Divider",
     description: "Horizontal line",
     command: ({ editor, range }) => {
-      editor.chain().focus().deleteRange(range).setHorizontalRule().run();
+      editor.chain().focus().deleteRange(range).run();
+      setTimeout(() => {
+        editor.chain().focus().setHorizontalRule().run();
+      }, 10);
     },
   },
 ];
