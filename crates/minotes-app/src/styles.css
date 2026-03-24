@@ -316,40 +316,6 @@ body {
   color: var(--text-muted);
 }
 
-/* Indent levels for nested blocks — each level gets its own tree line */
-.block[data-depth="1"] { margin-left: 22px; border-left-color: transparent; }
-.block[data-depth="2"] { margin-left: 44px; border-left-color: transparent; }
-.block[data-depth="3"] { margin-left: 66px; border-left-color: transparent; }
-.block[data-depth="4"] { margin-left: 88px; border-left-color: transparent; }
-
-/* Nested blocks get their own vertical tree line */
-.block[data-depth="1"],
-.block[data-depth="2"],
-.block[data-depth="3"],
-.block[data-depth="4"] {
-  box-shadow: -22px 0 0 -10.5px var(--border);
-}
-
-/* Additional tree lines for deeper levels */
-.block[data-depth="2"] {
-  box-shadow:
-    -22px 0 0 -10.5px var(--border),
-    -44px 0 0 -10.5px var(--border);
-}
-.block[data-depth="3"] {
-  box-shadow:
-    -22px 0 0 -10.5px var(--border),
-    -44px 0 0 -10.5px var(--border),
-    -66px 0 0 -10.5px var(--border);
-}
-.block[data-depth="4"] {
-  box-shadow:
-    -22px 0 0 -10.5px var(--border),
-    -44px 0 0 -10.5px var(--border),
-    -66px 0 0 -10.5px var(--border),
-    -88px 0 0 -10.5px var(--border);
-}
-
 /* Collapse toggle for parent blocks */
 .block-collapse {
   position: absolute;
