@@ -1,4 +1,27 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke as tauriInvoke } from "@tauri-apps/api/core";
+import { mockHandlers } from "./mockBackend";
+
+// Detect if we're running inside Tauri or in a regular browser
+const isTauri = !!(window as any).__TAURI_INTERNALS__;
+
+// Unified invoke: uses Tauri when available, mock backend otherwise
+async function invoke<T>(command: string, args?: Record<string, any>): Promise<T> {
+  if (isTauri) {
+    return tauriInvoke<T>(command, args);
+  }
+  // Mock backend
+  const handler = mockHandlers[command];
+  if (!handler) {
+    console.warn(`[mock] No handler for command: ${command}`);
+    return undefined as any;
+  }
+  try {
+    const result = handler(args ?? {});
+    return result as T;
+  } catch (e: any) {
+    throw e.message ?? String(e);
+  }
+}
 
 export interface Page {
   id: string;

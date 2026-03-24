@@ -1,0 +1,396 @@
+/**
+ * Mock backend for testing MiNotes in a regular browser (outside Tauri).
+ *
+ * Provides an in-memory store with realistic test data.
+ * Activates automatically when Tauri's invoke() is not available.
+ */
+
+import type {
+  Page, Block, PageTree, Link, GraphStats, Property,
+  FolderTreeRoot, QueryResult, GraphData,
+} from "./api";
+
+// ── In-memory store ──
+
+const now = new Date().toISOString();
+const today = new Date().toISOString().slice(0, 10);
+
+let nextId = 100;
+function genId(): string {
+  return `mock-${++nextId}-${Date.now().toString(36)}`;
+}
+
+const pages: Map<string, Page> = new Map();
+const blocks: Map<string, Block> = new Map();
+const properties: Map<string, Property[]> = new Map();
+
+// ── Seed test data ──
+
+function seedData() {
+  // Journal page
+  const journalId = genId();
+  pages.set(journalId, {
+    id: journalId,
+    title: `Journal/${today}`,
+    position: 1,
+    is_journal: true,
+    journal_date: today,
+    created_at: now,
+    updated_at: now,
+  });
+
+  const jb1 = genId();
+  blocks.set(jb1, {
+    id: jb1, page_id: journalId, position: 1,
+    content: "Welcome to today's journal. Start typing here.",
+    format: "markdown", collapsed: false, created_at: now, updated_at: now,
+  });
+
+  // Getting Started page
+  const gsId = genId();
+  pages.set(gsId, {
+    id: gsId, title: "Getting Started", position: 2,
+    is_journal: false, created_at: now, updated_at: now,
+  });
+
+  const tutorialBlocks = [
+    "This is a block. Press **Enter** to create a new one below.",
+    "Type **[[** to link to another page. Try [[Project Alpha]]",
+    "Press **/** for slash commands — headings, lists, code blocks.",
+    "Press **Ctrl+Enter** to cycle: TODO → DOING → DONE",
+    "Use **Ctrl+K** to search, or type **>** for commands.",
+    "Press **Ctrl+J** to jump to today's journal.",
+    "Press **Ctrl+,** for Settings. You're ready to go!",
+  ];
+
+  tutorialBlocks.forEach((content, i) => {
+    const bid = genId();
+    blocks.set(bid, {
+      id: bid, page_id: gsId, position: i + 1,
+      content, format: "markdown", collapsed: false,
+      created_at: now, updated_at: now,
+    });
+  });
+
+  // Project Alpha page
+  const paId = genId();
+  pages.set(paId, {
+    id: paId, title: "Project Alpha", position: 3,
+    is_journal: false, created_at: now, updated_at: now,
+  });
+
+  const projectBlocks = [
+    "# Project Alpha",
+    "This is a sample project page with nested blocks.",
+    "## Tasks",
+    "TODO Review the PRD document",
+    "DOING Build the frontend components",
+    "DONE Set up the development environment",
+    "## Notes",
+    "The architecture uses Rust + TypeScript with Tauri 2.",
+    "Key insight: blocks are the fundamental unit of content.",
+  ];
+
+  let parentId: string | undefined;
+  projectBlocks.forEach((content, i) => {
+    const bid = genId();
+    // Nest "TODO/DOING/DONE" blocks under "Tasks"
+    const isTask = content.startsWith("TODO") || content.startsWith("DOING") || content.startsWith("DONE");
+    const isNote = i >= 7;
+    blocks.set(bid, {
+      id: bid, page_id: paId, position: i + 1,
+      parent_id: isTask ? parentId : isNote && i > 7 ? parentId : undefined,
+      content, format: "markdown", collapsed: false,
+      created_at: now, updated_at: now,
+    });
+    if (content === "## Tasks" || content === "## Notes") parentId = bid;
+  });
+
+  // Research Notes page
+  const rnId = genId();
+  pages.set(rnId, {
+    id: rnId, title: "Research Notes", position: 4,
+    is_journal: false, created_at: now, updated_at: now,
+  });
+
+  ["Exploring local-first architectures for note-taking apps.",
+   "Key reference: [[Project Alpha]] for implementation details.",
+   "CRDT sync is the future of collaborative editing.",
+   "- [ ] Read the Automerge paper",
+   "- [x] Review Logseq's outliner model",
+  ].forEach((content, i) => {
+    const bid = genId();
+    blocks.set(bid, {
+      id: bid, page_id: rnId, position: i + 1,
+      content, format: "markdown", collapsed: false,
+      created_at: now, updated_at: now,
+    });
+  });
+}
+
+seedData();
+
+// ── Helper functions ──
+
+function getPageBlocks(pageId: string): Block[] {
+  return Array.from(blocks.values())
+    .filter(b => b.page_id === pageId)
+    .sort((a, b) => a.position - b.position);
+}
+
+function findPage(titleOrId: string): Page | undefined {
+  return pages.get(titleOrId) ??
+    Array.from(pages.values()).find(p => p.title === titleOrId);
+}
+
+// ── Mock API handlers ──
+
+export const mockHandlers: Record<string, (args: any) => any> = {
+  list_pages: ({ limit }: { limit?: number }) => {
+    const all = Array.from(pages.values()).sort((a, b) => a.position - b.position);
+    return all.slice(0, limit ?? 100);
+  },
+
+  get_page_tree: ({ titleOrId }: { titleOrId: string }) => {
+    const page = findPage(titleOrId);
+    if (!page) throw new Error(`Page not found: ${titleOrId}`);
+    return { page, blocks: getPageBlocks(page.id) };
+  },
+
+  create_page: ({ title }: { title: string }) => {
+    const existing = Array.from(pages.values()).find(p => p.title === title);
+    if (existing) throw new Error(`Page '${title}' already exists`);
+    const id = genId();
+    const page: Page = {
+      id, title, position: pages.size + 1,
+      is_journal: false, created_at: now, updated_at: now,
+    };
+    pages.set(id, page);
+    return page;
+  },
+
+  delete_page: ({ id }: { id: string }) => {
+    pages.delete(id);
+    for (const [bid, block] of blocks) {
+      if (block.page_id === id) blocks.delete(bid);
+    }
+    return true;
+  },
+
+  rename_page: ({ id, newTitle }: { id: string; newTitle: string }) => {
+    const page = pages.get(id);
+    if (!page) throw new Error("Page not found");
+    page.title = newTitle;
+    page.updated_at = new Date().toISOString();
+    return page;
+  },
+
+  create_block: ({ pageId, content, parentId }: { pageId: string; content: string; parentId?: string }) => {
+    const id = genId();
+    const siblings = getPageBlocks(pageId);
+    const maxPos = siblings.length > 0 ? Math.max(...siblings.map(b => b.position)) : 0;
+    const block: Block = {
+      id, page_id: pageId, parent_id: parentId,
+      position: maxPos + 1, content: content ?? "",
+      format: "markdown", collapsed: false,
+      created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+    };
+    blocks.set(id, block);
+    return block;
+  },
+
+  update_block: ({ id, content }: { id: string; content: string }) => {
+    const block = blocks.get(id);
+    if (!block) throw new Error("Block not found");
+    block.content = content;
+    block.updated_at = new Date().toISOString();
+    return block;
+  },
+
+  delete_block: ({ id }: { id: string }) => {
+    blocks.delete(id);
+    return true;
+  },
+
+  move_block: ({ id, newParent, position }: { id: string; newParent: string; position: number }) => {
+    const block = blocks.get(id);
+    if (!block) throw new Error("Block not found");
+    block.parent_id = newParent;
+    block.position = position;
+    return block;
+  },
+
+  reparent_block: ({ id, parentId }: { id: string; parentId?: string }) => {
+    const block = blocks.get(id);
+    if (!block) throw new Error("Block not found");
+    block.parent_id = parentId;
+    return block;
+  },
+
+  search_blocks: ({ query, limit }: { query: string; limit?: number }) => {
+    const q = query.toLowerCase();
+    return Array.from(blocks.values())
+      .filter(b => b.content.toLowerCase().includes(q))
+      .slice(0, limit ?? 20);
+  },
+
+  get_backlinks: ({ pageId }: { pageId: string }) => {
+    return [] as Link[];
+  },
+
+  get_unlinked_references: ({ pageId }: { pageId: string }) => {
+    return [] as Block[];
+  },
+
+  get_graph_stats: () => {
+    return {
+      pages: pages.size,
+      blocks: blocks.size,
+      links: 0,
+      properties: 0,
+      events: 0,
+      orphan_pages: 0,
+      journal_pages: Array.from(pages.values()).filter(p => p.is_journal).length,
+    } as GraphStats;
+  },
+
+  get_graph_data: () => {
+    return {
+      nodes: Array.from(pages.values()).map(p => ({
+        id: p.id, title: p.title,
+        block_count: getPageBlocks(p.id).length,
+        link_count: 0,
+      })),
+      edges: [],
+    } as GraphData;
+  },
+
+  run_query: ({ sql }: { sql: string }) => {
+    return { columns: ["info"], rows: [{ info: "Mock backend — SQL not supported" }] } as QueryResult;
+  },
+
+  get_journal: ({ date }: { date?: string }) => {
+    const d = date ?? today;
+    const title = `Journal/${d}`;
+    let page = Array.from(pages.values()).find(p => p.title === title);
+    if (!page) {
+      const id = genId();
+      page = {
+        id, title, position: pages.size + 1,
+        is_journal: true, journal_date: d,
+        created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+      };
+      pages.set(id, page);
+      // Auto-create one empty block
+      const bid = genId();
+      blocks.set(bid, {
+        id: bid, page_id: id, position: 1,
+        content: "", format: "markdown", collapsed: false,
+        created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+      });
+    }
+    return { page, blocks: getPageBlocks(page.id) };
+  },
+
+  get_folder_tree: () => {
+    const rootPages = Array.from(pages.values())
+      .filter(p => !p.folder_id && !p.is_journal)
+      .sort((a, b) => a.position - b.position);
+    return { folders: [], root_pages: rootPages } as FolderTreeRoot;
+  },
+
+  create_folder: ({ name }: { name: string }) => {
+    return { id: genId(), name, position: 0, collapsed: false, created_at: now, updated_at: now };
+  },
+
+  move_page_to_folder: ({ pageId, folderId }: { pageId: string; folderId?: string }) => {
+    const page = pages.get(pageId);
+    if (!page) throw new Error("Page not found");
+    page.folder_id = folderId;
+    return page;
+  },
+
+  reorder_page: ({ id, newPosition }: { id: string; newPosition: number }) => {
+    const page = pages.get(id);
+    if (!page) throw new Error("Page not found");
+    page.position = newPosition;
+    return page;
+  },
+
+  delete_folder: () => true,
+
+  set_property: ({ entityId, entityType, key, value, valueType }: any) => {
+    const prop: Property = {
+      id: genId(), entity_id: entityId, entity_type: entityType,
+      key, value, value_type: valueType ?? "text",
+      created_at: now, updated_at: now,
+    };
+    const existing = properties.get(entityId) ?? [];
+    const idx = existing.findIndex(p => p.key === key);
+    if (idx >= 0) existing[idx] = prop; else existing.push(prop);
+    properties.set(entityId, existing);
+    return prop;
+  },
+
+  get_properties: ({ entityId }: { entityId: string }) => {
+    return properties.get(entityId) ?? [];
+  },
+
+  get_inherited_properties: ({ blockId }: { blockId: string }) => {
+    return properties.get(blockId) ?? [];
+  },
+
+  delete_property: ({ entityId, key }: { entityId: string; key: string }) => {
+    const existing = properties.get(entityId) ?? [];
+    properties.set(entityId, existing.filter(p => p.key !== key));
+    return true;
+  },
+
+  // Stubs for features that don't need full mock
+  add_favorite: () => {},
+  remove_favorite: () => true,
+  list_favorites: () => [],
+  add_alias: () => {},
+  remove_alias: () => true,
+  get_aliases: () => [],
+  create_template: () => ({ id: genId(), name: "", content: "", created_at: now, updated_at: now }),
+  list_templates: () => [],
+  apply_template: () => [],
+  delete_template: () => true,
+  export_opml: () => "<opml></opml>",
+  export_json: () => ({ pages: [] }),
+  publish_site: () => [],
+  list_plugins: () => [],
+  register_plugin: () => ({ id: genId(), name: "", version: "0.1.0", enabled: true, created_at: now, updated_at: now }),
+  enable_plugin: () => ({ id: "", name: "", version: "", enabled: true, created_at: now, updated_at: now }),
+  disable_plugin: () => ({ id: "", name: "", version: "", enabled: false, created_at: now, updated_at: now }),
+  uninstall_plugin: () => true,
+  create_card: () => ({ id: genId(), block_id: "", card_type: "basic", due: now, stability: 0, difficulty: 0, reps: 0, lapses: 0, state: "new", created_at: now, updated_at: now }),
+  get_due_cards: () => [],
+  review_card: () => ({ id: "", block_id: "", card_type: "basic", due: now, stability: 0, difficulty: 0, reps: 0, lapses: 0, state: "review", created_at: now, updated_at: now }),
+  get_srs_stats: () => ({ due_count: 0, reviewed_today: 0, total_cards: 0 }),
+  delete_card: () => true,
+  list_graphs: () => [],
+  switch_graph: () => true,
+  create_graph_cmd: () => ({ name: "default", path: "", size_bytes: 0, modified_at: now }),
+  delete_graph_cmd: () => true,
+  get_current_graph: () => "default",
+  clip_content: () => ({ id: genId(), title: "", position: 0, is_journal: false, created_at: now, updated_at: now }),
+  create_highlight: () => ({ id: genId(), pdf_path: "", page_num: 0, x: 0, y: 0, width: 0, height: 0, color: "yellow", created_at: now, updated_at: now }),
+  get_highlights: () => [],
+  update_highlight_note: () => ({ id: "", pdf_path: "", page_num: 0, x: 0, y: 0, width: 0, height: 0, color: "yellow", created_at: now, updated_at: now }),
+  delete_highlight: () => true,
+  search_highlights: () => [],
+  undo: () => null,
+  get_sync_status: () => ({ total_pages: 0, synced_pages: 0, pending_changes: 0 }),
+  sync_page: () => [],
+  get_version_history: () => [],
+  restore_version: () => {},
+  plugin_storage_get: () => null,
+  plugin_storage_set: () => {},
+  add_css_snippet: () => ({ id: genId(), name: "", css: "", enabled: true, source: "custom", created_at: now }),
+  list_css_snippets: () => [],
+  toggle_css_snippet: () => ({ id: "", name: "", css: "", enabled: true, source: "custom", created_at: now }),
+  delete_css_snippet: () => true,
+  get_enabled_css_snippets: () => [],
+};
