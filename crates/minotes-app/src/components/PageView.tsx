@@ -73,9 +73,15 @@ export default function PageView({
 
   // Execute focus when focusBlockIndex changes
   useEffect(() => {
-    if (focusBlockIndex !== null && blockRefs.current[focusBlockIndex]) {
-      blockRefs.current[focusBlockIndex]?.focus();
-      setFocusBlockIndex(null);
+    if (focusBlockIndex !== null) {
+      // Small delay to ensure refs are mounted after render
+      const timer = setTimeout(() => {
+        if (blockRefs.current[focusBlockIndex]) {
+          blockRefs.current[focusBlockIndex]?.focus();
+        }
+        setFocusBlockIndex(null);
+      }, 30);
+      return () => clearTimeout(timer);
     }
   }, [focusBlockIndex, blocks]);
 
@@ -176,8 +182,9 @@ export default function PageView({
 
     const newBlock = await api.createBlock(page.id, contentAfterCursor);
     undoStack.push({ type: 'create', blockId: newBlock.id, pageId: page.id, newContent: contentAfterCursor, timestamp: Date.now() });
-    onRefreshPage();
-    setFocusBlockIndex(idx + 1);
+    await onRefreshPage();
+    // Set focus after refresh so the new block's ref exists
+    setTimeout(() => setFocusBlockIndex(idx + 1), 50);
   };
 
   const handleBackspaceAtStart = async (blockId: string, content: string) => {
