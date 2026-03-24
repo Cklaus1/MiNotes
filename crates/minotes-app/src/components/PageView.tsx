@@ -169,18 +169,11 @@ export default function PageView({
   const handleEnter = async (blockId: string, contentAfterCursor: string) => {
     const idx = blocks.findIndex(b => b.id === blockId);
     if (idx === -1) return;
-    const currentBlock = blocks[idx];
 
-    // If there's content after the cursor, update the current block to remove it
-    if (contentAfterCursor) {
-      const contentBefore = currentBlock.content.slice(
-        0,
-        currentBlock.content.length - contentAfterCursor.length,
-      );
-      await api.updateBlock(blockId, contentBefore);
-    }
+    // NOTE: The current block is already saved by useBlockEditor's Enter handler
+    // (it calls onSave with the before-cursor content). We only need to create
+    // the new block with the after-cursor content.
 
-    // Create new block with the split content
     const newBlock = await api.createBlock(page.id, contentAfterCursor);
     undoStack.push({ type: 'create', blockId: newBlock.id, pageId: page.id, newContent: contentAfterCursor, timestamp: Date.now() });
     onRefreshPage();

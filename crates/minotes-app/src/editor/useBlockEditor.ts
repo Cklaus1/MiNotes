@@ -137,20 +137,31 @@ export function useBlockEditor({
 
           event.preventDefault();
 
-          // Get markdown content after cursor by slicing the doc
           const from = state.selection.from;
-          const docEnd = state.doc.content.size - 1; // -1 for the closing paragraph tag
+          const docEnd = state.doc.content.size - 1;
 
-          // Extract text after cursor from the current editor state
+          // Get text BEFORE cursor (stays in current block)
+          const contentBeforeCursor = from > 1
+            ? state.doc.textBetween(1, from, "\n", "")
+            : "";
+
+          // Get text AFTER cursor (goes to new block)
           let contentAfterCursor = "";
           if (from < docEnd) {
-            // Get the text content from cursor to end
             contentAfterCursor = state.doc.textBetween(from, docEnd, "\n", "");
-            // Delete everything after cursor
+          }
+
+          // Save the current block with only the before-cursor content
+          contentRef.current = contentBeforeCursor.trim(); // Prevent blur from re-saving
+          onSaveRef.current(contentBeforeCursor.trim());
+
+          // Update the editor display to match
+          if (from < docEnd) {
             const tr = state.tr.delete(from, docEnd);
             view.dispatch(tr);
           }
 
+          // Create new block with the after-cursor content
           onEnterRef.current(contentAfterCursor);
           return true;
         }
