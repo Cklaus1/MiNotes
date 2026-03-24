@@ -18,6 +18,7 @@ interface Props {
   block: Block;
   depth?: number;
   hasChildren?: boolean;
+  isLastSibling?: boolean;
   dataBlockId?: string;
   selected?: boolean;
   onUpdate: (id: string, content: string) => void;
@@ -38,7 +39,7 @@ interface Props {
 }
 
 const BlockItem = forwardRef<BlockItemHandle, Props>(({
-  block, depth = 0, hasChildren = false, dataBlockId, selected = false, onUpdate, onDelete, onPageLinkClick,
+  block, depth = 0, hasChildren = false, isLastSibling = false, dataBlockId, selected = false, onUpdate, onDelete, onPageLinkClick,
   onBlockRefClick, onEnter, onBackspaceAtStart, onArrowUp, onArrowDown, onPasteMultiline,
   onIndent, onOutdent, onDuplicate, onToggleCollapse, onZoomIn, onShiftClick,
 }, ref) => {
@@ -170,6 +171,7 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
     <div
       className={`block${selected ? " selected" : ""}`}
       data-depth={depth > 0 ? String(depth) : undefined}
+      data-tree-last={isLastSibling ? "true" : undefined}
       data-block-id={dataBlockId ?? block.id}
       onContextMenu={handleContextMenu}
       onClick={(e) => {

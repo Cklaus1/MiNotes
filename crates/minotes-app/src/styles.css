@@ -256,21 +256,29 @@ body {
   padding-left: 0;
 }
 
-/* ├── connector shape */
+/*
+ * ├── middle sibling: vertical runs full height + horizontal branch
+ * └── last sibling: vertical stops at branch, no continuation
+ *
+ * Controlled by data-tree-last attribute from React (not CSS :last-child,
+ * which can't know about logical tree siblings vs DOM siblings).
+ */
+
+/* ├── connector (default: middle sibling) */
 .block-list.tree-mode .block::before {
   content: "";
   position: absolute;
   left: 0;
   top: 0;
-  width: 12px;            /* horizontal arm length */
-  height: 16px;           /* vertical: top of block to branch point */
+  width: 14px;
+  height: 16px;
   border-left: 1px solid rgba(255, 255, 255, 0.25);
   border-bottom: 1px solid rgba(255, 255, 255, 0.25);
   border-radius: 0 0 0 4px;
   background: none;
 }
 
-/* │ vertical continuation below the branch */
+/* │ continuation below (default: middle sibling) */
 .block-list.tree-mode .block::after {
   content: "";
   position: absolute;
@@ -281,22 +289,14 @@ body {
   border-left: 1px solid rgba(255, 255, 255, 0.25);
 }
 
-/* └── last child: vertical stops at branch (no ::after) */
-.block-list.tree-mode .block:last-child::after {
+/* └── last sibling: no vertical continuation below */
+.block-list.tree-mode .block[data-tree-last]::after {
   display: none;
 }
 
-/* ── only child: horizontal arm only */
-.block-list.tree-mode .block:only-child::before {
-  border-left: none;
-  border-radius: 0;
-  top: 15px;
-  height: 0;
-  width: 12px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.25);
-}
-.block-list.tree-mode .block:only-child::after {
-  display: none;
+/* Breathing room: wider indent per level */
+.block-list.tree-mode .block {
+  padding: 6px 4px 6px 18px;  /* 14px arm + 4px gap */
 }
 
 /* ── Active path ── */
@@ -329,11 +329,29 @@ body {
   border-left-color: rgba(255, 255, 255, 0.4);
 }
 
-/* ── Tree indent levels ── */
+/* ── Tree indent levels (18px per level for scanability) ── */
 .block-list.tree-mode .block[data-depth="1"] { margin-left: 18px; }
 .block-list.tree-mode .block[data-depth="2"] { margin-left: 36px; }
 .block-list.tree-mode .block[data-depth="3"] { margin-left: 54px; }
 .block-list.tree-mode .block[data-depth="4"] { margin-left: 72px; }
+
+/* Depth-based opacity: deeper = fainter */
+.block-list.tree-mode .block[data-depth="1"]::before,
+.block-list.tree-mode .block[data-depth="1"]::after {
+  opacity: 0.85;
+}
+.block-list.tree-mode .block[data-depth="2"]::before,
+.block-list.tree-mode .block[data-depth="2"]::after {
+  opacity: 0.65;
+}
+.block-list.tree-mode .block[data-depth="3"]::before,
+.block-list.tree-mode .block[data-depth="3"]::after {
+  opacity: 0.45;
+}
+.block-list.tree-mode .block[data-depth="4"]::before,
+.block-list.tree-mode .block[data-depth="4"]::after {
+  opacity: 0.3;
+}
 
 /* ── Light mode ── */
 [data-theme="light"] .block-list.tree-mode .block::before {

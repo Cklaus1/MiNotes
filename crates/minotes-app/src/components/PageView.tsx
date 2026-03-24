@@ -333,6 +333,13 @@ export default function PageView({
     return {
       getDepth: (id: string) => depthMap.get(id) ?? 0,
       hasChildren: (id: string) => (childrenMap.get(id) ?? []).length > 0,
+      isLastSibling: (id: string) => {
+        const block = blocks.find(b => b.id === id);
+        if (!block) return true;
+        const parentKey = block.parent_id ?? "__root__";
+        const siblings = childrenMap.get(parentKey) ?? [];
+        return siblings[siblings.length - 1] === id;
+      },
       isHiddenByCollapse: (id: string) => {
         // Walk up the parent chain; if any ancestor is collapsed, this block is hidden
         let current = blocks.find(b => b.id === id);
@@ -680,6 +687,7 @@ export default function PageView({
               onToggleCollapse={toggleCollapse}
               onZoomIn={() => setZoomedBlockId(block.id)}
               hasChildren={blockTreeInfo.hasChildren(block.id)}
+              isLastSibling={blockTreeInfo.isLastSibling(block.id)}
               onShiftClick={handleShiftClick}
             />
           ))}
