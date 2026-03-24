@@ -268,27 +268,208 @@ This PRD addresses these gaps to make MiNotes feel as fluid as Logseq while avoi
 
 ---
 
-## Priority Order
+---
+
+## UX-011: `[[` Page Link Autocomplete
+
+**Current:** Type `[[Page Name]]` manually. The WikiLink TipTap node converts it to a chip after typing `]]`.
+**Target:** Typing `[[` opens an instant dropdown listing existing pages, filtering as you type.
+
+### Behavior
+
+- Type `[[` → dropdown appears immediately below cursor
+- Shows top 8 matching pages, filtered in real-time
+- Arrow keys navigate, Enter selects and inserts `[[PageName]]` as a WikiLink node
+- If no match: Enter creates a new page with that name and inserts the link
+- Escape dismisses the dropdown
+- Tab accepts the top suggestion
+
+### Logseq's mistake to avoid
+- Logseq's `#` autocomplete breaks on multi-word tags. Our implementation should handle spaces naturally since we use `[[...]]` for all links.
+
+### Implementation
+- TipTap suggestion plugin (same pattern as slash commands) triggered by `[[`
+- Fetch page list from `api.listPages()`, filter client-side
+- On select: insert WikiLink node, close brackets
+
+---
+
+## UX-012: Smart Paste
+
+**Current:** Paste inserts raw text into the current block.
+**Target:** Multi-line paste splits into separate blocks. Code paste stays in one block.
+
+### Behavior
+
+| Paste content | Result |
+|--------------|--------|
+| Single line | Insert into current block |
+| Multiple lines (paragraphs) | Each paragraph becomes a new block |
+| Indented text | Preserves hierarchy (indented lines become child blocks) |
+| Code fence (triple backtick) | Paste as single code block, don't split |
+| HTML from web page | Convert to markdown, then apply above rules |
+
+### Logseq's mistake to avoid
+- Logseq can't paste into code blocks (lines become separate blocks). We should detect when cursor is in a code block and paste as-is.
+
+---
+
+## UX-013: Multi-Block Selection
+
+**Current:** No block selection. Must interact with one block at a time.
+**Target:** Shift+Click or Shift+Arrow selects consecutive blocks for batch operations.
+
+### Behavior
+
+- `Shift+Up/Down` in block selection mode: extend selection
+- `Shift+Click` on a block: select range from focused block to clicked block
+- Selected blocks: blue highlight background
+- Operations on selection: Delete, Copy, Cut, Tab (indent all), Shift+Tab (outdent all)
+- `Escape` clears selection
+
+---
+
+## UX-014: Link Preview on Hover
+
+**Current:** Clicking a [[wiki link]] navigates to the page.
+**Target:** Ctrl+Hover over a link shows a floating preview of the linked page's first few blocks.
+
+### Behavior
+
+- Hover alone: just underline highlight (no popup, avoids accidental triggers)
+- Ctrl+Hover: after 200ms, show a floating card with page title + first 5 blocks
+- Click: navigate (existing behavior)
+- Shift+Click: open in right sidebar (UX-005)
+- Preview card: 300px wide, max 200px tall, scrollable, dark theme
+
+### Logseq's mistake to avoid
+- Logseq's always-on hover with 2s delay causes accidental popups while scrolling. Require Ctrl modifier.
+
+---
+
+## UX-015: Block Context Menu
+
+**Current:** Right-click on blocks only works for delete via `confirm()` dialog.
+**Target:** Rich context menu on right-click with common block operations.
+
+### Menu items
+
+- Copy block reference `((uuid))`
+- Copy block content
+- Duplicate block
+- Delete block
+- Add to favorites (if page-level)
+- Create flashcard from this block
+- Set heading level (H1-H4)
+- Add property
+- Move to page... (opens page picker)
+- Open in right sidebar
+
+---
+
+## UX-016: Reliable Undo/Redo
+
+**Current:** Event-based undo on Ctrl+Z, but only for block create/delete at app level.
+**Target:** Global undo stack that works across block boundaries with character-level granularity.
+
+### Behavior
+
+- Ctrl+Z: undo last action (typing, block create, block delete, block merge, indent, property change)
+- Ctrl+Shift+Z: redo
+- Undo history persists for the session (cleared on app close)
+- Works correctly across block boundaries (e.g., undo a merge restores both blocks)
+
+### Logseq's mistake to avoid
+- Logseq's undo is "critically broken" — redo history lost on block change, code blocks deleted by undo, merge undo requires 2 presses. This is their #1 technical debt. Doing undo right would be a major differentiator.
+
+### Implementation
+- Maintain an in-memory undo stack in the frontend (not event-sourced from backend)
+- Each operation pushes an inverse action to the stack
+- TipTap handles within-block undo natively; we handle cross-block operations
+
+---
+
+## UX-017: Onboarding / First-Run Experience
+
+**Current:** EmptyState shows "Welcome to MiNotes" with a create page input.
+**Target:** Interactive first-run walkthrough that teaches the core concepts by doing.
+
+### Flow
+
+1. First launch → auto-create a "Getting Started" page with tutorial blocks
+2. Tutorial blocks teach:
+   - "This is a block. Press Enter to create a new one below."
+   - "Type `[[` to link to another page."
+   - "Press `/` for slash commands."
+   - "Press Ctrl+J to open your journal."
+   - "Press Ctrl+K to search everything."
+3. Each block has a subtle "try it" indicator
+4. After user creates their first block, the tutorial fades and journal becomes the landing page
+5. No modal dialogs, no forced walkthrough — learn by interacting with real content
+
+### Logseq's mistake to avoid
+- Logseq's onboarding is a static document. Users don't learn by reading, they learn by doing. Our tutorial should be blocks the user edits.
+
+---
+
+## UX-018: Subtle Animations
+
+**Current:** No transitions. UI changes are instant.
+**Target:** Minimal, performant animations that add polish without lag.
+
+### Animations
+
+| Element | Animation | Duration |
+|---------|-----------|----------|
+| New block created | Fade in + slight slide down | 150ms |
+| Block deleted | Fade out + collapse height | 150ms |
+| Sidebar open/close | Slide with ease-out | 200ms |
+| Modal panels open | Fade in + scale from 95% | 150ms |
+| Page transition | Fade crossfade | 100ms |
+| Block hover highlight | Fade in background | 100ms |
+| Toast notifications | Slide up + fade in | 200ms |
+
+### Rules
+- All animations respect `prefers-reduced-motion` media query
+- No animation longer than 200ms
+- No animation on scroll or typing (performance critical paths)
+
+---
+
+## Updated Priority Order
 
 | # | Feature | Impact | Effort | Priority |
 |---|---------|--------|--------|----------|
-| UX-001 | Seamless block creation (Enter/Backspace) | Critical | Medium | P0 |
-| UX-004 | Auto-focus on page open | High | Small | P0 |
-| UX-009 | Journal as default landing | High | Small | P0 |
-| UX-003 | Arrow key navigation between blocks | High | Medium | P0 |
-| UX-002 | Block indent/outdent (Tab) | High | Large | P1 |
-| UX-007 | Visual design polish | Medium | Medium | P1 |
-| UX-008 | TODO cycling (Ctrl+Enter) | Medium | Small | P1 |
-| UX-006 | Block zoom (focus mode) | Medium | Medium | P1 |
-| UX-005 | Right sidebar (split view) | Medium | Large | P2 |
-| UX-010 | Inline block references | Medium | Medium | P2 |
+| UX-001 | Seamless block creation (Enter/Backspace) | Critical | Medium | **P0** |
+| UX-004 | Auto-focus on page open | High | Small | **P0** |
+| UX-009 | Journal as default landing | High | Small | **P0** |
+| UX-003 | Arrow key navigation between blocks | High | Medium | **P0** |
+| UX-011 | `[[` page link autocomplete | High | Medium | **P0** |
+| UX-002 | Block indent/outdent (Tab) | High | Large | **P1** |
+| UX-007 | Visual design polish | Medium | Medium | **P1** |
+| UX-008 | TODO cycling (Ctrl+Enter) | Medium | Small | **P1** |
+| UX-016 | Reliable undo/redo | High | Large | **P1** |
+| UX-015 | Block context menu | Medium | Small | **P1** |
+| UX-012 | Smart paste | Medium | Medium | **P1** |
+| UX-006 | Block zoom (focus mode) | Medium | Medium | **P2** |
+| UX-005 | Right sidebar (split view) | Medium | Large | **P2** |
+| UX-010 | Inline block references | Medium | Medium | **P2** |
+| UX-013 | Multi-block selection | Medium | Medium | **P2** |
+| UX-014 | Link preview on hover | Low | Medium | **P2** |
+| UX-017 | Onboarding tutorial | Medium | Medium | **P2** |
+| UX-018 | Subtle animations | Low | Small | **P2** |
 
 ---
 
 ## Anti-Patterns to Avoid (from Logseq)
 
-1. **Don't overload the bullet** — Logseq's bullet handles zoom, drag, collapse, and context menu. Separate these: bullet = zoom, drag handle = drag, triangle = collapse.
+1. **Don't overload the bullet** — Logseq's bullet handles zoom, drag, collapse, and context menu in one tiny target. Separate these: bullet = zoom, drag handle (on hover) = drag, triangle = collapse, right-click = context menu.
 2. **Don't force outliner** — Allow flat blocks without mandatory nesting. Some content is naturally linear.
 3. **Don't make properties verbose** — Logseq's `property:: value` syntax is clunky. Keep our chip-based UI.
-4. **Don't hide the cursor** — Always show where you are. Active block should be visually obvious.
-5. **Don't lag on mobile** — If/when mobile ships, sync before edit, never lose keystrokes.
+4. **Don't hide the cursor** — Always show where you are. Active block should have a visible left-border accent.
+5. **Don't lag on mobile** — Sync before edit, never lose keystrokes.
+6. **Don't break undo** — Logseq's undo is critically broken across block boundaries. Invest in a reliable global undo stack.
+7. **Don't use always-on hover previews** — Require Ctrl+Hover to avoid accidental popups while scrolling.
+8. **Don't paste-split inside code blocks** — Detect code context and paste as-is.
+9. **Don't lose redo history on navigation** — Redo stack should persist until a new action is taken.
+10. **Don't skip onboarding** — An empty journal with no guidance loses new users. Teach by letting them edit real tutorial content.
