@@ -440,7 +440,7 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
                       ?.querySelector("input")
                       ?.focus();
                   }
-                  if (e.key === "Escape") setAddingProp(false);
+                  if (e.key === "Escape") { setAddingProp(false); setNewKey(""); setNewValue(""); }
                 }}
                 autoFocus
               />
@@ -452,10 +452,11 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
                   onChange={e => setNewValue(e.target.value)}
                   onKeyDown={e => {
                     if (e.key === "Enter") handleAddProperty();
-                    if (e.key === "Escape") setAddingProp(false);
+                    if (e.key === "Escape") { setAddingProp(false); setNewKey(""); setNewValue(""); }
                   }}
                 />
               </span>
+              <span className="prop-delete" onClick={() => { setAddingProp(false); setNewKey(""); setNewValue(""); }}>×</span>
             </span>
           )}
         </div>
