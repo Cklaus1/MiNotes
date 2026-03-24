@@ -230,56 +230,73 @@ body {
 .block[data-depth="4"] { margin-left: 80px; }
 
 /* === Full Tree Mode === */
-/* Uses border-left/border-bottom for ├── / └── connectors */
-/* ::before = connector (L-shape or T-shape) */
-/* ::after = not used (freed for future) */
+/*
+ * Node axis = left: 0px (the vertical trunk)
+ * Branch arm = 12px horizontal from trunk to content
+ * All content types (text, list, checkbox) start at the same x
+ *
+ * ::before = connector (vertical + horizontal = ├── or └── shape)
+ * ::after  = vertical continuation below the branch
+ */
 
 .block-list.tree-mode {
-  padding-left: 18px;
+  padding-left: 14px;
 }
 
 .block-list.tree-mode .block {
-  padding: 6px 4px 6px 14px;
+  padding: 6px 4px 6px 14px;  /* 14px = branch arm width + gap */
 }
 
-/* ├── connector: vertical line (full height) + horizontal branch */
-/* Uses border-left for vertical, border-bottom for horizontal arm */
+/* Normalize all content to start at the same node axis */
+.block-list.tree-mode .block .block-content .ProseMirror ul,
+.block-list.tree-mode .block .block-content .ProseMirror ol {
+  padding-left: 1.2em;  /* tighter, aligned */
+}
+.block-list.tree-mode .block .block-content .ProseMirror ul[data-type="taskList"] {
+  padding-left: 0;
+}
+
+/* ├── connector shape */
 .block-list.tree-mode .block::before {
   content: "";
   position: absolute;
   left: 0;
   top: 0;
-  width: 10px;
-  height: 16px;  /* half the block — where the branch connects */
+  width: 12px;            /* horizontal arm length */
+  height: 16px;           /* vertical: top of block to branch point */
   border-left: 1px solid rgba(255, 255, 255, 0.25);
   border-bottom: 1px solid rgba(255, 255, 255, 0.25);
-  border-radius: 0 0 0 3px;  /* slight rounding at corner */
+  border-radius: 0 0 0 4px;
   background: none;
 }
 
-/* Vertical continuation below the branch (│ continues down) */
+/* │ vertical continuation below the branch */
 .block-list.tree-mode .block::after {
   content: "";
   position: absolute;
   left: 0;
-  top: 16px;  /* starts where ::before ends */
+  top: 16px;
   bottom: 0;
   width: 0;
   border-left: 1px solid rgba(255, 255, 255, 0.25);
 }
 
-/* └── Last child: no vertical continuation below */
+/* └── last child: vertical stops at branch (no ::after) */
 .block-list.tree-mode .block:last-child::after {
   display: none;
 }
 
-/* Only child: just the horizontal arm, no vertical */
+/* ── only child: horizontal arm only */
 .block-list.tree-mode .block:only-child::before {
   border-left: none;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.25);
   border-radius: 0;
   top: 15px;
   height: 0;
+  width: 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.25);
+}
+.block-list.tree-mode .block:only-child::after {
+  display: none;
 }
 
 /* ── Active path ── */
