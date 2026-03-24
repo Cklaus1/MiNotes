@@ -191,7 +191,8 @@ export function useBlockEditor({
         }
 
         // ArrowUp on first line — move to previous block
-        if (event.key === "ArrowUp" && onArrowUpRef.current) {
+        // Skip if a suggestion popup is open (slash commands, [[ links, etc.)
+        if (event.key === "ArrowUp" && onArrowUpRef.current && !document.querySelector('.tippy-box')) {
           const { state } = view;
           const { from } = state.selection;
           try {
@@ -231,7 +232,8 @@ export function useBlockEditor({
         }
 
         // ArrowDown on last line — move to next block
-        if (event.key === "ArrowDown" && onArrowDownRef.current) {
+        // Skip if a suggestion popup is open
+        if (event.key === "ArrowDown" && onArrowDownRef.current && !document.querySelector('.tippy-box')) {
           const { state } = view;
           const { from } = state.selection;
           const docEnd = state.doc.content.size - 1;
