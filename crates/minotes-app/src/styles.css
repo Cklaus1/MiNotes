@@ -847,17 +847,21 @@ body {
 }
 
 .prop-add-btn {
+  position: absolute;
+  right: 4px;
+  top: 2px;
   background: none;
   border: none;
   color: var(--text-muted);
   cursor: pointer;
   font-size: 12px;
   padding: 0 4px;
-  opacity: 0;
-  transition: opacity 0.1s;
+  display: none;
+  z-index: 2;
 }
 
 .block:hover > .prop-add-btn {
+  display: block;
   opacity: 0.6;
 }
 
