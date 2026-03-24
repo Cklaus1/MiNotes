@@ -243,7 +243,11 @@ export default function App() {
   // UX-009: Journal as default landing + UX-017: Onboarding tutorial on first launch
   useEffect(() => {
     const init = async () => {
-      await refresh();
+      try {
+        await refresh();
+      } catch (e) {
+        console.error("[init] refresh failed:", e);
+      }
 
       if (!isOnboardingComplete()) {
         try {
@@ -253,13 +257,18 @@ export default function App() {
           }
           markOnboardingComplete();
           await openPage(page.id);
-        } catch {
-          // Page might already exist, just open journal
+          return;
+        } catch (e) {
+          console.error("[init] onboarding failed:", e);
           markOnboardingComplete();
-          await openJournal();
         }
-      } else {
+      }
+
+      try {
         await openJournal();
+      } catch (e) {
+        console.error("[init] openJournal failed:", e);
+        setLastError(`Init failed: ${typeof e === "string" ? e : JSON.stringify(e)}`);
       }
     };
     init();
@@ -279,8 +288,8 @@ export default function App() {
         onSettingsClick={() => setSettingsOpen(prev => !prev)}
         refreshKey={refreshKey}
       />
-      <div className="main workspace-split mod-root" style={{ position: "relative", display: "flex" }}>
-        <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+      <div className="main workspace-split mod-root" style={{ position: "relative", display: "flex", flexDirection: "row" }}>
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }}>
           {lastError && (
             <div style={{ background: "#f38ba8", color: "#1e1e2e", padding: "8px 16px", fontSize: 13, fontWeight: 600 }}>
               {lastError}
