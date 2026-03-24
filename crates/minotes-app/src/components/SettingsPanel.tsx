@@ -38,103 +38,86 @@ export default function SettingsPanel({ open, onClose }: Props) {
           <button className="btn btn-sm" onClick={onClose}>×</button>
         </div>
 
+        {/* Theme row */}
         <div className="settings-section">
-          <div className="settings-section-title">Appearance</div>
-
           <div className="settings-row">
             <div className="settings-row-info">
               <div className="settings-row-name">Theme</div>
-              <div className="settings-row-desc">Switch between dark and light mode.</div>
             </div>
             <select
               className="settings-select"
               value={currentTheme}
               onChange={e => handleThemeChange(e.target.value as "dark" | "light")}
             >
-              <option value="dark">Dark (Catppuccin Mocha)</option>
-              <option value="light">Light (Catppuccin Latte)</option>
+              <option value="dark">Dark</option>
+              <option value="light">Light</option>
             </select>
           </div>
         </div>
 
+        {/* Toggles row — side by side */}
         <div className="settings-section">
-          <div className="settings-section-title">Display</div>
-
-          <div className="settings-row">
-            <div className="settings-row-info">
-              <div className="settings-row-name">Full Tree Mode</div>
-              <div className="settings-row-desc">
-                Show connector lines between blocks. Default is clean document mode.
-              </div>
+          <div className="settings-toggles-row">
+            <div className="settings-toggle-item">
+              <span className="settings-toggle-label">Full Tree Mode</span>
+              <label className="settings-toggle">
+                <input
+                  type="checkbox"
+                  checked={settings.fullTreeMode}
+                  onChange={e => toggle("fullTreeMode", e.target.checked)}
+                />
+                <span className="settings-toggle-slider" />
+              </label>
             </div>
-            <label className="settings-toggle">
-              <input
-                type="checkbox"
-                checked={settings.fullTreeMode}
-                onChange={e => toggle("fullTreeMode", e.target.checked)}
-              />
-              <span className="settings-toggle-slider" />
-            </label>
-          </div>
-        </div>
-
-        <div className="settings-section">
-          <div className="settings-section-title">Editor</div>
-
-          <div className="settings-row">
-            <div className="settings-row-info">
-              <div className="settings-row-name">Obsidian Editor Mode</div>
-              <div className="settings-row-desc">
-                Per-block toggle between rich text and source markdown.
-              </div>
+            <div className="settings-toggle-item">
+              <span className="settings-toggle-label">Obsidian Editor Mode</span>
+              <label className="settings-toggle">
+                <input
+                  type="checkbox"
+                  checked={settings.obsidianEditorEnabled}
+                  onChange={e => toggle("obsidianEditorEnabled", e.target.checked)}
+                />
+                <span className="settings-toggle-slider" />
+              </label>
             </div>
-            <label className="settings-toggle">
-              <input
-                type="checkbox"
-                checked={settings.obsidianEditorEnabled}
-                onChange={e => toggle("obsidianEditorEnabled", e.target.checked)}
-              />
-              <span className="settings-toggle-slider" />
-            </label>
           </div>
 
           {settings.obsidianEditorEnabled && (
-            <div className="settings-row">
+            <div className="settings-row" style={{ marginTop: 8 }}>
               <div className="settings-row-info">
-                <div className="settings-row-name">Default Editor for New Blocks</div>
-                <div className="settings-row-desc">
-                  Which editor to use by default. You can always toggle per block.
-                </div>
+                <div className="settings-row-name" style={{ fontSize: 12 }}>Default Editor</div>
               </div>
               <select
                 className="settings-select"
                 value={settings.defaultEditorMode}
                 onChange={e => toggle("defaultEditorMode", e.target.value)}
               >
-                <option value="minotes">Mi Edit (Rich Text)</option>
-                <option value="obsidian">Obsidian Edit (Source)</option>
+                <option value="minotes">Mi Edit</option>
+                <option value="obsidian">Obsidian Edit</option>
               </select>
             </div>
           )}
         </div>
 
+        {/* Keyboard shortcuts — 2 column */}
         <div className="settings-section">
           <div className="settings-section-title">Keyboard Shortcuts</div>
           <div className="shortcuts-grid">
             {[
-              ["Ctrl+K", "Search / Command Palette"],
-              ["Ctrl+J", "Today's Journal"],
+              ["Ctrl+K", "Search / Commands"],
+              ["Ctrl+J", "Journal"],
               ["Ctrl+N", "New Page"],
-              ["Ctrl+Q", "SQL Query Panel"],
+              ["Ctrl+Q", "SQL Query"],
               ["Ctrl+G", "Graph View"],
-              ["Ctrl+R", "Flashcard Review"],
+              ["Ctrl+R", "Flashcards"],
               ["Ctrl+W", "Whiteboard"],
               ["Ctrl+P", "Open PDF"],
               ["Ctrl+Z", "Undo"],
               ["Ctrl+,", "Settings"],
               ["Ctrl+Shift+T", "Toggle Theme"],
-              ["/", "Slash Commands (in editor)"],
-              ["Esc", "Close Panel / Blur Editor"],
+              ["/", "Slash Commands"],
+              ["Tab", "Indent Block"],
+              ["Esc", "Close / Blur"],
             ].map(([key, desc]) => (
               <div key={key} className="shortcut-row">
                 <kbd className="shortcut-key">{key}</kbd>
@@ -144,15 +127,10 @@ export default function SettingsPanel({ open, onClose }: Props) {
           </div>
         </div>
 
+        {/* About */}
         <div className="settings-section">
-          <div className="settings-section-title">About</div>
-          <div className="settings-row">
-            <div className="settings-row-info">
-              <div className="settings-row-desc" style={{ color: "var(--text-muted)" }}>
-                MiNotes — Local-first knowledge management engine<br />
-                Rust + TypeScript · Tauri 2 · TipTap + CodeMirror 6
-              </div>
-            </div>
+          <div style={{ fontSize: 11, color: "var(--text-muted)", textAlign: "center", padding: "4px 0" }}>
+            MiNotes · Rust + TypeScript · Tauri 2
           </div>
         </div>
       </div>

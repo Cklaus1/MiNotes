@@ -2438,6 +2438,25 @@ body.theme-light { /* matches our light theme */ }
   background: var(--bg-primary);
 }
 
+/* Side-by-side toggle row */
+.settings-toggles-row {
+  display: flex;
+  gap: 24px;
+}
+
+.settings-toggle-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+}
+
+.settings-toggle-label {
+  font-size: 13px;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
 .settings-select {
   background: var(--bg-surface);
   border: 1px solid var(--border);
