@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, useCallback, lazy, Suspense, forwardRef, useImperativeHandle } from "react";
+import React, { useEffect, useState, useRef, useCallback, lazy, Suspense, forwardRef, useImperativeHandle } from "react";
 import { EditorContent } from "@tiptap/react";
 import type { Block, Property } from "../lib/api";
 import * as api from "../lib/api";
@@ -43,12 +43,13 @@ interface Props {
   onZoomIn?: () => void;
   onShiftClick?: (blockId: string) => void;
   onOpenWhiteboard?: (whiteboardId: string) => void;
+  onDragReorder?: (draggedBlockId: string, targetBlockId: string, position: "above" | "below") => void;
 }
 
 const BlockItem = forwardRef<BlockItemHandle, Props>(({
   block, depth = 0, hasChildren = false, isLastSibling = false, isOnActivePath = false, onFocusBlock, onBlurBlock, dataBlockId, selected = false, onUpdate, onDelete, onPageLinkClick,
   onBlockRefClick, onEnter, onBackspaceAtStart, onArrowUp, onArrowDown, onPasteMultiline,
-  onIndent, onOutdent, onDuplicate, onToggleCollapse, onZoomIn, onShiftClick, onOpenWhiteboard,
+  onIndent, onOutdent, onDuplicate, onToggleCollapse, onZoomIn, onShiftClick, onOpenWhiteboard, onDragReorder,
 }, ref) => {
   const settings = getSettings();
   const [editorMode, setEditorMode] = useState<"minotes" | "obsidian">(
@@ -61,6 +62,7 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
   const [editingProp, setEditingProp] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
+  const [dropPosition, setDropPosition] = useState<"above" | "below" | null>(null);
 
   const handleToggleTodo = () => {
     const content = block.content;
@@ -247,7 +249,7 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
 
   return (
     <div
-      className={`block${selected ? " selected" : ""}`}
+      className={`block${selected ? " selected" : ""}${dropPosition === "above" ? " drop-above" : ""}${dropPosition === "below" ? " drop-below" : ""}`}
       data-depth={depth > 0 ? String(depth) : undefined}
       data-tree-last={isLastSibling ? "true" : undefined}
       data-active-path={isOnActivePath ? "true" : undefined}
@@ -262,7 +264,42 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
           onShiftClick(block.id);
         }
       }}
+      onDragOver={(e) => {
+        if (!onDragReorder) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const rect = e.currentTarget.getBoundingClientRect();
+        setDropPosition(e.clientY < rect.top + rect.height / 2 ? "above" : "below");
+      }}
+      onDragLeave={() => setDropPosition(null)}
+      onDrop={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const draggedId = e.dataTransfer.getData("text/block-id");
+        if (draggedId && draggedId !== block.id && dropPosition && onDragReorder) {
+          onDragReorder(draggedId, block.id, dropPosition);
+        }
+        setDropPosition(null);
+      }}
     >
+      {/* Drag handle — visible on hover */}
+      {onDragReorder && (
+        <div
+          className="block-drag-handle"
+          draggable
+          onDragStart={(e) => {
+            e.dataTransfer.setData("text/block-id", block.id);
+            e.dataTransfer.effectAllowed = "move";
+            (e.currentTarget.closest(".block") as HTMLElement)?.classList.add("dragging");
+          }}
+          onDragEnd={(e) => {
+            (e.currentTarget.closest(".block") as HTMLElement)?.classList.remove("dragging");
+          }}
+          title="Drag to reorder"
+        >
+          ⠿
+        </div>
+      )}
       {/* Zoom trigger on bullet for blocks with children */}
       {hasChildren && onZoomIn && (
         <div
@@ -422,4 +459,18 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
 
 BlockItem.displayName = "BlockItem";
 
-export default BlockItem;
+// Memo: only re-render when block data or selection state actually changes
+// Prevents focus-stealing re-renders when sibling blocks change activePathIds
+export default React.memo(BlockItem, (prev, next) => {
+  return (
+    prev.block.id === next.block.id &&
+    prev.block.content === next.block.content &&
+    prev.block.collapsed === next.block.collapsed &&
+    prev.depth === next.depth &&
+    prev.selected === next.selected &&
+    prev.hasChildren === next.hasChildren &&
+    prev.isLastSibling === next.isLastSibling &&
+    prev.isOnActivePath === next.isOnActivePath &&
+    !!prev.onDragReorder === !!next.onDragReorder
+  );
+});

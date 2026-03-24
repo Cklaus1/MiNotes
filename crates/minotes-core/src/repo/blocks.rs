@@ -147,6 +147,25 @@ impl Database {
         Ok(block)
     }
 
+    /// Reorder a block within its current parent (or move to a new parent).
+    /// parent_id can be None to move to root level.
+    pub fn reorder_block(&self, id: &Uuid, parent_id: Option<&Uuid>, position: f64, actor: &str) -> Result<Block> {
+        let now = Utc::now();
+        let parent_str = parent_id.map(|p| p.to_string());
+        let count = self.conn.execute(
+            "UPDATE blocks SET parent_id = ?1, position = ?2, updated_at = ?3 WHERE id = ?4",
+            rusqlite::params![parent_str, position, now.to_rfc3339(), id.to_string()],
+        )?;
+        if count == 0 {
+            return Err(Error::NotFound(format!("Block {id}")));
+        }
+        let block = self
+            .get_block(id)?
+            .ok_or_else(|| Error::NotFound(format!("Block {id}")))?;
+        self.emit_event("block.reordered", &block.id, "block", &block, actor)?;
+        Ok(block)
+    }
+
     pub fn get_children(&self, parent_id: &Uuid) -> Result<Vec<Block>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, page_id, parent_id, position, content, format, collapsed, created_at, updated_at

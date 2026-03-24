@@ -273,6 +273,9 @@ export const moveBlock = (id: string, newParent: string, position: number) =>
 export const reparentBlock = (id: string, parentId?: string) =>
   invoke<Block>("reparent_block", { id, parentId });
 
+export const reorderBlock = (id: string, parentId: string | undefined, position: number) =>
+  invoke<Block>("reorder_block", { id, parentId, position });
+
 // Aliases
 export const addAlias = (pageId: string, alias: string) =>
   invoke<void>("add_alias", { pageId, alias });

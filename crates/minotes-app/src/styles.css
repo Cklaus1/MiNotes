@@ -389,6 +389,50 @@ body {
   color: var(--text-muted);
 }
 
+/* Drag handle — visible on hover */
+.block-drag-handle {
+  position: absolute;
+  left: -14px;
+  top: 6px;
+  width: 14px;
+  height: 20px;
+  cursor: grab;
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 20px;
+  text-align: center;
+  opacity: 0;
+  transition: opacity 0.15s;
+  user-select: none;
+  z-index: 2;
+}
+
+.block:hover > .block-drag-handle {
+  opacity: 0.4;
+}
+
+.block-drag-handle:hover {
+  opacity: 1 !important;
+  color: var(--text-primary);
+  cursor: grab;
+}
+
+.block-drag-handle:active {
+  cursor: grabbing;
+}
+
+.block.dragging {
+  opacity: 0.4;
+}
+
+.block.drop-above {
+  border-top: 2px solid var(--accent);
+}
+
+.block.drop-below {
+  border-bottom: 2px solid var(--accent);
+}
+
 /* Collapse toggle for parent blocks */
 .block-collapse {
   position: absolute;

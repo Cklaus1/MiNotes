@@ -503,6 +503,24 @@ fn move_block(
         .map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn reorder_block(
+    state: State<'_, AppState>,
+    id: String,
+    parent_id: Option<String>,
+    position: f64,
+) -> Result<Block, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+    let parent_uuid = parent_id
+        .as_deref()
+        .map(|p| uuid::Uuid::parse_str(p))
+        .transpose()
+        .map_err(|e| e.to_string())?;
+    db.reorder_block(&uuid, parent_uuid.as_ref(), position, "user")
+        .map_err(|e| e.to_string())
+}
+
 // ── Reparent Block Command ──
 
 #[tauri::command]
@@ -935,6 +953,7 @@ pub fn run() {
             get_enabled_css_snippets,
             undo,
             save_png_to_downloads,
+            reorder_block,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

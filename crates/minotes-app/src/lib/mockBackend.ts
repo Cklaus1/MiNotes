@@ -356,6 +356,14 @@ export const mockHandlers: Record<string, (args: any) => any> = {
     return block;
   },
 
+  reorder_block: ({ id, parentId, position }: { id: string; parentId?: string; position: number }) => {
+    const block = blocks.get(id);
+    if (!block) throw new Error("Block not found");
+    block.parent_id = parentId;
+    block.position = position;
+    return block;
+  },
+
   search_blocks: ({ query, limit }: { query: string; limit?: number }) => {
     const q = query.toLowerCase();
     return Array.from(blocks.values())

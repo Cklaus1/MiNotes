@@ -362,6 +362,35 @@ export default function PageView({
     });
   };
 
+  // Drag-to-reorder blocks
+  const handleDragReorder = useCallback(async (draggedBlockId: string, targetBlockId: string, position: "above" | "below") => {
+    const target = blocks.find(b => b.id === targetBlockId);
+    if (!target) return;
+
+    const siblings = blocks
+      .filter(b => (b.parent_id ?? null) === (target.parent_id ?? null))
+      .sort((a, b) => a.position - b.position);
+    const targetSibIdx = siblings.findIndex(b => b.id === targetBlockId);
+
+    let newPos: number;
+    if (position === "above") {
+      const prev = targetSibIdx > 0 ? siblings[targetSibIdx - 1].position : 0;
+      newPos = (prev + target.position) / 2;
+    } else {
+      const next = targetSibIdx < siblings.length - 1 ? siblings[targetSibIdx + 1].position : target.position + 1;
+      newPos = (target.position + next) / 2;
+    }
+
+    // Optimistic update
+    setLocalBlocks(prev =>
+      prev.map(b => b.id === draggedBlockId ? { ...b, parent_id: target.parent_id, position: newPos } : b)
+    );
+
+    // Persist — reorderBlock handles null parent_id for root-level blocks
+    await api.reorderBlock(draggedBlockId, target.parent_id ?? undefined, newPos);
+    onRefreshPage();
+  }, [blocks, onRefreshPage]);
+
   // Build block tree structure for computing depth and children info
   const blockTreeInfo = (() => {
     const childrenMap = new Map<string, string[]>();
@@ -843,6 +872,7 @@ export default function PageView({
               }}
               onShiftClick={handleShiftClick}
               onOpenWhiteboard={onOpenWhiteboard}
+              onDragReorder={handleDragReorder}
             />
           ))}
 
