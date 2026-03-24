@@ -5,86 +5,84 @@ import { PluginKey } from "@tiptap/pm/state";
 import tippy, { type Instance as TippyInstance } from "tippy.js";
 import { SlashMenu, type SlashMenuItem } from "./SlashMenu";
 
+/*
+ * Slash commands insert MARKDOWN TEXT that the block editor already knows
+ * how to render. This avoids the issue where TipTap formatting commands
+ * (setHeading, toggleList) get lost during the blur→save→sync cycle.
+ *
+ * When the user saves (blur), getMarkdown() serializes the content,
+ * and when the block reloads, setContent() parses the markdown back.
+ * So we just need to ensure the right markdown text is in the editor.
+ */
+
 const COMMANDS: SlashMenuItem[] = [
   {
     title: "Heading 1",
     description: "Large heading",
     command: ({ editor, range }) => {
-      editor.chain().focus().deleteRange(range).run();
-      // Small delay to let the deletion settle, then apply heading
-      setTimeout(() => {
-        editor.chain().focus().setHeading({ level: 1 }).run();
-      }, 10);
+      // Get any existing text in the block (before the / trigger)
+      const textBefore = editor.state.doc.textBetween(1, range.from, "", "").trim();
+      editor.chain().focus().deleteRange({ from: 1, to: editor.state.doc.content.size - 1 })
+        .insertContent(`# ${textBefore}`).run();
     },
   },
   {
     title: "Heading 2",
     description: "Medium heading",
     command: ({ editor, range }) => {
-      editor.chain().focus().deleteRange(range).run();
-      setTimeout(() => {
-        editor.chain().focus().setHeading({ level: 2 }).run();
-      }, 10);
+      const textBefore = editor.state.doc.textBetween(1, range.from, "", "").trim();
+      editor.chain().focus().deleteRange({ from: 1, to: editor.state.doc.content.size - 1 })
+        .insertContent(`## ${textBefore}`).run();
     },
   },
   {
     title: "Heading 3",
     description: "Small heading",
     command: ({ editor, range }) => {
-      editor.chain().focus().deleteRange(range).run();
-      setTimeout(() => {
-        editor.chain().focus().setHeading({ level: 3 }).run();
-      }, 10);
+      const textBefore = editor.state.doc.textBetween(1, range.from, "", "").trim();
+      editor.chain().focus().deleteRange({ from: 1, to: editor.state.doc.content.size - 1 })
+        .insertContent(`### ${textBefore}`).run();
     },
   },
   {
     title: "Bullet List",
     description: "Start a list",
     command: ({ editor, range }) => {
-      editor.chain().focus().deleteRange(range).run();
-      setTimeout(() => {
-        editor.chain().focus().toggleBulletList().run();
-      }, 10);
+      const textBefore = editor.state.doc.textBetween(1, range.from, "", "").trim();
+      editor.chain().focus().deleteRange({ from: 1, to: editor.state.doc.content.size - 1 })
+        .insertContent(`- ${textBefore}`).run();
     },
   },
   {
     title: "Task List",
     description: "Checklist",
     command: ({ editor, range }) => {
-      editor.chain().focus().deleteRange(range).run();
-      setTimeout(() => {
-        editor.chain().focus().toggleTaskList().run();
-      }, 10);
+      const textBefore = editor.state.doc.textBetween(1, range.from, "", "").trim();
+      editor.chain().focus().deleteRange({ from: 1, to: editor.state.doc.content.size - 1 })
+        .insertContent(`- [ ] ${textBefore}`).run();
     },
   },
   {
     title: "Code Block",
     description: "Code snippet",
     command: ({ editor, range }) => {
-      editor.chain().focus().deleteRange(range).run();
-      setTimeout(() => {
-        editor.chain().focus().toggleCodeBlock().run();
-      }, 10);
+      editor.chain().focus().deleteRange(range).toggleCodeBlock().run();
     },
   },
   {
     title: "Blockquote",
     description: "Quote",
     command: ({ editor, range }) => {
-      editor.chain().focus().deleteRange(range).run();
-      setTimeout(() => {
-        editor.chain().focus().toggleBlockquote().run();
-      }, 10);
+      const textBefore = editor.state.doc.textBetween(1, range.from, "", "").trim();
+      editor.chain().focus().deleteRange({ from: 1, to: editor.state.doc.content.size - 1 })
+        .insertContent(`> ${textBefore}`).run();
     },
   },
   {
     title: "Divider",
     description: "Horizontal line",
     command: ({ editor, range }) => {
-      editor.chain().focus().deleteRange(range).run();
-      setTimeout(() => {
-        editor.chain().focus().setHorizontalRule().run();
-      }, 10);
+      editor.chain().focus().deleteRange(range).setHorizontalRule().run();
     },
   },
 ];
