@@ -236,8 +236,11 @@ export default function Sidebar({
 
       <div className="stats-bar">
         {stats && (
-          <span className="stats-summary" title={`${stats.pages} pages · ${stats.blocks} blocks · ${stats.links} links`}>
-            {stats.pages}p · {stats.blocks}b{stats.links > 0 ? ` · ${stats.links}L` : ""}
+          <span className="stats-icon-wrapper">
+            <span className="stats-icon" title="Graph stats">📊</span>
+            <span className="stats-tooltip">
+              {stats.pages} pages · {stats.blocks} blocks · {stats.links} links
+            </span>
           </span>
         )}
         <button

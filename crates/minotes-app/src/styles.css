@@ -606,7 +606,44 @@ body {
   font-size: 11px;
   color: var(--text-muted);
   display: flex;
-  gap: 16px;
+  align-items: center;
+  gap: 8px;
+}
+
+.stats-icon-wrapper {
+  position: relative;
+  cursor: default;
+}
+
+.stats-icon {
+  font-size: 14px;
+  opacity: 0.6;
+  transition: opacity 0.15s;
+}
+
+.stats-icon-wrapper:hover .stats-icon {
+  opacity: 1;
+}
+
+.stats-tooltip {
+  display: none;
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  margin-bottom: 6px;
+  padding: 4px 10px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--text-primary);
+  z-index: 10;
+}
+
+.stats-icon-wrapper:hover .stats-tooltip {
+  display: block;
 }
 
 /* Backlinks panel */
