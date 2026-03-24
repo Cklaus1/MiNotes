@@ -3,6 +3,16 @@ import type { Page, GraphStats, FolderTree, FolderTreeRoot } from "../lib/api";
 import * as api from "../lib/api";
 import GraphSwitcher from "./GraphSwitcher";
 
+function formatJournalDate(dateStr: string): string {
+  try {
+    const [y, m, d] = dateStr.split("-").map(Number);
+    const date = new Date(y, m - 1, d);
+    return date.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+  } catch {
+    return dateStr;
+  }
+}
+
 interface Props {
   activePage: Page | null;
   stats: GraphStats | null;
@@ -217,7 +227,7 @@ export default function Sidebar({
                 className={`page-item ${activePage?.id === page.id ? "active" : ""}`}
                 onClick={() => onPageClick(page.id)}
               >
-                📅 {page.journal_date ?? page.title}
+                📅 {page.journal_date ? formatJournalDate(page.journal_date) : page.title}
               </div>
             ))}
           </>

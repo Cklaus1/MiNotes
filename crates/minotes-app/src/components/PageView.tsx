@@ -226,6 +226,19 @@ export default function PageView({
     }
   };
 
+  const formatJournalTitle = (dateStr: string) => {
+    try {
+      // dateStr is "YYYY-MM-DD" — parse as local date (not UTC)
+      const [y, m, d] = dateStr.split("-").map(Number);
+      const date = new Date(y, m - 1, d);
+      return date.toLocaleDateString(undefined, {
+        weekday: "long", year: "numeric", month: "long", day: "numeric",
+      });
+    } catch {
+      return dateStr;
+    }
+  };
+
   // Journal date navigation helpers
   const getJournalDate = () => page.journal_date ?? null;
 
@@ -696,7 +709,7 @@ export default function PageView({
   return (
     <div className="page-view">
       <div className="main-header">
-        <h2>{page.icon ?? (page.is_journal ? "\u{1F4C5}" : "")} {page.title}</h2>
+        <h2>{page.icon ?? (page.is_journal ? "\u{1F4C5}" : "")} {page.is_journal && page.journal_date ? formatJournalTitle(page.journal_date) : page.title}</h2>
         {page.is_journal && onJournalNav && (
           <div className="journal-nav">
             <button className="btn btn-sm" onClick={() => shiftDate(-1)}>← Prev</button>
