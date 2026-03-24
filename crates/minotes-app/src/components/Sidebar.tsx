@@ -34,7 +34,21 @@ export default function Sidebar({
       const tree = await api.getFolderTree();
       setTreeData(tree);
       const pages = await api.listPages(200);
-      setJournals(pages.filter(p => p.is_journal).slice(0, 7));
+      // Filter journals: only show ones that have been written in
+      // (check if they have blocks with actual content)
+      const journalPages = pages.filter(p => p.is_journal).slice(0, 20);
+      const journalsWithContent: Page[] = [];
+      for (const jp of journalPages) {
+        try {
+          const tree = await api.getPageTree(jp.id);
+          const hasContent = tree.blocks.some(b => b.content.trim().length > 0);
+          if (hasContent) journalsWithContent.push(jp);
+        } catch {
+          journalsWithContent.push(jp); // Show if we can't check
+        }
+        if (journalsWithContent.length >= 7) break;
+      }
+      setJournals(journalsWithContent);
       const favs = await api.listFavorites();
       setFavorites(favs);
     } catch (e) {
