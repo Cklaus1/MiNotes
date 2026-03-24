@@ -1032,7 +1032,67 @@ WB_BLOCK_ID=$(ev "(()=>{
 ss "32-whiteboard-keyboard-shortcut"
 
 # ═══════════════════════════════════════════════
-journey "33. Final: Is the app stable after everything?"
+journey "33. I want to see my page as a mind map"
+# Real user: visual thinker wants spatial overview of a page
+# ═══════════════════════════════════════════════
+
+step "I navigate to a page with content"
+api "navigateTo('Getting Started')" > /dev/null; sleep 2
+R=$(api "getCurrentPage()" | tr -d '"')
+[[ "$R" == *"Getting Started"* ]] && pass "On Getting Started page" || fail "Can't navigate" "$R"
+BLOCK_COUNT=$(api "getBlockCount()" | tr -d '"')
+
+step "I open mind map with Ctrl+M"
+$AB press "Control+m" 2>/dev/null; sleep 2
+S=$(snap)
+echo "$S" | grep -qi "Close\|Fit\|Horizontal\|LR\|PNG\|SVG" && pass "Mind map overlay opens" || fail "Mind map didn't open" ""
+
+step "I see nodes in the mind map"
+NODE_COUNT=$(ev "document.querySelectorAll('.mm-node').length" | tr -d '"')
+[[ "$NODE_COUNT" -ge 2 ]] 2>/dev/null && pass "Mind map has nodes ($NODE_COUNT)" || fail "No nodes rendered" "$NODE_COUNT"
+
+step "Root node shows page title"
+ROOT=$(ev "document.querySelector('.mm-root')?.textContent || 'none'" | tr -d '"')
+echo "$ROOT" | grep -qi "Getting Started" && pass "Root node = page title" || fail "Root node wrong" "$ROOT"
+
+step "MiniMap is visible"
+MINIMAP=$(ev "!!document.querySelector('.react-flow__minimap')" | tr -d '"')
+[[ "$MINIMAP" == "true" ]] && pass "MiniMap visible" || fail "No minimap" ""
+
+step "I can switch layout direction"
+ev "document.querySelectorAll('.mindmap-toolbar .btn-sm').forEach(b => { if(b.textContent==='TB') b.click() })" > /dev/null 2>&1
+sleep 1
+pass "Layout switched to vertical"
+
+step "I close the mind map with Escape"
+$AB press "Escape" 2>/dev/null; sleep 1
+S=$(snap)
+echo "$S" | grep -qi "Getting Started" && pass "Back to page after close" || fail "Not back to page" ""
+
+step "I reopen and right-click a node for context menu"
+$AB press "Control+m" 2>/dev/null; sleep 2
+# Right-click any non-root node
+ev "(()=>{
+  const nodes = document.querySelectorAll('.mm-node:not(.mm-root)');
+  if (nodes.length > 0) {
+    const rect = nodes[0].getBoundingClientRect();
+    nodes[0].dispatchEvent(new MouseEvent('contextmenu', {clientX:rect.left+10, clientY:rect.top+10, bubbles:true}));
+    return 'done';
+  }
+  return 'no nodes';
+})()" > /dev/null 2>&1
+sleep 0.5
+CTX=$(ev "document.querySelector('.mindmap-context-menu')?.textContent || 'none'" | tr -d '"')
+echo "$CTX" | grep -qi "child\|sibling\|delete" && pass "Context menu with actions" || fail "No context menu" "$CTX"
+
+step "Close mind map"
+$AB press "Escape" 2>/dev/null; sleep 0.5
+$AB press "Escape" 2>/dev/null; sleep 1
+
+ss "33-mindmap"
+
+# ═══════════════════════════════════════════════
+journey "34. Final: Is the app stable after everything?"
 # After all journeys of heavy use, does it still work?
 # ═══════════════════════════════════════════════
 
@@ -1062,7 +1122,7 @@ S=$(snap)
 echo "$S" | grep -qi "Theme" && pass "Settings stable" || fail "Settings crashed" ""
 api "closePanel()" > /dev/null
 
-ss "33-final-stability"
+ss "34-final-stability"
 
 # ═══════════════════════════════════════════════
 $AB close 2>/dev/null

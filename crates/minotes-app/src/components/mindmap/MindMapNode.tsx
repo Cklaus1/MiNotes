@@ -56,15 +56,17 @@ function MindMapNodeInner(props: NodeProps) {
         <span className={data.todoState === "done" ? "mm-strikethrough" : ""}>
           {data.label}
         </span>
-        {data.collapsed && data.childCount > 0 && (
+        {/* Collapse/expand badge */}
+        {data.childCount > 0 && (
           <span
-            className="mm-collapse-badge"
+            className={`mm-collapse-badge ${data.collapsed ? "" : "mm-expanded"}`}
             onClick={(e) => {
               e.stopPropagation();
               data.onToggleCollapse?.();
             }}
+            title={data.collapsed ? "Expand branch" : "Collapse branch"}
           >
-            +{data.childCount}
+            {data.collapsed ? `+${data.childCount}` : "−"}
           </span>
         )}
       </div>
