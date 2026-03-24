@@ -716,7 +716,8 @@ export default function PageView({
         </span>
       </div>
 
-      {(aliases.length > 0 || addingAlias) && (
+      {/* Show existing aliases inline (compact, no add button — use ⚙ properties to add) */}
+      {aliases.length > 0 && (
         <div className="page-aliases">
           <span className="page-aliases-label">Aliases:</span>
           {aliases.map(alias => (
@@ -725,25 +726,8 @@ export default function PageView({
               <span className="alias-remove" onClick={() => handleRemoveAlias(alias)}>×</span>
             </span>
           ))}
-          {addingAlias ? (
-            <input
-              className="alias-input"
-              placeholder="alias..."
-              value={newAlias}
-              onChange={e => setNewAlias(e.target.value)}
-              onKeyDown={e => {
-                if (e.key === "Enter") handleAddAlias();
-                if (e.key === "Escape") { setAddingAlias(false); setNewAlias(""); }
-              }}
-              onBlur={() => { if (!newAlias.trim()) setAddingAlias(false); }}
-              autoFocus
-            />
-          ) : (
-            <button className="alias-add-btn" onClick={() => setAddingAlias(true)} title="Add alias">+</button>
-          )}
         </div>
       )}
-      {/* Alias button hidden when empty — access via gear icon or right-click page title */}
 
       {showProps && (
         <div className="page-properties">
@@ -812,6 +796,44 @@ export default function PageView({
               <div style={{ color: "var(--text-muted)", fontSize: 12 }}>
                 No properties. Click + to add one.
               </div>
+            )}
+          </div>
+          {/* Aliases section inside properties panel */}
+          <div className="page-properties-header" style={{ marginTop: 8 }}>
+            <span className="page-properties-label">Aliases</span>
+            <button
+              className="prop-add-btn"
+              onClick={() => setAddingAlias(true)}
+              title="Add alias"
+            >
+              +
+            </button>
+          </div>
+          <div className="page-aliases-inline">
+            {aliases.map(alias => (
+              <span key={alias} className="alias-chip">
+                {alias}
+                <span className="alias-remove" onClick={() => handleRemoveAlias(alias)}>×</span>
+              </span>
+            ))}
+            {aliases.length === 0 && !addingAlias && (
+              <div style={{ color: "var(--text-muted)", fontSize: 12 }}>
+                No aliases.
+              </div>
+            )}
+            {addingAlias && (
+              <input
+                className="alias-input"
+                placeholder="alias..."
+                value={newAlias}
+                onChange={e => setNewAlias(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === "Enter") handleAddAlias();
+                  if (e.key === "Escape") { setAddingAlias(false); setNewAlias(""); }
+                }}
+                onBlur={() => { if (!newAlias.trim()) setAddingAlias(false); }}
+                autoFocus
+              />
             )}
           </div>
         </div>

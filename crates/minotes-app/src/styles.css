@@ -1346,6 +1346,13 @@ body {
   margin-right: 4px;
 }
 
+.page-aliases-inline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 2px 0;
+}
+
 .alias-chip {
   display: inline-flex;
   align-items: center;
