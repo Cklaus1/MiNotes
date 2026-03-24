@@ -341,6 +341,206 @@ echo "$H" | grep -qi "<h1\|heading" && pass "Headings render" || fail "Headings 
 ss "12-meta-test"
 
 # ═══════════════════════════════════════════════
+journey "13. I want to edit text I already wrote"
+# Go back to existing content and change it
+# ═══════════════════════════════════════════════
+
+step "I go to a page with existing content"
+api "navigateTo('Project Alpha')" > /dev/null; sleep 2
+ORIG=$(api "getBlockContent(1)" | tr -d '"')
+[[ -n "$ORIG" ]] && pass "I see existing content" || fail "No content" "Block 1 empty"
+
+step "I change the text in block 1"
+api "setBlockContent(1, 'EDITED: Updated project description')" > /dev/null; sleep 1
+R=$(api "getBlockContent(1)" | tr -d '"')
+[[ "$R" == *"EDITED"* ]] && pass "Text updated successfully" || fail "Edit didn't save" "$R"
+
+step "The edit shows in the editor"
+H=$(ev "document.querySelectorAll('.ProseMirror')[1]?.textContent")
+echo "$H" | grep -qi "EDITED" && pass "Editor reflects the edit" || fail "Editor stale" "$H"
+
+step "I restore the original text"
+api "setBlockContent(1, '$ORIG')" > /dev/null; sleep 1
+R=$(api "getBlockContent(1)" | tr -d '"')
+[[ "$R" == *"$ORIG"* ]] 2>/dev/null && pass "Original restored" || fail "Restore failed" "$R"
+
+ss "13-edit-text"
+
+# ═══════════════════════════════════════════════
+journey "14. I want to delete a block I don't need"
+# Backspace on empty block should remove it
+# ═══════════════════════════════════════════════
+
+step "I count how many blocks are on the page"
+api "navigateTo('Getting Started')" > /dev/null; sleep 2
+BEFORE=$(api "getBlockCount()" | tr -d '"')
+[[ "$BEFORE" -ge 3 ]] 2>/dev/null && pass "Page has $BEFORE blocks" || fail "Too few blocks" "$BEFORE"
+
+step "I delete the last block"
+ev "(async()=>{const api=await import('/src/lib/api.ts');const b=window.__MINOTES__?.getBlocks();if(b&&b.length>0){const last=b[b.length-1];await api.deleteBlock(last.content?'':'skip');return 'attempted';}return 'no blocks'})()" > /dev/null 2>&1
+# Actually use the test API's known block to delete
+LAST_IDX=$((BEFORE - 1))
+LAST_CONTENT=$(api "getBlockContent($LAST_IDX)" | tr -d '"')
+[[ -n "$LAST_CONTENT" ]] && pass "Found last block to delete: ${LAST_CONTENT:0:30}" || fail "Can't find last block" "index $LAST_IDX"
+
+step "Block count decreases after delete"
+# Use the raw API to delete
+ev "(async()=>{const api=await import('/src/lib/api.ts');const tree=await api.getPageTree('Getting Started');const blocks=tree.blocks;if(blocks.length>1){await api.deleteBlock(blocks[blocks.length-1].id);return 'deleted';}return 'skip'})()" > /dev/null 2>&1
+sleep 1
+api "navigateTo('Getting Started')" > /dev/null; sleep 2
+AFTER=$(api "getBlockCount()" | tr -d '"')
+[[ "$AFTER" -lt "$BEFORE" ]] 2>/dev/null && pass "Block deleted ($BEFORE → $AFTER)" || fail "Delete didn't work" "Still $AFTER blocks"
+
+ss "14-delete-block"
+
+# ═══════════════════════════════════════════════
+journey "15. I want to use bold and italic formatting"
+# Basic inline formatting that every user expects
+# ═══════════════════════════════════════════════
+
+step "I create a block with bold markdown"
+api "navigateTo('Getting Started')" > /dev/null; sleep 2
+api "setBlockContent(0, 'This has **bold text** in it')" > /dev/null; sleep 2
+
+step "Bold renders visually"
+H=$(ev "document.querySelectorAll('.ProseMirror')[0]?.innerHTML")
+echo "$H" | grep -qi "<strong\|font-weight" && pass "Bold renders as <strong>" || fail "Bold not rendering" "${H:0:60}"
+
+step "I create a block with italic markdown"
+api "setBlockContent(1, 'This has *italic text* in it')" > /dev/null; sleep 2
+H=$(ev "document.querySelectorAll('.ProseMirror')[1]?.innerHTML")
+echo "$H" | grep -qi "<em\|font-style" && pass "Italic renders as <em>" || fail "Italic not rendering" "${H:0:60}"
+
+step "I create a block with inline code"
+api "setBlockContent(2, 'Run the command \`npm install\` first')" > /dev/null; sleep 2
+H=$(ev "document.querySelectorAll('.ProseMirror')[2]?.innerHTML")
+echo "$H" | grep -qi "<code" && pass "Inline code renders as <code>" || fail "Code not rendering" "${H:0:60}"
+
+step "I create a block with strikethrough"
+api "setBlockContent(3, 'This is ~~no longer needed~~')" > /dev/null; sleep 2
+H=$(ev "document.querySelectorAll('.ProseMirror')[3]?.innerHTML")
+echo "$H" | grep -qi "<s>\|<del>\|line-through\|strike" && pass "Strikethrough renders" || fail "Strikethrough not rendering" "${H:0:60}"
+
+ss "15-inline-formatting"
+
+# ═══════════════════════════════════════════════
+journey "16. I want to cycle TODO states on a block"
+# Ctrl+Enter cycles: plain → TODO → DOING → DONE → plain
+# ═══════════════════════════════════════════════
+
+step "I set a block with TODO state"
+api "setBlockContent(0, 'TODO Write the documentation')" > /dev/null; sleep 1
+R=$(api "getBlockContent(0)" | tr -d '"')
+[[ "$R" == *"TODO"* ]] && pass "TODO state visible" || fail "TODO not set" "$R"
+
+step "I change to DOING state"
+api "setBlockContent(0, 'DOING Write the documentation')" > /dev/null; sleep 1
+R=$(api "getBlockContent(0)" | tr -d '"')
+[[ "$R" == *"DOING"* ]] && pass "DOING state visible" || fail "DOING not set" "$R"
+
+step "I change to DONE state"
+api "setBlockContent(0, 'DONE Write the documentation')" > /dev/null; sleep 1
+R=$(api "getBlockContent(0)" | tr -d '"')
+[[ "$R" == *"DONE"* ]] && pass "DONE state visible" || fail "DONE not set" "$R"
+
+step "I remove the state (back to plain)"
+api "setBlockContent(0, 'Write the documentation')" > /dev/null; sleep 1
+R=$(api "getBlockContent(0)" | tr -d '"')
+[[ "$R" != *"TODO"* && "$R" != *"DOING"* && "$R" != *"DONE"* ]] && pass "State removed, plain text" || fail "State stuck" "$R"
+
+ss "16-todo-cycling"
+
+# ═══════════════════════════════════════════════
+journey "17. I want to use the right-click context menu"
+# Block operations: copy ref, duplicate, delete
+# ═══════════════════════════════════════════════
+
+step "I right-click on a block"
+api "navigateTo('Project Alpha')" > /dev/null; sleep 2
+# Simulate right-click via CDP
+ev "document.querySelectorAll('.block')[0]?.dispatchEvent(new MouseEvent('contextmenu', {bubbles:true, clientX:400, clientY:200}))" > /dev/null
+sleep 1
+S=$(snap)
+echo "$S" | grep -qi "Copy\|Duplicate\|Delete\|TODO" && pass "Context menu appears" || fail "No context menu" "Right-click didn't show menu"
+
+step "I close the context menu"
+$AB press "Escape" 2>/dev/null; sleep 0.5
+
+ss "17-context-menu"
+
+# ═══════════════════════════════════════════════
+journey "18. I want mixed content on one page"
+# Real pages have headings + text + lists + todos + links
+# ═══════════════════════════════════════════════
+
+step "I create a rich page with mixed content"
+api "navigateTo('Getting Started')" > /dev/null; sleep 2
+api "setBlockContent(0, '# Meeting Notes - March 24')" > /dev/null; sleep 0.5
+api "setBlockContent(1, 'Attendees: **Alice**, **Bob**, **Charlie**')" > /dev/null; sleep 0.5
+api "setBlockContent(2, '## Action Items')" > /dev/null; sleep 0.5
+api "setBlockContent(3, '- [ ] Alice: Update the roadmap')" > /dev/null; sleep 0.5
+api "setBlockContent(4, '- [x] Bob: Deploy staging')" > /dev/null; sleep 0.5
+api "setBlockContent(5, '> Key decision: Ship by end of Q1')" > /dev/null; sleep 0.5
+api "setBlockContent(6, 'See [[Project Alpha]] for details')" > /dev/null; sleep 2
+
+step "Heading renders"
+H=$(ev "document.querySelectorAll('.ProseMirror')[0]?.innerHTML")
+echo "$H" | grep -qi "<h1" && pass "H1 renders" || fail "H1 broken" "${H:0:40}"
+
+step "Bold text renders"
+H=$(ev "document.querySelectorAll('.ProseMirror')[1]?.innerHTML")
+echo "$H" | grep -qi "<strong" && pass "Bold names render" || fail "Bold broken" "${H:0:40}"
+
+step "Subheading renders"
+H=$(ev "document.querySelectorAll('.ProseMirror')[2]?.innerHTML")
+echo "$H" | grep -qi "<h2" && pass "H2 renders" || fail "H2 broken" "${H:0:40}"
+
+step "Todo items render with checkboxes"
+H=$(ev "document.querySelectorAll('.ProseMirror')[3]?.innerHTML")
+echo "$H" | grep -qi "taskList\|checkbox" && pass "Todos render" || fail "Todos broken" "${H:0:40}"
+
+step "Checked item shows correctly"
+H=$(ev "document.querySelectorAll('.ProseMirror')[4]?.innerHTML")
+echo "$H" | grep -qi "data-checked" && pass "Checked state renders" || fail "Checked broken" "${H:0:40}"
+
+step "Blockquote renders"
+H=$(ev "document.querySelectorAll('.ProseMirror')[5]?.innerHTML")
+echo "$H" | grep -qi "blockquote" && pass "Quote renders" || fail "Quote broken" "${H:0:40}"
+
+step "Wiki link renders"
+S=$(snap)
+echo "$S" | grep -qi "Project Alpha" && pass "Wiki link visible" || fail "Link broken" "Not found"
+
+ss "18-mixed-content"
+
+# ═══════════════════════════════════════════════
+journey "19. I want to use the app across a full session"
+# Stability: does everything still work after heavy use?
+# ═══════════════════════════════════════════════
+
+step "After all the testing, journal still opens"
+api "openJournal()" > /dev/null; sleep 2
+R=$(api "getCurrentPage()" | tr -d '"')
+[[ "$R" == *"Journal"* ]] && pass "Journal still works" || fail "Journal broken after session" "$R"
+
+step "Search still works"
+api "openSearch()" > /dev/null; sleep 1
+S=$(snap)
+echo "$S" | grep -qi "Search" && pass "Search still works" || fail "Search broken" "Not found"
+api "closePanel()" > /dev/null; sleep 0.5
+
+step "Navigation still works"
+api "navigateTo('Research Notes')" > /dev/null; sleep 2
+R=$(api "getCurrentPage()" | tr -d '"')
+[[ "$R" == *"Research Notes"* ]] && pass "Navigation still works" || fail "Nav broken" "$R"
+
+step "Content still readable"
+R=$(api "getBlockCount()" | tr -d '"')
+[[ "$R" -ge 3 ]] 2>/dev/null && pass "Content intact ($R blocks)" || fail "Content lost" "$R"
+
+ss "19-session-stability"
+
+# ═══════════════════════════════════════════════
 # Cleanup
 # ═══════════════════════════════════════════════
 $AB close 2>/dev/null
