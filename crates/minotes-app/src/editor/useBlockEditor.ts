@@ -22,12 +22,15 @@ const lowlight = createLowlight(common);
 interface UseBlockEditorOptions {
   content: string;
   onSave: (markdown: string) => void;
-  onPageLinkClick: (title: string) => void;
+  onPageLinkClick: (title: string, shiftKey?: boolean) => void;
   onEnter?: (contentAfterCursor: string) => void;
   onBackspaceAtStart?: (content: string) => void;
   onArrowUp?: () => void;
   onArrowDown?: () => void;
   onToggleTodo?: () => void;
+  onPasteMultiline?: (lines: string[]) => void;
+  onIndent?: () => void;
+  onOutdent?: () => void;
 }
 
 export function useBlockEditor({
@@ -39,6 +42,9 @@ export function useBlockEditor({
   onArrowUp,
   onArrowDown,
   onToggleTodo,
+  onPasteMultiline,
+  onIndent,
+  onOutdent,
 }: UseBlockEditorOptions) {
   const onSaveRef = useRef(onSave);
   const contentRef = useRef(content);
@@ -47,6 +53,9 @@ export function useBlockEditor({
   const onArrowUpRef = useRef(onArrowUp);
   const onArrowDownRef = useRef(onArrowDown);
   const onToggleTodoRef = useRef(onToggleTodo);
+  const onPasteMultilineRef = useRef(onPasteMultiline);
+  const onIndentRef = useRef(onIndent);
+  const onOutdentRef = useRef(onOutdent);
   onSaveRef.current = onSave;
   contentRef.current = content;
   onEnterRef.current = onEnter;
@@ -54,6 +63,9 @@ export function useBlockEditor({
   onArrowUpRef.current = onArrowUp;
   onArrowDownRef.current = onArrowDown;
   onToggleTodoRef.current = onToggleTodo;
+  onPasteMultilineRef.current = onPasteMultiline;
+  onIndentRef.current = onIndent;
+  onOutdentRef.current = onOutdent;
 
   const editor = useEditor({
     extensions: [
@@ -179,6 +191,26 @@ export function useBlockEditor({
           }
         }
 
+        // Tab — indent block (unless inside list/task item)
+        if (event.key === "Tab" && !event.shiftKey && onIndentRef.current) {
+          const { $from } = view.state.selection;
+          const parent = $from.node($from.depth);
+          if (parent.type.name === "listItem" || parent.type.name === "taskItem") return false;
+          event.preventDefault();
+          onIndentRef.current();
+          return true;
+        }
+
+        // Shift+Tab — outdent block (unless inside list/task item)
+        if (event.key === "Tab" && event.shiftKey && onOutdentRef.current) {
+          const { $from } = view.state.selection;
+          const parent = $from.node($from.depth);
+          if (parent.type.name === "listItem" || parent.type.name === "taskItem") return false;
+          event.preventDefault();
+          onOutdentRef.current();
+          return true;
+        }
+
         // ArrowDown on last line — move to next block
         if (event.key === "ArrowDown" && onArrowDownRef.current) {
           const { state } = view;
@@ -201,6 +233,40 @@ export function useBlockEditor({
         }
 
         return false;
+      },
+      handlePaste(view, event) {
+        const text = event.clipboardData?.getData('text/plain') ?? '';
+
+        // Don't split if inside a code block
+        const { $from } = view.state.selection;
+        if ($from.node($from.depth).type.name === 'codeBlock') {
+          return false; // Let default handle it
+        }
+
+        // Check if multi-line
+        const lines = text.split('\n').filter(l => l.trim());
+        if (lines.length <= 1) {
+          return false; // Single line, let default handle
+        }
+
+        // Check if it looks like a code block
+        if (text.trimStart().startsWith('```')) {
+          return false; // Let TipTap handle code fences
+        }
+
+        if (!onPasteMultilineRef.current) {
+          return false; // No handler, let default handle
+        }
+
+        event.preventDefault();
+
+        // Insert first line into current block
+        const firstLine = lines[0];
+        view.dispatch(view.state.tr.insertText(firstLine));
+
+        // Call the callback with remaining lines to create new blocks
+        onPasteMultilineRef.current(lines.slice(1));
+        return true;
       },
     },
     onBlur({ editor }) {

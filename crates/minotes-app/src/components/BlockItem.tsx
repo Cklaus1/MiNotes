@@ -4,6 +4,7 @@ import type { Block, Property } from "../lib/api";
 import * as api from "../lib/api";
 import { useBlockEditor } from "../editor";
 import { getSettings } from "../lib/settings";
+import BlockContextMenu from "./BlockContextMenu";
 import "../editor/editor.css";
 
 // Lazy-load CM6 editor — only downloaded when obsidianEditorEnabled
@@ -15,18 +16,28 @@ export interface BlockItemHandle {
 
 interface Props {
   block: Block;
+  depth?: number;
+  hasChildren?: boolean;
+  dataBlockId?: string;
   onUpdate: (id: string, content: string) => void;
   onDelete: (id: string) => void;
-  onPageLinkClick: (title: string) => void;
+  onPageLinkClick: (title: string, shiftKey?: boolean) => void;
   onEnter?: (blockId: string, contentAfterCursor: string) => void;
   onBackspaceAtStart?: (blockId: string, content: string) => void;
   onArrowUp?: (blockId: string) => void;
   onArrowDown?: (blockId: string) => void;
+  onPasteMultiline?: (blockId: string, lines: string[]) => void;
+  onIndent?: (blockId: string) => void;
+  onOutdent?: (blockId: string) => void;
+  onDuplicate?: (blockId: string) => void;
+  onToggleCollapse?: (blockId: string) => void;
+  onZoomIn?: () => void;
 }
 
 const BlockItem = forwardRef<BlockItemHandle, Props>(({
-  block, onUpdate, onDelete, onPageLinkClick,
-  onEnter, onBackspaceAtStart, onArrowUp, onArrowDown,
+  block, depth = 0, hasChildren = false, dataBlockId, onUpdate, onDelete, onPageLinkClick,
+  onEnter, onBackspaceAtStart, onArrowUp, onArrowDown, onPasteMultiline,
+  onIndent, onOutdent, onDuplicate, onToggleCollapse, onZoomIn,
 }, ref) => {
   const settings = getSettings();
   const [editorMode, setEditorMode] = useState<"minotes" | "obsidian">(
@@ -38,6 +49,7 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
   const [newValue, setNewValue] = useState("");
   const [editingProp, setEditingProp] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
 
   const handleToggleTodo = () => {
     const content = block.content;
@@ -67,6 +79,9 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
     onArrowUp: onArrowUp ? () => onArrowUp(block.id) : undefined,
     onArrowDown: onArrowDown ? () => onArrowDown(block.id) : undefined,
     onToggleTodo: handleToggleTodo,
+    onPasteMultiline: onPasteMultiline ? (lines) => onPasteMultiline(block.id, lines) : undefined,
+    onIndent: onIndent ? () => onIndent(block.id) : undefined,
+    onOutdent: onOutdent ? () => onOutdent(block.id) : undefined,
   });
 
   useImperativeHandle(ref, () => ({
@@ -131,8 +146,37 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
     setProperties(prev => prev.filter(p => p.key !== key));
   };
 
+  const handleContextMenu = (e: React.MouseEvent) => {
+    e.preventDefault();
+    setContextMenu({ x: e.clientX, y: e.clientY });
+  };
+
   return (
-    <div className="block">
+    <div
+      className="block"
+      data-depth={depth > 0 ? String(depth) : undefined}
+      data-block-id={dataBlockId ?? block.id}
+      onContextMenu={handleContextMenu}
+    >
+      {/* Zoom trigger on bullet for blocks with children */}
+      {hasChildren && onZoomIn && (
+        <div
+          className="block-zoom-trigger"
+          onClick={onZoomIn}
+          title="Zoom into this block"
+        />
+      )}
+      {/* Collapse toggle for blocks with children */}
+      {hasChildren && onToggleCollapse && (
+        <button
+          className="block-collapse"
+          onClick={() => onToggleCollapse(block.id)}
+          title={block.collapsed ? "Expand" : "Collapse"}
+        >
+          {block.collapsed ? "\u25B6" : "\u25BC"}
+        </button>
+      )}
+
       {/* Editor mode toggle — only shown when obsidian editor is enabled in settings */}
       {settings.obsidianEditorEnabled && (
         <div className="editor-mode-toggle">
@@ -231,6 +275,21 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
       >
         +
       </button>
+
+      {/* Context menu */}
+      {contextMenu && (
+        <BlockContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          blockId={block.id}
+          blockContent={block.content}
+          onClose={() => setContextMenu(null)}
+          onDelete={onDelete}
+          onDuplicate={onDuplicate ?? (() => {})}
+          onCopyRef={() => {}}
+          onToggleTodo={() => handleToggleTodo()}
+        />
+      )}
     </div>
   );
 });

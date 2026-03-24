@@ -193,6 +193,9 @@ export const getProperties = (entityId: string) =>
 export const deleteProperty = (entityId: string, key: string) =>
   invoke<boolean>("delete_property", { entityId, key });
 
+export const getInheritedProperties = (blockId: string) =>
+  invoke<Property[]>("get_inherited_properties", { blockId });
+
 // SRS Cards
 export interface Card {
   id: string;
@@ -243,6 +246,9 @@ export const listFavorites = () =>
 // Block move
 export const moveBlock = (id: string, newParent: string, position: number) =>
   invoke<Block>("move_block", { id, newParent, position });
+
+export const reparentBlock = (id: string, parentId?: string) =>
+  invoke<Block>("reparent_block", { id, parentId });
 
 // Aliases
 export const addAlias = (pageId: string, alias: string) =>

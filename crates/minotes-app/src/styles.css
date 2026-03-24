@@ -2465,3 +2465,88 @@ body.theme-light { /* matches our light theme */ }
 .cm6-editor { min-height: 1.6em; }
 .cm6-editor .cm-editor { font-size: 14px; line-height: 1.6; }
 .cm6-editor .cm-editor.cm-focused { outline: none; }
+
+/* ── UX-005: Right Sidebar (Split View) ── */
+
+.right-sidebar {
+  width: 350px;
+  border-left: 1px solid var(--border);
+  background: var(--bg-secondary);
+  overflow-y: auto;
+  flex-shrink: 0;
+}
+
+.right-sidebar-panel {
+  border-bottom: 1px solid var(--border);
+}
+
+.right-sidebar-panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+}
+
+.right-sidebar-panel-header:hover {
+  background: var(--bg-primary);
+}
+
+.right-sidebar-panel-content {
+  padding: 8px 12px;
+}
+
+.mini-page-view {
+  padding: 4px 0;
+}
+
+.mini-block {
+  padding: 2px 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+/* ── UX-006: Block Zoom (Focus Mode) ── */
+
+.breadcrumb-bar {
+  padding: 6px 24px;
+  font-size: 12px;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-secondary);
+  flex-shrink: 0;
+}
+
+.breadcrumb-item {
+  cursor: pointer;
+  color: var(--text-secondary);
+}
+
+.breadcrumb-item:hover {
+  color: var(--accent);
+}
+
+.breadcrumb-sep {
+  color: var(--text-muted);
+  margin: 0 2px;
+}
+
+.block-zoom-trigger {
+  position: absolute;
+  left: 0;
+  top: 8px;
+  width: 20px;
+  height: 20px;
+  cursor: zoom-in;
+  z-index: 3;
+  border-radius: 4px;
+}
+
+.block-zoom-trigger:hover {
+  background: rgba(137, 180, 250, 0.15);
+}

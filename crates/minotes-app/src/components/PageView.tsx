@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from "react";
-import type { PageTree, Property } from "../lib/api";
+import type { Block, PageTree, Property } from "../lib/api";
 import * as api from "../lib/api";
 import BlockItem from "./BlockItem";
 import type { BlockItemHandle } from "./BlockItem";
@@ -11,15 +11,17 @@ interface Props {
   onUpdateBlock: (id: string, content: string) => void;
   onDeleteBlock: (id: string) => void;
   onPageLinkClick: (title: string) => void;
+  onShiftClick?: (title: string) => void;
   onJournalNav?: (date: string) => void;
   onRefreshPage: () => void;
 }
 
 export default function PageView({
-  pageTree, onUpdateBlock, onDeleteBlock, onPageLinkClick, onJournalNav, onRefreshPage,
+  pageTree, onUpdateBlock, onDeleteBlock, onPageLinkClick, onShiftClick, onJournalNav, onRefreshPage,
 }: Props) {
   const { page, blocks } = pageTree;
   const [pageProps, setPageProps] = useState<Property[]>([]);
+  const [zoomedBlockId, setZoomedBlockId] = useState<string | null>(null);
   const [showProps, setShowProps] = useState(false);
   const [addingProp, setAddingProp] = useState(false);
   const [newKey, setNewKey] = useState("");
@@ -178,6 +180,123 @@ export default function PageView({
     if (idx < blocks.length - 1) setFocusBlockIndex(idx + 1);
   };
 
+  // UX-012: Smart paste — split multi-line paste into multiple blocks
+  const handlePasteMultiline = async (blockId: string, lines: string[]) => {
+    const idx = blocks.findIndex(b => b.id === blockId);
+    if (idx === -1) return;
+    for (const line of lines) {
+      await api.createBlock(page.id, line);
+    }
+    onRefreshPage();
+    setFocusBlockIndex(idx + lines.length);
+  };
+
+  // UX-002: Block indent/outdent
+  const handleIndent = async (blockId: string) => {
+    const flatIdx = blocks.findIndex(b => b.id === blockId);
+    if (flatIdx <= 0) return; // Can't indent first block
+
+    const block = blocks[flatIdx];
+    // Find the previous sibling (block with same parent_id, positioned before this one)
+    const prevSibling = blocks.slice(0, flatIdx).reverse()
+      .find(b => b.parent_id === block.parent_id);
+
+    if (!prevSibling) return; // No sibling above to become parent
+
+    // Move block to be child of previous sibling
+    await api.moveBlock(blockId, prevSibling.id, block.position);
+    onRefreshPage();
+  };
+
+  const handleOutdent = async (blockId: string) => {
+    const block = blocks.find(b => b.id === blockId);
+    if (!block?.parent_id) return; // Already at root level
+
+    const parent = blocks.find(b => b.id === block.parent_id);
+    if (!parent) return;
+
+    // Move block to be sibling of parent (same parent as parent)
+    await api.reparentBlock(blockId, parent.parent_id ?? undefined);
+    onRefreshPage();
+  };
+
+  // UX-015: Block duplicate
+  const handleDuplicate = async (blockId: string) => {
+    const block = blocks.find(b => b.id === blockId);
+    if (!block) return;
+    await api.createBlock(page.id, block.content, block.parent_id ?? undefined);
+    onRefreshPage();
+  };
+
+  // UX-002: Toggle block collapse
+  const handleToggleCollapse = async (blockId: string) => {
+    const block = blocks.find(b => b.id === blockId);
+    if (!block) return;
+    // Toggle collapsed state via update — we use the content as-is but toggle collapsed
+    // Since updateBlock only updates content, we use reparentBlock-style direct approach
+    // Actually the collapsed field isn't exposed via updateBlock. We'll use a direct approach.
+    // For now, just use updateBlock which preserves collapsed. We need to add a toggle command.
+    // Workaround: use the block's current content to update it (no-op on content) but we can't
+    // toggle collapsed this way. Let's just manage it client-side for now.
+    // Actually, let's just track collapsed state locally since the backend blocks don't get modified.
+    // We'll do this with local state.
+  };
+
+  // Track collapsed blocks locally
+  const [collapsedBlocks, setCollapsedBlocks] = useState<Set<string>>(new Set());
+
+  const toggleCollapse = (blockId: string) => {
+    setCollapsedBlocks(prev => {
+      const next = new Set(prev);
+      if (next.has(blockId)) {
+        next.delete(blockId);
+      } else {
+        next.add(blockId);
+      }
+      return next;
+    });
+  };
+
+  // Build block tree structure for computing depth and children info
+  const blockTreeInfo = (() => {
+    const childrenMap = new Map<string, string[]>();
+    const depthMap = new Map<string, number>();
+
+    // Build children map
+    for (const block of blocks) {
+      const parentKey = block.parent_id ?? "__root__";
+      if (!childrenMap.has(parentKey)) childrenMap.set(parentKey, []);
+      childrenMap.get(parentKey)!.push(block.id);
+    }
+
+    // Compute depths
+    const computeDepth = (blockId: string, depth: number) => {
+      depthMap.set(blockId, depth);
+      const children = childrenMap.get(blockId) ?? [];
+      for (const childId of children) {
+        computeDepth(childId, depth + 1);
+      }
+    };
+    const roots = childrenMap.get("__root__") ?? [];
+    for (const rootId of roots) {
+      computeDepth(rootId, 0);
+    }
+
+    return {
+      getDepth: (id: string) => depthMap.get(id) ?? 0,
+      hasChildren: (id: string) => (childrenMap.get(id) ?? []).length > 0,
+      isHiddenByCollapse: (id: string) => {
+        // Walk up the parent chain; if any ancestor is collapsed, this block is hidden
+        let current = blocks.find(b => b.id === id);
+        while (current?.parent_id) {
+          if (collapsedBlocks.has(current.parent_id)) return true;
+          current = blocks.find(b => b.id === current!.parent_id);
+        }
+        return false;
+      },
+    };
+  })();
+
   // Ensure blockRefs array is properly sized
   useEffect(() => {
     blockRefs.current = blockRefs.current.slice(0, blocks.length);
@@ -185,6 +304,86 @@ export default function PageView({
       blockRefs.current.push(null);
     }
   }, [blocks.length]);
+
+  // Reset zoom when page changes
+  useEffect(() => {
+    setZoomedBlockId(null);
+  }, [page.id]);
+
+  // UX-005: Handle page link clicks with shift support
+  const handlePageLinkClick = useCallback((title: string, shiftKey?: boolean) => {
+    if (shiftKey && onShiftClick) {
+      onShiftClick(title);
+    } else {
+      onPageLinkClick(title);
+    }
+  }, [onPageLinkClick, onShiftClick]);
+
+  // UX-006: Block zoom helpers
+  const getDescendants = useCallback((allBlocks: typeof blocks, rootId: string) => {
+    const rootBlock = allBlocks.find(b => b.id === rootId);
+    if (!rootBlock) return allBlocks;
+
+    const result = [rootBlock];
+    const collectChildren = (parentId: string) => {
+      const children = allBlocks.filter(b => b.parent_id === parentId);
+      for (const child of children) {
+        result.push(child);
+        collectChildren(child.id);
+      }
+    };
+    collectChildren(rootId);
+    return result;
+  }, []);
+
+  const getBreadcrumbs = useCallback((allBlocks: typeof blocks, blockId: string) => {
+    const crumbs: typeof blocks = [];
+    let current = allBlocks.find(b => b.id === blockId);
+    while (current) {
+      crumbs.unshift(current);
+      if (!current.parent_id) break;
+      current = allBlocks.find(b => b.id === current!.parent_id);
+    }
+    return crumbs;
+  }, []);
+
+  const visibleBlocks = zoomedBlockId
+    ? getDescendants(blocks, zoomedBlockId)
+    : blocks;
+
+  // Filter visible blocks (exclude collapsed children)
+  const filteredVisibleBlocks = visibleBlocks.filter(
+    b => !blockTreeInfo.isHiddenByCollapse(b.id)
+  );
+
+  // UX-006: Zoom keyboard shortcuts
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (!e.altKey) return;
+      if (e.key === "ArrowRight") {
+        const activeEl = document.activeElement?.closest(".block");
+        if (activeEl) {
+          const blockId = activeEl.getAttribute("data-block-id");
+          if (blockId) {
+            e.preventDefault();
+            setZoomedBlockId(blockId);
+          }
+        }
+      } else if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        if (zoomedBlockId) {
+          const current = blocks.find(b => b.id === zoomedBlockId);
+          if (current?.parent_id) {
+            setZoomedBlockId(current.parent_id);
+          } else {
+            setZoomedBlockId(null);
+          }
+        }
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [zoomedBlockId, blocks]);
 
   return (
     <div className="page-view">
@@ -314,25 +513,54 @@ export default function PageView({
         </div>
       )}
 
+      {zoomedBlockId && (
+        <div className="breadcrumb-bar">
+          <span className="breadcrumb-item" onClick={() => setZoomedBlockId(null)}>
+            {page.title}
+          </span>
+          {getBreadcrumbs(blocks, zoomedBlockId).map(b => (
+            <span key={b.id}>
+              <span className="breadcrumb-sep"> &rsaquo; </span>
+              <span className="breadcrumb-item" onClick={() => setZoomedBlockId(b.id)}>
+                {b.content.slice(0, 30) || "(empty)"}
+              </span>
+            </span>
+          ))}
+        </div>
+      )}
+
       <div className="content view-content markdown-source-view">
         <div className="block-list">
-          {blocks.map((block, idx) => (
+          {filteredVisibleBlocks.map((block, idx) => (
             <BlockItem
               key={block.id}
               ref={(el) => { blockRefs.current[idx] = el; }}
               block={block}
+              depth={blockTreeInfo.getDepth(block.id)}
+              dataBlockId={block.id}
               onUpdate={onUpdateBlock}
               onDelete={onDeleteBlock}
-              onPageLinkClick={onPageLinkClick}
+              onPageLinkClick={handlePageLinkClick}
               onEnter={handleEnter}
               onBackspaceAtStart={handleBackspaceAtStart}
               onArrowUp={handleArrowUp}
               onArrowDown={handleArrowDown}
+              onPasteMultiline={handlePasteMultiline}
+              onIndent={handleIndent}
+              onOutdent={handleOutdent}
+              onDuplicate={handleDuplicate}
+              onToggleCollapse={toggleCollapse}
+              onZoomIn={() => setZoomedBlockId(block.id)}
+              hasChildren={blockTreeInfo.hasChildren(block.id)}
             />
           ))}
 
-          <BacklinksPanel pageId={page.id} onPageClick={onPageLinkClick} />
-          <UnlinkedRefsPanel pageId={page.id} pageTitle={page.title} onPageClick={onPageLinkClick} />
+          {!zoomedBlockId && (
+            <>
+              <BacklinksPanel pageId={page.id} onPageClick={onPageLinkClick} />
+              <UnlinkedRefsPanel pageId={page.id} pageTitle={page.title} onPageClick={onPageLinkClick} />
+            </>
+          )}
         </div>
       </div>
     </div>

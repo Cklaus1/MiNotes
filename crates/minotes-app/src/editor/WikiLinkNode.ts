@@ -3,7 +3,7 @@ import { Plugin, PluginKey } from "@tiptap/pm/state";
 import markdownItWikiLink from "./markdownItWikiLink";
 
 export interface WikiLinkOptions {
-  onPageLinkClick: (pageName: string) => void;
+  onPageLinkClick: (pageName: string, shiftKey?: boolean) => void;
 }
 
 export const WikiLinkNode = Node.create<WikiLinkOptions>({
@@ -70,7 +70,7 @@ export const WikiLinkNode = Node.create<WikiLinkOptions>({
               if (pageName) {
                 event.preventDefault();
                 event.stopPropagation();
-                onPageLinkClick(pageName);
+                onPageLinkClick(pageName, event.shiftKey);
                 return true;
               }
             }

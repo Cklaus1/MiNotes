@@ -162,6 +162,26 @@ impl Database {
         Ok(blocks)
     }
 
+    /// Change a block's parent (or set to root by passing None).
+    pub fn reparent_block(&self, id: &Uuid, parent_id: Option<&Uuid>, actor: &str) -> Result<Block> {
+        let now = Utc::now();
+        let count = self.conn.execute(
+            "UPDATE blocks SET parent_id = ?1, updated_at = ?2 WHERE id = ?3",
+            rusqlite::params![
+                parent_id.map(|u| u.to_string()),
+                now.to_rfc3339(),
+                id.to_string()
+            ],
+        )?;
+        if count == 0 {
+            return Err(Error::NotFound(format!("Block {id}")));
+        }
+        let block = self.get_block(id)?
+            .ok_or_else(|| Error::NotFound(format!("Block {id}")))?;
+        self.emit_event("block.reparented", &block.id, "block", &block, actor)?;
+        Ok(block)
+    }
+
     pub fn get_page_blocks(&self, page_id: &Uuid) -> Result<Vec<Block>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, page_id, parent_id, position, content, format, collapsed, created_at, updated_at

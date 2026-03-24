@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import Sidebar from "./components/Sidebar";
 import PageView from "./components/PageView";
+import RightSidebar from "./components/RightSidebar";
 import EmptyState from "./components/EmptyState";
 import SearchPanel from "./components/SearchPanel";
 import QueryPanel from "./components/QueryPanel";
@@ -18,6 +19,7 @@ import SettingsPanel from "./components/SettingsPanel";
 import * as api from "./lib/api";
 import { initTheme, toggleTheme } from "./lib/theme";
 import { loadEnabledSnippets } from "./lib/cssLoader";
+import { isOnboardingComplete, markOnboardingComplete, TUTORIAL_BLOCKS } from "./lib/onboarding";
 
 export default function App() {
   const [activePage, setActivePage] = useState<api.PageTree | null>(null);
@@ -37,6 +39,8 @@ export default function App() {
   const [mobileTab, setMobileTab] = useState("pages");
   const [customViews, setCustomViews] = useState<Array<{ type: string; displayText: string; containerEl: HTMLElement }>>([]);
   const [lastError, setLastError] = useState<string | null>(null);
+  const [rightSidebarPanels, setRightSidebarPanels] = useState<Array<{id: string, title: string}>>([]);
+  const [rightSidebarVisible, setRightSidebarVisible] = useState(true);
 
   const refresh = useCallback(async () => {
     try {
@@ -132,6 +136,19 @@ export default function App() {
     }
   }, [activePage, refresh]);
 
+  const openInSidebar = useCallback(async (titleOrId: string) => {
+    try {
+      const tree = await api.getPageTree(titleOrId);
+      setRightSidebarPanels(prev => {
+        if (prev.some(p => p.id === tree.page.id)) return prev;
+        return [...prev, { id: tree.page.id, title: tree.page.title }];
+      });
+      setRightSidebarVisible(true);
+    } catch (e) {
+      console.error("Failed to open in sidebar:", e);
+    }
+  }, []);
+
   // Initialize theme and CSS snippets on mount
   useEffect(() => {
     initTheme();
@@ -204,14 +221,39 @@ export default function App() {
         e.preventDefault();
         setSettingsOpen(prev => !prev);
       }
+      // Ctrl+\ — toggle right sidebar
+      if ((e.metaKey || e.ctrlKey) && e.key === "\\") {
+        e.preventDefault();
+        setRightSidebarVisible(prev => !prev);
+      }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, [openJournal, createPage]);
 
-  // UX-009: Journal as default landing — open today's journal on mount
+  // UX-009: Journal as default landing + UX-017: Onboarding tutorial on first launch
   useEffect(() => {
-    refresh().then(() => openJournal());
+    const init = async () => {
+      await refresh();
+
+      if (!isOnboardingComplete()) {
+        try {
+          const page = await api.createPage("Getting Started");
+          for (const text of TUTORIAL_BLOCKS) {
+            await api.createBlock(page.id, text);
+          }
+          markOnboardingComplete();
+          await openPage(page.id);
+        } catch {
+          // Page might already exist, just open journal
+          markOnboardingComplete();
+          await openJournal();
+        }
+      } else {
+        await openJournal();
+      }
+    };
+    init();
   }, []);
 
   return (
@@ -228,46 +270,56 @@ export default function App() {
         onSettingsClick={() => setSettingsOpen(prev => !prev)}
         refreshKey={refreshKey}
       />
-      <div className="main workspace-split mod-root" style={{ position: "relative" }}>
-        {lastError && (
-          <div style={{ background: "#f38ba8", color: "#1e1e2e", padding: "8px 16px", fontSize: 13, fontWeight: 600 }}>
-            {lastError}
-          </div>
-        )}
-        {pdfViewerPath && (
-          <PdfViewer
-            filePath={pdfViewerPath}
-            onClose={() => setPdfViewerPath(null)}
+      <div className="main workspace-split mod-root" style={{ position: "relative", display: "flex" }}>
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+          {lastError && (
+            <div style={{ background: "#f38ba8", color: "#1e1e2e", padding: "8px 16px", fontSize: 13, fontWeight: 600 }}>
+              {lastError}
+            </div>
+          )}
+          {pdfViewerPath && (
+            <PdfViewer
+              filePath={pdfViewerPath}
+              onClose={() => setPdfViewerPath(null)}
+            />
+          )}
+          {whiteboardOpen && (
+            <Whiteboard onClose={() => setWhiteboardOpen(false)} />
+          )}
+          {graphOpen && (
+            <GraphView
+              onPageClick={(id) => { openPage(id); setGraphOpen(false); }}
+              onClose={() => setGraphOpen(false)}
+            />
+          )}
+          {customViews.length > 0 && (
+            <CustomViewContainer
+              views={customViews}
+              onClose={(type) => {
+                setCustomViews(prev => prev.filter(v => v.type !== type));
+              }}
+            />
+          )}
+          {activePage ? (
+            <PageView
+              pageTree={activePage}
+              onUpdateBlock={updateBlock}
+              onDeleteBlock={deleteBlock}
+              onPageLinkClick={openPage}
+              onShiftClick={openInSidebar}
+              onJournalNav={openJournal}
+              onRefreshPage={() => openPage(activePage.page.id)}
+            />
+          ) : (
+            <EmptyState onCreatePage={createPage} />
+          )}
+        </div>
+        {rightSidebarVisible && rightSidebarPanels.length > 0 && (
+          <RightSidebar
+            panels={rightSidebarPanels}
+            onClose={(id) => setRightSidebarPanels(prev => prev.filter(p => p.id !== id))}
+            onPageClick={openPage}
           />
-        )}
-        {whiteboardOpen && (
-          <Whiteboard onClose={() => setWhiteboardOpen(false)} />
-        )}
-        {graphOpen && (
-          <GraphView
-            onPageClick={(id) => { openPage(id); setGraphOpen(false); }}
-            onClose={() => setGraphOpen(false)}
-          />
-        )}
-        {customViews.length > 0 && (
-          <CustomViewContainer
-            views={customViews}
-            onClose={(type) => {
-              setCustomViews(prev => prev.filter(v => v.type !== type));
-            }}
-          />
-        )}
-        {activePage ? (
-          <PageView
-            pageTree={activePage}
-            onUpdateBlock={updateBlock}
-            onDeleteBlock={deleteBlock}
-            onPageLinkClick={openPage}
-            onJournalNav={openJournal}
-            onRefreshPage={() => openPage(activePage.page.id)}
-          />
-        ) : (
-          <EmptyState onCreatePage={createPage} />
         )}
       </div>
       <SearchPanel

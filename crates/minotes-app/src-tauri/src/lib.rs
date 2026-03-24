@@ -300,6 +300,13 @@ fn get_properties(state: State<'_, AppState>, entity_id: String) -> Result<Vec<P
 }
 
 #[tauri::command]
+fn get_inherited_properties(state: State<'_, AppState>, block_id: String) -> Result<Vec<Property>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let uuid = uuid::Uuid::parse_str(&block_id).map_err(|e| e.to_string())?;
+    db.get_inherited_properties(&uuid).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn delete_property(
     state: State<'_, AppState>,
     entity_id: String,
@@ -477,6 +484,25 @@ fn move_block(
     let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
     let parent_uuid = uuid::Uuid::parse_str(&new_parent).map_err(|e| e.to_string())?;
     db.move_block(&uuid, &parent_uuid, position, "user")
+        .map_err(|e| e.to_string())
+}
+
+// ── Reparent Block Command ──
+
+#[tauri::command]
+fn reparent_block(
+    state: State<'_, AppState>,
+    id: String,
+    parent_id: Option<String>,
+) -> Result<Block, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+    let parent_uuid = parent_id
+        .as_ref()
+        .map(|p| uuid::Uuid::parse_str(p))
+        .transpose()
+        .map_err(|e| e.to_string())?;
+    db.reparent_block(&uuid, parent_uuid.as_ref(), "user")
         .map_err(|e| e.to_string())
 }
 
@@ -787,6 +813,7 @@ pub fn run() {
             update_block,
             delete_block,
             move_block,
+            reparent_block,
             search_blocks,
             get_backlinks,
             get_unlinked_references,
@@ -801,6 +828,7 @@ pub fn run() {
             delete_folder,
             set_property,
             get_properties,
+            get_inherited_properties,
             delete_property,
             create_card,
             get_due_cards,

@@ -65,6 +65,40 @@ impl Database {
         Ok(props)
     }
 
+    /// Get properties for a block including inherited properties from parent blocks.
+    /// Walks up the parent_id chain collecting properties. Child properties override parent ones.
+    pub fn get_inherited_properties(&self, block_id: &Uuid) -> Result<Vec<Property>> {
+        let mut all_props: std::collections::HashMap<String, Property> = std::collections::HashMap::new();
+        let mut current_id = Some(*block_id);
+        let mut depth = 0;
+
+        while let Some(id) = current_id {
+            if depth > 20 { break; } // Safety limit
+
+            let props = self.get_properties(&id)?;
+            for prop in props {
+                // Only insert if not already set by a child (child overrides parent)
+                if !all_props.contains_key(&prop.key) {
+                    all_props.insert(prop.key.clone(), prop);
+                }
+            }
+
+            // Walk up to parent
+            let parent: Option<String> = self.conn.query_row(
+                "SELECT parent_id FROM blocks WHERE id = ?1",
+                rusqlite::params![id.to_string()],
+                |row| row.get(0),
+            ).ok().flatten();
+
+            current_id = parent.and_then(|p| Uuid::parse_str(&p).ok());
+            depth += 1;
+        }
+
+        let mut result: Vec<Property> = all_props.into_values().collect();
+        result.sort_by(|a, b| a.key.cmp(&b.key));
+        Ok(result)
+    }
+
     pub fn delete_property(&self, entity_id: &Uuid, key: &str, actor: &str) -> Result<bool> {
         self.emit_event(
             "property.deleted",
