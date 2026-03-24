@@ -93,9 +93,24 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
     onSlashCommand: (newMarkdown: string) => {
       // Save to backend + update local state (triggers re-render → setContent)
       onUpdate(block.id, newMarkdown);
-      // Re-focus after content re-renders
+      // Re-focus inside the content after re-render
       setTimeout(() => {
-        editorRef.current?.commands.focus("end");
+        if (editorRef.current) {
+          editorRef.current.commands.focus();
+          // For lists/tasks, cursor may land outside the item — move to first text position
+          try {
+            const doc = editorRef.current.state.doc;
+            // Find the first text node position
+            let textPos = 1;
+            doc.descendants((node, pos) => {
+              if (node.isText && textPos === 1) {
+                textPos = pos + node.nodeSize;
+                return false;
+              }
+            });
+            editorRef.current.commands.setTextSelection(textPos);
+          } catch {}
+        }
       }, 150);
     },
   });

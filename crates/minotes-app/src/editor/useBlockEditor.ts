@@ -146,14 +146,20 @@ export function useBlockEditor({
           const parentNode = $from.node($from.depth);
           const grandparent = $from.depth > 1 ? $from.node($from.depth - 1) : null;
 
-          if (
-            parentNode.type.name === "listItem" ||
-            parentNode.type.name === "codeBlock" ||
-            parentNode.type.name === "taskItem" ||
-            grandparent?.type.name === "table" ||
-            grandparent?.type.name === "blockquote"
-          ) {
-            return false;
+          // Check all ancestors, not just immediate parent
+          let isInsideSpecialNode = false;
+          for (let d = $from.depth; d >= 0; d--) {
+            const node = $from.node(d);
+            const name = node.type.name;
+            if (name === "listItem" || name === "taskItem" || name === "codeBlock" ||
+                name === "table" || name === "blockquote" || name === "bulletList" ||
+                name === "orderedList" || name === "taskList") {
+              isInsideSpecialNode = true;
+              break;
+            }
+          }
+          if (isInsideSpecialNode) {
+            return false; // Let TipTap handle Enter natively (new list item, etc.)
           }
 
           event.preventDefault();
