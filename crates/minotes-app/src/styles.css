@@ -2209,7 +2209,8 @@ body.theme-light { /* matches our light theme */ }
   position: absolute;
   cursor: pointer;
   top: 0; left: 0; right: 0; bottom: 0;
-  background: var(--bg-surface);
+  background: var(--border);
+  border: 1px solid var(--text-muted);
   border-radius: 11px;
   transition: 0.2s;
 }
@@ -2218,14 +2219,15 @@ body.theme-light { /* matches our light theme */ }
   content: "";
   position: absolute;
   height: 16px; width: 16px;
-  left: 3px; bottom: 3px;
-  background: var(--text-muted);
+  left: 2px; bottom: 2px;
+  background: var(--text-secondary);
   border-radius: 50%;
   transition: 0.2s;
 }
 
 .settings-toggle input:checked + .settings-toggle-slider {
   background: var(--accent);
+  border-color: var(--accent);
 }
 
 .settings-toggle input:checked + .settings-toggle-slider::before {
@@ -2281,6 +2283,38 @@ body.theme-light { /* matches our light theme */ }
 }
 
 /* ── CM6 Editor ── */
+
+/* Shortcuts grid in settings */
+.shortcuts-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.shortcut-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 3px 0;
+}
+
+.shortcut-key {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-family: monospace;
+  color: var(--text-primary);
+  min-width: 90px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.shortcut-desc {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
 
 .cm6-editor { min-height: 1.6em; }
 .cm6-editor .cm-editor { font-size: 14px; line-height: 1.6; }

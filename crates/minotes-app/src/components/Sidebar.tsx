@@ -110,9 +110,9 @@ export default function Sidebar({
         <button
           className="btn btn-sm"
           onClick={() => setShowFolderCreate(!showFolderCreate)}
-          title="New folder"
+          title="New project"
         >
-          + Folder
+          + Project
         </button>
       </div>
 
@@ -120,7 +120,7 @@ export default function Sidebar({
         <div className="sidebar-actions">
           <input
             className="search-input"
-            placeholder="Folder name..."
+            placeholder="Project name..."
             value={newFolderName}
             onChange={e => setNewFolderName(e.target.value)}
             onKeyDown={e => {
@@ -251,7 +251,7 @@ function DraggablePage({
   onRefresh: () => void;
 }) {
   const [dropPosition, setDropPosition] = useState<"above" | "below" | null>(null);
-  const didDrag = useRef(false);
+  const mouseStart = useRef<{ x: number; y: number } | null>(null);
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
@@ -291,20 +291,24 @@ function DraggablePage({
       style={{ paddingLeft: 16 + depth * 16 }}
       draggable
       onDragStart={e => {
-        didDrag.current = true;
         e.dataTransfer.setData("text/page-id", page.id);
         e.dataTransfer.setData("text/page-folder", page.folder_id ?? "");
         e.dataTransfer.effectAllowed = "move";
         e.currentTarget.classList.add("dragging");
       }}
       onDragEnd={e => { e.currentTarget.classList.remove("dragging"); setDropPosition(null); }}
-      onMouseDown={() => { didDrag.current = false; }}
-      onMouseUp={() => {
-        // Only navigate if this was a clean click, not a drag
-        if (!didDrag.current) {
-          onPageClick(page.id);
+      onMouseDown={e => { mouseStart.current = { x: e.clientX, y: e.clientY }; }}
+      onMouseUp={e => {
+        const start = mouseStart.current;
+        if (start) {
+          const dx = Math.abs(e.clientX - start.x);
+          const dy = Math.abs(e.clientY - start.y);
+          // Only navigate if mouse barely moved (not a drag)
+          if (dx < 5 && dy < 5) {
+            onPageClick(page.id);
+          }
         }
-        didDrag.current = false;
+        mouseStart.current = null;
       }}
       onDragOver={handleDragOver}
       onDragLeave={() => setDropPosition(null)}
@@ -336,7 +340,7 @@ function FolderItem({
   const handleDeleteFolder = async (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    if (confirm(`Delete folder "${folder.name}"? Pages will be moved to root.`)) {
+    if (confirm(`Delete project "${folder.name}"? Pages will be moved to root.`)) {
       await api.deleteFolder(folder.id);
       onRefresh();
     }

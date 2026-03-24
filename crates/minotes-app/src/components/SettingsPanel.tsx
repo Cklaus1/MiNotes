@@ -64,11 +64,7 @@ export default function SettingsPanel({ open, onClose }: Props) {
             <div className="settings-row-info">
               <div className="settings-row-name">Obsidian Editor Mode</div>
               <div className="settings-row-desc">
-                Enable CodeMirror 6 source editor as an alternative to the default rich-text editor.
-                When enabled, each block and page shows a toggle to switch between "Mi Edit" (WYSIWYG) and
-                "Obsidian Edit" (source markdown). This unlocks compatibility with Obsidian CM6 editor plugins.
-                <br /><br />
-                <strong>Default: Off.</strong> Only enable if you use Obsidian plugins that require the source editor.
+                Show a per-block toggle between rich text and source markdown editing.
               </div>
             </div>
             <label className="settings-toggle">
@@ -99,6 +95,32 @@ export default function SettingsPanel({ open, onClose }: Props) {
               </select>
             </div>
           )}
+        </div>
+
+        <div className="settings-section">
+          <div className="settings-section-title">Keyboard Shortcuts</div>
+          <div className="shortcuts-grid">
+            {[
+              ["Ctrl+K", "Search / Command Palette"],
+              ["Ctrl+J", "Today's Journal"],
+              ["Ctrl+N", "New Page"],
+              ["Ctrl+Q", "SQL Query Panel"],
+              ["Ctrl+G", "Graph View"],
+              ["Ctrl+R", "Flashcard Review"],
+              ["Ctrl+W", "Whiteboard"],
+              ["Ctrl+P", "Open PDF"],
+              ["Ctrl+Z", "Undo"],
+              ["Ctrl+,", "Settings"],
+              ["Ctrl+Shift+T", "Toggle Theme"],
+              ["/", "Slash Commands (in editor)"],
+              ["Esc", "Close Panel / Blur Editor"],
+            ].map(([key, desc]) => (
+              <div key={key} className="shortcut-row">
+                <kbd className="shortcut-key">{key}</kbd>
+                <span className="shortcut-desc">{desc}</span>
+              </div>
+            ))}
+          </div>
         </div>
 
         <div className="settings-section">
