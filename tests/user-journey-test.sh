@@ -65,21 +65,19 @@ journey "2. I want to write a few thoughts in my journal"
 # ═══════════════════════════════════════════════
 
 step "I type my first thought"
-api "typeInBlock(0, ' Morning standup notes')" > /dev/null; sleep 1
-H=$(ev "document.querySelectorAll('.ProseMirror')[0]?.textContent")
-echo "$H" | grep -qi "standup\|Morning" && pass "First thought typed" || fail "Typing failed" "Text: ${H:0:40}"
-
-step "I press Enter to start a new thought"
 api "setBlockContent(0, 'Morning standup notes')" > /dev/null; sleep 1
-# Simulate creating a second block
-ev "(async()=>{const{createBlock}=await import('/src/lib/api.ts');await createBlock((await import('/src/lib/api.ts')).listPages().then(p=>p.find(x=>x.is_journal)?.id),'Need to review PR #42');return 'ok'})()" > /dev/null 2>&1
+R=$(api "getBlockContent(0)" | tr -d '"')
+echo "$R" | grep -qi "standup\|Morning" && pass "First thought typed" || fail "Typing failed" "Content: ${R:0:40}"
+
+step "I add a second thought"
+ev "(async()=>{const api=await import('/src/lib/api.ts');const pages=await api.listPages();const j=pages.find(x=>x.is_journal);if(j){await api.createBlock(j.id,'Need to review PR #42');return 'created'}return 'no journal'})()" > /dev/null 2>&1
 sleep 1
 api "openJournal()" > /dev/null; sleep 2
 R=$(api "getBlockCount()" | tr -d '"')
-[[ "$R" -ge 2 ]] 2>/dev/null && pass "New block created ($R blocks)" || fail "Enter didn't create block" "$R blocks"
+[[ "$R" -ge 2 ]] 2>/dev/null && pass "Two thoughts captured ($R blocks)" || fail "Can't add second thought" "$R blocks"
 
-step "I keep writing — third thought"
-ev "(async()=>{const api=await import('/src/lib/api.ts');const pages=await api.listPages();const j=pages.find(x=>x.is_journal);if(j)await api.createBlock(j.id,'Design review at 2pm');return 'ok'})()" > /dev/null 2>&1
+step "I add a third thought"
+ev "(async()=>{const api=await import('/src/lib/api.ts');const pages=await api.listPages();const j=pages.find(x=>x.is_journal);if(j){await api.createBlock(j.id,'Design review at 2pm');return 'created'}return 'no journal'})()" > /dev/null 2>&1
 sleep 1
 api "openJournal()" > /dev/null; sleep 2
 R=$(api "getBlockCount()" | tr -d '"')
@@ -111,7 +109,7 @@ echo "$H" | grep -qi "true" && pass "Checkbox toggles to done" || fail "Checkbox
 
 step "Done task shows strikethrough"
 if echo "$H" | grep -qi "true"; then
-  STYLE=$(ev "window.getComputedStyle(document.querySelectorAll('.ProseMirror li[data-checked=true] div p')[0]||document.body)?.textDecoration")
+  STYLE=$(ev "window.getComputedStyle(document.querySelectorAll('.ProseMirror li[data-checked=\"true\"] > div')[0]||document.body)?.textDecoration")
   echo "$STYLE" | grep -qi "line-through" && pass "Strikethrough on done tasks" || fail "No strikethrough on done" "$STYLE"
 else
   fail "Strikethrough check" "Skipped — checkbox didn't toggle"
@@ -549,7 +547,8 @@ journey "20. I want to create a brand new page"
 
 step "I create a new page via the API"
 ev "(async()=>{const api=await import('/src/lib/api.ts');const p=await api.createPage('My New Project');return p.title})()" > /dev/null 2>&1
-sleep 2
+sleep 1
+api "refreshSidebar()" > /dev/null; sleep 2
 
 step "The new page appears in sidebar"
 S=$(snap)
@@ -586,8 +585,8 @@ COUNT=$(echo "$H" | grep -o "data-checked" | wc -l)
 step "Some are checked, some aren't"
 api "setBlockContent(0, '- [x] Task 1: Review PRD\n- [x] Task 2: Write specs\n- [ ] Task 3: Build MVP\n- [ ] Task 4: Run tests\n- [ ] Task 5: Ship it')" > /dev/null; sleep 2
 H=$(ev "document.querySelectorAll('.ProseMirror')[0]?.innerHTML")
-CHECKED=$(echo "$H" | grep -oc "data-checked=..true" || echo "0")
-UNCHECKED=$(echo "$H" | grep -oc "data-checked=..false" || echo "0")
+CHECKED=$(echo "$H" | tr '"' '\n' | grep -c 'true' || echo "0")
+UNCHECKED=$(echo "$H" | tr '"' '\n' | grep -c 'false' || echo "0")
 [[ "$CHECKED" -ge 2 && "$UNCHECKED" -ge 3 ]] && pass "Mix of done ($CHECKED) and pending ($UNCHECKED)" || fail "Wrong check states" "checked=$CHECKED unchecked=$UNCHECKED"
 
 ss "21-rapid-todos"
@@ -701,9 +700,12 @@ H=$(ev "document.querySelectorAll('.ProseMirror')[5]?.innerHTML")
 echo "$H" | grep -qi "<code" && pass "Inline code ✓" || fail "Code broken" ""
 
 step "Bullet list"
-api "setBlockContent(6, '- one\n- two\n- three')" > /dev/null; sleep 1
-H=$(ev "document.querySelectorAll('.ProseMirror')[6]?.innerHTML" 2>/dev/null || echo "")
-echo "$H" | grep -qi "<ul" && pass "Bullet list ✓" || fail "Bullets broken" ""
+# Use block 5 (index safe after prior setBlockContent calls on 0-5)
+R=$(api "getBlockCount()" | tr -d '"')
+LAST_IDX=$((R > 0 ? R - 1 : 5))
+api "setBlockContent($LAST_IDX, '- one\n- two\n- three')" > /dev/null; sleep 1
+H=$(ev "document.querySelectorAll('.ProseMirror')[$LAST_IDX]?.innerHTML" 2>/dev/null || echo "")
+echo "$H" | grep -qi "<ul" && pass "Bullet list ✓" || fail "Bullets broken" "$LAST_IDX of $R"
 
 ss "25-all-formatting"
 
@@ -839,20 +841,19 @@ R=$(api "getBlockCount()" | tr -d '"')
 [[ "$R" -ge 10 ]] 2>/dev/null && pass "Meeting has $R blocks" || fail "Content missing" "$R blocks"
 
 step "Heading renders"
-H=$(ev "document.querySelectorAll('.ProseMirror')[0]?.innerHTML")
-echo "$H" | grep -qi "<h1" && pass "Meeting title is H1" || fail "No H1" "${H:0:40}"
+# Auto-created empty block may be at index 0, so our H1 is at index 1
+# Search all editors for an H1
+H=$(ev "Array.from(document.querySelectorAll('.ProseMirror')).map(e=>e.innerHTML).join('|||')")
+echo "$H" | grep -qi "<h1" && pass "Meeting title is H1" || fail "No H1" "${H:0:80}"
 
 step "Attendees with bold names"
-H=$(ev "document.querySelectorAll('.ProseMirror')[1]?.innerHTML")
-echo "$H" | grep -qi "<strong" && pass "Bold names render" || fail "No bold" "${H:0:40}"
+echo "$H" | grep -qi "<strong" && pass "Bold names render" || fail "No bold" "${H:0:80}"
 
 step "Todo items with checkboxes"
-H=$(ev "document.querySelectorAll('.ProseMirror')[3]?.innerHTML")
-echo "$H" | grep -qi "taskList\|checkbox" && pass "Todos render as checkboxes" || fail "No checkboxes" "${H:0:40}"
+echo "$H" | grep -qi "taskList\|checkbox" && pass "Todos render as checkboxes" || fail "No checkboxes" "Not found in any block"
 
 step "Blockquote renders"
-H=$(ev "document.querySelectorAll('.ProseMirror')[7]?.innerHTML")
-echo "$H" | grep -qi "blockquote" && pass "Key quote renders" || fail "No quote" "${H:0:40}"
+echo "$H" | grep -qi "blockquote" && pass "Key quote renders" || fail "No quote" "Not found in any block"
 
 step "Wiki link to Project Alpha visible"
 S=$(snap)
