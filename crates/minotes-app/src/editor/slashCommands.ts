@@ -29,21 +29,14 @@ const COMMANDS: SlashMenuItem[] = [
   },
   {
     title: "Bullet List",
-    description: "Unordered list",
+    description: "Start a list",
     command: ({ editor, range }) => {
       editor.chain().focus().deleteRange(range).toggleBulletList().run();
     },
   },
   {
-    title: "Numbered List",
-    description: "Ordered list",
-    command: ({ editor, range }) => {
-      editor.chain().focus().deleteRange(range).toggleOrderedList().run();
-    },
-  },
-  {
     title: "Task List",
-    description: "Checkbox list",
+    description: "Checklist",
     command: ({ editor, range }) => {
       editor.chain().focus().deleteRange(range).toggleTaskList().run();
     },
@@ -57,30 +50,16 @@ const COMMANDS: SlashMenuItem[] = [
   },
   {
     title: "Blockquote",
-    description: "Quote block",
+    description: "Quote",
     command: ({ editor, range }) => {
       editor.chain().focus().deleteRange(range).toggleBlockquote().run();
     },
   },
   {
-    title: "Table",
-    description: "Insert 3x3 table",
-    command: ({ editor, range }) => {
-      editor.chain().focus().deleteRange(range).insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run();
-    },
-  },
-  {
-    title: "Horizontal Rule",
-    description: "Divider line",
+    title: "Divider",
+    description: "Horizontal line",
     command: ({ editor, range }) => {
       editor.chain().focus().deleteRange(range).setHorizontalRule().run();
-    },
-  },
-  {
-    title: "Highlight",
-    description: "Highlight text",
-    command: ({ editor, range }) => {
-      editor.chain().focus().deleteRange(range).toggleHighlight().run();
     },
   },
 ];
