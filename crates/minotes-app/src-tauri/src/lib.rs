@@ -204,18 +204,30 @@ fn get_journal(state: State<'_, AppState>, date: Option<String>) -> Result<PageT
         None => chrono::Local::now().date_naive(),
     };
     let title = format!("Journal/{}", d);
-    let page = match db.get_page_by_title(&title).map_err(|e| e.to_string())? {
-        Some(p) => p,
-        None => {
-            // Only create the page when user actually writes in it
-            // For now, create it but the auto-create empty block in PageView
-            // will handle the first block creation
-            db.create_page(&title, None, true, Some(d), "user")
-                .map_err(|e| e.to_string())?
+    match db.get_page_by_title(&title).map_err(|e| e.to_string())? {
+        Some(p) => {
+            let blocks = db.get_page_blocks(&p.id).map_err(|e| e.to_string())?;
+            Ok(PageTree { page: p, blocks })
         }
-    };
-    let blocks = db.get_page_blocks(&page.id).map_err(|e| e.to_string())?;
-    Ok(PageTree { page, blocks })
+        None => {
+            // Return a virtual page — don't persist until user writes content.
+            // The page will be created by create_block when the first block is added.
+            let virtual_id = uuid::Uuid::now_v7();
+            let now = chrono::Utc::now();
+            let page = minotes_core::models::Page {
+                id: virtual_id,
+                title: title.clone(),
+                icon: None,
+                folder_id: None,
+                position: 0.0,
+                is_journal: true,
+                journal_date: Some(d),
+                created_at: now,
+                updated_at: now,
+            };
+            Ok(PageTree { page, blocks: vec![] })
+        }
+    }
 }
 
 // ── Folder Commands ──

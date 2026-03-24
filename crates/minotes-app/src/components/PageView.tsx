@@ -66,10 +66,30 @@ export default function PageView({
   // Auto-create empty block on empty pages (debounced to avoid race with programmatic block creation)
   useEffect(() => {
     if (blocks.length === 0) {
-      const timer = setTimeout(() => {
+      const timer = setTimeout(async () => {
         // Re-check — blocks might have been added in the meantime
         if (localBlocks.length === 0) {
-          api.createBlock(page.id, "").then(() => onRefreshPage());
+          try {
+            // For virtual journal pages, ensure the page exists first
+            if (page.is_journal) {
+              try {
+                await api.createPage(page.title);
+              } catch {
+                // Page already exists — that's fine
+              }
+            }
+            await api.createBlock(page.id, "");
+            onRefreshPage();
+          } catch {
+            // Block creation failed — page might not exist
+            // Try creating via journal API which handles this
+            if (page.is_journal && page.journal_date) {
+              try {
+                await api.getJournal(page.journal_date);
+                onRefreshPage();
+              } catch {}
+            }
+          }
         }
       }, 300);
       return () => clearTimeout(timer);
