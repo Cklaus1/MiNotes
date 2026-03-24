@@ -230,87 +230,70 @@ body {
 .block[data-depth="4"] { margin-left: 80px; }
 
 /* === Full Tree Mode === */
-/* Activated via .tree-mode class on .block-list */
-/* Uses ├── / └── style branch connectors */
+/* Uses border-left/border-bottom for ├── / └── connectors */
+/* ::before = connector (L-shape or T-shape) */
+/* ::after = not used (freed for future) */
 
 .block-list.tree-mode {
-  padding-left: 20px;
+  padding-left: 18px;
 }
 
 .block-list.tree-mode .block {
-  padding: 6px 4px 6px 16px;
+  padding: 6px 4px 6px 14px;
 }
 
-/* Hide default bullet in tree mode */
+/* ├── connector: vertical line (full height) + horizontal branch */
+/* Uses border-left for vertical, border-bottom for horizontal arm */
 .block-list.tree-mode .block::before {
-  display: none;
-}
-
-/* ::after = vertical line (│) running full block height */
-.block-list.tree-mode .block::after {
   content: "";
   position: absolute;
   left: 0;
   top: 0;
+  width: 10px;
+  height: 16px;  /* half the block — where the branch connects */
+  border-left: 1px solid rgba(255, 255, 255, 0.25);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 0 0 0 3px;  /* slight rounding at corner */
+  background: none;
+}
+
+/* Vertical continuation below the branch (│ continues down) */
+.block-list.tree-mode .block::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 16px;  /* starts where ::before ends */
   bottom: 0;
   width: 0;
-  border-left: 1px solid rgba(255, 255, 255, 0.22);
+  border-left: 1px solid rgba(255, 255, 255, 0.25);
 }
 
-/* Horizontal branch connector (├── shape) via box-shadow on ::after */
-/* The horizontal arm extends from the vertical line to content */
-.block-list.tree-mode .block::after {
-  box-shadow: 0px 15px 0 0 rgba(255, 255, 255, 0.22),
-              1px 15px 0 0 rgba(255, 255, 255, 0.22),
-              2px 15px 0 0 rgba(255, 255, 255, 0.22),
-              3px 15px 0 0 rgba(255, 255, 255, 0.22),
-              4px 15px 0 0 rgba(255, 255, 255, 0.22),
-              5px 15px 0 0 rgba(255, 255, 255, 0.22),
-              6px 15px 0 0 rgba(255, 255, 255, 0.22),
-              7px 15px 0 0 rgba(255, 255, 255, 0.22);
-}
-
-/* Last block — └── shape: vertical line stops at connector */
+/* └── Last child: no vertical continuation below */
 .block-list.tree-mode .block:last-child::after {
-  bottom: auto;
-  height: 16px;
+  display: none;
 }
 
-/* Only child — just a horizontal dash, no vertical line */
-.block-list.tree-mode .block:only-child::after {
+/* Only child: just the horizontal arm, no vertical */
+.block-list.tree-mode .block:only-child::before {
   border-left: none;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 0;
   top: 15px;
-  height: 1px;
-  width: 8px;
-  border-top: 1px solid rgba(255, 255, 255, 0.22);
-  box-shadow: none;
+  height: 0;
 }
 
-/* Node dot — sits at the junction where horizontal meets vertical */
-.block-list.tree-mode .block {
-  /* Pseudo-elements used up, so use border-image trick or rely on connector */
-  /* The junction IS the corner — no separate dot needed */
-}
-
-/* ── Active path: focused block gets emphasis ── */
+/* ── Active path ── */
 
 .block-list.tree-mode .block:focus-within {
   background: rgba(137, 180, 250, 0.04);
 }
 
-.block-list.tree-mode .block:focus-within::after {
+.block-list.tree-mode .block:focus-within::before {
   border-left-color: rgba(137, 180, 250, 0.5);
-  box-shadow: 0px 15px 0 0 rgba(137, 180, 250, 0.5),
-              1px 15px 0 0 rgba(137, 180, 250, 0.5),
-              2px 15px 0 0 rgba(137, 180, 250, 0.5),
-              3px 15px 0 0 rgba(137, 180, 250, 0.5),
-              4px 15px 0 0 rgba(137, 180, 250, 0.5),
-              5px 15px 0 0 rgba(137, 180, 250, 0.5),
-              6px 15px 0 0 rgba(137, 180, 250, 0.5),
-              7px 15px 0 0 rgba(137, 180, 250, 0.5);
+  border-bottom-color: rgba(137, 180, 250, 0.5);
 }
 
-.block-list.tree-mode .block:last-child:focus-within::after {
+.block-list.tree-mode .block:focus-within::after {
   border-left-color: rgba(137, 180, 250, 0.5);
 }
 
@@ -320,57 +303,42 @@ body {
   background: rgba(255, 255, 255, 0.02);
 }
 
+.block-list.tree-mode .block:hover::before {
+  border-left-color: rgba(255, 255, 255, 0.4);
+  border-bottom-color: rgba(255, 255, 255, 0.4);
+}
+
 .block-list.tree-mode .block:hover::after {
-  border-left-color: rgba(255, 255, 255, 0.35);
-  box-shadow: 0px 15px 0 0 rgba(255, 255, 255, 0.35),
-              1px 15px 0 0 rgba(255, 255, 255, 0.35),
-              2px 15px 0 0 rgba(255, 255, 255, 0.35),
-              3px 15px 0 0 rgba(255, 255, 255, 0.35),
-              4px 15px 0 0 rgba(255, 255, 255, 0.35),
-              5px 15px 0 0 rgba(255, 255, 255, 0.35),
-              6px 15px 0 0 rgba(255, 255, 255, 0.35),
-              7px 15px 0 0 rgba(255, 255, 255, 0.35);
+  border-left-color: rgba(255, 255, 255, 0.4);
 }
 
 /* ── Tree indent levels ── */
-.block-list.tree-mode .block[data-depth="1"] { margin-left: 20px; }
-.block-list.tree-mode .block[data-depth="2"] { margin-left: 40px; }
-.block-list.tree-mode .block[data-depth="3"] { margin-left: 60px; }
-.block-list.tree-mode .block[data-depth="4"] { margin-left: 80px; }
+.block-list.tree-mode .block[data-depth="1"] { margin-left: 18px; }
+.block-list.tree-mode .block[data-depth="2"] { margin-left: 36px; }
+.block-list.tree-mode .block[data-depth="3"] { margin-left: 54px; }
+.block-list.tree-mode .block[data-depth="4"] { margin-left: 72px; }
 
 /* ── Light mode ── */
-[data-theme="light"] .block-list.tree-mode .block::after {
-  border-left-color: rgba(0, 0, 0, 0.18);
-  box-shadow: 0px 15px 0 0 rgba(0, 0, 0, 0.18),
-              1px 15px 0 0 rgba(0, 0, 0, 0.18),
-              2px 15px 0 0 rgba(0, 0, 0, 0.18),
-              3px 15px 0 0 rgba(0, 0, 0, 0.18),
-              4px 15px 0 0 rgba(0, 0, 0, 0.18),
-              5px 15px 0 0 rgba(0, 0, 0, 0.18),
-              6px 15px 0 0 rgba(0, 0, 0, 0.18),
-              7px 15px 0 0 rgba(0, 0, 0, 0.18);
+[data-theme="light"] .block-list.tree-mode .block::before {
+  border-left-color: rgba(0, 0, 0, 0.2);
+  border-bottom-color: rgba(0, 0, 0, 0.2);
 }
-[data-theme="light"] .block-list.tree-mode .block:hover::after {
-  border-left-color: rgba(0, 0, 0, 0.3);
-  box-shadow: 0px 15px 0 0 rgba(0, 0, 0, 0.3),
-              1px 15px 0 0 rgba(0, 0, 0, 0.3),
-              2px 15px 0 0 rgba(0, 0, 0, 0.3),
-              3px 15px 0 0 rgba(0, 0, 0, 0.3),
-              4px 15px 0 0 rgba(0, 0, 0, 0.3),
-              5px 15px 0 0 rgba(0, 0, 0, 0.3),
-              6px 15px 0 0 rgba(0, 0, 0, 0.3),
-              7px 15px 0 0 rgba(0, 0, 0, 0.3);
+[data-theme="light"] .block-list.tree-mode .block::after {
+  border-left-color: rgba(0, 0, 0, 0.2);
+}
+[data-theme="light"] .block-list.tree-mode .block:focus-within::before {
+  border-left-color: rgba(30, 102, 245, 0.45);
+  border-bottom-color: rgba(30, 102, 245, 0.45);
 }
 [data-theme="light"] .block-list.tree-mode .block:focus-within::after {
-  border-left-color: rgba(30, 102, 245, 0.4);
-  box-shadow: 0px 15px 0 0 rgba(30, 102, 245, 0.4),
-              1px 15px 0 0 rgba(30, 102, 245, 0.4),
-              2px 15px 0 0 rgba(30, 102, 245, 0.4),
-              3px 15px 0 0 rgba(30, 102, 245, 0.4),
-              4px 15px 0 0 rgba(30, 102, 245, 0.4),
-              5px 15px 0 0 rgba(30, 102, 245, 0.4),
-              6px 15px 0 0 rgba(30, 102, 245, 0.4),
-              7px 15px 0 0 rgba(30, 102, 245, 0.4);
+  border-left-color: rgba(30, 102, 245, 0.45);
+}
+[data-theme="light"] .block-list.tree-mode .block:hover::before {
+  border-left-color: rgba(0, 0, 0, 0.35);
+  border-bottom-color: rgba(0, 0, 0, 0.35);
+}
+[data-theme="light"] .block-list.tree-mode .block:hover::after {
+  border-left-color: rgba(0, 0, 0, 0.35);
 }
 
 /* Block selection highlight */
