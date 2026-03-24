@@ -168,7 +168,11 @@ export default function App() {
   useEffect(() => {
     registerTestApi({
       navigateTo: (titleOrId: string) => {
-        openPage(titleOrId);
+        openPage(titleOrId).catch(e => console.error("[testApi] navigateTo error:", e));
+        return true;
+      },
+      refreshSidebar: () => {
+        refresh();
         return true;
       },
       openJournal: (date?: string) => {

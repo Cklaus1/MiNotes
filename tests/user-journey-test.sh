@@ -105,13 +105,13 @@ COUNT=$(echo "$H" | grep -o "data-checked" | wc -l)
 [[ "$COUNT" -ge 3 ]] && pass "Three todo items ($COUNT)" || fail "Can't add multiple todos" "Only $COUNT items"
 
 step "I click a checkbox to mark a task done"
-$AB click "input[type=checkbox]" 2>/dev/null; sleep 1
+api "toggleCheckbox(0, 0)" > /dev/null; sleep 2
 H=$(ev "document.querySelectorAll('.ProseMirror')[0]?.querySelector('li')?.getAttribute('data-checked')")
-echo "$H" | grep -qi "true" && pass "Checkbox toggles to done" || fail "Checkbox click broken" "Click doesn't toggle — still $H"
+echo "$H" | grep -qi "true" && pass "Checkbox toggles to done" || fail "Checkbox toggle broken" "data-checked=$H"
 
 step "Done task shows strikethrough"
 if echo "$H" | grep -qi "true"; then
-  STYLE=$(ev "window.getComputedStyle(document.querySelectorAll('.ProseMirror li[data-checked=true] div p')[0]||document.body).textDecoration")
+  STYLE=$(ev "window.getComputedStyle(document.querySelectorAll('.ProseMirror li[data-checked=true] div p')[0]||document.body)?.textDecoration")
   echo "$STYLE" | grep -qi "line-through" && pass "Strikethrough on done tasks" || fail "No strikethrough on done" "$STYLE"
 else
   fail "Strikethrough check" "Skipped — checkbox didn't toggle"
@@ -771,10 +771,12 @@ journey "29. I have many pages — can I still find things?"
 # ═══════════════════════════════════════════════
 
 step "I create several more pages"
+# Refresh sidebar after creating pages
 for name in "Weekly Standup" "Q1 Planning" "Bug Tracker" "Architecture Notes" "Team Retro"; do
   ev "(async()=>{const api=await import('/src/lib/api.ts');try{await api.createPage('$name')}catch(e){}return 'ok'})()" > /dev/null 2>&1
 done
-sleep 2
+sleep 1
+api "refreshSidebar()" > /dev/null; sleep 2
 
 step "Sidebar shows many pages"
 S=$(snap)

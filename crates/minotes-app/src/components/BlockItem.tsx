@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, lazy, Suspense, forwardRef, useImperativeHandle } from "react";
+import { useEffect, useState, useRef, useCallback, lazy, Suspense, forwardRef, useImperativeHandle } from "react";
 import { EditorContent } from "@tiptap/react";
 import type { Block, Property } from "../lib/api";
 import * as api from "../lib/api";
@@ -141,6 +141,54 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
     }
   }, [block.content, tiptapEditor, editorMode]);
 
+  // Fix: checkbox toggle via document-level native event listener
+  // React synthetic events don't fire for contenteditable="false" elements
+  useEffect(() => {
+    const blockEl = document.querySelector(`[data-block-id="${block.id}"]`);
+    if (!blockEl) return;
+
+    const handler = (e: Event) => {
+      const target = e.target as HTMLElement;
+      const isCheckbox = target.tagName === 'INPUT' && (target as HTMLInputElement).type === 'checkbox';
+      const isLabel = target.tagName === 'LABEL' || (target.tagName === 'SPAN' && !!target.closest('label'));
+      if (!isCheckbox && !isLabel) return;
+      if (!editorRef.current) return;
+
+      e.preventDefault();
+      e.stopPropagation();
+
+      const li = target.closest('li[data-checked]');
+      if (!li) return;
+      const isChecked = li.getAttribute('data-checked') === 'true';
+
+      try {
+        const editor = editorRef.current;
+        const { doc } = editor.state;
+        doc.descendants((node: any, pos: number) => {
+          if (node.type.name === 'taskItem') {
+            const domNode = editor.view.nodeDOM(pos) as HTMLElement;
+            if (domNode && (domNode === li || domNode.contains(target))) {
+              editor.chain()
+                .focus(undefined, { scrollIntoView: false })
+                .command(({ tr }: any) => {
+                  tr.setNodeMarkup(pos, undefined, { ...node.attrs, checked: !isChecked });
+                  return true;
+                })
+                .run();
+              return false;
+            }
+          }
+        });
+      } catch {}
+    };
+
+    blockEl.addEventListener('click', handler, true);
+    return () => blockEl.removeEventListener('click', handler, true);
+  }, [block.id, tiptapEditor]);
+
+  // Dummy for onClickCapture — actual handler is native above
+  const handleBlockClick = useCallback(() => {}, []);
+
   // Load properties
   useEffect(() => {
     api.getProperties(block.id).then(setProperties).catch(() => {});
@@ -203,6 +251,7 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
       onFocusCapture={() => onFocusBlock?.(block.id)}
       onBlurCapture={() => onBlurBlock?.()}
       onContextMenu={handleContextMenu}
+      onClickCapture={handleBlockClick}
       onClick={(e) => {
         if (e.shiftKey && onShiftClick) {
           e.preventDefault();

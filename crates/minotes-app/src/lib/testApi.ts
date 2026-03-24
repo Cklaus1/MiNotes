@@ -18,9 +18,11 @@ export interface MiNotesTestApi {
   openSearch: () => boolean;
   openSettings: () => boolean;
   closePanel: () => boolean;
+  refreshSidebar: () => boolean;
   getCurrentPage: () => string | null;
   getBlockCount: () => number;
   isPanelOpen: (name: string) => boolean;
+  toggleCheckbox: (blockIndex: number, itemIndex?: number) => boolean;
   version: string;
 }
 

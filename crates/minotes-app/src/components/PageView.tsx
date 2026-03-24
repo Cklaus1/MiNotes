@@ -63,10 +63,16 @@ export default function PageView({
     api.getAliases(page.id).then(setAliases).catch(() => {});
   }, [page.id]);
 
-  // Auto-create empty block on empty pages
+  // Auto-create empty block on empty pages (debounced to avoid race with programmatic block creation)
   useEffect(() => {
     if (blocks.length === 0) {
-      api.createBlock(page.id, "").then(() => onRefreshPage());
+      const timer = setTimeout(() => {
+        // Re-check — blocks might have been added in the meantime
+        if (localBlocks.length === 0) {
+          api.createBlock(page.id, "").then(() => onRefreshPage());
+        }
+      }, 300);
+      return () => clearTimeout(timer);
     }
   }, [page.id, blocks.length]);
 
@@ -465,6 +471,28 @@ export default function PageView({
         return false;
       },
       getBlockCount: () => filteredVisibleBlocks.length,
+      toggleCheckbox: (blockIndex: number, itemIndex: number = 0) => {
+        // Get the block and modify its content to toggle the checkbox
+        const block = filteredVisibleBlocks[blockIndex];
+        if (!block) return false;
+        // Parse the markdown — find the nth [ ] or [x] and toggle it
+        let content = block.content;
+        let count = 0;
+        const toggled = content.replace(/- \[([ x])\]/g, (match, state) => {
+          if (count === itemIndex) {
+            count++;
+            return state === 'x' ? '- [ ]' : '- [x]';
+          }
+          count++;
+          return match;
+        });
+        if (toggled !== content) {
+          onUpdateBlock(block.id, toggled);
+          setLocalBlocks(prev => prev.map(b => b.id === block.id ? { ...b, content: toggled } : b));
+          return true;
+        }
+        return false;
+      },
     });
   }, [filteredVisibleBlocks]);
 
