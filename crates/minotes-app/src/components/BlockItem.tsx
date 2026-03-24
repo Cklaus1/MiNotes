@@ -357,6 +357,17 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
         </div>
       )}
 
+      {/* TODO/DOING/DONE badge */}
+      {block.content.startsWith("TODO ") && (
+        <span className="todo-badge todo-badge-todo" onClick={handleToggleTodo} title="Click to cycle: TODO → DOING → DONE">TODO</span>
+      )}
+      {block.content.startsWith("DOING ") && (
+        <span className="todo-badge todo-badge-doing" onClick={handleToggleTodo} title="Click to cycle: DOING → DONE">DOING</span>
+      )}
+      {block.content.startsWith("DONE ") && (
+        <span className="todo-badge todo-badge-done" onClick={handleToggleTodo} title="Click to remove DONE state">DONE</span>
+      )}
+
       {/* Editor content — whiteboard blocks render as clickable cards */}
       {(() => {
         const wbMatch = block.content.match(WHITEBOARD_REGEX);

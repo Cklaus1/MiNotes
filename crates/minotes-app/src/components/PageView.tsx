@@ -507,10 +507,16 @@ export default function PageView({
     ? getDescendants(blocks, zoomedBlockId)
     : blocks;
 
-  // Filter visible blocks (exclude collapsed children)
-  const filteredVisibleBlocks = visibleBlocks.filter(
-    b => !blockTreeInfo.isHiddenByCollapse(b.id)
-  );
+  // Filter visible blocks (exclude collapsed children + duplicate H1 title)
+  const filteredVisibleBlocks = visibleBlocks.filter((b, idx) => {
+    if (blockTreeInfo.isHiddenByCollapse(b.id)) return false;
+    // Hide first block if it's an H1 matching the page title (redundant with header)
+    if (idx === 0 && !b.parent_id) {
+      const trimmed = b.content.trim();
+      if (trimmed.startsWith("# ") && trimmed.slice(2).trim() === page.title) return false;
+    }
+    return true;
+  });
 
   // Active path: the focused block + all its ancestors
   const activePathIds = new Set<string>(
@@ -737,11 +743,7 @@ export default function PageView({
           )}
         </div>
       )}
-      {aliases.length === 0 && !addingAlias && (
-        <div className="page-aliases">
-          <button className="alias-add-btn" onClick={() => setAddingAlias(true)} title="Add alias" style={{ fontSize: 11, opacity: 0.5 }}>+ alias</button>
-        </div>
-      )}
+      {/* Alias button hidden when empty — access via gear icon or right-click page title */}
 
       {showProps && (
         <div className="page-properties">

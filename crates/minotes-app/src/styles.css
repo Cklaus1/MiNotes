@@ -384,6 +384,39 @@ body {
   outline: none;
 }
 
+/* TODO/DOING/DONE badges */
+.todo-badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 1px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  position: absolute;
+  left: 16px;
+  top: 8px;
+  z-index: 2;
+  transition: opacity 0.15s;
+}
+
+.todo-badge:hover { opacity: 0.8; }
+
+.todo-badge-todo {
+  background: #f9e2af;
+  color: #1e1e2e;
+}
+
+.todo-badge-doing {
+  background: #89b4fa;
+  color: #1e1e2e;
+}
+
+.todo-badge-done {
+  background: #a6e3a1;
+  color: #1e1e2e;
+}
+
 .block-content:empty::before {
   content: "Type something...";
   color: var(--text-muted);
