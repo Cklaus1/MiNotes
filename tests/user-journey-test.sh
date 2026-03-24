@@ -878,7 +878,7 @@ step "I add a whiteboard block via the API (simulating /whiteboard slash command
 BEFORE_COUNT=$(api "getBlockCount()" | tr -d '"')
 ev "(async()=>{
   const api=await import('/src/lib/api.ts');
-  const { generateWhiteboardId } = await import('/src/components/Whiteboard.tsx');
+  const { generateWhiteboardId } = await import('/src/lib/whiteboardUtils.ts');
   const tree=await api.getPageTree('Project Alpha');
   const wbId = generateWhiteboardId();
   await api.createBlock(tree.page.id, '{{whiteboard:' + wbId + '}}');
@@ -972,7 +972,7 @@ step "I create a whiteboard via Ctrl+W (using API to simulate)"
 # Ctrl+W in headless browser may close the tab, so simulate via API
 ev "(async()=>{
   const api=await import('/src/lib/api.ts');
-  const { generateWhiteboardId } = await import('/src/components/Whiteboard.tsx');
+  const { generateWhiteboardId } = await import('/src/lib/whiteboardUtils.ts');
   const tree=await api.getPageTree('Research Notes');
   const wbId = generateWhiteboardId();
   await api.createBlock(tree.page.id, '{{whiteboard:' + wbId + '}}');

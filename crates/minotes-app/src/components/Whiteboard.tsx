@@ -64,19 +64,6 @@ function saveWhiteboardData(id: string, data: WhiteboardData) {
   window.dispatchEvent(new CustomEvent("whiteboard-saved", { detail: id }));
 }
 
-/** Check if a whiteboard has saved data */
-export function hasWhiteboardData(whiteboardId: string): boolean {
-  return localStorage.getItem(STORAGE_PREFIX + whiteboardId) !== null;
-}
-
-/** Generate a new whiteboard ID */
-export function generateWhiteboardId(): string {
-  return "wb-" + crypto.randomUUID().slice(0, 8);
-}
-
-/** Whiteboard content marker pattern */
-export const WHITEBOARD_REGEX = /^\{\{whiteboard:([a-zA-Z0-9-]+)\}\}$/;
-
 let nextNoteId = 1;
 
 export default function Whiteboard({ whiteboardId, onClose }: Props) {

@@ -44,7 +44,18 @@ export default function PageView({
   const [addingAlias, setAddingAlias] = useState(false);
   const [newAlias, setNewAlias] = useState("");
   const [focusBlockIndex, setFocusBlockIndex] = useState<number | null>(null);
-  const [activeBlockId, setActiveBlockId] = useState<string | null>(null);
+  const [activeBlockId, setActiveBlockIdState] = useState<string | null>(null);
+  const activeBlockIdRef = useRef<string | null>(null);
+  const activeBlockTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Debounced active block update — prevents re-render from stealing editor focus on click
+  const setActiveBlockId = useCallback((id: string | null) => {
+    activeBlockIdRef.current = id;
+    if (activeBlockTimer.current) clearTimeout(activeBlockTimer.current);
+    activeBlockTimer.current = setTimeout(() => {
+      setActiveBlockIdState(id);
+    }, 50);
+  }, []);
   const [linkPreview, setLinkPreview] = useState<{ pageName: string; x: number; y: number } | null>(null);
   const [selectedBlockIds, setSelectedBlockIds] = useState<Set<string>>(new Set());
   const [selectionAnchor, setSelectionAnchor] = useState<number | null>(null);
@@ -821,7 +832,15 @@ export default function PageView({
               })()}
               isOnActivePath={activePathIds.has(block.id)}
               onFocusBlock={setActiveBlockId}
-              onBlurBlock={() => setActiveBlockId(null)}
+              onBlurBlock={() => {
+                // Only clear if no other block takes focus within 100ms
+                // Prevents flash when clicking between blocks
+                setTimeout(() => {
+                  if (activeBlockIdRef.current === block.id) {
+                    setActiveBlockId(null);
+                  }
+                }, 100);
+              }}
               onShiftClick={handleShiftClick}
               onOpenWhiteboard={onOpenWhiteboard}
             />

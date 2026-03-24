@@ -4,7 +4,7 @@ import Suggestion, { type SuggestionOptions, type SuggestionProps } from "@tipta
 import { PluginKey } from "@tiptap/pm/state";
 import tippy, { type Instance as TippyInstance } from "tippy.js";
 import { SlashMenu, type SlashMenuItem } from "./SlashMenu";
-import { generateWhiteboardId } from "../components/Whiteboard";
+import { generateWhiteboardId } from "../lib/whiteboardUtils";
 
 /*
  * Slash commands use two strategies:

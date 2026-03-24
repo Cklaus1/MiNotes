@@ -5,7 +5,7 @@ import * as api from "../lib/api";
 import { useBlockEditor } from "../editor";
 import { getSettings } from "../lib/settings";
 import BlockContextMenu from "./BlockContextMenu";
-import { WHITEBOARD_REGEX, hasWhiteboardData } from "./Whiteboard";
+import { WHITEBOARD_REGEX, hasWhiteboardData } from "../lib/whiteboardUtils";
 import WhiteboardThumbnail from "./WhiteboardThumbnail";
 import BubbleToolbar from "../editor/BubbleToolbar";
 import "../editor/editor.css";
