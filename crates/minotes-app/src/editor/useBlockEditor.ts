@@ -128,8 +128,8 @@ export function useBlockEditor({
           return true;
         }
 
-        // Enter — split block (unless Shift, or inside list/code/table/blockquote)
-        if (event.key === "Enter" && !event.shiftKey && onEnterRef.current) {
+        // Enter — split block (unless Shift, inside list/code/table/blockquote, or popup open)
+        if (event.key === "Enter" && !event.shiftKey && onEnterRef.current && !document.querySelector('.tippy-box')) {
           const { state } = view;
           const { $from } = state.selection;
           const parentNode = $from.node($from.depth);
