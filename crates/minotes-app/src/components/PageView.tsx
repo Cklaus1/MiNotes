@@ -21,7 +21,15 @@ interface Props {
 export default function PageView({
   pageTree, onUpdateBlock, onDeleteBlock, onPageLinkClick, onShiftClick, onJournalNav, onRefreshPage,
 }: Props) {
-  const { page, blocks } = pageTree;
+  const { page } = pageTree;
+  // Local blocks state for optimistic updates (prevents full re-render on Enter)
+  const [localBlocks, setLocalBlocks] = useState(pageTree.blocks);
+  const blocks = localBlocks;
+
+  // Sync from props when page changes or blocks update from parent
+  useEffect(() => {
+    setLocalBlocks(pageTree.blocks);
+  }, [pageTree]);
   const [pageProps, setPageProps] = useState<Property[]>([]);
   const [zoomedBlockId, setZoomedBlockId] = useState<string | null>(null);
   const [showProps, setShowProps] = useState(false);
@@ -176,15 +184,19 @@ export default function PageView({
     const idx = blocks.findIndex(b => b.id === blockId);
     if (idx === -1) return;
 
-    // NOTE: The current block is already saved by useBlockEditor's Enter handler
-    // (it calls onSave with the before-cursor content). We only need to create
-    // the new block with the after-cursor content.
-
+    // Create the new block in backend
     const newBlock = await api.createBlock(page.id, contentAfterCursor);
     undoStack.push({ type: 'create', blockId: newBlock.id, pageId: page.id, newContent: contentAfterCursor, timestamp: Date.now() });
-    await onRefreshPage();
-    // Set focus after refresh so the new block's ref exists
-    setTimeout(() => setFocusBlockIndex(idx + 1), 50);
+
+    // Optimistically insert into local state (no full page refresh!)
+    setLocalBlocks(prev => {
+      const copy = [...prev];
+      copy.splice(idx + 1, 0, newBlock);
+      return copy;
+    });
+
+    // Focus the new block after React renders it
+    setTimeout(() => setFocusBlockIndex(idx + 1), 30);
   };
 
   const handleBackspaceAtStart = async (blockId: string, content: string) => {

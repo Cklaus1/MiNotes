@@ -253,6 +253,34 @@ body {
 .block[data-depth="3"] { margin-left: 72px; }
 .block[data-depth="4"] { margin-left: 96px; }
 
+/* Vertical indent guide lines */
+.block[data-depth]::after {
+  content: "";
+  position: absolute;
+  left: -12px;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--border);
+  opacity: 0.5;
+}
+
+.block[data-depth="2"]::after { left: -12px; }
+.block[data-depth="3"]::after {
+  left: -12px;
+  box-shadow: -24px 0 0 0 rgba(69, 71, 90, 0.5);
+}
+.block[data-depth="4"]::after {
+  left: -12px;
+  box-shadow: -24px 0 0 0 rgba(69, 71, 90, 0.5), -48px 0 0 0 rgba(69, 71, 90, 0.5);
+}
+
+/* Hide guide on root level blocks */
+.block:not([data-depth])::after,
+.block[data-depth="0"]::after {
+  display: none;
+}
+
 /* Collapse toggle for parent blocks */
 .block-collapse {
   position: absolute;
