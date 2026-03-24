@@ -112,7 +112,6 @@ pub struct Event {
 /// A page with its block tree (for --tree output).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PageTree {
-    #[serde(flatten)]
     pub page: Page,
     pub blocks: Vec<Block>,
 }
