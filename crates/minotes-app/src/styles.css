@@ -205,6 +205,35 @@ body {
   transition: background 0.15s;
 }
 
+/* Heading blocks — larger bullets + left accent border */
+.block:has(.ProseMirror > h1)::before {
+  width: 6px;
+  height: 6px;
+  top: 12px;
+  background: var(--accent);
+  border-radius: 2px;
+}
+
+.block:has(.ProseMirror > h2)::before {
+  width: 5px;
+  height: 5px;
+  top: 12px;
+  background: rgba(137, 180, 250, 0.6);
+  border-radius: 2px;
+}
+
+.block:has(.ProseMirror > h3)::before {
+  width: 5px;
+  height: 5px;
+  top: 10px;
+  background: rgba(137, 180, 250, 0.4);
+}
+
+/* Subtle top margin before headings for visual breathing room */
+.block:has(.ProseMirror > h1) { margin-top: 12px; }
+.block:has(.ProseMirror > h2) { margin-top: 8px; }
+.block:has(.ProseMirror > h3) { margin-top: 4px; }
+
 /* Hover: soft highlight */
 .block:hover {
   background: rgba(49, 50, 68, 0.2);
