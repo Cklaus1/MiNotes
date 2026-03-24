@@ -543,6 +543,204 @@ ss "19-session-stability"
 # ═══════════════════════════════════════════════
 # Cleanup
 # ═══════════════════════════════════════════════
+journey "20. I want to create a brand new page"
+# Core action: + New → type title → see empty page
+# ═══════════════════════════════════════════════
+
+step "I create a new page via the API"
+ev "(async()=>{const api=await import('/src/lib/api.ts');const p=await api.createPage('My New Project');return p.title})()" > /dev/null 2>&1
+sleep 2
+
+step "The new page appears in sidebar"
+S=$(snap)
+echo "$S" | grep -qi "My New Project" && pass "New page in sidebar" || fail "Page not in sidebar" "Can't find My New Project"
+
+step "I navigate to my new page"
+api "navigateTo('My New Project')" > /dev/null; sleep 2
+R=$(api "getCurrentPage()" | tr -d '"')
+[[ "$R" == *"My New Project"* ]] && pass "New page opens" || fail "Can't open new page" "$R"
+
+step "I add content to it"
+ev "(async()=>{const api=await import('/src/lib/api.ts');const tree=await api.getPageTree('My New Project');await api.createBlock(tree.page.id,'First note in my new project');return 'ok'})()" > /dev/null 2>&1
+sleep 1
+api "navigateTo('My New Project')" > /dev/null; sleep 2
+R=$(api "getBlockCount()" | tr -d '"')
+[[ "$R" -ge 1 ]] 2>/dev/null && pass "Content added to new page ($R blocks)" || fail "Can't add content" "$R blocks"
+
+ss "20-create-page"
+
+# ═══════════════════════════════════════════════
+journey "21. I want to add many todo items quickly"
+# Power user: rapid todo entry — type, Enter, type, Enter
+# ═══════════════════════════════════════════════
+
+step "I create a page with 5 task items at once"
+api "navigateTo('My New Project')" > /dev/null; sleep 2
+api "setBlockContent(0, '- [ ] Task 1: Review PRD\n- [ ] Task 2: Write specs\n- [ ] Task 3: Build MVP\n- [ ] Task 4: Run tests\n- [ ] Task 5: Ship it')" > /dev/null; sleep 2
+
+step "All 5 tasks render as checkboxes"
+H=$(ev "document.querySelectorAll('.ProseMirror')[0]?.innerHTML")
+COUNT=$(echo "$H" | grep -o "data-checked" | wc -l)
+[[ "$COUNT" -ge 5 ]] && pass "All 5 tasks render ($COUNT checkboxes)" || fail "Missing tasks" "Only $COUNT of 5"
+
+step "Some are checked, some aren't"
+api "setBlockContent(0, '- [x] Task 1: Review PRD\n- [x] Task 2: Write specs\n- [ ] Task 3: Build MVP\n- [ ] Task 4: Run tests\n- [ ] Task 5: Ship it')" > /dev/null; sleep 2
+H=$(ev "document.querySelectorAll('.ProseMirror')[0]?.innerHTML")
+CHECKED=$(echo "$H" | grep -oc "data-checked=..true" || echo "0")
+UNCHECKED=$(echo "$H" | grep -oc "data-checked=..false" || echo "0")
+[[ "$CHECKED" -ge 2 && "$UNCHECKED" -ge 3 ]] && pass "Mix of done ($CHECKED) and pending ($UNCHECKED)" || fail "Wrong check states" "checked=$CHECKED unchecked=$UNCHECKED"
+
+ss "21-rapid-todos"
+
+# ═══════════════════════════════════════════════
+journey "22. I want to see how pages connect"
+# User tries the UX Review page and Project Alpha — are links visible?
+# ═══════════════════════════════════════════════
+
+step "I go to Research Notes (has links)"
+api "navigateTo('Research Notes')" > /dev/null; sleep 2
+S=$(snap)
+
+step "I can see text that references other pages"
+echo "$S" | grep -qi "Project Alpha" && pass "Cross-page reference visible" || fail "No references" "Can't see links"
+
+step "I go to the UX Review (has many items)"
+api "navigateTo('UX Design Review — 2026-03-24')" > /dev/null; sleep 2
+R=$(api "getBlockCount()" | tr -d '"')
+[[ "$R" -ge 15 ]] 2>/dev/null && pass "UX Review has content ($R blocks)" || fail "UX Review empty" "$R"
+
+step "The UX Review has TODO items"
+S=$(snap)
+echo "$S" | grep -qi "TODO\|DOING\|DONE" && pass "TODO states visible in review" || fail "No task states" "Can't see statuses"
+
+ss "22-connected-pages"
+
+# ═══════════════════════════════════════════════
+journey "23. I want to work with code snippets"
+# Developer use case: store code in notes
+# ═══════════════════════════════════════════════
+
+step "I create a code block"
+api "navigateTo('Getting Started')" > /dev/null; sleep 2
+api 'setBlockContent(0, "```javascript\nfunction greet(name) {\n  return `Hello, ${name}!`;\n}\n```")' > /dev/null; sleep 2
+
+step "Code block renders with syntax highlighting"
+H=$(ev "document.querySelectorAll('.ProseMirror')[0]?.innerHTML")
+echo "$H" | grep -qi "<pre\|<code\|hljs\|code-block" && pass "Code block renders" || fail "No code block" "${H:0:60}"
+
+step "I create an inline code mention"
+api "setBlockContent(1, 'Run \`npm run test\` to verify')" > /dev/null; sleep 2
+H=$(ev "document.querySelectorAll('.ProseMirror')[1]?.innerHTML")
+echo "$H" | grep -qi "<code" && pass "Inline code renders" || fail "No inline code" "${H:0:60}"
+
+ss "23-code-snippets"
+
+# ═══════════════════════════════════════════════
+journey "24. I want to see what happens with empty states"
+# Edge case: empty page, empty search, no results
+# ═══════════════════════════════════════════════
+
+step "I navigate to a page with minimal content"
+api "openJournal('2025-01-01')" > /dev/null; sleep 2
+R=$(api "getCurrentPage()" | tr -d '"')
+[[ "$R" == *"2025-01-01"* ]] && pass "Empty journal page created" || fail "Can't create empty page" "$R"
+
+step "Empty page still has an editable block"
+R=$(api "getBlockCount()" | tr -d '"')
+[[ "$R" -ge 1 ]] 2>/dev/null && pass "Empty page has starter block" || fail "No blocks on empty page" "$R"
+
+step "I can still use search from an empty page"
+api "openSearch()" > /dev/null; sleep 1
+S=$(snap)
+echo "$S" | grep -qi "Search" && pass "Search works on empty page" || fail "Search broken" "Can't search"
+api "closePanel()" > /dev/null; sleep 0.5
+
+step "I can still navigate away"
+api "navigateTo('Project Alpha')" > /dev/null; sleep 2
+R=$(api "getCurrentPage()" | tr -d '"')
+[[ "$R" == *"Project Alpha"* ]] && pass "Navigation from empty page works" || fail "Stuck on empty page" "$R"
+
+ss "24-empty-states"
+
+# ═══════════════════════════════════════════════
+journey "25. I want to verify ALL formatting types on one page"
+# Comprehensive formatting test — every markdown feature
+# ═══════════════════════════════════════════════
+
+step "I go to Getting Started"
+api "navigateTo('Getting Started')" > /dev/null; sleep 2
+
+step "H1 heading"
+api "setBlockContent(0, '# Main Title')" > /dev/null; sleep 1
+H=$(ev "document.querySelectorAll('.ProseMirror')[0]?.innerHTML")
+echo "$H" | grep -qi "<h1" && pass "H1 ✓" || fail "H1 broken" ""
+
+step "H2 heading"
+api "setBlockContent(1, '## Section')" > /dev/null; sleep 1
+H=$(ev "document.querySelectorAll('.ProseMirror')[1]?.innerHTML")
+echo "$H" | grep -qi "<h2" && pass "H2 ✓" || fail "H2 broken" ""
+
+step "H3 heading"
+api "setBlockContent(2, '### Subsection')" > /dev/null; sleep 1
+H=$(ev "document.querySelectorAll('.ProseMirror')[2]?.innerHTML")
+echo "$H" | grep -qi "<h3" && pass "H3 ✓" || fail "H3 broken" ""
+
+step "Bold"
+api "setBlockContent(3, '**bold text**')" > /dev/null; sleep 1
+H=$(ev "document.querySelectorAll('.ProseMirror')[3]?.innerHTML")
+echo "$H" | grep -qi "<strong" && pass "Bold ✓" || fail "Bold broken" ""
+
+step "Italic"
+api "setBlockContent(4, '*italic text*')" > /dev/null; sleep 1
+H=$(ev "document.querySelectorAll('.ProseMirror')[4]?.innerHTML")
+echo "$H" | grep -qi "<em" && pass "Italic ✓" || fail "Italic broken" ""
+
+step "Inline code"
+api "setBlockContent(5, '\`code\`')" > /dev/null; sleep 1
+H=$(ev "document.querySelectorAll('.ProseMirror')[5]?.innerHTML")
+echo "$H" | grep -qi "<code" && pass "Inline code ✓" || fail "Code broken" ""
+
+step "Bullet list"
+api "setBlockContent(6, '- one\n- two\n- three')" > /dev/null; sleep 1
+H=$(ev "document.querySelectorAll('.ProseMirror')[6]?.innerHTML" 2>/dev/null || echo "")
+echo "$H" | grep -qi "<ul" && pass "Bullet list ✓" || fail "Bullets broken" ""
+
+ss "25-all-formatting"
+
+# ═══════════════════════════════════════════════
+journey "26. Final: Is the app stable after everything?"
+# After 25 journeys of heavy use, does it still work?
+# ═══════════════════════════════════════════════
+
+step "Journal still works"
+api "openJournal()" > /dev/null; sleep 2
+R=$(api "getCurrentPage()" | tr -d '"')
+[[ "$R" == *"Journal"* ]] && pass "Journal stable" || fail "Journal crashed" "$R"
+
+step "Navigation still works"
+api "navigateTo('Project Alpha')" > /dev/null; sleep 1
+R=$(api "getCurrentPage()" | tr -d '"')
+[[ "$R" == *"Project Alpha"* ]] && pass "Navigation stable" || fail "Nav crashed" "$R"
+
+step "Content still readable"
+R=$(api "getBlockCount()" | tr -d '"')
+[[ "$R" -ge 3 ]] 2>/dev/null && pass "Content intact" || fail "Content lost" "$R"
+
+step "Search still works"
+api "openSearch()" > /dev/null; sleep 1
+S=$(snap)
+echo "$S" | grep -qi "Search" && pass "Search stable" || fail "Search crashed" ""
+api "closePanel()" > /dev/null; sleep 0.5
+
+step "Settings still works"
+api "openSettings()" > /dev/null; sleep 1
+S=$(snap)
+echo "$S" | grep -qi "Theme" && pass "Settings stable" || fail "Settings crashed" ""
+api "closePanel()" > /dev/null
+
+ss "26-final-stability"
+
+# ═══════════════════════════════════════════════
 $AB close 2>/dev/null
 
 # ═══════════════════════════════════════════════
