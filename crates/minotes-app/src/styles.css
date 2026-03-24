@@ -231,38 +231,28 @@ body {
 
 /* === Full Tree Mode === */
 /*
- * Node axis = left: 0px (the vertical trunk)
- * Branch arm = 12px horizontal from trunk to content
- * All content types (text, list, checkbox) start at the same x
- *
- * ::before = connector (vertical + horizontal = ├── or └── shape)
- * ::after  = vertical continuation below the branch
+ * ::before = connector (├── or └── shape via border-left + border-bottom)
+ * ::after  = vertical continuation below branch (│)
+ * data-tree-last = last sibling (hides ::after for └── effect)
+ * data-active-path = ancestor of focused block (highlighted)
  */
 
 .block-list.tree-mode {
-  padding-left: 14px;
+  padding-left: 16px;
 }
 
 .block-list.tree-mode .block {
-  padding: 6px 4px 6px 14px;  /* 14px = branch arm width + gap */
+  padding: 7px 4px 7px 20px;  /* 16px arm + 4px breathing room */
 }
 
-/* Normalize all content to start at the same node axis */
+/* Normalize content alignment */
 .block-list.tree-mode .block .block-content .ProseMirror ul,
 .block-list.tree-mode .block .block-content .ProseMirror ol {
-  padding-left: 1.2em;  /* tighter, aligned */
+  padding-left: 1.2em;
 }
 .block-list.tree-mode .block .block-content .ProseMirror ul[data-type="taskList"] {
   padding-left: 0;
 }
-
-/*
- * ├── middle sibling: vertical runs full height + horizontal branch
- * └── last sibling: vertical stops at branch, no continuation
- *
- * Controlled by data-tree-last attribute from React (not CSS :last-child,
- * which can't know about logical tree siblings vs DOM siblings).
- */
 
 /* ├── connector (default: middle sibling) */
 .block-list.tree-mode .block::before {
@@ -270,50 +260,44 @@ body {
   position: absolute;
   left: 0;
   top: 0;
-  width: 14px;
-  height: 16px;
-  border-left: 1px solid rgba(255, 255, 255, 0.25);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.25);
-  border-radius: 0 0 0 4px;
+  width: 16px;             /* horizontal arm length */
+  height: 17px;            /* meets content vertically */
+  border-left: 1px solid rgba(255, 255, 255, 0.28);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 0 0 0 2px;  /* subtle softening */
   background: none;
 }
 
-/* │ continuation below (default: middle sibling) */
+/* │ vertical continuation below branch */
 .block-list.tree-mode .block::after {
   content: "";
   position: absolute;
   left: 0;
-  top: 16px;
+  top: 17px;
   bottom: 0;
   width: 0;
-  border-left: 1px solid rgba(255, 255, 255, 0.25);
+  border-left: 1px solid rgba(255, 255, 255, 0.28);
 }
 
-/* └── last sibling: no vertical continuation below */
+/* └── last sibling: strict cutoff, no bleed */
 .block-list.tree-mode .block[data-tree-last]::after {
   display: none;
 }
 
-/* Breathing room: wider indent per level */
-.block-list.tree-mode .block {
-  padding: 6px 4px 6px 18px;  /* 14px arm + 4px gap */
-}
+/* ── Active path: entire ancestry highlights ── */
 
-/* ── Active path: highlight entire ancestry ── */
-
-/* Focused block itself */
 .block-list.tree-mode .block:focus-within {
-  background: rgba(137, 180, 250, 0.04);
+  background: rgba(137, 180, 250, 0.05);
 }
 .block-list.tree-mode .block:focus-within::before {
-  border-left-color: rgba(137, 180, 250, 0.5);
-  border-bottom-color: rgba(137, 180, 250, 0.5);
+  border-left-color: rgba(137, 180, 250, 0.55);
+  border-bottom-color: rgba(137, 180, 250, 0.55);
 }
 .block-list.tree-mode .block:focus-within::after {
-  border-left-color: rgba(137, 180, 250, 0.5);
+  border-left-color: rgba(137, 180, 250, 0.55);
 }
 
-/* Ancestor blocks on the active path */
+/* Ancestors on the path */
 .block-list.tree-mode .block[data-active-path]::before {
   border-left-color: rgba(137, 180, 250, 0.35);
   border-bottom-color: rgba(137, 180, 250, 0.35);
@@ -328,28 +312,28 @@ body {
   background: rgba(255, 255, 255, 0.02);
 }
 .block-list.tree-mode .block:hover::before {
-  border-left-color: rgba(255, 255, 255, 0.4);
-  border-bottom-color: rgba(255, 255, 255, 0.4);
+  border-left-color: rgba(255, 255, 255, 0.42);
+  border-bottom-color: rgba(255, 255, 255, 0.42);
 }
 .block-list.tree-mode .block:hover::after {
-  border-left-color: rgba(255, 255, 255, 0.4);
+  border-left-color: rgba(255, 255, 255, 0.42);
 }
 
-/* ── Tree indent levels (18px per level) ── */
+/* ── Indent: 18px per level ── */
 .block-list.tree-mode .block[data-depth="1"] { margin-left: 18px; }
 .block-list.tree-mode .block[data-depth="2"] { margin-left: 36px; }
 .block-list.tree-mode .block[data-depth="3"] { margin-left: 54px; }
 .block-list.tree-mode .block[data-depth="4"] { margin-left: 72px; }
 
-/* Depth-based opacity: natural depth hierarchy */
+/* Depth contrast: lines stay readable, text can fade */
 .block-list.tree-mode .block[data-depth="1"]::before,
-.block-list.tree-mode .block[data-depth="1"]::after { opacity: 0.8; }
+.block-list.tree-mode .block[data-depth="1"]::after { opacity: 0.85; }
 .block-list.tree-mode .block[data-depth="2"]::before,
-.block-list.tree-mode .block[data-depth="2"]::after { opacity: 0.6; }
+.block-list.tree-mode .block[data-depth="2"]::after { opacity: 0.7; }
 .block-list.tree-mode .block[data-depth="3"]::before,
-.block-list.tree-mode .block[data-depth="3"]::after { opacity: 0.4; }
+.block-list.tree-mode .block[data-depth="3"]::after { opacity: 0.5; }
 .block-list.tree-mode .block[data-depth="4"]::before,
-.block-list.tree-mode .block[data-depth="4"]::after { opacity: 0.25; }
+.block-list.tree-mode .block[data-depth="4"]::after { opacity: 0.35; }
 
 /* ── Light mode ── */
 [data-theme="light"] .block-list.tree-mode .block::before {
@@ -372,6 +356,13 @@ body {
 }
 [data-theme="light"] .block-list.tree-mode .block:hover::after {
   border-left-color: rgba(0, 0, 0, 0.35);
+}
+[data-theme="light"] .block-list.tree-mode .block[data-active-path]::before {
+  border-left-color: rgba(30, 102, 245, 0.3);
+  border-bottom-color: rgba(30, 102, 245, 0.3);
+}
+[data-theme="light"] .block-list.tree-mode .block[data-active-path]::after {
+  border-left-color: rgba(30, 102, 245, 0.3);
 }
 
 /* Block selection highlight */
