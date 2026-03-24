@@ -18,6 +18,7 @@ import CustomViewContainer from "./components/CustomViewContainer";
 import SettingsPanel from "./components/SettingsPanel";
 import * as api from "./lib/api";
 import { initTheme, toggleTheme } from "./lib/theme";
+import { initTestApi, registerTestApi } from "./lib/testApi";
 import { loadEnabledSnippets } from "./lib/cssLoader";
 import { isOnboardingComplete, markOnboardingComplete, TUTORIAL_BLOCKS } from "./lib/onboarding";
 import { executeUndo, executeRedo } from "./lib/undoManager";
@@ -156,11 +157,55 @@ export default function App() {
     }
   }, []);
 
-  // Initialize theme and CSS snippets on mount
+  // Initialize test API, theme, and CSS snippets on mount
   useEffect(() => {
+    initTestApi();
     initTheme();
     loadEnabledSnippets();
   }, []);
+
+  // Register test API navigation methods
+  useEffect(() => {
+    registerTestApi({
+      navigateTo: (titleOrId: string) => {
+        openPage(titleOrId);
+        return true;
+      },
+      openJournal: (date?: string) => {
+        openJournal(date);
+        return true;
+      },
+      openSearch: () => {
+        setSearchOpen(true);
+        return true;
+      },
+      openSettings: () => {
+        setSettingsOpen(true);
+        return true;
+      },
+      closePanel: () => {
+        setSearchOpen(false);
+        setQueryOpen(false);
+        setGraphOpen(false);
+        setReviewOpen(false);
+        setPluginsOpen(false);
+        setWhiteboardOpen(false);
+        setSyncOpen(false);
+        setObsidianPluginsOpen(false);
+        setCssManagerOpen(false);
+        setSettingsOpen(false);
+        return true;
+      },
+      getCurrentPage: () => activePage?.page.title ?? null,
+      isPanelOpen: (name: string) => {
+        const map: Record<string, boolean> = {
+          search: searchOpen, query: queryOpen, graph: graphOpen,
+          review: reviewOpen, settings: settingsOpen,
+        };
+        return map[name] ?? false;
+      },
+    });
+  }, [activePage, searchOpen, queryOpen, graphOpen, reviewOpen, settingsOpen]);
 
   // Keyboard shortcuts
   useEffect(() => {

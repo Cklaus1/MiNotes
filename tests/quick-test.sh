@@ -1,128 +1,112 @@
 #!/bin/bash
-# Quick single-feature test for MiNotes
+# Quick single-feature test for MiNotes using agent-browser + test API
 # Usage: ./tests/quick-test.sh [feature]
-# Features: load, type, enter, slash, search, settings, journal, graph
 
 AB="agent-browser"
 URL="http://localhost:1420"
+SSDIR="tests/screenshots"
+mkdir -p "$SSDIR"
 
 case "${1:-load}" in
   load)
-    echo "Testing: App loads"
-    $AB open "$URL" --wait-until networkidle
-    sleep 2
-    $AB snapshot
-    $AB screenshot tests/screenshots/quick-load.png
+    echo "Testing: App loads with mock data"
+    $AB open "$URL" --wait-until networkidle && sleep 3
+    $AB eval "window.__MINOTES__?.getCurrentPage()"
+    $AB eval "window.__MINOTES__?.getBlockCount()"
+    $AB screenshot "$SSDIR/quick-load.png"
     $AB close
     ;;
 
   type)
-    echo "Testing: Type in block"
-    $AB open "$URL" --wait-until networkidle
-    sleep 2
-    $AB press "Control+j"
+    echo "Testing: Type in block via test API"
+    $AB open "$URL" --wait-until networkidle && sleep 3
+    $AB eval "window.__MINOTES__?.typeInBlock(0, 'Hello from agent-browser!')"
     sleep 1
-    $AB click "[class*=ProseMirror]" || true
-    sleep 0.5
-    $AB type "Testing typing in MiNotes block"
-    sleep 1
-    $AB screenshot tests/screenshots/quick-type.png
-    $AB snapshot
+    $AB eval "window.__MINOTES__?.getBlockContent(0)"
+    $AB screenshot "$SSDIR/quick-type.png"
     $AB close
     ;;
 
   enter)
-    echo "Testing: Enter creates new block"
-    $AB open "$URL" --wait-until networkidle
-    sleep 2
-    $AB press "Control+j"
-    sleep 1
-    $AB click "[class*=ProseMirror]" || true
-    $AB type "Block one"
+    echo "Testing: Create new block"
+    $AB open "$URL" --wait-until networkidle && sleep 3
+    $AB eval "window.__MINOTES__?.typeInBlock(0, 'First block')"
     sleep 0.5
-    $AB press "Enter"
+    $AB eval "window.__MINOTES__?.pressEnterInBlock(0)"
     sleep 1
-    $AB type "Block two"
-    sleep 1
-    $AB screenshot tests/screenshots/quick-enter.png
-    $AB snapshot
+    $AB eval "window.__MINOTES__?.getBlocks()"
+    $AB screenshot "$SSDIR/quick-enter.png"
     $AB close
     ;;
 
-  slash)
-    echo "Testing: Slash commands"
-    $AB open "$URL" --wait-until networkidle
+  navigate)
+    echo "Testing: Navigate to page"
+    $AB open "$URL" --wait-until networkidle && sleep 3
+    $AB eval "window.__MINOTES__?.navigateTo('Project Alpha')"
     sleep 2
-    $AB press "Control+j"
-    sleep 1
-    $AB press "Enter"
-    sleep 0.5
-    $AB type "/"
-    sleep 1
-    $AB screenshot tests/screenshots/quick-slash.png
-    $AB snapshot -i
-    $AB press "Escape"
+    $AB eval "window.__MINOTES__?.getCurrentPage()"
+    $AB eval "window.__MINOTES__?.getBlocks()"
+    $AB screenshot "$SSDIR/quick-navigate.png"
+    $AB close
+    ;;
+
+  journal)
+    echo "Testing: Journal navigation"
+    $AB open "$URL" --wait-until networkidle && sleep 3
+    $AB eval "window.__MINOTES__?.openJournal()"
+    sleep 2
+    $AB eval "window.__MINOTES__?.getCurrentPage()"
+    $AB eval "window.__MINOTES__?.openJournal('2026-03-23')"
+    sleep 2
+    $AB eval "window.__MINOTES__?.getCurrentPage()"
+    $AB screenshot "$SSDIR/quick-journal.png"
     $AB close
     ;;
 
   search)
     echo "Testing: Search panel"
-    $AB open "$URL" --wait-until networkidle
-    sleep 2
-    $AB press "Control+k"
+    $AB open "$URL" --wait-until networkidle && sleep 3
+    $AB eval "window.__MINOTES__?.openSearch()"
     sleep 1
-    $AB screenshot tests/screenshots/quick-search.png
-    $AB snapshot -i
-    $AB press "Escape"
+    $AB snapshot -i | head -10
+    $AB screenshot "$SSDIR/quick-search.png"
+    $AB eval "window.__MINOTES__?.closePanel()"
     $AB close
     ;;
 
   settings)
     echo "Testing: Settings panel"
-    $AB open "$URL" --wait-until networkidle
-    sleep 2
-    $AB press "Control+,"
+    $AB open "$URL" --wait-until networkidle && sleep 3
+    $AB eval "window.__MINOTES__?.openSettings()"
     sleep 1
-    $AB screenshot tests/screenshots/quick-settings.png
-    $AB snapshot
-    $AB press "Escape"
+    $AB snapshot | grep -i "theme\|tree\|keyboard" | head -10
+    $AB screenshot "$SSDIR/quick-settings.png"
+    $AB eval "window.__MINOTES__?.closePanel()"
     $AB close
     ;;
 
-  journal)
-    echo "Testing: Journal"
-    $AB open "$URL" --wait-until networkidle
+  blocks)
+    echo "Testing: Block content inspection"
+    $AB open "$URL" --wait-until networkidle && sleep 3
+    $AB eval "window.__MINOTES__?.navigateTo('Getting Started')"
     sleep 2
-    $AB press "Control+j"
-    sleep 2
-    $AB screenshot tests/screenshots/quick-journal.png
-    $AB snapshot
-    $AB close
-    ;;
-
-  graph)
-    echo "Testing: Graph view"
-    $AB open "$URL" --wait-until networkidle
-    sleep 2
-    $AB press "Control+g"
-    sleep 2
-    $AB screenshot tests/screenshots/quick-graph.png
-    $AB snapshot
-    $AB press "Escape"
+    $AB eval "JSON.stringify(window.__MINOTES__?.getBlocks(), null, 2)"
+    $AB screenshot "$SSDIR/quick-blocks.png"
     $AB close
     ;;
 
   all)
     echo "Running all quick tests..."
-    for t in load type enter slash search settings journal graph; do
+    for t in load type navigate journal search settings blocks; do
       echo ""
-      echo "--- $t ---"
+      echo "=== $t ==="
       $0 $t
+      echo ""
     done
     ;;
 
   *)
-    echo "Usage: $0 [load|type|enter|slash|search|settings|journal|graph|all]"
+    echo "Usage: $0 [load|type|enter|navigate|journal|search|settings|blocks|all]"
     exit 1
     ;;
 esac

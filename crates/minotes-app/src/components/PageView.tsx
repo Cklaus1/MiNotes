@@ -8,6 +8,7 @@ import BacklinksPanel from "./BacklinksPanel";
 import UnlinkedRefsPanel from "./UnlinkedRefsPanel";
 import LinkPreview from "./LinkPreview";
 import { undoStack } from "../lib/undoStack";
+import { registerTestApi } from "../lib/testApi";
 
 interface Props {
   pageTree: PageTree;
@@ -427,6 +428,45 @@ export default function PageView({
       ? [activeBlockId, ...blockTreeInfo.getAncestorIds(activeBlockId)]
       : []
   );
+
+  // Register block-level test API
+  useEffect(() => {
+    registerTestApi({
+      typeInBlock: (blockIndex: number, text: string) => {
+        const el = document.querySelectorAll('.ProseMirror')[blockIndex];
+        if (!el) return false;
+        (el as HTMLElement).focus();
+        document.execCommand('insertText', false, text);
+        return true;
+      },
+      setBlockContent: (blockIndex: number, markdown: string) => {
+        const block = filteredVisibleBlocks[blockIndex];
+        if (!block) return false;
+        onUpdateBlock(block.id, markdown);
+        setLocalBlocks(prev => prev.map(b => b.id === block.id ? { ...b, content: markdown } : b));
+        return true;
+      },
+      getBlockContent: (blockIndex: number) => {
+        const block = filteredVisibleBlocks[blockIndex];
+        return block?.content ?? null;
+      },
+      getBlocks: () => filteredVisibleBlocks.map((b, i) => ({ index: i, content: b.content })),
+      pressEnterInBlock: (blockIndex: number) => {
+        const ref = blockRefs.current[blockIndex];
+        if (!ref) return false;
+        ref.focus();
+        const el = document.querySelectorAll('.ProseMirror')[blockIndex];
+        if (el) el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+        return true;
+      },
+      focusBlock: (blockIndex: number) => {
+        const ref = blockRefs.current[blockIndex];
+        if (ref) { ref.focus(); return true; }
+        return false;
+      },
+      getBlockCount: () => filteredVisibleBlocks.length,
+    });
+  }, [filteredVisibleBlocks]);
 
   // UX-006: Zoom keyboard shortcuts
   useEffect(() => {
