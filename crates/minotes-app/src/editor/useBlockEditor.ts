@@ -60,6 +60,7 @@ export function useBlockEditor({
   const onPasteMultilineRef = useRef(onPasteMultiline);
   const onIndentRef = useRef(onIndent);
   const onOutdentRef = useRef(onOutdent);
+  const editorInstanceRef = useRef<any>(null);
   onSaveRef.current = onSave;
   contentRef.current = content;
   onEnterRef.current = onEnter;
@@ -137,32 +138,31 @@ export function useBlockEditor({
 
           event.preventDefault();
 
+          const ed = editorInstanceRef.current;
           const from = state.selection.from;
           const docEnd = state.doc.content.size - 1;
 
-          // Get text BEFORE cursor (stays in current block)
-          const contentBeforeCursor = from > 1
-            ? state.doc.textBetween(1, from, "\n", "")
-            : "";
-
-          // Get text AFTER cursor (goes to new block)
-          let contentAfterCursor = "";
+          // Get plain text after cursor (for the new block)
+          let textAfterCursor = "";
           if (from < docEnd) {
-            contentAfterCursor = state.doc.textBetween(from, docEnd, "\n", "");
+            textAfterCursor = state.doc.textBetween(from, docEnd, "\n", "");
           }
 
-          // Save the current block with only the before-cursor content
-          contentRef.current = contentBeforeCursor.trim(); // Prevent blur from re-saving
-          onSaveRef.current(contentBeforeCursor.trim());
-
-          // Update the editor display to match
+          // Delete text after cursor from the editor
           if (from < docEnd) {
             const tr = state.tr.delete(from, docEnd);
             view.dispatch(tr);
           }
 
-          // Create new block with the after-cursor content
-          onEnterRef.current(contentAfterCursor);
+          // Get markdown of remaining content (preserves formatting)
+          const markdownBefore = ed?.storage?.markdown?.getMarkdown?.() ?? "";
+
+          // Save current block with before-cursor content
+          contentRef.current = markdownBefore.trim();
+          onSaveRef.current(markdownBefore.trim());
+
+          // Create new block with after-cursor text
+          onEnterRef.current(textAfterCursor);
           return true;
         }
 
@@ -295,6 +295,11 @@ export function useBlockEditor({
       }
     },
   }, [onPageLinkClick, onBlockRefClick]);
+
+  // Keep editorInstanceRef in sync so handleKeyDown can access storage
+  useEffect(() => {
+    editorInstanceRef.current = editor;
+  }, [editor]);
 
   // Sync external content changes (e.g. after backend refresh)
   useEffect(() => {

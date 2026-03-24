@@ -1,4 +1,4 @@
-import { useEffect, useState, lazy, Suspense, forwardRef, useImperativeHandle } from "react";
+import { useEffect, useState, useRef, lazy, Suspense, forwardRef, useImperativeHandle } from "react";
 import { EditorContent } from "@tiptap/react";
 import type { Block, Property } from "../lib/api";
 import * as api from "../lib/api";
@@ -88,11 +88,22 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
     onOutdent: onOutdent ? () => onOutdent(block.id) : undefined,
   });
 
+  const editorRef = useRef(tiptapEditor);
+  editorRef.current = tiptapEditor;
+
   useImperativeHandle(ref, () => ({
     focus: (position: "start" | "end" = "end") => {
-      tiptapEditor?.commands.focus(position);
+      const tryFocus = () => {
+        if (editorRef.current) {
+          editorRef.current.commands.focus(position);
+        }
+      };
+      tryFocus();
+      // Retry in case editor isn't ready yet
+      setTimeout(tryFocus, 50);
+      setTimeout(tryFocus, 150);
     },
-  }));
+  }), []);
 
   // Sync external content changes for TipTap
   useEffect(() => {
