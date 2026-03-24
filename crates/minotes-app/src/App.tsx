@@ -106,10 +106,16 @@ export default function App() {
   const updateBlock = useCallback(async (id: string, content: string) => {
     try {
       await api.updateBlock(id, content);
-      // Refresh to pick up any new [[links]] that were added
-      if (activePage) {
-        const tree = await api.getPageTree(activePage.page.id);
-        setActivePage(tree);
+      // Don't refresh the full page on every keystroke save — it kills focus.
+      // Only refresh if content contains [[ links that might need resolving.
+      if (content.includes("[[") && activePage) {
+        // Delay the refresh slightly so it doesn't steal focus
+        setTimeout(async () => {
+          try {
+            const tree = await api.getPageTree(activePage.page.id);
+            setActivePage(tree);
+          } catch {}
+        }, 500);
       }
     } catch (e) {
       console.error("Failed to update block:", e);
