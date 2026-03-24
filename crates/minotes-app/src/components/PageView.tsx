@@ -704,7 +704,11 @@ export default function PageView({
               onToggleCollapse={toggleCollapse}
               onZoomIn={() => setZoomedBlockId(block.id)}
               hasChildren={blockTreeInfo.hasChildren(block.id)}
-              isLastSibling={(() => { const v = blockTreeInfo.isLastSibling(block.id); if (v) console.log("[tree] last sibling:", block.id, block.content?.slice(0,20)); return v; })()}
+              isLastSibling={(() => {
+                const next = filteredVisibleBlocks[idx + 1];
+                if (!next) return true;
+                return (next.parent_id ?? null) !== (block.parent_id ?? null);
+              })()}
               isOnActivePath={activePathIds.has(block.id)}
               onFocusBlock={setActiveBlockId}
               onBlurBlock={() => setActiveBlockId(null)}
