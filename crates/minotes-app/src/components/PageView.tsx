@@ -689,7 +689,11 @@ export default function PageView({
               depth={blockTreeInfo.getDepth(block.id)}
               dataBlockId={block.id}
               selected={selectedBlockIds.has(block.id)}
-              onUpdate={onUpdateBlock}
+              onUpdate={(id, content) => {
+                // Update local state so editor picks up the new content
+                setLocalBlocks(prev => prev.map(b => b.id === id ? { ...b, content } : b));
+                onUpdateBlock(id, content);
+              }}
               onDelete={onDeleteBlock}
               onPageLinkClick={handlePageLinkClick}
               onBlockRefClick={handleBlockRefClick}
