@@ -23,6 +23,7 @@ function genId(): string {
 const pages: Map<string, Page> = new Map();
 const blocks: Map<string, Block> = new Map();
 const properties: Map<string, Property[]> = new Map();
+const pendingJournals: Map<string, Page> = new Map();
 
 // ── Seed test data ──
 
@@ -282,6 +283,15 @@ export const mockHandlers: Record<string, (args: any) => any> = {
   },
 
   create_block: ({ pageId, content, parentId }: { pageId: string; content: string; parentId?: string }) => {
+    // If this is for a pending journal, persist it now
+    for (const [date, pending] of pendingJournals) {
+      if (pending.id === pageId) {
+        pages.set(pending.id, pending);
+        pendingJournals.delete(date);
+        break;
+      }
+    }
+
     const id = genId();
     const siblings = getPageBlocks(pageId);
     const maxPos = siblings.length > 0 ? Math.max(...siblings.map(b => b.position)) : 0;
@@ -368,22 +378,22 @@ export const mockHandlers: Record<string, (args: any) => any> = {
   get_journal: ({ date }: { date?: string }) => {
     const d = date ?? today;
     const title = `Journal/${d}`;
+    // Check real pages first
     let page = Array.from(pages.values()).find(p => p.title === title);
     if (!page) {
-      const id = genId();
+      // Check pending journals
+      page = pendingJournals.get(d);
+    }
+    if (!page) {
+      // Create a pending journal — NOT in the main pages map
+      // It only moves to pages when the user creates a block
+      const id = `journal-${d}`;
       page = {
         id, title, position: pages.size + 1,
         is_journal: true, journal_date: d,
         created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
       };
-      pages.set(id, page);
-      // Auto-create one empty block
-      const bid = genId();
-      blocks.set(bid, {
-        id: bid, page_id: id, position: 1,
-        content: "", format: "markdown", collapsed: false,
-        created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
-      });
+      pendingJournals.set(d, page);
     }
     return { page, blocks: getPageBlocks(page.id) };
   },

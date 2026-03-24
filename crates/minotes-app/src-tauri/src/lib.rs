@@ -206,9 +206,13 @@ fn get_journal(state: State<'_, AppState>, date: Option<String>) -> Result<PageT
     let title = format!("Journal/{}", d);
     let page = match db.get_page_by_title(&title).map_err(|e| e.to_string())? {
         Some(p) => p,
-        None => db
-            .create_page(&title, None, true, Some(d), "user")
-            .map_err(|e| e.to_string())?,
+        None => {
+            // Only create the page when user actually writes in it
+            // For now, create it but the auto-create empty block in PageView
+            // will handle the first block creation
+            db.create_page(&title, None, true, Some(d), "user")
+                .map_err(|e| e.to_string())?
+        }
     };
     let blocks = db.get_page_blocks(&page.id).map_err(|e| e.to_string())?;
     Ok(PageTree { page, blocks })
