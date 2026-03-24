@@ -11,27 +11,27 @@ export default function UnlinkedRefsPanel({ pageId, pageTitle, onPageClick }: Pr
   const [blocks, setBlocks] = useState<api.Block[]>([]);
   const [loading, setLoading] = useState(false);
   const [expanded, setExpanded] = useState(false);
+  const [hasResults, setHasResults] = useState<boolean | null>(null); // null = unknown
 
+  // Pre-check if there are any unlinked references (lightweight)
   useEffect(() => {
-    if (!expanded) return;
     let cancelled = false;
-    setLoading(true);
+    setHasResults(null);
+    setExpanded(false);
+    setBlocks([]);
 
     api.getUnlinkedReferences(pageId).then(results => {
       if (!cancelled) {
-        setBlocks(results);
-        setLoading(false);
+        setHasResults(results.length > 0);
+        if (results.length > 0) setBlocks(results);
       }
-    }).catch(() => { if (!cancelled) setLoading(false); });
+    }).catch(() => { if (!cancelled) setHasResults(false); });
 
     return () => { cancelled = true; };
-  }, [pageId, expanded]);
-
-  // Reset when page changes
-  useEffect(() => {
-    setExpanded(false);
-    setBlocks([]);
   }, [pageId]);
+
+  // Don't render anything if no unlinked references
+  if (hasResults === null || hasResults === false) return null;
 
   return (
     <div className="unlinked-refs">
@@ -39,15 +39,10 @@ export default function UnlinkedRefsPanel({ pageId, pageTitle, onPageClick }: Pr
         className="unlinked-refs-toggle"
         onClick={() => setExpanded(e => !e)}
       >
-        {expanded ? "▼" : "▶"} Unlinked References
-        {expanded && !loading && ` (${blocks.length})`}
+        {expanded ? "▼" : "▶"} Unlinked References ({blocks.length})
       </h4>
       {expanded && (
-        loading ? (
-          <div style={{ color: "var(--text-muted)", fontSize: 12, padding: "4px 0" }}>
-            Searching...
-          </div>
-        ) : blocks.length === 0 ? (
+        blocks.length === 0 ? (
           <div style={{ color: "var(--text-muted)", fontSize: 12, padding: "4px 0" }}>
             No unlinked mentions of "{pageTitle}" found.
           </div>
