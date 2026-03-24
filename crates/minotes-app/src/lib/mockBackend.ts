@@ -515,4 +515,5 @@ export const mockHandlers: Record<string, (args: any) => any> = {
   toggle_css_snippet: () => ({ id: "", name: "", css: "", enabled: true, source: "custom", created_at: now }),
   delete_css_snippet: () => true,
   get_enabled_css_snippets: () => [],
+  save_png_to_downloads: ({ filename }: { filename: string }) => `Downloads/${filename}`,
 };

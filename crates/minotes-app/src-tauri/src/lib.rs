@@ -808,6 +808,48 @@ fn clip_content(
     Ok(page)
 }
 
+#[tauri::command]
+fn save_png_to_downloads(filename: String, data: Vec<u8>) -> Result<String, String> {
+    // Detect WSL and use Windows Downloads folder
+    let downloads = if std::path::Path::new("/proc/version").exists() {
+        let version = std::fs::read_to_string("/proc/version").unwrap_or_default();
+        if version.to_lowercase().contains("microsoft") {
+            // WSL — find Windows user's Downloads folder
+            if let Ok(entries) = std::fs::read_dir("/mnt/c/Users") {
+                for entry in entries.flatten() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if name != "Public" && name != "Default" && name != "Default User" && name != "All Users" && name != "desktop.ini" {
+                        let dl = entry.path().join("Downloads");
+                        if dl.exists() {
+                            return write_png(dl, &filename, &data);
+                        }
+                    }
+                }
+            }
+            // Fallback to Linux home Downloads
+            find_linux_downloads()
+        } else {
+            find_linux_downloads()
+        }
+    } else {
+        find_linux_downloads()
+    };
+
+    write_png(downloads, &filename, &data)
+}
+
+fn find_linux_downloads() -> PathBuf {
+    let home = dirs_next().unwrap_or_else(|| PathBuf::from("."));
+    let dl = home.join("Downloads");
+    if dl.exists() { dl } else { home }
+}
+
+fn write_png(dir: PathBuf, filename: &str, data: &[u8]) -> Result<String, String> {
+    let path = dir.join(filename);
+    std::fs::write(&path, data).map_err(|e| e.to_string())?;
+    Ok(path.to_string_lossy().to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let path = db_path();
@@ -892,6 +934,7 @@ pub fn run() {
             delete_css_snippet,
             get_enabled_css_snippets,
             undo,
+            save_png_to_downloads,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

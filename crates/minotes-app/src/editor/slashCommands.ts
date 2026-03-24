@@ -4,6 +4,7 @@ import Suggestion, { type SuggestionOptions, type SuggestionProps } from "@tipta
 import { PluginKey } from "@tiptap/pm/state";
 import tippy, { type Instance as TippyInstance } from "tippy.js";
 import { SlashMenu, type SlashMenuItem } from "./SlashMenu";
+import { generateWhiteboardId } from "../components/Whiteboard";
 
 /*
  * Slash commands use two strategies:
@@ -97,6 +98,14 @@ const COMMANDS: SlashMenuItem[] = [
     description: "horizontal line separator",
     command: ({ editor, range }) => {
       slashCommandCallback?.("---");
+    },
+  },
+  {
+    title: "Whiteboard",
+    description: "drawing canvas sketch",
+    command: ({ editor, range }) => {
+      const wbId = generateWhiteboardId();
+      slashCommandCallback?.(`{{whiteboard:${wbId}}}`);
     },
   },
 ];

@@ -8,7 +8,7 @@ import QueryPanel from "./components/QueryPanel";
 import GraphView from "./components/GraphView";
 import ReviewPanel from "./components/ReviewPanel";
 import PluginManager from "./components/PluginManager";
-import Whiteboard from "./components/Whiteboard";
+import Whiteboard, { generateWhiteboardId } from "./components/Whiteboard";
 import SyncPanel from "./components/SyncPanel";
 import PdfViewer from "./components/PdfViewer";
 import MobileNav from "./components/MobileNav";
@@ -31,7 +31,7 @@ export default function App() {
   const [graphOpen, setGraphOpen] = useState(false);
   const [reviewOpen, setReviewOpen] = useState(false);
   const [pluginsOpen, setPluginsOpen] = useState(false);
-  const [whiteboardOpen, setWhiteboardOpen] = useState(false);
+  const [whiteboardId, setWhiteboardId] = useState<string | null>(null);
   const [syncOpen, setSyncOpen] = useState(false);
   const [obsidianPluginsOpen, setObsidianPluginsOpen] = useState(false);
   const [cssManagerOpen, setCssManagerOpen] = useState(false);
@@ -193,7 +193,7 @@ export default function App() {
         setGraphOpen(false);
         setReviewOpen(false);
         setPluginsOpen(false);
-        setWhiteboardOpen(false);
+        setWhiteboardId(null);
         setSyncOpen(false);
         setObsidianPluginsOpen(false);
         setCssManagerOpen(false);
@@ -264,10 +264,18 @@ export default function App() {
         const title = prompt("Page title:");
         if (title?.trim()) createPage(title.trim());
       }
-      // Cmd/Ctrl+W — whiteboard
+      // Cmd/Ctrl+W — new whiteboard block in current page
       if ((e.metaKey || e.ctrlKey) && e.key === "w") {
         e.preventDefault();
-        setWhiteboardOpen(prev => !prev);
+        if (whiteboardId) {
+          setWhiteboardId(null); // close if open
+        } else if (activePage) {
+          const wbId = generateWhiteboardId();
+          api.createBlock(activePage.page.id, `{{whiteboard:${wbId}}}`).then(() => {
+            openPage(activePage.page.id);
+          });
+          setWhiteboardId(wbId);
+        }
       }
       // Cmd/Ctrl+P — open PDF
       if ((e.metaKey || e.ctrlKey) && e.key === "p") {
@@ -356,8 +364,11 @@ export default function App() {
               onClose={() => setPdfViewerPath(null)}
             />
           )}
-          {whiteboardOpen && (
-            <Whiteboard onClose={() => setWhiteboardOpen(false)} />
+          {whiteboardId && (
+            <Whiteboard
+              whiteboardId={whiteboardId}
+              onClose={() => setWhiteboardId(null)}
+            />
           )}
           {graphOpen && (
             <GraphView
@@ -382,6 +393,7 @@ export default function App() {
               onShiftClick={openInSidebar}
               onJournalNav={openJournal}
               onRefreshPage={() => openPage(activePage.page.id)}
+              onOpenWhiteboard={(wbId: string) => setWhiteboardId(wbId)}
             />
           ) : (
             <EmptyState onCreatePage={createPage} />

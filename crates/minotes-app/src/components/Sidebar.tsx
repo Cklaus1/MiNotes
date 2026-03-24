@@ -34,13 +34,21 @@ export default function Sidebar({
       const tree = await api.getFolderTree();
       setTreeData(tree);
       const pages = await api.listPages(200);
-      // Show journals that have actual content
-      // The mock backend filters in list_pages; for Tauri we check here
-      const journalPages = pages.filter(p => p.is_journal);
-      // Quick check: if there are too many journals (user clicked Next a lot),
-      // filter would need block counts. For now just show recent ones.
-      // The mock backend already filters empty journals in list_pages.
-      setJournals(journalPages.slice(0, 15));
+      // Filter journals: only show ones with actual content
+      const journalPages = pages.filter(p => p.is_journal).slice(0, 20);
+      const withContent: typeof journalPages = [];
+      for (const jp of journalPages) {
+        try {
+          const tree = await api.getPageTree(jp.id);
+          if (tree.blocks.some(b => b.content && b.content.trim().length > 0)) {
+            withContent.push(jp);
+          }
+        } catch {
+          withContent.push(jp); // Show if we can't check
+        }
+        if (withContent.length >= 10) break; // Cap at 10
+      }
+      setJournals(withContent);
       const favs = await api.listFavorites();
       setFavorites(favs);
     } catch (e) {

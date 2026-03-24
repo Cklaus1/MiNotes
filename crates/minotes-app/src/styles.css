@@ -1637,10 +1637,51 @@ body {
   transform: scale(1.15);
 }
 
+.whiteboard-save-status {
+  font-size: 11px;
+  color: var(--accent);
+  font-weight: 600;
+  animation: whiteboard-fade-in 0.2s ease;
+}
+
+@keyframes whiteboard-fade-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 .whiteboard-canvas {
   flex: 1;
   display: block;
   cursor: crosshair;
+}
+
+.whiteboard-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px 4px 4px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-secondary);
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.whiteboard-indicator:hover {
+  background: var(--bg-secondary);
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+
+.whiteboard-indicator-label {
+  white-space: nowrap;
+}
+
+.whiteboard-thumbnail {
+  border-radius: 4px;
+  flex-shrink: 0;
 }
 
 .whiteboard-note-editor {
@@ -2750,4 +2791,48 @@ body.theme-light { /* matches our light theme */ }
 .link-preview-loading, .link-preview-empty {
   font-size: 12px;
   color: var(--text-muted);
+}
+
+/* Bubble Toolbar — floating formatting bar on text selection */
+.bubble-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 6px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+  animation: scale-in 0.1s ease-out;
+}
+
+.bubble-toolbar button {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 3px 7px;
+  border-radius: 4px;
+  cursor: pointer;
+  line-height: 1;
+  font-family: inherit;
+  transition: background 0.1s, color 0.1s;
+}
+
+.bubble-toolbar button:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.bubble-toolbar button.active {
+  background: var(--accent);
+  color: #fff;
+}
+
+.bubble-separator {
+  width: 1px;
+  height: 16px;
+  background: var(--border);
+  margin: 0 2px;
 }

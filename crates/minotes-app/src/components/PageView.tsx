@@ -9,7 +9,6 @@ import UnlinkedRefsPanel from "./UnlinkedRefsPanel";
 import LinkPreview from "./LinkPreview";
 import { undoStack } from "../lib/undoStack";
 import { registerTestApi } from "../lib/testApi";
-
 interface Props {
   pageTree: PageTree;
   onUpdateBlock: (id: string, content: string) => void;
@@ -18,10 +17,11 @@ interface Props {
   onShiftClick?: (title: string) => void;
   onJournalNav?: (date: string) => void;
   onRefreshPage: () => void;
+  onOpenWhiteboard?: (whiteboardId: string) => void;
 }
 
 export default function PageView({
-  pageTree, onUpdateBlock, onDeleteBlock, onPageLinkClick, onShiftClick, onJournalNav, onRefreshPage,
+  pageTree, onUpdateBlock, onDeleteBlock, onPageLinkClick, onShiftClick, onJournalNav, onRefreshPage, onOpenWhiteboard,
 }: Props) {
   const { page } = pageTree;
   // Local blocks state for optimistic updates (prevents full re-render on Enter)
@@ -122,26 +122,44 @@ export default function PageView({
     }
   }, [focusBlockIndex, blocks]);
 
-  // UX-014: Link preview on Ctrl+hover
+  // Link preview on hover (300ms delay) or instant on Ctrl+hover
   useEffect(() => {
+    let hoverTimer: ReturnType<typeof setTimeout> | null = null;
+    let currentLink: HTMLElement | null = null;
+
     const handler = (e: MouseEvent) => {
-      if (!e.ctrlKey && !e.metaKey) {
-        setLinkPreview(null);
-        return;
-      }
       const target = e.target as HTMLElement;
-      const wikiLink = target.closest('.wiki-link');
+      const wikiLink = target.closest('.wiki-link') as HTMLElement | null;
+
       if (wikiLink) {
+        if (wikiLink === currentLink) return; // Same link, skip
+        currentLink = wikiLink;
         const pageName = wikiLink.getAttribute('data-page-name') || wikiLink.textContent;
-        if (pageName) {
+        if (!pageName) return;
+
+        if (e.ctrlKey || e.metaKey) {
+          // Instant preview on Ctrl+hover
+          if (hoverTimer) clearTimeout(hoverTimer);
           setLinkPreview({ pageName, x: e.clientX + 10, y: e.clientY + 10 });
+        } else {
+          // Delayed preview on plain hover
+          if (hoverTimer) clearTimeout(hoverTimer);
+          const x = e.clientX + 10, y = e.clientY + 10;
+          hoverTimer = setTimeout(() => {
+            setLinkPreview({ pageName, x, y });
+          }, 300);
         }
       } else {
+        currentLink = null;
+        if (hoverTimer) { clearTimeout(hoverTimer); hoverTimer = null; }
         setLinkPreview(null);
       }
     };
     document.addEventListener('mousemove', handler);
-    return () => document.removeEventListener('mousemove', handler);
+    return () => {
+      document.removeEventListener('mousemove', handler);
+      if (hoverTimer) clearTimeout(hoverTimer);
+    };
   }, []);
 
   const handleAddAlias = async () => {
@@ -805,6 +823,7 @@ export default function PageView({
               onFocusBlock={setActiveBlockId}
               onBlurBlock={() => setActiveBlockId(null)}
               onShiftClick={handleShiftClick}
+              onOpenWhiteboard={onOpenWhiteboard}
             />
           ))}
 

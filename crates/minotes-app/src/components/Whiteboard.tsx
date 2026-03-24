@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from "react";
+import { isTauri, savePngToDownloads } from "../lib/api";
 
 interface StickyNote {
   id: string;
@@ -16,10 +17,18 @@ interface Line {
   width: number;
 }
 
+interface WhiteboardData {
+  notes: StickyNote[];
+  lines: Line[];
+  camera: { x: number; y: number; zoom: number };
+  nextNoteId: number;
+}
+
 type Mode = "select" | "draw";
 
 interface Props {
-  onClose: () => void;
+  whiteboardId: string;
+  onClose: (hasContent: boolean) => void;
 }
 
 // Catppuccin palette colors for drawing
@@ -39,20 +48,56 @@ const NOTE_COLORS = [
   "#cba6f7", // mauve
 ];
 
+const STORAGE_PREFIX = "minotes-whiteboard-";
+
+function loadWhiteboardData(id: string): WhiteboardData | null {
+  try {
+    const raw = localStorage.getItem(STORAGE_PREFIX + id);
+    if (raw) return JSON.parse(raw);
+  } catch { /* ignore */ }
+  return null;
+}
+
+function saveWhiteboardData(id: string, data: WhiteboardData) {
+  localStorage.setItem(STORAGE_PREFIX + id, JSON.stringify(data));
+  // Notify thumbnails to refresh
+  window.dispatchEvent(new CustomEvent("whiteboard-saved", { detail: id }));
+}
+
+/** Check if a whiteboard has saved data */
+export function hasWhiteboardData(whiteboardId: string): boolean {
+  return localStorage.getItem(STORAGE_PREFIX + whiteboardId) !== null;
+}
+
+/** Generate a new whiteboard ID */
+export function generateWhiteboardId(): string {
+  return "wb-" + crypto.randomUUID().slice(0, 8);
+}
+
+/** Whiteboard content marker pattern */
+export const WHITEBOARD_REGEX = /^\{\{whiteboard:([a-zA-Z0-9-]+)\}\}$/;
+
 let nextNoteId = 1;
 
-export default function Whiteboard({ onClose }: Props) {
+export default function Whiteboard({ whiteboardId, onClose }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  const [notes, setNotes] = useState<StickyNote[]>([]);
-  const [lines, setLines] = useState<Line[]>([]);
-  const [mode, setMode] = useState<Mode>("select");
+  // Load saved data on mount
+  const saved = loadWhiteboardData(whiteboardId);
+
+  const [notes, setNotes] = useState<StickyNote[]>(saved?.notes ?? []);
+  const [lines, setLines] = useState<Line[]>(saved?.lines ?? []);
+  const [mode, setMode] = useState<Mode>("draw");
   const [drawColor, setDrawColor] = useState(DRAW_COLORS[1]);
   const [noteColor, setNoteColor] = useState(NOTE_COLORS[0]);
+  const [saveStatus, setSaveStatus] = useState<string | null>(null);
 
   // Camera / pan / zoom state stored in refs for performance
-  const cameraRef = useRef({ x: 0, y: 0, zoom: 1 });
+  const cameraRef = useRef(saved?.camera ?? { x: 0, y: 0, zoom: 1 });
+
+  // Initialize nextNoteId from saved data
+  if (saved?.nextNoteId) nextNoteId = saved.nextNoteId;
   const drawingRef = useRef<{ active: boolean; points: Array<{ x: number; y: number }> }>({
     active: false,
     points: [],
@@ -488,23 +533,83 @@ export default function Whiteboard({ onClose }: Props) {
     }
   }, [editingNote, editText]);
 
+  // Auto-save every 10 seconds if there's content
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (notesRef.current.length > 0 || linesRef.current.length > 0) {
+        saveWhiteboardData(whiteboardId, {
+          notes: notesRef.current,
+          lines: linesRef.current,
+          camera: { ...cameraRef.current },
+          nextNoteId,
+        });
+      }
+    }, 10000);
+    return () => clearInterval(interval);
+  }, [whiteboardId]);
+
+  // Save and close
+  const handleClose = useCallback(() => {
+    const hasContent = notesRef.current.length > 0 || linesRef.current.length > 0;
+    if (hasContent) {
+      saveWhiteboardData(whiteboardId, {
+        notes: notesRef.current,
+        lines: linesRef.current,
+        camera: { ...cameraRef.current },
+        nextNoteId,
+      });
+    } else {
+      // Remove empty whiteboard data
+      localStorage.removeItem(STORAGE_PREFIX + whiteboardId);
+    }
+    onClose(hasContent);
+  }, [whiteboardId, onClose]);
+
   const exportPng = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const dataUrl = canvas.toDataURL("image/png");
-    const link = document.createElement("a");
-    link.download = "whiteboard.png";
-    link.href = dataUrl;
-    link.click();
-  }, []);
+    const filename = `whiteboard-${whiteboardId}.png`;
+
+    if (isTauri) {
+      // Tauri mode: save directly to Downloads folder (WSL-aware)
+      canvas.toBlob(async (blob) => {
+        if (!blob) return;
+        const arrayBuf = await blob.arrayBuffer();
+        const data = Array.from(new Uint8Array(arrayBuf));
+        try {
+          const path = await savePngToDownloads(filename, data);
+          setSaveStatus(`Exported → ${path}`);
+        } catch (e) {
+          setSaveStatus(`Export failed: ${e}`);
+        }
+        setTimeout(() => setSaveStatus(null), 4000);
+      }, "image/png");
+    } else {
+      // Browser mode: trigger download (goes to browser's Downloads folder)
+      canvas.toBlob((blob) => {
+        if (!blob) return;
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.download = filename;
+        link.href = url;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+        setSaveStatus(`Exported → Downloads/${filename}`);
+        setTimeout(() => setSaveStatus(null), 3000);
+      }, "image/png");
+    }
+  }, [whiteboardId]);
 
   const clearCanvas = useCallback(() => {
     setNotes([]);
     setLines([]);
+    localStorage.removeItem(STORAGE_PREFIX + whiteboardId);
     requestRedraw();
-  }, [requestRedraw]);
+  }, [whiteboardId, requestRedraw]);
 
-  // Keyboard: Escape to close, close editing
+  // Keyboard: Escape to close, close editing; S/D to switch modes
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
@@ -513,13 +618,18 @@ export default function Whiteboard({ onClose }: Props) {
         } else if (contextMenu) {
           setContextMenu(null);
         } else {
-          onClose();
+          handleClose();
         }
+      }
+      // Quick mode switch (only when not editing)
+      if (!editingNote) {
+        if (e.key === "s" || e.key === "S") setMode("select");
+        if (e.key === "d" || e.key === "D") setMode("draw");
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [onClose, editingNote, finishEdit, contextMenu]);
+  }, [handleClose, editingNote, finishEdit, contextMenu]);
 
   // Compute editing note screen position
   const editScreenPos = (() => {
@@ -585,14 +695,17 @@ export default function Whiteboard({ onClose }: Props) {
         )}
 
         <div className="whiteboard-toolbar-group">
-          <button className="btn btn-sm" onClick={exportPng} title="Export as PNG">
+          {saveStatus && (
+            <span className="whiteboard-save-status">{saveStatus}</span>
+          )}
+          <button className="btn btn-sm" onClick={exportPng} title="Export as PNG (downloads to your default Downloads folder)">
             Export PNG
           </button>
           <button className="btn btn-sm" onClick={clearCanvas} title="Clear canvas">
             Clear
           </button>
-          <button className="btn btn-sm" onClick={onClose} title="Close (Esc)">
-            Close
+          <button className="btn btn-sm btn-primary" onClick={handleClose} title="Save & Close (Esc)">
+            Save & Close
           </button>
         </div>
       </div>

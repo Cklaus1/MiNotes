@@ -472,3 +472,9 @@ export const getEnabledCssSnippets = () =>
 // Undo
 export const undo = () =>
   invoke<number | null>("undo");
+
+// File export — saves PNG to Downloads (WSL-aware in Tauri mode)
+export const savePngToDownloads = (filename: string, data: number[]) =>
+  invoke<string>("save_png_to_downloads", { filename, data });
+
+export { isTauri };

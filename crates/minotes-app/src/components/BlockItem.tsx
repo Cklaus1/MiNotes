@@ -5,6 +5,9 @@ import * as api from "../lib/api";
 import { useBlockEditor } from "../editor";
 import { getSettings } from "../lib/settings";
 import BlockContextMenu from "./BlockContextMenu";
+import { WHITEBOARD_REGEX, hasWhiteboardData } from "./Whiteboard";
+import WhiteboardThumbnail from "./WhiteboardThumbnail";
+import BubbleToolbar from "../editor/BubbleToolbar";
 import "../editor/editor.css";
 
 // Lazy-load CM6 editor — only downloaded when obsidianEditorEnabled
@@ -39,12 +42,13 @@ interface Props {
   onToggleCollapse?: (blockId: string) => void;
   onZoomIn?: () => void;
   onShiftClick?: (blockId: string) => void;
+  onOpenWhiteboard?: (whiteboardId: string) => void;
 }
 
 const BlockItem = forwardRef<BlockItemHandle, Props>(({
   block, depth = 0, hasChildren = false, isLastSibling = false, isOnActivePath = false, onFocusBlock, onBlurBlock, dataBlockId, selected = false, onUpdate, onDelete, onPageLinkClick,
   onBlockRefClick, onEnter, onBackspaceAtStart, onArrowUp, onArrowDown, onPasteMultiline,
-  onIndent, onOutdent, onDuplicate, onToggleCollapse, onZoomIn, onShiftClick,
+  onIndent, onOutdent, onDuplicate, onToggleCollapse, onZoomIn, onShiftClick, onOpenWhiteboard,
 }, ref) => {
   const settings = getSettings();
   const [editorMode, setEditorMode] = useState<"minotes" | "obsidian">(
@@ -298,14 +302,35 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
         </div>
       )}
 
-      {/* Editor content */}
-      {editorMode === "minotes" ? (
-        <EditorContent editor={tiptapEditor} className="block-content" />
-      ) : (
-        <Suspense fallback={<div className="block-content" style={{ color: "var(--text-muted)" }}>Loading source editor...</div>}>
-          <CM6BlockEditor content={block.content} onSave={handleCM6Save} />
-        </Suspense>
-      )}
+      {/* Editor content — whiteboard blocks render as clickable cards */}
+      {(() => {
+        const wbMatch = block.content.match(WHITEBOARD_REGEX);
+        if (wbMatch) {
+          const wbId = wbMatch[1];
+          const hasSaved = hasWhiteboardData(wbId);
+          return (
+            <div
+              className="whiteboard-indicator"
+              onClick={() => onOpenWhiteboard?.(wbId)}
+            >
+              <WhiteboardThumbnail whiteboardId={wbId} />
+              <span className="whiteboard-indicator-label">
+                {hasSaved ? "Whiteboard" : "Whiteboard (empty)"} — click to open
+              </span>
+            </div>
+          );
+        }
+        return editorMode === "minotes" ? (
+          <>
+            {tiptapEditor && <BubbleToolbar editor={tiptapEditor} />}
+            <EditorContent editor={tiptapEditor} className="block-content" />
+          </>
+        ) : (
+          <Suspense fallback={<div className="block-content" style={{ color: "var(--text-muted)" }}>Loading source editor...</div>}>
+            <CM6BlockEditor content={block.content} onSave={handleCM6Save} />
+          </Suspense>
+        );
+      })()}
 
       {/* Properties */}
       {(properties.length > 0 || addingProp) && (

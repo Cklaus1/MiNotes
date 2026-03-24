@@ -290,6 +290,24 @@ export function useBlockEditor({
           return false; // Let default handle it
         }
 
+        // URL-to-link paste: if pasting a URL over selected text, wrap as [text](url)
+        const urlPattern = /^https?:\/\/\S+$/;
+        if (urlPattern.test(text.trim())) {
+          const { from, to, empty } = view.state.selection;
+          if (!empty) {
+            // Has selection — wrap as markdown link [selected text](url)
+            const selectedText = view.state.doc.textBetween(from, to);
+            event.preventDefault();
+            view.dispatch(view.state.tr.insertText(`[${selectedText}](${text.trim()})`, from, to));
+            return true;
+          }
+          // No selection — insert as markdown link, try to auto-title
+          // For now, insert as clickable [url](url) — title fetch would be async
+          event.preventDefault();
+          view.dispatch(view.state.tr.insertText(`[${text.trim()}](${text.trim()})`));
+          return true;
+        }
+
         // Check if multi-line
         const lines = text.split('\n').filter(l => l.trim());
         if (lines.length <= 1) {
