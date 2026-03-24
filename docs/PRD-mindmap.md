@@ -224,18 +224,15 @@ function blocksToFlow(blocks: Block[], pageTitle: string): { nodes: Node[]; edge
 
 ## UX Design
 
-### View Toggle
+### Opening the Mind Map
 
-Added to the page header, next to existing controls:
+**Full-screen overlay** (same pattern as Whiteboard and Graph View):
 
-```
-📐 Project Alpha
-[Blocks] [Mind Map] [Kanban]          3 blocks · Updated 2m ago
-```
-
-- Default view: Blocks (current behavior)
-- View preference stored per page as a property (`view:: mindmap`)
-- Keyboard shortcut: Ctrl+M to toggle mind map
+- **Ctrl+M** toggles the mind map overlay for the current page
+- **Esc** closes the overlay, returning to the block view
+- Consistent with Ctrl+W (whiteboard) and Ctrl+G (graph) — all overlays
+- Maximum canvas space — mind maps need room to breathe
+- Edits in the overlay update blocks via API; closing returns to the page with changes reflected
 
 ### Mind Map View
 

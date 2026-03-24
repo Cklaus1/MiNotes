@@ -17,6 +17,7 @@ import ObsidianPluginBrowser from "./components/ObsidianPluginBrowser";
 import CssSnippetManager from "./components/CssSnippetManager";
 import CustomViewContainer from "./components/CustomViewContainer";
 import SettingsPanel from "./components/SettingsPanel";
+import MindMapView from "./components/mindmap/MindMapView";
 import * as api from "./lib/api";
 import { initTheme, toggleTheme } from "./lib/theme";
 import { initTestApi, registerTestApi } from "./lib/testApi";
@@ -37,6 +38,7 @@ export default function App() {
   const [obsidianPluginsOpen, setObsidianPluginsOpen] = useState(false);
   const [cssManagerOpen, setCssManagerOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [mindmapOpen, setMindmapOpen] = useState(false);
   const [pdfViewerPath, setPdfViewerPath] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [mobileTab, setMobileTab] = useState("pages");
@@ -195,6 +197,7 @@ export default function App() {
         setReviewOpen(false);
         setPluginsOpen(false);
         setWhiteboardId(null);
+        setMindmapOpen(false);
         setSyncOpen(false);
         setObsidianPluginsOpen(false);
         setCssManagerOpen(false);
@@ -277,6 +280,11 @@ export default function App() {
           });
           setWhiteboardId(wbId);
         }
+      }
+      // Cmd/Ctrl+M — mind map view
+      if ((e.metaKey || e.ctrlKey) && e.key === "m") {
+        e.preventDefault();
+        if (activePage) setMindmapOpen(prev => !prev);
       }
       // Cmd/Ctrl+P — open PDF
       if ((e.metaKey || e.ctrlKey) && e.key === "p") {
@@ -369,6 +377,15 @@ export default function App() {
             <Whiteboard
               whiteboardId={whiteboardId}
               onClose={() => setWhiteboardId(null)}
+            />
+          )}
+          {mindmapOpen && activePage && (
+            <MindMapView
+              pageId={activePage.page.id}
+              pageTitle={activePage.page.title}
+              blocks={activePage.blocks}
+              onClose={() => setMindmapOpen(false)}
+              onRefreshPage={() => { openPage(activePage.page.id); }}
             />
           )}
           {graphOpen && (
