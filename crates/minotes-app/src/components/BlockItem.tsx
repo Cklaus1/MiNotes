@@ -95,8 +95,15 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
       onUpdate(block.id, newMarkdown);
       // Re-focus the editor after content updates
       setTimeout(() => {
-        editorRef.current?.commands.focus("end");
-      }, 100);
+        if (editorRef.current) {
+          // Focus at the end of actual content, not after trailing newlines
+          editorRef.current.commands.focus();
+          // Move cursor to end of content
+          const doc = editorRef.current.state.doc;
+          const endPos = doc.content.size - 1;
+          editorRef.current.commands.setTextSelection(Math.max(1, endPos));
+        }
+      }, 120);
     },
   });
 
