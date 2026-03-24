@@ -185,9 +185,9 @@ body {
 }
 
 .block {
-  padding: 6px 4px 6px 16px;
+  padding: 3px 4px 3px 16px;
   position: relative;
-  min-height: 28px;
+  min-height: 24px;
   transition: background 0.15s;
   border-radius: 4px;
 }
@@ -197,7 +197,7 @@ body {
   content: "";
   position: absolute;
   left: 4px;
-  top: 14px;
+  top: 11px;
   width: 4px;
   height: 4px;
   border-radius: 50%;
@@ -242,7 +242,7 @@ body {
 }
 
 .block-list.tree-mode .block {
-  padding: 7px 4px 7px 20px;  /* 16px arm + 4px breathing room */
+  padding: 4px 4px 4px 20px;  /* 16px arm + 4px breathing room */
 }
 
 /* Normalize content alignment */
@@ -261,7 +261,7 @@ body {
   left: 0;
   top: 0;
   width: 16px;             /* horizontal arm length */
-  height: 17px;            /* meets content vertically */
+  height: 14px;            /* meets content vertically */
   border-left: 1px solid rgba(255, 255, 255, 0.28);
   border-bottom: 1px solid rgba(255, 255, 255, 0.28);
   border-radius: 0 0 0 2px;  /* subtle softening */
@@ -273,7 +273,7 @@ body {
   content: "";
   position: absolute;
   left: 0;
-  top: 17px;
+  top: 14px;
   bottom: 0;
   width: 0;
   border-left: 1px solid rgba(255, 255, 255, 0.28);
@@ -395,7 +395,7 @@ body {
   cursor: pointer;
   position: absolute;
   left: 16px;
-  top: 8px;
+  top: 5px;
   z-index: 2;
   transition: opacity 0.15s;
 }
