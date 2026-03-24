@@ -233,64 +233,118 @@ body {
 /* Activated via .tree-mode class on .block-list */
 
 .block-list.tree-mode {
-  padding-left: 20px;
+  padding-left: 24px;
 }
 
 .block-list.tree-mode .block {
-  padding: 6px 4px 6px 20px;
-  margin-bottom: 2px;
+  padding: 7px 4px 7px 18px;
 }
 
-/* Tree node — replaces soft bullet */
+/* Junction node — replaces soft bullet, integrates into tree */
 .block-list.tree-mode .block::before {
-  left: 1px;
-  top: 12px;
-  width: 6px;
-  height: 6px;
+  content: "";
+  left: 0;
+  top: 13px;
+  width: 5px;
+  height: 5px;
   border-radius: 50%;
-  background: rgba(166, 173, 200, 0.5);
+  background: rgba(255, 255, 255, 0.25);
 }
 
-/* Vertical continuation line — connects blocks */
+/* Vertical line — runs through each block, precisely aligned to node center */
 .block-list.tree-mode .block::after {
   content: "";
   position: absolute;
-  left: 3px;
+  left: 2px;  /* center of 5px node at left:0 */
   top: 0;
   bottom: 0;
   width: 1px;
-  background: rgba(166, 173, 200, 0.18);
+  background: rgba(255, 255, 255, 0.2);
 }
 
-/* Last block — line stops at the node */
+/* Horizontal connector — junction from vertical line to content */
+.block-list.tree-mode .block {
+  border-left: none;
+}
+
+/* First block — line starts from node (no line above) */
+.block-list.tree-mode .block:first-child::after {
+  top: 15px;  /* start at node center */
+}
+
+/* Last block — line ends at node (L-shape) */
 .block-list.tree-mode .block:last-child::after {
   bottom: auto;
-  height: 15px;
+  height: 16px;  /* stop at node center */
 }
 
-/* Tree hover */
-.block-list.tree-mode .block:hover::before {
+/* Only child — no vertical line at all */
+.block-list.tree-mode .block:only-child::after {
+  display: none;
+}
+
+/* ── Active path: focused block gets emphasis ── */
+
+/* Focused node — pops */
+.block-list.tree-mode .block:focus-within::before {
   background: rgba(137, 180, 250, 0.8);
+  width: 6px;
+  height: 6px;
+  left: -0.5px;
+  top: 12.5px;
+}
+
+/* Focused line segment — stronger */
+.block-list.tree-mode .block:focus-within::after {
+  background: rgba(137, 180, 250, 0.4);
+  width: 1.5px;
+  left: 1.75px;
+}
+
+/* Focused block — very subtle bg */
+.block-list.tree-mode .block:focus-within {
+  background: rgba(137, 180, 250, 0.04);
+}
+
+/* ── Hover: lighter emphasis ── */
+
+.block-list.tree-mode .block:hover::before {
+  background: rgba(255, 255, 255, 0.45);
 }
 
 .block-list.tree-mode .block:hover::after {
-  background: rgba(137, 180, 250, 0.3);
+  background: rgba(255, 255, 255, 0.3);
 }
 
-/* Tree focus */
-.block-list.tree-mode .block:focus-within::before {
-  background: #89b4fa;
+.block-list.tree-mode .block:hover {
+  background: rgba(255, 255, 255, 0.03);
 }
 
-.block-list.tree-mode .block:focus-within::after {
-  background: rgba(137, 180, 250, 0.3);
-}
-
-/* Tree indent levels */
+/* ── Tree indent levels ── */
 .block-list.tree-mode .block[data-depth="1"] { margin-left: 22px; }
 .block-list.tree-mode .block[data-depth="2"] { margin-left: 44px; }
 .block-list.tree-mode .block[data-depth="3"] { margin-left: 66px; }
 .block-list.tree-mode .block[data-depth="4"] { margin-left: 88px; }
+
+/* ── Light mode adjustments ── */
+[data-theme="light"] .block-list.tree-mode .block::before {
+  background: rgba(0, 0, 0, 0.2);
+}
+[data-theme="light"] .block-list.tree-mode .block::after {
+  background: rgba(0, 0, 0, 0.15);
+}
+[data-theme="light"] .block-list.tree-mode .block:hover::before {
+  background: rgba(0, 0, 0, 0.35);
+}
+[data-theme="light"] .block-list.tree-mode .block:hover::after {
+  background: rgba(0, 0, 0, 0.25);
+}
+[data-theme="light"] .block-list.tree-mode .block:focus-within::before {
+  background: rgba(30, 102, 245, 0.7);
+}
+[data-theme="light"] .block-list.tree-mode .block:focus-within::after {
+  background: rgba(30, 102, 245, 0.3);
+}
 
 /* Block selection highlight */
 .block.selected {
