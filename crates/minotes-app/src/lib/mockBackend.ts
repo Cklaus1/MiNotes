@@ -244,7 +244,16 @@ function findPage(titleOrId: string): Page | undefined {
 
 export const mockHandlers: Record<string, (args: any) => any> = {
   list_pages: ({ limit }: { limit?: number }) => {
-    const all = Array.from(pages.values()).sort((a, b) => a.position - b.position);
+    const all = Array.from(pages.values())
+      .filter(p => {
+        // Hide journals that have no real content (only empty blocks or no blocks)
+        if (p.is_journal) {
+          const pageBlocks = getPageBlocks(p.id);
+          return pageBlocks.some(b => b.content.trim().length > 0);
+        }
+        return true;
+      })
+      .sort((a, b) => a.position - b.position);
     return all.slice(0, limit ?? 100);
   },
 
@@ -283,12 +292,14 @@ export const mockHandlers: Record<string, (args: any) => any> = {
   },
 
   create_block: ({ pageId, content, parentId }: { pageId: string; content: string; parentId?: string }) => {
-    // If this is for a pending journal, persist it now
-    for (const [date, pending] of pendingJournals) {
-      if (pending.id === pageId) {
-        pages.set(pending.id, pending);
-        pendingJournals.delete(date);
-        break;
+    // If this is for a pending journal, only persist if content is non-empty
+    if (content && content.trim().length > 0) {
+      for (const [date, pending] of pendingJournals) {
+        if (pending.id === pageId) {
+          pages.set(pending.id, pending);
+          pendingJournals.delete(date);
+          break;
+        }
       }
     }
 
@@ -310,6 +321,18 @@ export const mockHandlers: Record<string, (args: any) => any> = {
     if (!block) throw new Error("Block not found");
     block.content = content;
     block.updated_at = new Date().toISOString();
+
+    // If this block belongs to a pending journal and has real content, persist it
+    if (content && content.trim().length > 0) {
+      for (const [date, pending] of pendingJournals) {
+        if (pending.id === block.page_id) {
+          pages.set(pending.id, pending);
+          pendingJournals.delete(date);
+          break;
+        }
+      }
+    }
+
     return block;
   },
 
@@ -378,22 +401,15 @@ export const mockHandlers: Record<string, (args: any) => any> = {
   get_journal: ({ date }: { date?: string }) => {
     const d = date ?? today;
     const title = `Journal/${d}`;
-    // Check real pages first
     let page = Array.from(pages.values()).find(p => p.title === title);
     if (!page) {
-      // Check pending journals
-      page = pendingJournals.get(d);
-    }
-    if (!page) {
-      // Create a pending journal — NOT in the main pages map
-      // It only moves to pages when the user creates a block
-      const id = `journal-${d}`;
+      const id = genId();
       page = {
         id, title, position: pages.size + 1,
         is_journal: true, journal_date: d,
         created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
       };
-      pendingJournals.set(d, page);
+      pages.set(id, page);
     }
     return { page, blocks: getPageBlocks(page.id) };
   },
