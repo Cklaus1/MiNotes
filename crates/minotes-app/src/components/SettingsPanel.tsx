@@ -58,13 +58,34 @@ export default function SettingsPanel({ open, onClose }: Props) {
         </div>
 
         <div className="settings-section">
+          <div className="settings-section-title">Display</div>
+
+          <div className="settings-row">
+            <div className="settings-row-info">
+              <div className="settings-row-name">Full Tree Mode</div>
+              <div className="settings-row-desc">
+                Show connector lines between blocks. Default is clean document mode.
+              </div>
+            </div>
+            <label className="settings-toggle">
+              <input
+                type="checkbox"
+                checked={settings.fullTreeMode}
+                onChange={e => toggle("fullTreeMode", e.target.checked)}
+              />
+              <span className="settings-toggle-slider" />
+            </label>
+          </div>
+        </div>
+
+        <div className="settings-section">
           <div className="settings-section-title">Editor</div>
 
           <div className="settings-row">
             <div className="settings-row-info">
               <div className="settings-row-name">Obsidian Editor Mode</div>
               <div className="settings-row-desc">
-                Show a per-block toggle between rich text and source markdown editing.
+                Per-block toggle between rich text and source markdown.
               </div>
             </div>
             <label className="settings-toggle">

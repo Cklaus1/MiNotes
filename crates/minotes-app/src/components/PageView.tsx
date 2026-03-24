@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import type { Block, PageTree, Property } from "../lib/api";
 import * as api from "../lib/api";
+import { getSettings } from "../lib/settings";
 import BlockItem from "./BlockItem";
 import type { BlockItemHandle } from "./BlockItem";
 import BacklinksPanel from "./BacklinksPanel";
@@ -655,7 +656,7 @@ export default function PageView({
       )}
 
       <div className="content view-content markdown-source-view">
-        <div className="block-list">
+        <div className={`block-list ${getSettings().fullTreeMode ? 'tree-mode' : ''}`}>
           {filteredVisibleBlocks.map((block, idx) => (
             <BlockItem
               key={block.id}

@@ -176,53 +176,121 @@ body {
   overflow-y: auto;
 }
 
-/* Blocks */
+/* ── Blocks ── */
+
+/* === Default: Clean Document Mode === */
 .block-list {
   max-width: 720px;
-  margin-left: 12px;
-  padding-left: 16px;
-  border-left: 2px solid #6c7086;
+  padding-left: 8px;
 }
 
 .block {
-  padding: 4px 0 4px 8px;
+  padding: 6px 4px 6px 16px;
   position: relative;
   min-height: 28px;
-  transition: background 0.1s;
-}
-
-/* Bullet dot — always visible */
-.block::before {
-  content: "\25CF";
-  position: absolute;
-  left: -22px;
-  top: 5px;
-  font-size: 10px;
-  color: #a6adc8;
-  line-height: 1;
-  cursor: pointer;
-  z-index: 2;
-}
-
-/* Hover: highlight background + brighter bullet */
-.block:hover {
-  background: rgba(49, 50, 68, 0.3);
+  transition: background 0.15s;
   border-radius: 4px;
+}
+
+/* Subtle bullet — small, understated */
+.block::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 14px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: rgba(166, 173, 200, 0.4);
+  transition: background 0.15s;
+}
+
+/* Hover: soft highlight */
+.block:hover {
+  background: rgba(49, 50, 68, 0.2);
 }
 
 .block:hover::before {
-  color: #89b4fa;
+  background: rgba(137, 180, 250, 0.7);
 }
 
-/* Active/focused block: subtle bg */
+/* Active/focused block */
 .block:focus-within {
   background: rgba(137, 180, 250, 0.06);
-  border-radius: 4px;
 }
 
 .block:focus-within::before {
-  color: #89b4fa;
+  background: #89b4fa;
 }
+
+/* Indent levels — soft indentation only */
+.block[data-depth="1"] { margin-left: 20px; }
+.block[data-depth="2"] { margin-left: 40px; }
+.block[data-depth="3"] { margin-left: 60px; }
+.block[data-depth="4"] { margin-left: 80px; }
+
+/* === Full Tree Mode === */
+/* Activated via .tree-mode class on .block-list */
+
+.block-list.tree-mode {
+  padding-left: 20px;
+}
+
+.block-list.tree-mode .block {
+  padding: 6px 4px 6px 20px;
+  margin-bottom: 2px;
+}
+
+/* Tree node — replaces soft bullet */
+.block-list.tree-mode .block::before {
+  left: 1px;
+  top: 12px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgba(166, 173, 200, 0.5);
+}
+
+/* Vertical continuation line — connects blocks */
+.block-list.tree-mode .block::after {
+  content: "";
+  position: absolute;
+  left: 3px;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: rgba(166, 173, 200, 0.18);
+}
+
+/* Last block — line stops at the node */
+.block-list.tree-mode .block:last-child::after {
+  bottom: auto;
+  height: 15px;
+}
+
+/* Tree hover */
+.block-list.tree-mode .block:hover::before {
+  background: rgba(137, 180, 250, 0.8);
+}
+
+.block-list.tree-mode .block:hover::after {
+  background: rgba(137, 180, 250, 0.3);
+}
+
+/* Tree focus */
+.block-list.tree-mode .block:focus-within::before {
+  background: #89b4fa;
+}
+
+.block-list.tree-mode .block:focus-within::after {
+  background: rgba(137, 180, 250, 0.3);
+}
+
+/* Tree indent levels */
+.block-list.tree-mode .block[data-depth="1"] { margin-left: 22px; }
+.block-list.tree-mode .block[data-depth="2"] { margin-left: 44px; }
+.block-list.tree-mode .block[data-depth="3"] { margin-left: 66px; }
+.block-list.tree-mode .block[data-depth="4"] { margin-left: 88px; }
 
 /* Block selection highlight */
 .block.selected {
@@ -2416,35 +2484,35 @@ body.theme-light { /* matches our light theme */ }
   margin: 4px 0;
 }
 
-/* Shortcuts grid in settings */
+/* Shortcuts grid in settings — 2-column layout */
 .shortcuts-grid {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 3px 16px;
 }
 
 .shortcut-row {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 3px 0;
+  gap: 8px;
+  padding: 2px 0;
 }
 
 .shortcut-key {
   background: var(--bg-surface);
   border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 2px 8px;
-  font-size: 11px;
+  border-radius: 3px;
+  padding: 1px 6px;
+  font-size: 10px;
   font-family: monospace;
   color: var(--text-primary);
-  min-width: 90px;
+  min-width: 70px;
   text-align: center;
   white-space: nowrap;
 }
 
 .shortcut-desc {
-  font-size: 13px;
+  font-size: 11px;
   color: var(--text-secondary);
 }
 

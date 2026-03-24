@@ -8,6 +8,8 @@ export interface MiNotesSettings {
   obsidianEditorEnabled: boolean;
   /** Default editor mode for new blocks when obsidianEditor is enabled */
   defaultEditorMode: "minotes" | "obsidian";
+  /** Enable full tree mode with connector lines (default: off) */
+  fullTreeMode: boolean;
 }
 
 const STORAGE_KEY = "minotes-settings";
@@ -15,6 +17,7 @@ const STORAGE_KEY = "minotes-settings";
 const DEFAULTS: MiNotesSettings = {
   obsidianEditorEnabled: false,
   defaultEditorMode: "minotes",
+  fullTreeMode: false,
 };
 
 export function getSettings(): MiNotesSettings {
