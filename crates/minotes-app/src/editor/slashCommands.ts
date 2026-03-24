@@ -6,13 +6,10 @@ import tippy, { type Instance as TippyInstance } from "tippy.js";
 import { SlashMenu, type SlashMenuItem } from "./SlashMenu";
 
 /*
- * Slash commands insert MARKDOWN TEXT that the block editor already knows
- * how to render. This avoids the issue where TipTap formatting commands
- * (setHeading, toggleList) get lost during the blur→save→sync cycle.
- *
- * When the user saves (blur), getMarkdown() serializes the content,
- * and when the block reloads, setContent() parses the markdown back.
- * So we just need to ensure the right markdown text is in the editor.
+ * Slash commands use editor.commands.setContent() to replace the entire
+ * block content with markdown. The tiptap-markdown extension intercepts
+ * setContent and parses markdown → ProseMirror nodes. This ensures
+ * headings, lists, etc. render correctly AND survive the save cycle.
  */
 
 const COMMANDS: SlashMenuItem[] = [
@@ -20,72 +17,75 @@ const COMMANDS: SlashMenuItem[] = [
     title: "Heading 1",
     description: "Large heading",
     command: ({ editor, range }) => {
-      // Get any existing text in the block (before the / trigger)
-      const textBefore = editor.state.doc.textBetween(1, range.from, "", "").trim();
-      editor.chain().focus().deleteRange({ from: 1, to: editor.state.doc.content.size - 1 })
-        .insertContent(`# ${textBefore}`).run();
+      const existingText = getTextBeforeSlash(editor, range);
+      editor.commands.setContent(`# ${existingText || ""}`);
     },
   },
   {
     title: "Heading 2",
     description: "Medium heading",
     command: ({ editor, range }) => {
-      const textBefore = editor.state.doc.textBetween(1, range.from, "", "").trim();
-      editor.chain().focus().deleteRange({ from: 1, to: editor.state.doc.content.size - 1 })
-        .insertContent(`## ${textBefore}`).run();
+      const existingText = getTextBeforeSlash(editor, range);
+      editor.commands.setContent(`## ${existingText || ""}`);
     },
   },
   {
     title: "Heading 3",
     description: "Small heading",
     command: ({ editor, range }) => {
-      const textBefore = editor.state.doc.textBetween(1, range.from, "", "").trim();
-      editor.chain().focus().deleteRange({ from: 1, to: editor.state.doc.content.size - 1 })
-        .insertContent(`### ${textBefore}`).run();
+      const existingText = getTextBeforeSlash(editor, range);
+      editor.commands.setContent(`### ${existingText || ""}`);
     },
   },
   {
     title: "Bullet List",
     description: "Start a list",
     command: ({ editor, range }) => {
-      const textBefore = editor.state.doc.textBetween(1, range.from, "", "").trim();
-      editor.chain().focus().deleteRange({ from: 1, to: editor.state.doc.content.size - 1 })
-        .insertContent(`- ${textBefore}`).run();
+      const existingText = getTextBeforeSlash(editor, range);
+      editor.commands.setContent(`- ${existingText || ""}`);
     },
   },
   {
     title: "Task List",
     description: "Checklist",
     command: ({ editor, range }) => {
-      const textBefore = editor.state.doc.textBetween(1, range.from, "", "").trim();
-      editor.chain().focus().deleteRange({ from: 1, to: editor.state.doc.content.size - 1 })
-        .insertContent(`- [ ] ${textBefore}`).run();
+      const existingText = getTextBeforeSlash(editor, range);
+      editor.commands.setContent(`- [ ] ${existingText || ""}`);
     },
   },
   {
     title: "Code Block",
     description: "Code snippet",
     command: ({ editor, range }) => {
-      editor.chain().focus().deleteRange(range).toggleCodeBlock().run();
+      editor.commands.setContent("```\n\n```");
     },
   },
   {
     title: "Blockquote",
     description: "Quote",
     command: ({ editor, range }) => {
-      const textBefore = editor.state.doc.textBetween(1, range.from, "", "").trim();
-      editor.chain().focus().deleteRange({ from: 1, to: editor.state.doc.content.size - 1 })
-        .insertContent(`> ${textBefore}`).run();
+      const existingText = getTextBeforeSlash(editor, range);
+      editor.commands.setContent(`> ${existingText || ""}`);
     },
   },
   {
     title: "Divider",
     description: "Horizontal line",
     command: ({ editor, range }) => {
-      editor.chain().focus().deleteRange(range).setHorizontalRule().run();
+      editor.commands.setContent("---");
     },
   },
 ];
+
+function getTextBeforeSlash(editor: any, range: { from: number; to: number }): string {
+  try {
+    const doc = editor.state.doc;
+    if (range.from > 1) {
+      return doc.textBetween(1, range.from, "", "").trim();
+    }
+  } catch {}
+  return "";
+}
 
 export const SlashCommands = Extension.create({
   name: "slashCommands",
