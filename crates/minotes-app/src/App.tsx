@@ -215,6 +215,7 @@ export default function App() {
         onJournalClick={() => openJournal()}
         onSearchClick={() => setSearchOpen(true)}
         onGraphClick={() => setGraphOpen(prev => !prev)}
+        onSettingsClick={() => setSettingsOpen(prev => !prev)}
         refreshKey={refreshKey}
       />
       <div className="main workspace-split mod-root" style={{ position: "relative" }}>

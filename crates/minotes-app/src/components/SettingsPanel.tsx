@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { getSettings, updateSettings, type MiNotesSettings } from "../lib/settings";
+import { getTheme, setTheme } from "../lib/theme";
 
 interface Props {
   open: boolean;
@@ -8,9 +9,13 @@ interface Props {
 
 export default function SettingsPanel({ open, onClose }: Props) {
   const [settings, setSettings] = useState<MiNotesSettings>(getSettings);
+  const [currentTheme, setCurrentTheme] = useState(getTheme);
 
   useEffect(() => {
-    if (open) setSettings(getSettings());
+    if (open) {
+      setSettings(getSettings());
+      setCurrentTheme(getTheme());
+    }
   }, [open]);
 
   if (!open) return null;
@@ -20,12 +25,36 @@ export default function SettingsPanel({ open, onClose }: Props) {
     setSettings(updated);
   };
 
+  const handleThemeChange = (theme: "dark" | "light") => {
+    setTheme(theme);
+    setCurrentTheme(theme);
+  };
+
   return (
     <div className="command-palette-overlay" onClick={onClose}>
       <div className="settings-panel" onClick={e => e.stopPropagation()}>
         <div className="settings-header">
           <span>Settings</span>
           <button className="btn btn-sm" onClick={onClose}>×</button>
+        </div>
+
+        <div className="settings-section">
+          <div className="settings-section-title">Appearance</div>
+
+          <div className="settings-row">
+            <div className="settings-row-info">
+              <div className="settings-row-name">Theme</div>
+              <div className="settings-row-desc">Switch between dark and light mode.</div>
+            </div>
+            <select
+              className="settings-select"
+              value={currentTheme}
+              onChange={e => handleThemeChange(e.target.value as "dark" | "light")}
+            >
+              <option value="dark">Dark (Catppuccin Mocha)</option>
+              <option value="light">Light (Catppuccin Latte)</option>
+            </select>
+          </div>
         </div>
 
         <div className="settings-section">

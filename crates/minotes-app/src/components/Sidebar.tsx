@@ -1,7 +1,6 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import type { Page, GraphStats, FolderTree, FolderTreeRoot } from "../lib/api";
 import * as api from "../lib/api";
-import { getTheme, toggleTheme } from "../lib/theme";
 import GraphSwitcher from "./GraphSwitcher";
 
 interface Props {
@@ -13,18 +12,19 @@ interface Props {
   onJournalClick: () => void;
   onSearchClick: () => void;
   onGraphClick: () => void;
+  onSettingsClick: () => void;
   refreshKey: number;
 }
 
 export default function Sidebar({
   activePage, stats, onPageClick, onCreatePage, onDeletePage,
-  onJournalClick, onSearchClick, onGraphClick, refreshKey,
+  onJournalClick, onSearchClick, onGraphClick, onSettingsClick, refreshKey,
 }: Props) {
   const [newTitle, setNewTitle] = useState("");
   const [showCreate, setShowCreate] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
   const [showFolderCreate, setShowFolderCreate] = useState(false);
-  const [themeIcon, setThemeIcon] = useState(getTheme() === "dark" ? "\u263E" : "\u263C");
+  // Theme toggle removed — now under Settings (Ctrl+,)
   const [treeData, setTreeData] = useState<FolderTreeRoot | null>(null);
   const [journals, setJournals] = useState<Page[]>([]);
   const [favorites, setFavorites] = useState<Page[]>([]);
@@ -105,14 +105,14 @@ export default function Sidebar({
 
       <div className="sidebar-actions" style={{ padding: "4px 16px", display: "flex", gap: 4 }}>
         <button className="btn" onClick={onJournalClick} style={{ flex: 1, textAlign: "left" }}>
-          📅 Today's Journal
+          📅 Journal
         </button>
         <button
           className="btn btn-sm"
           onClick={() => setShowFolderCreate(!showFolderCreate)}
           title="New folder"
         >
-          📁+
+          + Folder
         </button>
       </div>
 
@@ -220,20 +220,19 @@ export default function Sidebar({
         )}
         <button
           className="btn btn-sm"
-          onClick={() => { toggleTheme(); setThemeIcon(getTheme() === "dark" ? "\u263C" : "\u263E"); }}
-          title="Toggle theme (Ctrl+Shift+T)"
-          style={{ marginLeft: "auto" }}
-        >
-          {themeIcon}
-        </button>
-        <button
-          className="btn btn-sm"
           onClick={onGraphClick}
           title="Graph view (Ctrl+G)"
+          style={{ marginLeft: "auto" }}
         >
           Graph
         </button>
-        <span className="shortcut-hint">Ctrl+K</span>
+        <button
+          className="btn btn-sm"
+          onClick={onSettingsClick}
+          title="Settings (Ctrl+,)"
+        >
+          ⚙
+        </button>
       </div>
     </div>
   );
@@ -252,6 +251,7 @@ function DraggablePage({
   onRefresh: () => void;
 }) {
   const [dropPosition, setDropPosition] = useState<"above" | "below" | null>(null);
+  const didDrag = useRef(false);
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
@@ -269,7 +269,6 @@ function DraggablePage({
     const draggedId = e.dataTransfer.getData("text/page-id");
     if (!draggedId || draggedId === page.id) return;
 
-    // Calculate new position based on drop location
     const idx = siblings.findIndex(p => p.id === page.id);
     let newPos: number;
 
@@ -281,7 +280,6 @@ function DraggablePage({
       newPos = (page.position + nextPos) / 2;
     }
 
-    // Move to same folder first (if coming from different folder)
     await api.movePageToFolder(draggedId, page.folder_id ?? undefined);
     await api.reorderPage(draggedId, newPos);
     onRefresh();
@@ -293,16 +291,24 @@ function DraggablePage({
       style={{ paddingLeft: 16 + depth * 16 }}
       draggable
       onDragStart={e => {
+        didDrag.current = true;
         e.dataTransfer.setData("text/page-id", page.id);
         e.dataTransfer.setData("text/page-folder", page.folder_id ?? "");
         e.dataTransfer.effectAllowed = "move";
         e.currentTarget.classList.add("dragging");
       }}
       onDragEnd={e => { e.currentTarget.classList.remove("dragging"); setDropPosition(null); }}
+      onMouseDown={() => { didDrag.current = false; }}
+      onMouseUp={() => {
+        // Only navigate if this was a clean click, not a drag
+        if (!didDrag.current) {
+          onPageClick(page.id);
+        }
+        didDrag.current = false;
+      }}
       onDragOver={handleDragOver}
       onDragLeave={() => setDropPosition(null)}
       onDrop={handleDrop}
-      onClick={() => onPageClick(page.id)}
       onContextMenu={e => {
         e.preventDefault();
         if (confirm(`Delete "${page.title}"?`)) onDeletePage(page.id);
