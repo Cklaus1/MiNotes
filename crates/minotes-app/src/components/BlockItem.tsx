@@ -192,8 +192,26 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
     return () => blockEl.removeEventListener('click', handler, true);
   }, [block.id, tiptapEditor]);
 
-  // Dummy for onClickCapture — actual handler is native above
-  const handleBlockClick = useCallback(() => {}, []);
+  // Click on block → ensure TipTap editor gets focus (WebKitGTK fix)
+  // Without this, WebKitGTK requires two clicks: one to focus the div, another for contenteditable
+  const handleBlockClick = useCallback((e: React.MouseEvent) => {
+    // Don't steal focus from drag handle, collapse button, or property inputs
+    const target = e.target as HTMLElement;
+    if (target.closest('.block-drag-handle') || target.closest('.block-collapse') ||
+        target.closest('.block-properties') || target.closest('.prop-add-btn') ||
+        target.closest('.whiteboard-indicator') || target.closest('.editor-mode-toggle')) {
+      return;
+    }
+    // Focus the TipTap editor if it exists and isn't already focused
+    if (editorRef.current && !editorRef.current.isFocused) {
+      // Use setTimeout(0) so the native click completes first, then we ensure focus
+      setTimeout(() => {
+        if (editorRef.current && !editorRef.current.isFocused) {
+          editorRef.current.commands.focus();
+        }
+      }, 0);
+    }
+  }, []);
 
   // Load properties
   useEffect(() => {
