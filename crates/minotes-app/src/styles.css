@@ -231,119 +231,146 @@ body {
 
 /* === Full Tree Mode === */
 /* Activated via .tree-mode class on .block-list */
+/* Uses ├── / └── style branch connectors */
 
 .block-list.tree-mode {
-  padding-left: 24px;
+  padding-left: 20px;
 }
 
 .block-list.tree-mode .block {
-  padding: 7px 4px 7px 18px;
+  padding: 6px 4px 6px 16px;
 }
 
-/* Junction node — replaces soft bullet, integrates into tree */
+/* Hide default bullet in tree mode */
 .block-list.tree-mode .block::before {
-  content: "";
-  left: 0;
-  top: 13px;
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.25);
+  display: none;
 }
 
-/* Vertical line — runs through each block, precisely aligned to node center */
+/* ::after = vertical line (│) running full block height */
 .block-list.tree-mode .block::after {
   content: "";
   position: absolute;
-  left: 2px;  /* center of 5px node at left:0 */
+  left: 0;
   top: 0;
   bottom: 0;
-  width: 1px;
-  background: rgba(255, 255, 255, 0.2);
+  width: 0;
+  border-left: 1px solid rgba(255, 255, 255, 0.22);
 }
 
-/* Horizontal connector — junction from vertical line to content */
-.block-list.tree-mode .block {
-  border-left: none;
+/* Horizontal branch connector (├── shape) via box-shadow on ::after */
+/* The horizontal arm extends from the vertical line to content */
+.block-list.tree-mode .block::after {
+  box-shadow: 0px 15px 0 0 rgba(255, 255, 255, 0.22),
+              1px 15px 0 0 rgba(255, 255, 255, 0.22),
+              2px 15px 0 0 rgba(255, 255, 255, 0.22),
+              3px 15px 0 0 rgba(255, 255, 255, 0.22),
+              4px 15px 0 0 rgba(255, 255, 255, 0.22),
+              5px 15px 0 0 rgba(255, 255, 255, 0.22),
+              6px 15px 0 0 rgba(255, 255, 255, 0.22),
+              7px 15px 0 0 rgba(255, 255, 255, 0.22);
 }
 
-/* First block — line starts from node (no line above) */
-.block-list.tree-mode .block:first-child::after {
-  top: 15px;  /* start at node center */
-}
-
-/* Last block — line ends at node (L-shape) */
+/* Last block — └── shape: vertical line stops at connector */
 .block-list.tree-mode .block:last-child::after {
   bottom: auto;
-  height: 16px;  /* stop at node center */
+  height: 16px;
 }
 
-/* Only child — no vertical line at all */
+/* Only child — just a horizontal dash, no vertical line */
 .block-list.tree-mode .block:only-child::after {
-  display: none;
+  border-left: none;
+  top: 15px;
+  height: 1px;
+  width: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.22);
+  box-shadow: none;
+}
+
+/* Node dot — sits at the junction where horizontal meets vertical */
+.block-list.tree-mode .block {
+  /* Pseudo-elements used up, so use border-image trick or rely on connector */
+  /* The junction IS the corner — no separate dot needed */
 }
 
 /* ── Active path: focused block gets emphasis ── */
 
-/* Focused node — pops */
-.block-list.tree-mode .block:focus-within::before {
-  background: rgba(137, 180, 250, 0.8);
-  width: 6px;
-  height: 6px;
-  left: -0.5px;
-  top: 12.5px;
-}
-
-/* Focused line segment — stronger */
-.block-list.tree-mode .block:focus-within::after {
-  background: rgba(137, 180, 250, 0.4);
-  width: 1.5px;
-  left: 1.75px;
-}
-
-/* Focused block — very subtle bg */
 .block-list.tree-mode .block:focus-within {
   background: rgba(137, 180, 250, 0.04);
 }
 
-/* ── Hover: lighter emphasis ── */
+.block-list.tree-mode .block:focus-within::after {
+  border-left-color: rgba(137, 180, 250, 0.5);
+  box-shadow: 0px 15px 0 0 rgba(137, 180, 250, 0.5),
+              1px 15px 0 0 rgba(137, 180, 250, 0.5),
+              2px 15px 0 0 rgba(137, 180, 250, 0.5),
+              3px 15px 0 0 rgba(137, 180, 250, 0.5),
+              4px 15px 0 0 rgba(137, 180, 250, 0.5),
+              5px 15px 0 0 rgba(137, 180, 250, 0.5),
+              6px 15px 0 0 rgba(137, 180, 250, 0.5),
+              7px 15px 0 0 rgba(137, 180, 250, 0.5);
+}
 
-.block-list.tree-mode .block:hover::before {
-  background: rgba(255, 255, 255, 0.45);
+.block-list.tree-mode .block:last-child:focus-within::after {
+  border-left-color: rgba(137, 180, 250, 0.5);
+}
+
+/* ── Hover ── */
+
+.block-list.tree-mode .block:hover {
+  background: rgba(255, 255, 255, 0.02);
 }
 
 .block-list.tree-mode .block:hover::after {
-  background: rgba(255, 255, 255, 0.3);
-}
-
-.block-list.tree-mode .block:hover {
-  background: rgba(255, 255, 255, 0.03);
+  border-left-color: rgba(255, 255, 255, 0.35);
+  box-shadow: 0px 15px 0 0 rgba(255, 255, 255, 0.35),
+              1px 15px 0 0 rgba(255, 255, 255, 0.35),
+              2px 15px 0 0 rgba(255, 255, 255, 0.35),
+              3px 15px 0 0 rgba(255, 255, 255, 0.35),
+              4px 15px 0 0 rgba(255, 255, 255, 0.35),
+              5px 15px 0 0 rgba(255, 255, 255, 0.35),
+              6px 15px 0 0 rgba(255, 255, 255, 0.35),
+              7px 15px 0 0 rgba(255, 255, 255, 0.35);
 }
 
 /* ── Tree indent levels ── */
-.block-list.tree-mode .block[data-depth="1"] { margin-left: 22px; }
-.block-list.tree-mode .block[data-depth="2"] { margin-left: 44px; }
-.block-list.tree-mode .block[data-depth="3"] { margin-left: 66px; }
-.block-list.tree-mode .block[data-depth="4"] { margin-left: 88px; }
+.block-list.tree-mode .block[data-depth="1"] { margin-left: 20px; }
+.block-list.tree-mode .block[data-depth="2"] { margin-left: 40px; }
+.block-list.tree-mode .block[data-depth="3"] { margin-left: 60px; }
+.block-list.tree-mode .block[data-depth="4"] { margin-left: 80px; }
 
-/* ── Light mode adjustments ── */
-[data-theme="light"] .block-list.tree-mode .block::before {
-  background: rgba(0, 0, 0, 0.2);
-}
+/* ── Light mode ── */
 [data-theme="light"] .block-list.tree-mode .block::after {
-  background: rgba(0, 0, 0, 0.15);
-}
-[data-theme="light"] .block-list.tree-mode .block:hover::before {
-  background: rgba(0, 0, 0, 0.35);
+  border-left-color: rgba(0, 0, 0, 0.18);
+  box-shadow: 0px 15px 0 0 rgba(0, 0, 0, 0.18),
+              1px 15px 0 0 rgba(0, 0, 0, 0.18),
+              2px 15px 0 0 rgba(0, 0, 0, 0.18),
+              3px 15px 0 0 rgba(0, 0, 0, 0.18),
+              4px 15px 0 0 rgba(0, 0, 0, 0.18),
+              5px 15px 0 0 rgba(0, 0, 0, 0.18),
+              6px 15px 0 0 rgba(0, 0, 0, 0.18),
+              7px 15px 0 0 rgba(0, 0, 0, 0.18);
 }
 [data-theme="light"] .block-list.tree-mode .block:hover::after {
-  background: rgba(0, 0, 0, 0.25);
-}
-[data-theme="light"] .block-list.tree-mode .block:focus-within::before {
-  background: rgba(30, 102, 245, 0.7);
+  border-left-color: rgba(0, 0, 0, 0.3);
+  box-shadow: 0px 15px 0 0 rgba(0, 0, 0, 0.3),
+              1px 15px 0 0 rgba(0, 0, 0, 0.3),
+              2px 15px 0 0 rgba(0, 0, 0, 0.3),
+              3px 15px 0 0 rgba(0, 0, 0, 0.3),
+              4px 15px 0 0 rgba(0, 0, 0, 0.3),
+              5px 15px 0 0 rgba(0, 0, 0, 0.3),
+              6px 15px 0 0 rgba(0, 0, 0, 0.3),
+              7px 15px 0 0 rgba(0, 0, 0, 0.3);
 }
 [data-theme="light"] .block-list.tree-mode .block:focus-within::after {
-  background: rgba(30, 102, 245, 0.3);
+  border-left-color: rgba(30, 102, 245, 0.4);
+  box-shadow: 0px 15px 0 0 rgba(30, 102, 245, 0.4),
+              1px 15px 0 0 rgba(30, 102, 245, 0.4),
+              2px 15px 0 0 rgba(30, 102, 245, 0.4),
+              3px 15px 0 0 rgba(30, 102, 245, 0.4),
+              4px 15px 0 0 rgba(30, 102, 245, 0.4),
+              5px 15px 0 0 rgba(30, 102, 245, 0.4),
+              6px 15px 0 0 rgba(30, 102, 245, 0.4),
+              7px 15px 0 0 rgba(30, 102, 245, 0.4);
 }
 
 /* Block selection highlight */
