@@ -19,6 +19,9 @@ interface Props {
   depth?: number;
   hasChildren?: boolean;
   isLastSibling?: boolean;
+  isOnActivePath?: boolean;
+  onFocusBlock?: (blockId: string) => void;
+  onBlurBlock?: () => void;
   dataBlockId?: string;
   selected?: boolean;
   onUpdate: (id: string, content: string) => void;
@@ -39,7 +42,7 @@ interface Props {
 }
 
 const BlockItem = forwardRef<BlockItemHandle, Props>(({
-  block, depth = 0, hasChildren = false, isLastSibling = false, dataBlockId, selected = false, onUpdate, onDelete, onPageLinkClick,
+  block, depth = 0, hasChildren = false, isLastSibling = false, isOnActivePath = false, onFocusBlock, onBlurBlock, dataBlockId, selected = false, onUpdate, onDelete, onPageLinkClick,
   onBlockRefClick, onEnter, onBackspaceAtStart, onArrowUp, onArrowDown, onPasteMultiline,
   onIndent, onOutdent, onDuplicate, onToggleCollapse, onZoomIn, onShiftClick,
 }, ref) => {
@@ -172,7 +175,10 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
       className={`block${selected ? " selected" : ""}`}
       data-depth={depth > 0 ? String(depth) : undefined}
       data-tree-last={isLastSibling ? "true" : undefined}
+      data-active-path={isOnActivePath ? "true" : undefined}
       data-block-id={dataBlockId ?? block.id}
+      onFocusCapture={() => onFocusBlock?.(block.id)}
+      onBlurCapture={() => onBlurBlock?.()}
       onContextMenu={handleContextMenu}
       onClick={(e) => {
         if (e.shiftKey && onShiftClick) {

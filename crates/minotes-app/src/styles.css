@@ -299,19 +299,27 @@ body {
   padding: 6px 4px 6px 18px;  /* 14px arm + 4px gap */
 }
 
-/* ── Active path ── */
+/* ── Active path: highlight entire ancestry ── */
 
+/* Focused block itself */
 .block-list.tree-mode .block:focus-within {
   background: rgba(137, 180, 250, 0.04);
 }
-
 .block-list.tree-mode .block:focus-within::before {
   border-left-color: rgba(137, 180, 250, 0.5);
   border-bottom-color: rgba(137, 180, 250, 0.5);
 }
-
 .block-list.tree-mode .block:focus-within::after {
   border-left-color: rgba(137, 180, 250, 0.5);
+}
+
+/* Ancestor blocks on the active path */
+.block-list.tree-mode .block[data-active-path]::before {
+  border-left-color: rgba(137, 180, 250, 0.35);
+  border-bottom-color: rgba(137, 180, 250, 0.35);
+}
+.block-list.tree-mode .block[data-active-path]::after {
+  border-left-color: rgba(137, 180, 250, 0.35);
 }
 
 /* ── Hover ── */
@@ -319,39 +327,29 @@ body {
 .block-list.tree-mode .block:hover {
   background: rgba(255, 255, 255, 0.02);
 }
-
 .block-list.tree-mode .block:hover::before {
   border-left-color: rgba(255, 255, 255, 0.4);
   border-bottom-color: rgba(255, 255, 255, 0.4);
 }
-
 .block-list.tree-mode .block:hover::after {
   border-left-color: rgba(255, 255, 255, 0.4);
 }
 
-/* ── Tree indent levels (18px per level for scanability) ── */
+/* ── Tree indent levels (18px per level) ── */
 .block-list.tree-mode .block[data-depth="1"] { margin-left: 18px; }
 .block-list.tree-mode .block[data-depth="2"] { margin-left: 36px; }
 .block-list.tree-mode .block[data-depth="3"] { margin-left: 54px; }
 .block-list.tree-mode .block[data-depth="4"] { margin-left: 72px; }
 
-/* Depth-based opacity: deeper = fainter */
+/* Depth-based opacity: natural depth hierarchy */
 .block-list.tree-mode .block[data-depth="1"]::before,
-.block-list.tree-mode .block[data-depth="1"]::after {
-  opacity: 0.85;
-}
+.block-list.tree-mode .block[data-depth="1"]::after { opacity: 0.8; }
 .block-list.tree-mode .block[data-depth="2"]::before,
-.block-list.tree-mode .block[data-depth="2"]::after {
-  opacity: 0.65;
-}
+.block-list.tree-mode .block[data-depth="2"]::after { opacity: 0.6; }
 .block-list.tree-mode .block[data-depth="3"]::before,
-.block-list.tree-mode .block[data-depth="3"]::after {
-  opacity: 0.45;
-}
+.block-list.tree-mode .block[data-depth="3"]::after { opacity: 0.4; }
 .block-list.tree-mode .block[data-depth="4"]::before,
-.block-list.tree-mode .block[data-depth="4"]::after {
-  opacity: 0.3;
-}
+.block-list.tree-mode .block[data-depth="4"]::after { opacity: 0.25; }
 
 /* ── Light mode ── */
 [data-theme="light"] .block-list.tree-mode .block::before {

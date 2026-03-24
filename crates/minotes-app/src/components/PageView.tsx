@@ -43,6 +43,7 @@ export default function PageView({
   const [addingAlias, setAddingAlias] = useState(false);
   const [newAlias, setNewAlias] = useState("");
   const [focusBlockIndex, setFocusBlockIndex] = useState<number | null>(null);
+  const [activeBlockId, setActiveBlockId] = useState<string | null>(null);
   const [linkPreview, setLinkPreview] = useState<{ pageName: string; x: number; y: number } | null>(null);
   const [selectedBlockIds, setSelectedBlockIds] = useState<Set<string>>(new Set());
   const [selectionAnchor, setSelectionAnchor] = useState<number | null>(null);
@@ -340,6 +341,15 @@ export default function PageView({
         const siblings = childrenMap.get(parentKey) ?? [];
         return siblings[siblings.length - 1] === id;
       },
+      getAncestorIds: (id: string): string[] => {
+        const ancestors: string[] = [];
+        let current = blocks.find(b => b.id === id);
+        while (current?.parent_id) {
+          ancestors.push(current.parent_id);
+          current = blocks.find(b => b.id === current!.parent_id);
+        }
+        return ancestors;
+      },
       isHiddenByCollapse: (id: string) => {
         // Walk up the parent chain; if any ancestor is collapsed, this block is hidden
         let current = blocks.find(b => b.id === id);
@@ -409,6 +419,13 @@ export default function PageView({
   // Filter visible blocks (exclude collapsed children)
   const filteredVisibleBlocks = visibleBlocks.filter(
     b => !blockTreeInfo.isHiddenByCollapse(b.id)
+  );
+
+  // Active path: the focused block + all its ancestors
+  const activePathIds = new Set<string>(
+    activeBlockId
+      ? [activeBlockId, ...blockTreeInfo.getAncestorIds(activeBlockId)]
+      : []
   );
 
   // UX-006: Zoom keyboard shortcuts
@@ -688,6 +705,9 @@ export default function PageView({
               onZoomIn={() => setZoomedBlockId(block.id)}
               hasChildren={blockTreeInfo.hasChildren(block.id)}
               isLastSibling={blockTreeInfo.isLastSibling(block.id)}
+              isOnActivePath={activePathIds.has(block.id)}
+              onFocusBlock={setActiveBlockId}
+              onBlurBlock={() => setActiveBlockId(null)}
               onShiftClick={handleShiftClick}
             />
           ))}
