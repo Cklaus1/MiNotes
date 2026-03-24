@@ -436,6 +436,31 @@ This PRD addresses these gaps to make MiNotes feel as fluid as Logseq while avoi
 
 ---
 
+---
+
+## UX-019: Property Inheritance from Parent Blocks
+
+**Current:** Properties are per-block only. No inheritance.
+**Target:** Child blocks inherit parent properties for queries. Tagging a parent automatically contextualizes all children.
+
+### Behavior
+
+- Set `project: Alpha` on a parent block → all children inherit this for query purposes
+- Inherited properties show as faded chips on child blocks (not editable on child, edit on parent)
+- Queries can filter by inherited properties: `WHERE property = 'project' AND value = 'Alpha'` returns the parent and all descendants
+- Explicit properties on a child override inherited ones
+
+### Why it matters
+- Logseq's #7 most valued feature. Users tag a meeting heading with `[[ProjectX]]` and every sub-bullet is automatically connected.
+- Without this, users must manually tag every block — defeats the purpose of nesting.
+
+### Implementation
+- Query-time inheritance: when running SQL queries, JOIN up the parent chain to find inherited properties
+- Add `get_inherited_properties(block_id)` to Rust backend that walks parent_id chain
+- Frontend: show inherited props as ghost chips with "(inherited)" label
+
+---
+
 ## Updated Priority Order
 
 | # | Feature | Impact | Effort | Priority |
@@ -451,6 +476,7 @@ This PRD addresses these gaps to make MiNotes feel as fluid as Logseq while avoi
 | UX-016 | Reliable undo/redo | High | Large | **P1** |
 | UX-015 | Block context menu | Medium | Small | **P1** |
 | UX-012 | Smart paste | Medium | Medium | **P1** |
+| UX-019 | Property inheritance | High | Medium | **P1** |
 | UX-006 | Block zoom (focus mode) | Medium | Medium | **P2** |
 | UX-005 | Right sidebar (split view) | Medium | Large | **P2** |
 | UX-010 | Inline block references | Medium | Medium | **P2** |
