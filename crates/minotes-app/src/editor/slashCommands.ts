@@ -49,15 +49,15 @@ const COMMANDS: SlashMenuItem[] = [
   },
   {
     title: "Bullet List",
-    description: "Start a list",
+    description: "list bullet unordered",
     command: ({ editor, range }) => {
       const text = getTextBeforeSlash(editor, range);
       slashCommandCallback?.(`- ${text}`);
     },
   },
   {
-    title: "Task List",
-    description: "Checklist",
+    title: "Todo List",
+    description: "task checkbox todo",
     command: ({ editor, range }) => {
       const text = getTextBeforeSlash(editor, range);
       slashCommandCallback?.(`- [ ] ${text}`);
@@ -65,15 +65,15 @@ const COMMANDS: SlashMenuItem[] = [
   },
   {
     title: "Code Block",
-    description: "Code snippet",
+    description: "code snippet",
     command: ({ editor, range }) => {
       const text = getTextBeforeSlash(editor, range);
       slashCommandCallback?.("```\n" + (text || "") + "\n```");
     },
   },
   {
-    title: "Blockquote",
-    description: "Quote",
+    title: "Quote",
+    description: "blockquote",
     command: ({ editor, range }) => {
       const text = getTextBeforeSlash(editor, range);
       slashCommandCallback?.(`> ${text}`);
@@ -81,7 +81,7 @@ const COMMANDS: SlashMenuItem[] = [
   },
   {
     title: "Divider",
-    description: "Horizontal line",
+    description: "horizontal line separator",
     command: () => {
       slashCommandCallback?.("---");
     },
@@ -100,8 +100,10 @@ export const SlashCommands = Extension.create({
           props.command({ editor, range });
         },
         items: ({ query }: { query: string }) => {
+          const q = query.toLowerCase();
           return COMMANDS.filter((item) =>
-            item.title.toLowerCase().includes(query.toLowerCase())
+            item.title.toLowerCase().includes(q) ||
+            item.description.toLowerCase().includes(q)
           );
         },
         render: () => {

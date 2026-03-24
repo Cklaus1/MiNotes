@@ -91,16 +91,12 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
     onIndent: onIndent ? () => onIndent(block.id) : undefined,
     onOutdent: onOutdent ? () => onOutdent(block.id) : undefined,
     onSlashCommand: (newMarkdown: string) => {
-      // 1. Update the editor content immediately to render the formatting
-      if (editorRef.current) {
-        try {
-          editorRef.current.commands.setContent(newMarkdown);
-        } catch (e) {
-          console.error("[slash] setContent failed:", e);
-        }
-      }
-      // 2. Save to backend
+      // Save to backend + update local state (triggers re-render → setContent)
       onUpdate(block.id, newMarkdown);
+      // Re-focus the editor after content updates
+      setTimeout(() => {
+        editorRef.current?.commands.focus("end");
+      }, 100);
     },
   });
 
