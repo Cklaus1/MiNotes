@@ -708,7 +708,163 @@ echo "$H" | grep -qi "<ul" && pass "Bullet list ✓" || fail "Bullets broken" ""
 ss "25-all-formatting"
 
 # ═══════════════════════════════════════════════
-journey "26. Final: Is the app stable after everything?"
+journey "26. I made a mistake — can I undo it?"
+# Real user: changes something, immediately regrets it
+# ═══════════════════════════════════════════════
+
+step "I change a block to something wrong"
+api "navigateTo('Project Alpha')" > /dev/null; sleep 2
+ORIG=$(api "getBlockContent(0)" | tr -d '"')
+api "setBlockContent(0, 'OOPS I DELETED EVERYTHING')" > /dev/null; sleep 1
+R=$(api "getBlockContent(0)" | tr -d '"')
+[[ "$R" == *"OOPS"* ]] && pass "Mistake made" || fail "Can't make mistake" "$R"
+
+step "I undo the mistake (restore original)"
+api "setBlockContent(0, '$ORIG')" > /dev/null; sleep 1
+R=$(api "getBlockContent(0)" | tr -d '"')
+[[ "$R" != *"OOPS"* ]] && pass "Mistake undone" || fail "Can't undo" "$R"
+
+ss "26-undo-mistake"
+
+# ═══════════════════════════════════════════════
+journey "27. I want to rename a page"
+# Real user: made a typo in title, or wants to reorganize
+# ═══════════════════════════════════════════════
+
+step "I have a page called 'My New Project'"
+api "navigateTo('My New Project')" > /dev/null; sleep 2
+R=$(api "getCurrentPage()" | tr -d '"')
+[[ "$R" == *"My New Project"* ]] && pass "Page exists" || fail "Page missing" "$R"
+
+step "I rename it"
+ev "(async()=>{const api=await import('/src/lib/api.ts');const tree=await api.getPageTree('My New Project');await api.renamePage(tree.page.id,'My Awesome Project');return 'renamed'})()" > /dev/null 2>&1
+sleep 2
+
+step "The new name appears"
+api "navigateTo('My Awesome Project')" > /dev/null; sleep 2
+R=$(api "getCurrentPage()" | tr -d '"')
+[[ "$R" == *"My Awesome Project"* ]] && pass "Page renamed successfully" || fail "Rename failed" "$R"
+
+ss "27-rename-page"
+
+# ═══════════════════════════════════════════════
+journey "28. I want to use the command palette for actions"
+# Not just search — the > prefix for commands
+# ═══════════════════════════════════════════════
+
+step "I open command palette with Ctrl+K"
+$AB press "Control+k" 2>/dev/null; sleep 1
+S=$(snap)
+echo "$S" | grep -qi "Search\|command" && pass "Command palette opens" || fail "No palette" ""
+
+step "I see the hint about > for commands"
+echo "$S" | grep -qi ">" && pass "I see the > hint for commands" || fail "No > hint" "Users won't discover commands"
+
+step "Close palette"
+$AB press "Escape" 2>/dev/null; sleep 0.5
+
+ss "28-command-palette"
+
+# ═══════════════════════════════════════════════
+journey "29. I have many pages — can I still find things?"
+# Scale test: create several pages, verify sidebar and search cope
+# ═══════════════════════════════════════════════
+
+step "I create several more pages"
+for name in "Weekly Standup" "Q1 Planning" "Bug Tracker" "Architecture Notes" "Team Retro"; do
+  ev "(async()=>{const api=await import('/src/lib/api.ts');try{await api.createPage('$name')}catch(e){}return 'ok'})()" > /dev/null 2>&1
+done
+sleep 2
+
+step "Sidebar shows many pages"
+S=$(snap)
+FOUND=0
+for name in "Project Alpha" "Research Notes" "Getting Started" "Weekly Standup" "Architecture Notes"; do
+  echo "$S" | grep -qi "$name" && FOUND=$((FOUND+1))
+done
+[[ "$FOUND" -ge 4 ]] && pass "Many pages visible ($FOUND)" || fail "Pages missing" "Only $FOUND found"
+
+step "Search still finds the right page"
+api "openSearch()" > /dev/null; sleep 1
+S=$(snap)
+echo "$S" | grep -qi "Architecture" && pass "Search finds new pages" || fail "Search can't find new pages" ""
+api "closePanel()" > /dev/null; sleep 0.5
+
+step "I can navigate to any page"
+api "navigateTo('Architecture Notes')" > /dev/null; sleep 2
+R=$(api "getCurrentPage()" | tr -d '"')
+[[ "$R" == *"Architecture"* ]] && pass "Navigate to any page works" || fail "Can't navigate" "$R"
+
+ss "29-many-pages"
+
+# ═══════════════════════════════════════════════
+journey "30. I want to write a real meeting note"
+# The ultimate test: a real-world use case end-to-end
+# ═══════════════════════════════════════════════
+
+step "I create a meeting notes page"
+ev "(async()=>{const api=await import('/src/lib/api.ts');try{await api.createPage('Sprint Review 2026-03-24')}catch(e){}return 'ok'})()" > /dev/null 2>&1
+sleep 1
+api "navigateTo('Sprint Review 2026-03-24')" > /dev/null; sleep 2
+R=$(api "getCurrentPage()" | tr -d '"')
+[[ "$R" == *"Sprint Review"* ]] && pass "Meeting page created" || fail "Can't create meeting page" "$R"
+
+step "I add the meeting structure"
+ev "(async()=>{
+  const api=await import('/src/lib/api.ts');
+  const tree=await api.getPageTree('Sprint Review 2026-03-24');
+  const pid=tree.page.id;
+  await api.createBlock(pid,'# Sprint Review — March 24, 2026');
+  await api.createBlock(pid,'**Attendees**: Alice, Bob, Charlie, Diana');
+  await api.createBlock(pid,'## Demo Items');
+  await api.createBlock(pid,'- [ ] Alice: New search feature');
+  await api.createBlock(pid,'- [x] Bob: Performance improvements');
+  await api.createBlock(pid,'- [ ] Charlie: Mobile responsive layout');
+  await api.createBlock(pid,'## Discussion');
+  await api.createBlock(pid,'> We need to ship by end of Q1 — no exceptions');
+  await api.createBlock(pid,'Key blocker: the [[Project Alpha]] dependency is not ready');
+  await api.createBlock(pid,'## Action Items');
+  await api.createBlock(pid,'TODO Alice: Finish search by Friday');
+  await api.createBlock(pid,'TODO Bob: Deploy to staging tonight');
+  await api.createBlock(pid,'DONE Charlie: Update the roadmap');
+  return 'done';
+})()" > /dev/null 2>&1
+sleep 2
+api "navigateTo('Sprint Review 2026-03-24')" > /dev/null; sleep 2
+
+step "Meeting page has all the content"
+R=$(api "getBlockCount()" | tr -d '"')
+[[ "$R" -ge 10 ]] 2>/dev/null && pass "Meeting has $R blocks" || fail "Content missing" "$R blocks"
+
+step "Heading renders"
+H=$(ev "document.querySelectorAll('.ProseMirror')[0]?.innerHTML")
+echo "$H" | grep -qi "<h1" && pass "Meeting title is H1" || fail "No H1" "${H:0:40}"
+
+step "Attendees with bold names"
+H=$(ev "document.querySelectorAll('.ProseMirror')[1]?.innerHTML")
+echo "$H" | grep -qi "<strong" && pass "Bold names render" || fail "No bold" "${H:0:40}"
+
+step "Todo items with checkboxes"
+H=$(ev "document.querySelectorAll('.ProseMirror')[3]?.innerHTML")
+echo "$H" | grep -qi "taskList\|checkbox" && pass "Todos render as checkboxes" || fail "No checkboxes" "${H:0:40}"
+
+step "Blockquote renders"
+H=$(ev "document.querySelectorAll('.ProseMirror')[7]?.innerHTML")
+echo "$H" | grep -qi "blockquote" && pass "Key quote renders" || fail "No quote" "${H:0:40}"
+
+step "Wiki link to Project Alpha visible"
+S=$(snap)
+echo "$S" | grep -qi "Project Alpha" && pass "Wiki link visible" || fail "No link" ""
+
+step "TODO/DONE states visible"
+echo "$S" | grep -qi "TODO\|DONE" && pass "Task states visible" || fail "No states" ""
+
+ss "30-real-meeting-note"
+
+# ═══════════════════════════════════════════════
+journey "31. Final: Is the app stable after everything?"
+# After 30 journeys of heavy use, does it still work?
+# ═══════════════════════════════════════════════
 # After 25 journeys of heavy use, does it still work?
 # ═══════════════════════════════════════════════
 
@@ -738,7 +894,7 @@ S=$(snap)
 echo "$S" | grep -qi "Theme" && pass "Settings stable" || fail "Settings crashed" ""
 api "closePanel()" > /dev/null
 
-ss "26-final-stability"
+ss "31-final-stability"
 
 # ═══════════════════════════════════════════════
 $AB close 2>/dev/null
