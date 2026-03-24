@@ -180,7 +180,7 @@ export default function PageView({
   };
 
   // UX-001: Seamless block creation
-  const handleEnter = async (blockId: string, contentAfterCursor: string) => {
+  const handleEnter = async (blockId: string, contentAfterCursor: string, savedContent?: string) => {
     const idx = blocks.findIndex(b => b.id === blockId);
     if (idx === -1) return;
 
@@ -188,9 +188,14 @@ export default function PageView({
     const newBlock = await api.createBlock(page.id, contentAfterCursor);
     undoStack.push({ type: 'create', blockId: newBlock.id, pageId: page.id, newContent: contentAfterCursor, timestamp: Date.now() });
 
-    // Optimistically insert into local state (no full page refresh!)
+    // Optimistically update local state:
+    // - Update current block's content to the saved before-cursor text
+    // - Insert new block after it
     setLocalBlocks(prev => {
       const copy = [...prev];
+      if (savedContent !== undefined) {
+        copy[idx] = { ...copy[idx], content: savedContent };
+      }
       copy.splice(idx + 1, 0, newBlock);
       return copy;
     });

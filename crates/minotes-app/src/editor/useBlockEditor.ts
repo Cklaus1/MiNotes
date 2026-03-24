@@ -26,7 +26,7 @@ interface UseBlockEditorOptions {
   onSave: (markdown: string) => void;
   onPageLinkClick: (title: string, shiftKey?: boolean) => void;
   onBlockRefClick?: (blockId: string) => void;
-  onEnter?: (contentAfterCursor: string) => void;
+  onEnter?: (contentAfterCursor: string, savedContent?: string) => void;
   onBackspaceAtStart?: (content: string) => void;
   onArrowUp?: () => void;
   onArrowDown?: () => void;
@@ -158,11 +158,13 @@ export function useBlockEditor({
           const markdownBefore = ed?.storage?.markdown?.getMarkdown?.() ?? "";
 
           // Save current block with before-cursor content
-          contentRef.current = markdownBefore.trim();
-          onSaveRef.current(markdownBefore.trim());
+          const savedContent = markdownBefore.trim();
+          contentRef.current = savedContent;
+          onSaveRef.current(savedContent);
 
           // Create new block with after-cursor text
-          onEnterRef.current(textAfterCursor);
+          // Pass both saved content and after-cursor so PageView can update local state
+          onEnterRef.current(textAfterCursor, savedContent);
           return true;
         }
 

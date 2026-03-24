@@ -24,7 +24,7 @@ interface Props {
   onDelete: (id: string) => void;
   onPageLinkClick: (title: string, shiftKey?: boolean) => void;
   onBlockRefClick?: (blockId: string) => void;
-  onEnter?: (blockId: string, contentAfterCursor: string) => void;
+  onEnter?: (blockId: string, contentAfterCursor: string, savedContent?: string) => void;
   onBackspaceAtStart?: (blockId: string, content: string) => void;
   onArrowUp?: (blockId: string) => void;
   onArrowDown?: (blockId: string) => void;
@@ -78,7 +78,7 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
     },
     onPageLinkClick,
     onBlockRefClick,
-    onEnter: onEnter ? (contentAfterCursor) => onEnter(block.id, contentAfterCursor) : undefined,
+    onEnter: onEnter ? (contentAfterCursor, savedContent) => onEnter(block.id, contentAfterCursor, savedContent) : undefined,
     onBackspaceAtStart: onBackspaceAtStart ? (content) => onBackspaceAtStart(block.id, content) : undefined,
     onArrowUp: onArrowUp ? () => onArrowUp(block.id) : undefined,
     onArrowDown: onArrowDown ? () => onArrowDown(block.id) : undefined,
