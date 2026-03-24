@@ -34,7 +34,9 @@ export default function Sidebar({
       const tree = await api.getFolderTree();
       setTreeData(tree);
       const pages = await api.listPages(200);
-      setJournals(pages.filter(p => p.is_journal).slice(0, 7));
+      // Show up to 10 journals — the list_pages mock filters empty ones,
+      // but for Tauri backend we show all (they're created on navigation)
+      setJournals(pages.filter(p => p.is_journal).slice(0, 20));
       const favs = await api.listFavorites();
       setFavorites(favs);
     } catch (e) {
