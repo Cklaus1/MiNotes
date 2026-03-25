@@ -805,11 +805,6 @@ export default function PageView({
                 />
               </div>
             )}
-            {pageProps.length === 0 && !addingProp && (
-              <div style={{ color: "var(--text-muted)", fontSize: 12 }}>
-                No properties. Click + to add one.
-              </div>
-            )}
           </div>
           {/* Aliases section inside properties panel */}
           <div className="page-properties-header" style={{ marginTop: 8 }}>
@@ -829,11 +824,6 @@ export default function PageView({
                 <span className="alias-remove" onClick={() => handleRemoveAlias(alias)}>×</span>
               </span>
             ))}
-            {aliases.length === 0 && !addingAlias && (
-              <div style={{ color: "var(--text-muted)", fontSize: 12 }}>
-                No aliases.
-              </div>
-            )}
             {addingAlias && (
               <input
                 className="alias-input"
