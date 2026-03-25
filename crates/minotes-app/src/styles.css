@@ -3130,18 +3130,19 @@ body.theme-light { /* matches our light theme */ }
 }
 
 .canvas-mode-btn {
-  background: none;
+  background: rgba(255, 255, 255, 0.05);
   border: none;
-  color: var(--text-secondary);
+  color: var(--text-primary);
   cursor: pointer;
   font-size: 12px;
   padding: 5px 14px;
   border-radius: 6px;
-  transition: background 0.15s, color 0.15s;
+  transition: background 0.15s, color 0.15s, box-shadow 0.15s;
   white-space: nowrap;
 }
 
 .canvas-mode-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
   color: var(--text-primary);
 }
 
@@ -3150,6 +3151,20 @@ body.theme-light { /* matches our light theme */ }
   color: #1e1e2e;
   font-weight: 600;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+[data-theme="light"] .canvas-mode-btn {
+  background: rgba(0, 0, 0, 0.04);
+  color: var(--text-primary);
+}
+
+[data-theme="light"] .canvas-mode-btn:hover {
+  background: rgba(0, 0, 0, 0.08);
+}
+
+[data-theme="light"] .canvas-mode-btn.active {
+  background: var(--accent);
+  color: #fff;
 }
 
 .canvas-page-context {
