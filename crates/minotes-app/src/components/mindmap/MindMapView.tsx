@@ -666,19 +666,12 @@ function MindMapInner({ pageId, pageTitle, blocks, onClose, onRefreshPage }: Pro
       </ReactFlow>
 
       {/* Bottom-right hover zone to trigger minimap */}
-      {!showMinimap && (
-        <div
-          className="mm-minimap-trigger"
-          onMouseEnter={() => setShowMinimap(true)}
-        />
-      )}
-      {showMinimap && (
-        <div
-          ref={minimapHoverRef}
-          className="mm-minimap-hover-area"
-          onMouseLeave={() => setShowMinimap(false)}
-        />
-      )}
+      <div
+        className={showMinimap ? "mm-minimap-hover-area" : "mm-minimap-trigger"}
+        ref={minimapHoverRef}
+        onMouseEnter={() => setShowMinimap(true)}
+        onMouseLeave={() => setShowMinimap(false)}
+      />
 
       {/* Context menu */}
       {contextMenu && (

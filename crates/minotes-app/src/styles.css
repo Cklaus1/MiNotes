@@ -3425,14 +3425,14 @@ body.theme-light { /* matches our light theme */ }
   cursor: default;
 }
 
-/* Keep minimap visible while hovering this expanded area */
+/* Larger area keeps minimap visible while hovering nearby — sits behind minimap */
 .mm-minimap-hover-area {
   position: absolute;
   bottom: 0;
   right: 0;
   width: 160px;
   height: 120px;
-  z-index: 4;
+  z-index: 3;
 }
 
 .mm-minimap-fade {
