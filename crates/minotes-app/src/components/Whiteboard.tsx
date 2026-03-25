@@ -670,7 +670,7 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
 
         {mode === "draw" && (
           <div className="whiteboard-toolbar-group">
-            <span className="whiteboard-toolbar-label">Stroke:</span>
+            <span className="whiteboard-toolbar-label">Color:</span>
             {DRAW_COLORS.map((c) => (
               <button
                 key={c}
