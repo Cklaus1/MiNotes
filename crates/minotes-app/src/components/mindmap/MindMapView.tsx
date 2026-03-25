@@ -109,8 +109,8 @@ function MindMapInner({ pageId, pageTitle, blocks, onClose, onRefreshPage }: Pro
 
   // Convert blocks to ReactFlow nodes/edges
   const { nodes: layoutNodes, edges: layoutEdges } = useMemo(() => {
-    return blocksToFlow(visibleBlocks, focusTitle, collapsedIds, direction);
-  }, [visibleBlocks, focusTitle, collapsedIds, direction]);
+    return blocksToFlow(visibleBlocks, focusTitle, collapsedIds, direction, autoEditNodeId);
+  }, [visibleBlocks, focusTitle, collapsedIds, direction, autoEditNodeId]);
 
   const [nodes, setNodes, onNodesChange] = useNodesState(layoutNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(layoutEdges);

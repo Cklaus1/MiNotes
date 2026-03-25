@@ -97,6 +97,7 @@ export function blocksToFlow(
   pageTitle: string,
   collapsedIds: Set<string>,
   direction: LayoutDirection = "LR",
+  editingNodeId: string | null = null,
 ): { nodes: Node[]; edges: Edge[] } {
   const nodes: Node[] = [];
   const edges: Edge[] = [];
@@ -147,8 +148,12 @@ export function blocksToFlow(
   const sourcePos = direction === "LR" ? Position.Right : Position.Bottom;
   const targetPos = direction === "LR" ? Position.Left : Position.Top;
 
-  // Recursively add blocks
+  // Recursively add blocks (skip empty blocks unless being edited)
   const addBlock = (block: Block, parentNodeId: string) => {
+    const isEmpty = !block.content.trim();
+    const isBeingEdited = block.id === editingNodeId;
+    if (isEmpty && !isBeingEdited) return; // Hide empty blocks
+
     const isCollapsed = collapsedIds.has(block.id);
     const label = extractLabel(block.content);
     const width = Math.min(200, Math.max(100, label.length * 7.5 + 32));
