@@ -3286,6 +3286,38 @@ body.theme-light { /* matches our light theme */ }
   background: #7ba4e8;
 }
 
+.mm-root-icon {
+  font-size: 10px;
+  opacity: 0.6;
+  margin-right: 2px;
+}
+
+.mm-root-edit-hint {
+  display: block;
+  font-size: 9px;
+  opacity: 0.6;
+  font-weight: 400;
+  margin-top: 2px;
+}
+
+.mm-root-title-group {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  line-height: 1.2;
+}
+
+.mm-root-date {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.mm-root-display-title {
+  font-size: 11px;
+  font-weight: 400;
+  opacity: 0.7;
+}
+
 /* Depth-based styling */
 .mm-node[data-depth="2"] { opacity: 0.9; }
 .mm-node[data-depth="3"] { opacity: 0.8; font-size: 12px; }

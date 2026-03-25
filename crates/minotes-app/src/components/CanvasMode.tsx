@@ -10,6 +10,8 @@ interface Props {
   initialMode: CanvasModeType;
   pageId: string | null;
   pageTitle: string;
+  isJournal?: boolean;
+  journalDate?: string;
   blocks: Block[];
   whiteboardId: string | null;
   onClose: () => void;
@@ -17,11 +19,12 @@ interface Props {
   onRefreshPage: () => void;
   onGraphSwitch: () => void;
   onWhiteboardClose: () => void;
+  onRenameTitle?: (newTitle: string) => void;
 }
 
 export default function CanvasMode({
-  initialMode, pageId, pageTitle, blocks, whiteboardId,
-  onClose, onPageClick, onRefreshPage, onGraphSwitch, onWhiteboardClose,
+  initialMode, pageId, pageTitle, isJournal, journalDate, blocks, whiteboardId,
+  onClose, onPageClick, onRefreshPage, onGraphSwitch, onWhiteboardClose, onRenameTitle,
 }: Props) {
   const [mode, setMode] = useState<CanvasModeType>(initialMode);
 
@@ -46,9 +49,12 @@ export default function CanvasMode({
           <MindMapView
             pageId={pageId}
             pageTitle={pageTitle}
+            isJournal={isJournal}
+            journalDate={journalDate}
             blocks={blocks}
             onClose={onClose}
             onRefreshPage={onRefreshPage}
+            onRenameTitle={onRenameTitle}
           />
         );
       case "draw":

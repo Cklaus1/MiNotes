@@ -389,6 +389,13 @@ export default function App() {
               initialMode={canvasMode}
               pageId={activePage?.page.id ?? null}
               pageTitle={activePage?.page.title ?? ""}
+              isJournal={activePage?.page.is_journal}
+              journalDate={activePage?.page.journal_date ? (() => {
+                try {
+                  const [y, m, d] = activePage.page.journal_date!.split("-").map(Number);
+                  return new Date(y, m - 1, d).toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: "numeric" });
+                } catch { return activePage.page.journal_date!; }
+              })() : undefined}
               blocks={activePage?.blocks ?? []}
               whiteboardId={whiteboardId}
               onClose={() => { setCanvasMode(null); }}
@@ -396,6 +403,21 @@ export default function App() {
               onRefreshPage={() => { if (activePage) openPage(activePage.page.id); }}
               onGraphSwitch={() => { setCanvasMode(null); setTimeout(() => { refresh(); setCanvasMode("graph"); }, 200); }}
               onWhiteboardClose={() => { setWhiteboardId(null); setCanvasMode(null); }}
+              onRenameTitle={activePage ? (newTitle: string) => {
+                if (activePage.page.is_journal) {
+                  // Journal: save display title as property, don't rename system title
+                  api.setProperty(activePage.page.id, "page", "display_title", newTitle).then(() => {
+                    openPage(activePage.page.id);
+                    refresh();
+                  });
+                } else {
+                  // Regular page: rename actual title
+                  api.renamePage(activePage.page.id, newTitle).then(() => {
+                    openPage(activePage.page.id);
+                    refresh();
+                  });
+                }
+              } : undefined}
             />
           )}
           {customViews.length > 0 && (

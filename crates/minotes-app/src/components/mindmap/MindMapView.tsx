@@ -22,9 +22,12 @@ const nodeTypes = { mindmapNode: MindMapNode };
 interface Props {
   pageId: string;
   pageTitle: string;
+  isJournal?: boolean;
+  journalDate?: string;
   blocks: Block[];
   onClose: () => void;
   onRefreshPage: () => void;
+  onRenameTitle?: (newTitle: string) => void;
 }
 
 // ── Markdown outline export ──
@@ -56,7 +59,7 @@ interface ContextMenuState {
 const AUTO_COLLAPSE_THRESHOLD = 50;
 const AUTO_COLLAPSE_DEPTH = 3;
 
-function MindMapInner({ pageId, pageTitle, blocks, onClose, onRefreshPage }: Props) {
+function MindMapInner({ pageId, pageTitle, isJournal, journalDate, blocks, onClose, onRefreshPage, onRenameTitle }: Props) {
   const [collapsedIds, setCollapsedIds] = useState<Set<string>>(() => {
     // Phase 7: Auto-collapse deep branches on large pages
     if (blocks.length > AUTO_COLLAPSE_THRESHOLD) {
@@ -194,6 +197,9 @@ function MindMapInner({ pageId, pageTitle, blocks, onClose, onRefreshPage }: Pro
               ? (text: string) => { api.updateBlock(d.blockId!, text).then(onRefreshPage); }
               : undefined,
             onClearAutoEdit: () => setAutoEditNodeId(null),
+            onRenameTitle: d.isRoot && onRenameTitle ? onRenameTitle : undefined,
+            isJournal: d.isRoot ? isJournal : undefined,
+            journalDate: d.isRoot ? journalDate : undefined,
             onToggleCollapse: d.blockId
               ? () => {
                   setCollapsedIds((prev) => {
@@ -208,7 +214,7 @@ function MindMapInner({ pageId, pageTitle, blocks, onClose, onRefreshPage }: Pro
         };
       })
     );
-  }, [nodes.length, setNodes, onRefreshPage, autoEditNodeId]);
+  }, [nodes.length, setNodes, onRefreshPage, autoEditNodeId, onRenameTitle]);
 
   // Phase 7: Edge highlighting — highlight path from root to selected node
   useEffect(() => {
