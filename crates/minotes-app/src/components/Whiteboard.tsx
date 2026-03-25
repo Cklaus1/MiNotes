@@ -1471,6 +1471,16 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
         {/* ── Actions (always visible) ── */}
         <div className="whiteboard-toolbar-group" style={{ marginLeft: "auto", position: "relative" }}>
           {saveStatus && <span className="whiteboard-save-status">{saveStatus}</span>}
+          <button className="btn btn-sm" onClick={() => {
+            const input = document.createElement("input");
+            input.type = "file";
+            input.accept = "image/*";
+            input.onchange = () => {
+              const file = input.files?.[0];
+              if (file) insertImage(file);
+            };
+            input.click();
+          }} title="Upload image">Upload</button>
           <button className="btn btn-sm" onClick={handleFitAll} title="Zoom to fit all (F)">Fit</button>
           <button className="btn btn-sm" onClick={() => { setShowExportMenu(v => !v); setShowCanvasSettings(false); }}>Export ▾</button>
           {showExportMenu && (
