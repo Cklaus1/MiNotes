@@ -26,15 +26,45 @@ interface CanvasImage {
   dataUrl: string;
 }
 
+interface TextElement {
+  id: string;
+  x: number;
+  y: number;
+  text: string;
+  color: string;
+  size: "S" | "M" | "L";
+}
+
+interface Arrow {
+  id: string;
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  color: string;
+}
+
+interface Box {
+  id: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  color: string;
+}
+
 interface WhiteboardData {
   notes: StickyNote[];
   lines: Line[];
   images?: CanvasImage[];
+  texts?: TextElement[];
+  arrows?: Arrow[];
+  boxes?: Box[];
   camera: { x: number; y: number; zoom: number };
   nextNoteId: number;
 }
 
-type Mode = "select" | "draw";
+type Mode = "select" | "text" | "arrow" | "box" | "draw";
 
 interface Props {
   whiteboardId: string;
@@ -86,7 +116,11 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
   const [notes, setNotes] = useState<StickyNote[]>(saved?.notes ?? []);
   const [lines, setLines] = useState<Line[]>(saved?.lines ?? []);
   const [images, setImages] = useState<CanvasImage[]>(saved?.images ?? []);
-  const [mode, setMode] = useState<Mode>("draw");
+  const [texts, setTexts] = useState<TextElement[]>(saved?.texts ?? []);
+  const [arrows, setArrows] = useState<Arrow[]>(saved?.arrows ?? []);
+  const [boxes, setBoxes] = useState<Box[]>(saved?.boxes ?? []);
+  const [mode, setMode] = useState<Mode>("select");
+  const [textSize, setTextSize] = useState<"S" | "M" | "L">("M");
   const [drawColor, setDrawColor] = useState(DRAW_COLORS[1]);
   const [noteColor, setNoteColor] = useState(NOTE_COLORS[0]);
   const [saveStatus, setSaveStatus] = useState<string | null>(null);
@@ -138,7 +172,15 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
   linesRef.current = lines;
   const imagesRef = useRef(images);
   imagesRef.current = images;
+  const textsRef = useRef(texts);
+  textsRef.current = texts;
+  const arrowsRef = useRef(arrows);
+  arrowsRef.current = arrows;
+  const boxesRef = useRef(boxes);
+  boxesRef.current = boxes;
   const loadedImagesRef = useRef<Map<string, HTMLImageElement>>(new Map());
+  const arrowDrawRef = useRef<{ active: boolean; x1: number; y1: number; x2: number; y2: number }>({ active: false, x1: 0, y1: 0, x2: 0, y2: 0 });
+  const boxDrawRef = useRef<{ active: boolean; x: number; y: number; w: number; h: number }>({ active: false, x: 0, y: 0, w: 0, h: 0 });
 
   const screenToWorld = useCallback((sx: number, sy: number) => {
     const cam = cameraRef.current;
@@ -265,6 +307,45 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
       }
     }
 
+    // Draw boxes
+    for (const box of boxesRef.current) {
+      ctx.strokeStyle = box.color;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(box.x, box.y, box.width, box.height);
+    }
+
+    // Draw in-progress box
+    if (boxDrawRef.current.active) {
+      ctx.strokeStyle = drawColor;
+      ctx.lineWidth = 2;
+      ctx.setLineDash([6, 4]);
+      ctx.strokeRect(boxDrawRef.current.x, boxDrawRef.current.y, boxDrawRef.current.w, boxDrawRef.current.h);
+      ctx.setLineDash([]);
+    }
+
+    // Draw arrows
+    for (const arrow of arrowsRef.current) {
+      drawArrow(ctx, arrow.x1, arrow.y1, arrow.x2, arrow.y2, arrow.color);
+    }
+
+    // Draw in-progress arrow
+    if (arrowDrawRef.current.active) {
+      const a = arrowDrawRef.current;
+      drawArrow(ctx, a.x1, a.y1, a.x2, a.y2, drawColor);
+    }
+
+    // Draw text elements
+    for (const te of textsRef.current) {
+      const fontSize = te.size === "S" ? 14 : te.size === "L" ? 24 : 18;
+      ctx.font = `500 ${fontSize}px -apple-system, BlinkMacSystemFont, sans-serif`;
+      ctx.fillStyle = te.color;
+      ctx.textBaseline = "top";
+      const lines = te.text.split("\n");
+      for (let i = 0; i < lines.length; i++) {
+        ctx.fillText(lines[i], te.x, te.y + i * (fontSize * 1.3));
+      }
+    }
+
     // Draw sticky notes
     for (const note of notesRef.current) {
       // Shadow
@@ -306,6 +387,26 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
   }, [drawColor]);
 
   // Text wrapping helper
+  function drawArrow(ctx: CanvasRenderingContext2D, x1: number, y1: number, x2: number, y2: number, color: string) {
+    const headLen = 12;
+    const angle = Math.atan2(y2 - y1, x2 - x1);
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineWidth = 2;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.stroke();
+    // Arrowhead
+    ctx.beginPath();
+    ctx.moveTo(x2, y2);
+    ctx.lineTo(x2 - headLen * Math.cos(angle - Math.PI / 6), y2 - headLen * Math.sin(angle - Math.PI / 6));
+    ctx.lineTo(x2 - headLen * Math.cos(angle + Math.PI / 6), y2 - headLen * Math.sin(angle + Math.PI / 6));
+    ctx.closePath();
+    ctx.fill();
+  }
+
   function wrapText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number): string[] {
     const result: string[] = [];
     const paragraphs = text.split("\n");
@@ -358,17 +459,20 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
   // Mark redraw needed when state changes
   useEffect(() => {
     requestRedraw();
-  }, [notes, lines, requestRedraw]);
+  }, [notes, lines, texts, arrows, boxes, requestRedraw]);
 
   // Mouse handlers
   // Save current state (called after every interaction)
   const saveNow = useCallback(() => {
-    const hasContent = notesRef.current.length > 0 || linesRef.current.length > 0 || imagesRef.current.length > 0;
+    const hasContent = notesRef.current.length > 0 || linesRef.current.length > 0 || imagesRef.current.length > 0 || textsRef.current.length > 0 || arrowsRef.current.length > 0 || boxesRef.current.length > 0;
     if (hasContent) {
       saveWhiteboardData(whiteboardId, {
         notes: notesRef.current,
         lines: linesRef.current,
         images: imagesRef.current,
+        texts: textsRef.current,
+        arrows: arrowsRef.current,
+        boxes: boxesRef.current,
         camera: { ...cameraRef.current },
         nextNoteId,
       });
@@ -406,6 +510,27 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
       if (e.button === 0) {
         if (mode === "draw") {
           drawingRef.current = { active: true, points: [{ x: world.x, y: world.y }] };
+          return;
+        }
+
+        if (mode === "arrow") {
+          arrowDrawRef.current = { active: true, x1: world.x, y1: world.y, x2: world.x, y2: world.y };
+          return;
+        }
+
+        if (mode === "box") {
+          boxDrawRef.current = { active: true, x: world.x, y: world.y, w: 0, h: 0 };
+          return;
+        }
+
+        if (mode === "text") {
+          // Create text element at click position
+          const id = "txt-" + Date.now();
+          setTexts((prev) => [...prev, { id, x: world.x, y: world.y, text: "", color: drawColor, size: textSize }]);
+          // Enter edit mode for this text
+          setEditingNote(id); // reuse editingNote state for text editing
+          setEditText("");
+          setTimeout(() => editInputRef.current?.focus(), 0);
           return;
         }
 
@@ -450,6 +575,24 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
         return;
       }
 
+      // Arrow drawing
+      if (arrowDrawRef.current.active) {
+        const world = screenToWorld(sx, sy);
+        arrowDrawRef.current.x2 = world.x;
+        arrowDrawRef.current.y2 = world.y;
+        requestRedraw();
+        return;
+      }
+
+      // Box drawing
+      if (boxDrawRef.current.active) {
+        const world = screenToWorld(sx, sy);
+        boxDrawRef.current.w = world.x - boxDrawRef.current.x;
+        boxDrawRef.current.h = world.y - boxDrawRef.current.y;
+        requestRedraw();
+        return;
+      }
+
       // Dragging note
       if (draggingNoteRef.current.noteId) {
         const world = screenToWorld(sx, sy);
@@ -487,6 +630,30 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
           changed = true;
         }
         drawingRef.current = { active: false, points: [] };
+      }
+
+      // End arrow
+      if (arrowDrawRef.current.active) {
+        const a = arrowDrawRef.current;
+        const dist = Math.sqrt((a.x2 - a.x1) ** 2 + (a.y2 - a.y1) ** 2);
+        if (dist > 10) {
+          setArrows((prev) => [...prev, { id: "arr-" + Date.now(), x1: a.x1, y1: a.y1, x2: a.x2, y2: a.y2, color: drawColor }]);
+          changed = true;
+        }
+        arrowDrawRef.current = { active: false, x1: 0, y1: 0, x2: 0, y2: 0 };
+      }
+
+      // End box
+      if (boxDrawRef.current.active) {
+        const b = boxDrawRef.current;
+        if (Math.abs(b.w) > 10 && Math.abs(b.h) > 10) {
+          // Normalize negative width/height
+          const x = b.w < 0 ? b.x + b.w : b.x;
+          const y = b.h < 0 ? b.y + b.h : b.y;
+          setBoxes((prev) => [...prev, { id: "box-" + Date.now(), x, y, width: Math.abs(b.w), height: Math.abs(b.h), color: drawColor }]);
+          changed = true;
+        }
+        boxDrawRef.current = { active: false, x: 0, y: 0, w: 0, h: 0 };
       }
 
       // End drag
@@ -692,6 +859,9 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
     setNotes([]);
     setLines([]);
     setImages([]);
+    setTexts([]);
+    setArrows([]);
+    setBoxes([]);
     localStorage.removeItem(STORAGE_PREFIX + whiteboardId);
     requestRedraw();
     // Auto-dismiss undo after 5 seconds
@@ -740,6 +910,9 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
       // Quick mode switch (only when not editing)
       if (!editingNote) {
         if (e.key === "s" || e.key === "S") setMode("select");
+        if (e.key === "t" || e.key === "T") setMode("text");
+        if (e.key === "a" || e.key === "A") setMode("arrow");
+        if (e.key === "b" || e.key === "B") setMode("box");
         if (e.key === "d" || e.key === "D") setMode("draw");
       }
       // Ctrl+Z — undo last stroke
@@ -788,20 +961,41 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
           <button
             className={`btn btn-sm ${mode === "select" ? "btn-primary" : ""}`}
             onClick={() => setMode("select")}
-            title="Select mode (S)"
+            title="Select (S)"
           >
             Select
           </button>
           <button
+            className={`btn btn-sm ${mode === "text" ? "btn-primary" : ""}`}
+            onClick={() => setMode("text")}
+            title="Text (T)"
+          >
+            Text
+          </button>
+          <button
+            className={`btn btn-sm ${mode === "arrow" ? "btn-primary" : ""}`}
+            onClick={() => setMode("arrow")}
+            title="Arrow (A)"
+          >
+            Arrow
+          </button>
+          <button
+            className={`btn btn-sm ${mode === "box" ? "btn-primary" : ""}`}
+            onClick={() => setMode("box")}
+            title="Box (B)"
+          >
+            Box
+          </button>
+          <button
             className={`btn btn-sm ${mode === "draw" ? "btn-primary" : ""}`}
             onClick={() => setMode("draw")}
-            title="Draw mode (D)"
+            title="Draw (D)"
           >
             Draw
           </button>
         </div>
 
-        {mode === "draw" && (
+        {mode !== "select" && (
           <div className="whiteboard-toolbar-group">
             <span className="whiteboard-toolbar-label">Color:</span>
             {DRAW_COLORS.map((c) => (
@@ -815,16 +1009,18 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
           </div>
         )}
 
-        {mode === "select" && (
+        {mode === "text" && (
           <div className="whiteboard-toolbar-group">
-            <span className="whiteboard-toolbar-label">Note color:</span>
-            {NOTE_COLORS.map((c) => (
+            <span className="whiteboard-toolbar-label">Size:</span>
+            {(["S", "M", "L"] as const).map((s) => (
               <button
-                key={c}
-                className={`whiteboard-color-swatch ${noteColor === c ? "active" : ""}`}
-                style={{ background: c }}
-                onClick={() => setNoteColor(c)}
-              />
+                key={s}
+                className={`btn btn-sm ${textSize === s ? "btn-primary" : ""}`}
+                onClick={() => setTextSize(s)}
+                style={{ minWidth: 28, padding: "2px 6px", fontSize: 11 }}
+              >
+                {s}
+              </button>
             ))}
           </div>
         )}
