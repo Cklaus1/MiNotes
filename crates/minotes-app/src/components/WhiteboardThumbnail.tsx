@@ -152,12 +152,19 @@ function renderThumbnail(canvas: HTMLCanvasElement, whiteboardId: string) {
       ctx.globalAlpha = 1;
     }
 
-    // Draw images as filled rectangles
+    // Draw images — outline with icon indicator
     for (const img of images) {
-      ctx.fillStyle = "#89b4fa";
-      ctx.globalAlpha = 0.3;
-      ctx.fillRect(tx(img.x), ty(img.y), img.width * scale, img.height * scale);
-      ctx.globalAlpha = 1;
+      const ix = tx(img.x), iy = ty(img.y);
+      const iw = img.width * scale, ih = img.height * scale;
+      ctx.strokeStyle = "#7287a8";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(ix, iy, iw, ih);
+      // Cross lines to indicate "image here"
+      ctx.beginPath();
+      ctx.moveTo(ix, iy); ctx.lineTo(ix + iw, iy + ih);
+      ctx.moveTo(ix + iw, iy); ctx.lineTo(ix, iy + ih);
+      ctx.strokeStyle = "rgba(114, 135, 168, 0.4)";
+      ctx.stroke();
     }
   } catch {
     ctx.fillStyle = "#9ca0b0";
