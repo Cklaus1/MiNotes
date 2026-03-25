@@ -1208,6 +1208,21 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
           }
         }
       } else {
+        // Tauri plugin found nothing — try WSL bridge via backend command
+        try {
+          const { invoke } = await import("@tauri-apps/api/core");
+          const base64: string = await invoke("paste_image_wsl");
+          if (base64) {
+            const binary = atob(base64);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+            const blob = new Blob([bytes], { type: "image/png" });
+            insertImage(blob);
+            setSaveStatus("Pasted!");
+            setTimeout(() => setSaveStatus(null), 1500);
+            return;
+          }
+        } catch { /* WSL bridge not available */ }
         setSaveStatus("No image in clipboard");
         setTimeout(() => setSaveStatus(null), 2000);
       }

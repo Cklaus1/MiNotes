@@ -868,6 +868,42 @@ fn write_png(dir: PathBuf, filename: &str, data: &[u8]) -> Result<String, String
     Ok(path.to_string_lossy().to_string())
 }
 
+/// WSL clipboard bridge: reads image from Windows clipboard via PowerShell
+#[tauri::command]
+fn paste_image_wsl() -> Result<String, String> {
+    // Check if we're in WSL
+    let version = std::fs::read_to_string("/proc/version").unwrap_or_default();
+    if !version.to_lowercase().contains("microsoft") {
+        return Err("Not WSL".to_string());
+    }
+
+    // Use PowerShell to get clipboard image and save as temp PNG
+    let temp_path = "/tmp/minotes-clipboard.png";
+    let ps_script = format!(
+        r#"$img = Get-Clipboard -Format Image; if ($img) {{ $img.Save('{}', [System.Drawing.Imaging.ImageFormat]::Png) }} else {{ exit 1 }}"#,
+        temp_path.replace('/', "\\")
+    );
+
+    // Convert WSL path to Windows path for PowerShell
+    let output = std::process::Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &format!(
+            r#"Add-Type -AssemblyName System.Windows.Forms; $img = [System.Windows.Forms.Clipboard]::GetImage(); if ($img -ne $null) {{ $ms = New-Object System.IO.MemoryStream; $img.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png); [Convert]::ToBase64String($ms.ToArray()) }} else {{ '' }}"#
+        )])
+        .output()
+        .map_err(|e| format!("PowerShell failed: {e}"))?;
+
+    if !output.status.success() {
+        return Err("PowerShell clipboard read failed".to_string());
+    }
+
+    let base64 = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if base64.is_empty() {
+        return Err("No image in Windows clipboard".to_string());
+    }
+
+    Ok(base64)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let path = db_path();
@@ -955,6 +991,7 @@ pub fn run() {
             undo,
             save_png_to_downloads,
             reorder_block,
+            paste_image_wsl,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
