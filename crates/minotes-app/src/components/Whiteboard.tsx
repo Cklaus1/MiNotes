@@ -1180,10 +1180,36 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
     setTimeout(saveNow, 50);
   }, [undoSnapshot, saveNow]);
 
-  // Paste image from clipboard (browser + Tauri)
+  // Paste from Tauri clipboard
+  const pasteFromTauriClipboard = useCallback(async () => {
+    try {
+      const { readImage } = await import("@tauri-apps/plugin-clipboard-manager");
+      const img = await readImage();
+      if (img) {
+        const [rgba, { width: w, height: h }] = await Promise.all([img.rgba(), img.size()]);
+        if (w && h && rgba) {
+          const canvas = document.createElement("canvas");
+          canvas.width = w;
+          canvas.height = h;
+          const ctx = canvas.getContext("2d");
+          if (ctx) {
+            const imageData = ctx.createImageData(w, h);
+            imageData.data.set(new Uint8ClampedArray(rgba));
+            ctx.putImageData(imageData, 0, 0);
+            canvas.toBlob((blob) => {
+              if (blob) insertImage(blob);
+            }, "image/png");
+          }
+        }
+      }
+    } catch (err) {
+      console.warn("Tauri clipboard paste failed:", err);
+    }
+  }, [insertImage]);
+
+  // Paste image from clipboard (browser paste event + Tauri Ctrl+V)
   useEffect(() => {
-    const handler = async (e: ClipboardEvent) => {
-      // Try browser clipboard API first
+    const pasteHandler = (e: ClipboardEvent) => {
       const items = e.clipboardData?.items;
       if (items) {
         for (const item of items) {
@@ -1195,49 +1221,27 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
           }
         }
       }
-
-      // Tauri: try reading image from clipboard plugin
-      if (isTauri) {
-        try {
-          const { readImage } = await import("@tauri-apps/plugin-clipboard-manager");
-          const img = await readImage();
-          if (img) {
-            const [rgba, { width: w, height: h }] = await Promise.all([img.rgba(), img.size()]);
-            if (w && h && rgba) {
-              const canvas = document.createElement("canvas");
-              canvas.width = w;
-              canvas.height = h;
-              const ctx = canvas.getContext("2d");
-              if (ctx) {
-                const imageData = ctx.createImageData(w, h);
-                imageData.data.set(new Uint8ClampedArray(rgba));
-                ctx.putImageData(imageData, 0, 0);
-                canvas.toBlob((blob) => {
-                  if (blob) insertImage(blob);
-                }, "image/png");
-              }
-            }
-          }
-        } catch {
-          // Clipboard empty or no image — ignore
-        }
-      }
+      // Browser paste had no image — try Tauri clipboard
+      if (isTauri) pasteFromTauriClipboard();
     };
 
-    // Ctrl+V handler for Tauri (paste event may not fire)
     const keyHandler = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === "v" && isTauri && !editingNote && !editingTextId) {
-        handler(new ClipboardEvent("paste"));
+      if ((e.ctrlKey || e.metaKey) && e.key === "v" && !editingNote && !editingTextId) {
+        if (isTauri) {
+          e.preventDefault();
+          pasteFromTauriClipboard();
+        }
+        // Browser: let native paste event fire
       }
     };
 
-    window.addEventListener("paste", handler);
+    window.addEventListener("paste", pasteHandler);
     window.addEventListener("keydown", keyHandler);
     return () => {
-      window.removeEventListener("paste", handler);
+      window.removeEventListener("paste", pasteHandler);
       window.removeEventListener("keydown", keyHandler);
     };
-  }, [insertImage, editingNote, editingTextId]);
+  }, [insertImage, editingNote, editingTextId, pasteFromTauriClipboard]);
 
   // Keyboard: Escape to close, close editing; S/D to switch modes
   useEffect(() => {
