@@ -711,7 +711,7 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
         setSelectedElement(null);
       }
     },
-    [mode, screenToWorld, findNoteAt]
+    [mode, screenToWorld, findNoteAt, findElementAt, textStyle, textSize, drawColor, noteColor, editingTextId]
   );
 
   const handleMouseMove = useCallback(
@@ -1164,121 +1164,84 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
 
   return (
     <div className="whiteboard" ref={containerRef}>
+      {/* ── Base toolbar ── */}
       <div className="whiteboard-toolbar">
         <div className="whiteboard-toolbar-group">
-          <button
-            className={`btn btn-sm ${mode === "select" ? "btn-primary" : ""}`}
-            onClick={() => setMode("select")}
-            title="Select (S)"
-          >
-            Select
-          </button>
-          <button
-            className={`btn btn-sm ${mode === "text" ? "btn-primary" : ""}`}
-            onClick={() => setMode("text")}
-            title="Text (T)"
-          >
-            Text
-          </button>
-          <button
-            className={`btn btn-sm ${mode === "arrow" ? "btn-primary" : ""}`}
-            onClick={() => setMode("arrow")}
-            title="Arrow (A)"
-          >
-            Arrow
-          </button>
-          <button
-            className={`btn btn-sm ${mode === "box" ? "btn-primary" : ""}`}
-            onClick={() => setMode("box")}
-            title="Box (B)"
-          >
-            Box
-          </button>
-          <button
-            className={`btn btn-sm ${mode === "draw" ? "btn-primary" : ""}`}
-            onClick={() => setMode("draw")}
-            title="Draw (D)"
-          >
-            Draw
-          </button>
+          {(["select", "text", "arrow", "box", "draw"] as const).map((m) => (
+            <button
+              key={m}
+              className={`btn btn-sm ${mode === m ? "btn-primary" : ""}`}
+              onClick={() => setMode(m)}
+              title={`${m.charAt(0).toUpperCase() + m.slice(1)} (${m[0].toUpperCase()})`}
+            >
+              {m.charAt(0).toUpperCase() + m.slice(1)}
+            </button>
+          ))}
         </div>
 
+        {/* ── Contextual controls per tool ── */}
         {mode !== "select" && (
           <div className="whiteboard-toolbar-group">
-            <span className="whiteboard-toolbar-label">Color:</span>
-            {DRAW_COLORS.map((c) => (
+            {(textStyle === "sticky" && mode === "text" ? NOTE_COLORS : DRAW_COLORS).map((c) => (
               <button
                 key={c}
-                className={`whiteboard-color-swatch ${drawColor === c ? "active" : ""}`}
+                className={`whiteboard-color-swatch ${(textStyle === "sticky" && mode === "text" ? noteColor : drawColor) === c ? "active" : ""}`}
                 style={{ background: c }}
-                onClick={() => setDrawColor(c)}
+                onClick={() => textStyle === "sticky" && mode === "text" ? setNoteColor(c) : setDrawColor(c)}
               />
             ))}
           </div>
         )}
 
         {mode === "text" && (
-          <>
-            <div className="whiteboard-toolbar-group">
-              {(["callout", "plain", "sticky"] as const).map((s) => (
-                <button
-                  key={s}
-                  className={`btn btn-sm ${textStyle === s ? "btn-primary" : ""}`}
-                  onClick={() => setTextStyle(s)}
-                  style={{ fontSize: 11, padding: "2px 8px" }}
-                >
-                  {s === "callout" ? "Callout" : s === "plain" ? "Plain" : "Sticky"}
-                </button>
-              ))}
-            </div>
-            {textStyle === "sticky" && (
-              <div className="whiteboard-toolbar-group">
-                {NOTE_COLORS.map((c) => (
-                  <button
-                    key={c}
-                    className={`whiteboard-color-swatch ${noteColor === c ? "active" : ""}`}
-                    style={{ background: c }}
-                    onClick={() => setNoteColor(c)}
-                  />
-                ))}
-              </div>
-            )}
-            <div className="whiteboard-toolbar-group">
-              <span className="whiteboard-toolbar-label">Size:</span>
-              {(["S", "M", "L"] as const).map((s) => (
-                <button
-                  key={s}
-                  className={`btn btn-sm ${textSize === s ? "btn-primary" : ""}`}
-                  onClick={() => setTextSize(s)}
-                  style={{ minWidth: 28, padding: "2px 6px", fontSize: 11 }}
-                >
-                  {s}
-                </button>
-              ))}
-            </div>
-          </>
+          <div className="whiteboard-toolbar-group">
+            <span className="whiteboard-toolbar-label">Style:</span>
+            {(["callout", "plain", "sticky"] as const).map((s) => (
+              <button
+                key={s}
+                className={`btn btn-sm ${textStyle === s ? "btn-primary" : ""}`}
+                onClick={() => setTextStyle(s)}
+                style={{ fontSize: 11, padding: "2px 8px" }}
+              >
+                {s === "callout" ? "Callout" : s === "plain" ? "Plain" : "Sticky"}
+              </button>
+            ))}
+            <span className="whiteboard-toolbar-label" style={{ marginLeft: 4 }}>Size:</span>
+            {(["S", "M", "L"] as const).map((s) => (
+              <button
+                key={s}
+                className={`btn btn-sm ${textSize === s ? "btn-primary" : ""}`}
+                onClick={() => setTextSize(s)}
+                style={{ minWidth: 24, padding: "2px 5px", fontSize: 10 }}
+              >
+                {s}
+              </button>
+            ))}
+          </div>
         )}
 
-        <div className="whiteboard-toolbar-group" style={{ position: "relative" }}>
-          {saveStatus && (
-            <span className="whiteboard-save-status">{saveStatus}</span>
-          )}
-          <button className="btn btn-sm" onClick={() => setShowExportMenu(v => !v)}>
-            Export ▾
-          </button>
+        {(mode === "arrow" || mode === "draw") && (
+          <div className="whiteboard-toolbar-group">
+            <span className="whiteboard-toolbar-label">Width:</span>
+            {(["S", "M", "L"] as const).map((s) => (
+              <button key={s} className="btn btn-sm" style={{ minWidth: 24, padding: "2px 5px", fontSize: 10, opacity: s === "M" ? 1 : 0.5 }} disabled>
+                {s}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* ── Actions (always visible) ── */}
+        <div className="whiteboard-toolbar-group" style={{ marginLeft: "auto", position: "relative" }}>
+          {saveStatus && <span className="whiteboard-save-status">{saveStatus}</span>}
+          <button className="btn btn-sm" onClick={() => { setShowExportMenu(v => !v); setShowCanvasSettings(false); }}>Export ▾</button>
           {showExportMenu && (
-            <div className="mindmap-dropdown" style={{ right: "auto", left: 0 }} onClick={() => setShowExportMenu(false)}>
+            <div className="mindmap-dropdown" onClick={() => setShowExportMenu(false)}>
               <button onClick={exportPng}>PNG Image</button>
             </div>
           )}
-          <button className="btn btn-sm" onClick={clearCanvas} title="Clear canvas">
-            Clear
-          </button>
-        </div>
-        <div className="whiteboard-toolbar-group" style={{ position: "relative" }}>
-          <button className="btn btn-sm" onClick={() => { setShowCanvasSettings(v => !v); setShowExportMenu(false); }} title="Canvas settings">
-            ⚙
-          </button>
+          <button className="btn btn-sm" onClick={clearCanvas} title="Clear">Clear</button>
+          <button className="btn btn-sm" onClick={() => { setShowCanvasSettings(v => !v); setShowExportMenu(false); }} title="Canvas settings">⚙</button>
           {showCanvasSettings && (
             <div className="wb-popover" onClick={(e) => e.stopPropagation()}>
               <div className="wb-popover-row">
