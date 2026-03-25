@@ -3414,6 +3414,27 @@ body.theme-light { /* matches our light theme */ }
   border-color: rgba(0, 0, 0, 0.1);
 }
 
+/* Invisible trigger zone — hover bottom-right corner to reveal minimap */
+.mm-minimap-trigger {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  width: 140px;
+  height: 100px;
+  z-index: 4;
+  cursor: default;
+}
+
+/* Keep minimap visible while hovering this expanded area */
+.mm-minimap-hover-area {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  width: 160px;
+  height: 120px;
+  z-index: 4;
+}
+
 .mm-minimap-fade {
   animation: mm-minimap-in 0.3s ease-out;
 }

@@ -239,12 +239,9 @@ function MindMapInner({ pageId, pageTitle, blocks, onClose, onRefreshPage }: Pro
     );
   }, [selectedNodeId]);
 
-  // Smart minimap: show when zoomed out or many nodes, hide when zoomed in on small content
-  const onViewportChange = useCallback(({ zoom }: { x: number; y: number; zoom: number }) => {
-    const nodeCount = nodes.length;
-    const shouldShow = nodeCount > 10 || zoom < 0.7;
-    setShowMinimap(shouldShow);
-  }, [nodes.length]);
+  // Minimap: show on bottom-right hover or M key hold
+  const minimapHoverRef = useRef<HTMLDivElement>(null);
+  const onViewportChange = useCallback(() => {}, []);
 
   // Fit view on mount
   useEffect(() => {
@@ -272,6 +269,21 @@ function MindMapInner({ pageId, pageTitle, blocks, onClose, onRefreshPage }: Pro
       onRefreshPage();
     });
   }, [pageId, onRefreshPage]);
+
+  // M key hold: show minimap while held
+  useEffect(() => {
+    const down = (e: KeyboardEvent) => {
+      if (e.key === "m" && !e.ctrlKey && !e.metaKey && document.activeElement?.tagName !== "INPUT") {
+        setShowMinimap(true);
+      }
+    };
+    const up = (e: KeyboardEvent) => {
+      if (e.key === "m") setShowMinimap(false);
+    };
+    window.addEventListener("keydown", down);
+    window.addEventListener("keyup", up);
+    return () => { window.removeEventListener("keydown", down); window.removeEventListener("keyup", up); };
+  }, []);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -650,6 +662,21 @@ function MindMapInner({ pageId, pageTitle, blocks, onClose, onRefreshPage }: Pro
           />
         )}
       </ReactFlow>
+
+      {/* Bottom-right hover zone to trigger minimap */}
+      {!showMinimap && (
+        <div
+          className="mm-minimap-trigger"
+          onMouseEnter={() => setShowMinimap(true)}
+        />
+      )}
+      {showMinimap && (
+        <div
+          ref={minimapHoverRef}
+          className="mm-minimap-hover-area"
+          onMouseLeave={() => setShowMinimap(false)}
+        />
+      )}
 
       {/* Context menu */}
       {contextMenu && (
