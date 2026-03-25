@@ -659,6 +659,8 @@ function MindMapInner({ pageId, pageTitle, blocks, onClose, onRefreshPage }: Pro
             }}
             maskColor="rgba(0,0,0,0.2)"
             className="mm-minimap-fade"
+            zoomable
+            pannable
           />
         )}
       </ReactFlow>
