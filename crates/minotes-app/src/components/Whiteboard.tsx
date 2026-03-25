@@ -641,10 +641,19 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
         if (e.key === "s" || e.key === "S") setMode("select");
         if (e.key === "d" || e.key === "D") setMode("draw");
       }
+      // Ctrl+Z — undo last stroke
+      if ((e.ctrlKey || e.metaKey) && e.key === "z" && !editingNote) {
+        e.preventDefault();
+        setLines((prev) => {
+          if (prev.length === 0) return prev;
+          return prev.slice(0, -1);
+        });
+        setTimeout(saveNow, 50);
+      }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [handleClose, editingNote, finishEdit, contextMenu]);
+  }, [handleClose, editingNote, finishEdit, contextMenu, saveNow]);
 
   // Compute editing note screen position
   const editScreenPos = (() => {
