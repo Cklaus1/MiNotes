@@ -586,10 +586,32 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
           // Create text element at click position
           const id = "txt-" + Date.now();
           setTexts((prev) => [...prev, { id, x: world.x, y: world.y, text: "", color: drawColor, size: textSize, callout: textCallout }]);
-          setEditingTextId(id);
-          setEditingTextValue("");
-          setTimeout(() => textInputRef.current?.focus(), 0);
+          // Delay so React state settles before overlay tries to find the element
+          setTimeout(() => {
+            setEditingTextId(id);
+            setEditingTextValue("");
+            setTimeout(() => textInputRef.current?.focus(), 50);
+          }, 20);
           return;
+        }
+
+        // Select mode - check texts (click to edit)
+        for (let i = textsRef.current.length - 1; i >= 0; i--) {
+          const te = textsRef.current[i];
+          if (!te.text) continue;
+          const fontSize = te.size === "S" ? 14 : te.size === "L" ? 24 : 18;
+          const pad = te.callout ? 10 : 0;
+          const textLines = te.text.split("\n");
+          const lineH = fontSize * 1.3;
+          const maxW = 200; // approximate
+          const bx = te.x - pad, by = te.y - pad;
+          const bw = maxW + pad * 2, bh = textLines.length * lineH + pad * 2;
+          if (world.x >= bx && world.x <= bx + bw && world.y >= by && world.y <= by + bh) {
+            setEditingTextId(te.id);
+            setEditingTextValue(te.text);
+            setTimeout(() => textInputRef.current?.focus(), 50);
+            return;
+          }
         }
 
         // Select mode - check if clicking a note
