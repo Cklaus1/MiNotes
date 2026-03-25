@@ -3210,11 +3210,12 @@ body.theme-light { /* matches our light theme */ }
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 8px 16px;
-  background: var(--bg-secondary);
+  padding: 6px 16px;
+  background: var(--bg-tertiary);
   border-bottom: 1px solid var(--border);
   z-index: 10;
   flex-wrap: wrap;
+  font-size: 12px;
 }
 
 .mindmap-toolbar-group {
