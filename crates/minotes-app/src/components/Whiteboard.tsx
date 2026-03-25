@@ -1152,6 +1152,26 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
         if (e.key === "d" || e.key === "D") setMode("draw");
       }
       // Delete / Backspace — remove selected element
+      // Enter on selected text element → edit it
+      if (e.key === "Enter" && selectedElement && !editingNote && !editingTextId) {
+        if (selectedElement.type === "text") {
+          const te = textsRef.current.find((t) => t.id === selectedElement.id);
+          if (te) {
+            e.preventDefault();
+            setEditingTextId(te.id);
+            setEditingTextValue(te.text);
+            setTimeout(() => textInputRef.current?.focus(), 50);
+          }
+        } else if (selectedElement.type === "note") {
+          const note = notesRef.current.find((n) => n.id === selectedElement.id);
+          if (note) {
+            e.preventDefault();
+            setEditingNote(note.id);
+            setEditText(note.text);
+            setTimeout(() => editInputRef.current?.focus(), 0);
+          }
+        }
+      }
       if ((e.key === "Delete" || e.key === "Backspace") && selectedElement && !editingNote && !editingTextId) {
         e.preventDefault();
         const { type, id } = selectedElement;
@@ -1221,6 +1241,50 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
         </div>
 
         {/* ── Contextual controls per tool ── */}
+
+        {/* Selected element info (Select mode) */}
+        {mode === "select" && selectedElement && (
+          <div className="whiteboard-toolbar-group">
+            <span className="whiteboard-toolbar-label">
+              {selectedElement.type === "text" ? "Text" : selectedElement.type === "note" ? "Sticky" : selectedElement.type === "arrow" ? "Arrow" : selectedElement.type === "box" ? "Box" : selectedElement.type === "line" ? "Stroke" : selectedElement.type === "image" ? "Image" : ""}
+            </span>
+            {(selectedElement.type === "text" || selectedElement.type === "arrow" || selectedElement.type === "box" || selectedElement.type === "line") && (
+              <>
+                {DRAW_COLORS.map((c) => (
+                  <button
+                    key={c}
+                    className="whiteboard-color-swatch"
+                    style={{ background: c }}
+                    onClick={() => {
+                      const { type, id } = selectedElement;
+                      if (type === "text") setTexts((prev) => prev.map((t) => t.id === id ? { ...t, color: c } : t));
+                      else if (type === "arrow") setArrows((prev) => prev.map((a) => a.id === id ? { ...a, color: c } : a));
+                      else if (type === "box") setBoxes((prev) => prev.map((b) => b.id === id ? { ...b, color: c } : b));
+                      else if (type === "line") setLines((prev) => prev.map((l, i) => String(i) === id ? { ...l, color: c } : l));
+                      setTimeout(saveNow, 50);
+                    }}
+                  />
+                ))}
+              </>
+            )}
+            {selectedElement.type === "note" && (
+              <>
+                {NOTE_COLORS.map((c) => (
+                  <button
+                    key={c}
+                    className="whiteboard-color-swatch"
+                    style={{ background: c }}
+                    onClick={() => {
+                      setNotes((prev) => prev.map((n) => n.id === selectedElement.id ? { ...n, color: c } : n));
+                      setTimeout(saveNow, 50);
+                    }}
+                  />
+                ))}
+              </>
+            )}
+          </div>
+        )}
+
         {mode !== "select" && (
           <div className="whiteboard-toolbar-group">
             {(textStyle === "sticky" && mode === "text" ? NOTE_COLORS : DRAW_COLORS).map((c) => (
