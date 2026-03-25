@@ -234,14 +234,6 @@ export default function Sidebar({
       </div>
 
       <div className="stats-bar">
-        {stats && (
-          <span className="stats-icon-wrapper">
-            <span className="stats-icon" title="Graph stats">📊</span>
-            <span className="stats-tooltip">
-              {stats.pages} pages · {stats.blocks} blocks · {stats.links} links
-            </span>
-          </span>
-        )}
         <div className="stats-modes">
           <button className={`stats-mode-btn ${activeMode === "graph" ? "active" : ""}`} onClick={onGraphClick} title="Graph (Ctrl+G)">
             🔗 Graph

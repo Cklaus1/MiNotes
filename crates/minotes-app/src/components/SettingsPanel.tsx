@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { getSettings, updateSettings, type MiNotesSettings } from "../lib/settings";
 import { getTheme, setTheme } from "../lib/theme";
+import * as api from "../lib/api";
 
 interface Props {
   open: boolean;
@@ -10,9 +11,11 @@ interface Props {
 export default function SettingsPanel({ open, onClose }: Props) {
   const [settings, setSettings] = useState<MiNotesSettings>(getSettings);
   const [currentTheme, setCurrentTheme] = useState(getTheme);
+  const [stats, setStats] = useState<api.GraphStats | null>(null);
 
   useEffect(() => {
     if (open) {
+      api.getGraphStats().then(setStats).catch(() => {});
       setSettings(getSettings());
       setCurrentTheme(getTheme());
     }
@@ -127,6 +130,16 @@ export default function SettingsPanel({ open, onClose }: Props) {
           ))}
         </div>
       </div>
+
+      {/* Workspace */}
+      {stats && (
+        <div className="settings-section">
+          <div className="settings-section-title">Workspace</div>
+          <div style={{ fontSize: 12, color: "var(--text-secondary)", padding: "2px 0" }}>
+            {stats.pages} pages · {stats.blocks} blocks · {stats.links} links
+          </div>
+        </div>
+      )}
 
       {/* About */}
       <div className="settings-section">
