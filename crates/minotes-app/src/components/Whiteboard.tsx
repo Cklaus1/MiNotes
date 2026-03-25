@@ -79,6 +79,7 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
   const [drawColor, setDrawColor] = useState(DRAW_COLORS[1]);
   const [noteColor, setNoteColor] = useState(NOTE_COLORS[0]);
   const [saveStatus, setSaveStatus] = useState<string | null>(null);
+  const [showHint, setShowHint] = useState(() => !saved || ((saved.lines?.length ?? 0) === 0 && (saved.notes?.length ?? 0) === 0));
 
   // Camera / pan / zoom state stored in refs for performance
   const cameraRef = useRef(saved?.camera ?? { x: 0, y: 0, zoom: 1 });
@@ -700,13 +701,20 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
       <canvas
         ref={canvasRef}
         className="whiteboard-canvas"
-        onMouseDown={handleMouseDown}
+        onMouseDown={(e) => { setShowHint(false); handleMouseDown(e); }}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
-        onDoubleClick={handleDoubleClick}
+        onDoubleClick={(e) => { setShowHint(false); handleDoubleClick(e); }}
         onWheel={handleWheel}
         onContextMenu={handleContextMenu}
       />
+
+      {/* First-time hint — disappears on first interaction */}
+      {showHint && (
+        <div className="whiteboard-hint" onMouseDown={() => setShowHint(false)}>
+          Start drawing
+        </div>
+      )}
 
       {/* Editing overlay for note text */}
       {editingNote && editScreenPos && (

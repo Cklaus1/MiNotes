@@ -1809,6 +1809,19 @@ body {
   cursor: crosshair;
 }
 
+.whiteboard-hint {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: rgba(166, 173, 200, 0.3);
+  font-size: 24px;
+  font-weight: 300;
+  pointer-events: none;
+  user-select: none;
+  letter-spacing: 0.05em;
+}
+
 .whiteboard-indicator {
   display: inline-flex;
   align-items: center;
