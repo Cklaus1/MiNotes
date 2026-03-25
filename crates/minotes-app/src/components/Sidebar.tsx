@@ -20,13 +20,15 @@ interface Props {
   onJournalClick: () => void;
   onSearchClick: () => void;
   onGraphClick: () => void;
+  onMindmapClick: () => void;
+  onWhiteboardClick: () => void;
   onSettingsClick: () => void;
   refreshKey: number;
 }
 
 export default function Sidebar({
   activePage, stats, onPageClick, onCreatePage, onDeletePage,
-  onJournalClick, onSearchClick, onGraphClick, onSettingsClick, refreshKey,
+  onJournalClick, onSearchClick, onGraphClick, onMindmapClick, onWhiteboardClick, onSettingsClick, refreshKey,
 }: Props) {
   const [newTitle, setNewTitle] = useState("");
   const [showCreate, setShowCreate] = useState(false);
@@ -239,18 +241,22 @@ export default function Sidebar({
             </span>
           </span>
         )}
+        <div className="stats-modes">
+          <button className="stats-mode-btn" onClick={onGraphClick} title="Graph view (Ctrl+G)">
+            🔗
+          </button>
+          <button className="stats-mode-btn" onClick={onMindmapClick} title="Mind map (Ctrl+M)">
+            🧠
+          </button>
+          <button className="stats-mode-btn" onClick={onWhiteboardClick} title="Whiteboard (Ctrl+W)">
+            🎨
+          </button>
+        </div>
         <button
-          className="btn btn-sm"
-          onClick={onGraphClick}
-          title="Graph view (Ctrl+G)"
-          style={{ marginLeft: "auto" }}
-        >
-          Graph
-        </button>
-        <button
-          className="btn btn-sm"
+          className="stats-mode-btn"
           onClick={onSettingsClick}
           title="Settings (Ctrl+,)"
+          style={{ marginLeft: "auto" }}
         >
           ⚙
         </button>

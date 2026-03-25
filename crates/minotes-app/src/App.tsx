@@ -357,6 +357,16 @@ export default function App() {
         onJournalClick={() => openJournal()}
         onSearchClick={() => setSearchOpen(true)}
         onGraphClick={() => setGraphOpen(prev => !prev)}
+        onMindmapClick={() => { if (activePage) setMindmapOpen(prev => !prev); }}
+        onWhiteboardClick={() => {
+          if (activePage) {
+            const wbId = generateWhiteboardId();
+            api.createBlock(activePage.page.id, `{{whiteboard:${wbId}}}`).then(() => {
+              openPage(activePage.page.id);
+            });
+            setWhiteboardId(wbId);
+          }
+        }}
         onSettingsClick={() => setSettingsOpen(prev => !prev)}
         refreshKey={refreshKey}
       />
