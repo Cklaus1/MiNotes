@@ -9,10 +9,12 @@ import {
   type SimulationLinkDatum,
 } from "d3-force";
 import * as api from "../lib/api";
+import GraphSwitcher from "./GraphSwitcher";
 
 interface Props {
   onPageClick: (id: string) => void;
   onClose: () => void;
+  onGraphSwitch: () => void;
 }
 
 interface SimNode extends SimulationNodeDatum {
@@ -37,7 +39,7 @@ function nodeRadius(blockCount: number): number {
   return Math.max(6, Math.min(24, 6 + Math.sqrt(blockCount) * 3));
 }
 
-export default function GraphView({ onPageClick, onClose }: Props) {
+export default function GraphView({ onPageClick, onClose, onGraphSwitch }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -374,10 +376,11 @@ export default function GraphView({ onPageClick, onClose }: Props) {
   return (
     <div className="graph-view">
       <div className="graph-toolbar">
+        <GraphSwitcher onSwitch={onGraphSwitch} />
         <span style={{ fontSize: 13, color: "var(--text-secondary)" }}>
-          {nodesRef.current.length} nodes, {edgesRef.current.length} edges
+          {nodesRef.current.length} nodes · {edgesRef.current.length} edges
         </span>
-        <button className="btn btn-sm" onClick={onClose}>
+        <button className="btn btn-sm" onClick={onClose} style={{ marginLeft: "auto" }}>
           Close (Esc)
         </button>
       </div>

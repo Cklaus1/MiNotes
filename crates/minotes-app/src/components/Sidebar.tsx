@@ -1,8 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import type { Page, GraphStats, FolderTree, FolderTreeRoot } from "../lib/api";
 import * as api from "../lib/api";
-import GraphSwitcher from "./GraphSwitcher";
-
 function formatJournalDate(dateStr: string): string {
   try {
     const [y, m, d] = dateStr.split("-").map(Number);
@@ -108,8 +106,6 @@ export default function Sidebar({
           </button>
         </div>
       </div>
-
-      <GraphSwitcher onSwitch={loadTree} />
 
       {showCreate && (
         <div className="sidebar-actions">

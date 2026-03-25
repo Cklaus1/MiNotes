@@ -392,6 +392,7 @@ export default function App() {
             <GraphView
               onPageClick={(id) => { openPage(id); setGraphOpen(false); }}
               onClose={() => setGraphOpen(false)}
+              onGraphSwitch={() => { setGraphOpen(false); setTimeout(() => { refresh(); setGraphOpen(true); }, 200); }}
             />
           )}
           {customViews.length > 0 && (

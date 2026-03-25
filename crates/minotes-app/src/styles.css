@@ -1610,7 +1610,19 @@ body {
 
 .graph-switcher {
   position: relative;
-  padding: 2px 16px 2px;
+}
+
+/* More prominent when inside graph toolbar */
+.graph-toolbar .graph-switcher-btn {
+  font-size: 13px;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.graph-toolbar .graph-switcher-icon {
+  font-size: 13px;
+  color: var(--accent);
 }
 
 .graph-switcher-btn {
