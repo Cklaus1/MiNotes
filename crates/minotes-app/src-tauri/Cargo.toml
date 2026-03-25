@@ -14,6 +14,7 @@ tauri-build = { version = "2", features = [] }
 minotes-core = { path = "../../minotes-core" }
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
+tauri-plugin-clipboard-manager = "2"
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }

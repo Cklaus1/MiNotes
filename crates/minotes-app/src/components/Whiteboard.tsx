@@ -1113,23 +1113,64 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
     setTimeout(saveNow, 50);
   }, [undoSnapshot, saveNow]);
 
-  // Paste image from clipboard
+  // Paste image from clipboard (browser + Tauri)
   useEffect(() => {
-    const handler = (e: ClipboardEvent) => {
+    const handler = async (e: ClipboardEvent) => {
+      // Try browser clipboard API first
       const items = e.clipboardData?.items;
-      if (!items) return;
-      for (const item of items) {
-        if (item.type.startsWith("image/")) {
-          e.preventDefault();
-          const blob = item.getAsFile();
-          if (blob) insertImage(blob);
-          return;
+      if (items) {
+        for (const item of items) {
+          if (item.type.startsWith("image/")) {
+            e.preventDefault();
+            const blob = item.getAsFile();
+            if (blob) insertImage(blob);
+            return;
+          }
+        }
+      }
+
+      // Tauri: try reading image from clipboard plugin
+      if (isTauri) {
+        try {
+          const { readImage } = await import("@tauri-apps/plugin-clipboard-manager");
+          const img = await readImage();
+          if (img) {
+            const [rgba, { width: w, height: h }] = await Promise.all([img.rgba(), img.size()]);
+            if (w && h && rgba) {
+              const canvas = document.createElement("canvas");
+              canvas.width = w;
+              canvas.height = h;
+              const ctx = canvas.getContext("2d");
+              if (ctx) {
+                const imageData = ctx.createImageData(w, h);
+                imageData.data.set(new Uint8ClampedArray(rgba));
+                ctx.putImageData(imageData, 0, 0);
+                canvas.toBlob((blob) => {
+                  if (blob) insertImage(blob);
+                }, "image/png");
+              }
+            }
+          }
+        } catch {
+          // Clipboard empty or no image — ignore
         }
       }
     };
+
+    // Ctrl+V handler for Tauri (paste event may not fire)
+    const keyHandler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "v" && isTauri && !editingNote && !editingTextId) {
+        handler(new ClipboardEvent("paste"));
+      }
+    };
+
     window.addEventListener("paste", handler);
-    return () => window.removeEventListener("paste", handler);
-  }, [insertImage]);
+    window.addEventListener("keydown", keyHandler);
+    return () => {
+      window.removeEventListener("paste", handler);
+      window.removeEventListener("keydown", keyHandler);
+    };
+  }, [insertImage, editingNote, editingTextId]);
 
   // Keyboard: Escape to close, close editing; S/D to switch modes
   useEffect(() => {
