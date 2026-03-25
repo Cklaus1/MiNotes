@@ -485,7 +485,7 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
 
       const padding = 8;
       const maxWidth = note.width - padding * 2;
-      const textLines = wrapText(ctx, note.text || "Double-click to edit", maxWidth);
+      const textLines = wrapText(ctx, note.text || "", maxWidth);
       let ty = note.y + 24;
       for (const tl of textLines) {
         if (ty > note.y + note.height - 8) break;
