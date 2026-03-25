@@ -756,16 +756,14 @@ export default function PageView({
             <button className="btn btn-sm" onClick={() => shiftDate(1)}>Next →</button>
           </div>
         )}
-        <span className="page-meta">
-          {blocks.length} blocks · Updated {formatDate(page.updated_at)}
-          <button
-            className="prop-toggle-btn"
-            onClick={() => setShowProps(p => !p)}
-            title="Toggle properties"
-          >
-            ⚙
-          </button>
-        </span>
+        <button
+          className="prop-toggle-btn"
+          onClick={() => setShowProps(p => !p)}
+          title="Page info (Ctrl+,)"
+          style={{ marginLeft: "auto" }}
+        >
+          ⚙
+        </button>
       </div>
 
       {/* Show existing aliases inline (compact, no add button — use ⚙ properties to add) */}
@@ -783,6 +781,10 @@ export default function PageView({
 
       {showProps && (
         <div className="page-properties">
+          <div className="page-info-summary">
+            <span className="page-info-title">{page.title}</span>
+            <span className="page-info-date">Updated: {formatDate(page.updated_at)}</span>
+          </div>
           <div className="page-properties-header">
             <span className="page-properties-label">Properties</span>
             <button

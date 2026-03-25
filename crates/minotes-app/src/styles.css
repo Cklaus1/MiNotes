@@ -1010,6 +1010,26 @@ body {
   background: var(--bg-secondary);
 }
 
+.page-info-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.page-info-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.page-info-date {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
 .page-properties-header {
   display: flex;
   align-items: center;
