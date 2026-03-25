@@ -540,6 +540,13 @@ function MindMapInner({ pageId, pageTitle, blocks, onClose, onRefreshPage }: Pro
           >
             TB
           </button>
+          <button
+            className={`btn btn-sm ${direction === "radial" ? "btn-primary" : ""}`}
+            onClick={() => setDirection("radial")}
+            title="Radial / hub-spoke layout"
+          >
+            Radial
+          </button>
         </div>
         <div className="mindmap-toolbar-group">
           <button className="btn btn-sm" onClick={handleExportPng} title="Export as PNG">PNG</button>

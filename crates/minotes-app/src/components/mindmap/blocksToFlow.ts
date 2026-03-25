@@ -68,7 +68,7 @@ function countDescendants(blockId: string, childrenMap: Map<string, string[]>): 
   return count;
 }
 
-export type LayoutDirection = "LR" | "TB";
+export type LayoutDirection = "LR" | "TB" | "radial";
 
 export function blocksToFlow(
   blocks: Block[],
@@ -78,12 +78,15 @@ export function blocksToFlow(
 ): { nodes: Node[]; edges: Edge[] } {
   const nodes: Node[] = [];
   const edges: Edge[] = [];
+  const isRadial = direction === "radial";
+  const dagreDir = isRadial ? "TB" : direction;
+
   const g = new dagre.graphlib.Graph();
   g.setDefaultEdgeLabel(() => ({}));
   g.setGraph({
-    rankdir: direction,
-    nodesep: 24,
-    ranksep: 100,
+    rankdir: dagreDir,
+    nodesep: isRadial ? 40 : 24,
+    ranksep: isRadial ? 120 : 100,
     marginx: 20,
     marginy: 20,
   });
@@ -154,7 +157,7 @@ export function blocksToFlow(
       id: `e-${parentNodeId}-${block.id}`,
       source: parentNodeId,
       target: block.id,
-      type: "smoothstep",
+      type: isRadial ? "default" : "smoothstep",
       animated: false,
     });
 
@@ -179,15 +182,71 @@ export function blocksToFlow(
   // Compute layout
   dagre.layout(g);
 
-  // Apply computed positions
-  for (const node of nodes) {
-    const pos = g.node(node.id);
-    if (pos) {
-      node.position = { x: pos.x - (pos.width ?? 0) / 2, y: pos.y - (pos.height ?? 0) / 2 };
+  if (isRadial) {
+    // Transform dagre's TB layout to radial (polar) coordinates
+    // Root stays at center; each rank becomes a ring
+    const rootPos = g.node(rootId);
+    const cx = rootPos?.x ?? 0;
+    const cy = rootPos?.y ?? 0;
+
+    // Group nodes by their dagre Y (rank), excluding root
+    const rankMap = new Map<number, string[]>();
+    for (const node of nodes) {
+      if (node.id === rootId) continue;
+      const pos = g.node(node.id);
+      if (!pos) continue;
+      const rank = Math.round(pos.y);
+      if (!rankMap.has(rank)) rankMap.set(rank, []);
+      rankMap.get(rank)!.push(node.id);
     }
-    // Set handle positions
-    node.sourcePosition = sourcePos;
-    node.targetPosition = targetPos;
+
+    // Sort ranks by Y value (distance from root)
+    const sortedRanks = Array.from(rankMap.keys()).sort((a, b) => a - b);
+
+    // Assign radial positions
+    for (let ri = 0; ri < sortedRanks.length; ri++) {
+      const rank = sortedRanks[ri];
+      const nodeIds = rankMap.get(rank)!;
+      const radius = (ri + 1) * 160; // ring spacing
+      const angleStep = (2 * Math.PI) / nodeIds.length;
+      const angleOffset = -Math.PI / 2; // start from top
+
+      for (let ni = 0; ni < nodeIds.length; ni++) {
+        const nodeId = nodeIds[ni];
+        const angle = angleOffset + ni * angleStep;
+        const node = nodes.find((n) => n.id === nodeId)!;
+        const pos = g.node(nodeId);
+        const w = pos?.width ?? 150;
+        const h = pos?.height ?? 40;
+        node.position = {
+          x: cx + radius * Math.cos(angle) - w / 2,
+          y: cy + radius * Math.sin(angle) - h / 2,
+        };
+      }
+    }
+
+    // Center root node
+    const rn = nodes.find((n) => n.id === rootId)!;
+    const rp = g.node(rootId);
+    if (rn && rp) {
+      rn.position = { x: cx - (rp.width ?? 0) / 2, y: cy - (rp.height ?? 0) / 2 };
+    }
+
+    // Radial: handles point outward from center (no fixed direction)
+    for (const node of nodes) {
+      node.sourcePosition = Position.Right;
+      node.targetPosition = Position.Left;
+    }
+  } else {
+    // Apply computed positions (linear layout)
+    for (const node of nodes) {
+      const pos = g.node(node.id);
+      if (pos) {
+        node.position = { x: pos.x - (pos.width ?? 0) / 2, y: pos.y - (pos.height ?? 0) / 2 };
+      }
+      node.sourcePosition = sourcePos;
+      node.targetPosition = targetPos;
+    }
   }
 
   return { nodes, edges };
