@@ -645,7 +645,7 @@ function MindMapInner({ pageId, pageTitle, blocks, onClose, onRefreshPage }: Pro
               if (d.todoState === "todo") return "#f9e2af";
               return "#585b70";
             }}
-            maskColor="rgba(0,0,0,0.3)"
+            maskColor="rgba(0,0,0,0.2)"
             className="mm-minimap-fade"
           />
         )}

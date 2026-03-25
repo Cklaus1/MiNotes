@@ -3374,22 +3374,44 @@ body.theme-light { /* matches our light theme */ }
 
 .mindmap-overlay .react-flow__minimap {
   border-radius: 6px;
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.04);
   overflow: hidden;
   width: 120px !important;
   height: 80px !important;
-  opacity: 0.6;
-  background: rgba(30, 30, 46, 0.5) !important;
-  transition: opacity 0.2s;
+  opacity: 0.45;
+  background: rgba(30, 30, 46, 0.35) !important;
+  transition: opacity 0.25s, border-color 0.25s;
 }
 
 .mindmap-overlay .react-flow__minimap:hover {
-  opacity: 0.9;
+  opacity: 0.8;
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+.mindmap-overlay .react-flow__minimap::before {
+  content: "Minimap";
+  position: absolute;
+  top: -16px;
+  right: 4px;
+  font-size: 9px;
+  color: var(--text-muted);
+  letter-spacing: 0.04em;
+  opacity: 0;
+  transition: opacity 0.2s;
+  pointer-events: none;
+}
+
+.mindmap-overlay .react-flow__minimap:hover::before {
+  opacity: 0.7;
 }
 
 [data-theme="light"] .mindmap-overlay .react-flow__minimap {
-  background: rgba(239, 241, 245, 0.5) !important;
-  border-color: rgba(0, 0, 0, 0.06);
+  background: rgba(239, 241, 245, 0.35) !important;
+  border-color: rgba(0, 0, 0, 0.04);
+}
+
+[data-theme="light"] .mindmap-overlay .react-flow__minimap:hover {
+  border-color: rgba(0, 0, 0, 0.1);
 }
 
 .mm-minimap-fade {
@@ -3398,7 +3420,7 @@ body.theme-light { /* matches our light theme */ }
 
 @keyframes mm-minimap-in {
   from { opacity: 0; transform: translateY(10px); }
-  to { opacity: 0.6; transform: translateY(0); }
+  to { opacity: 0.45; transform: translateY(0); }
 }
 
 /* Expanded collapse badge — more subtle */
