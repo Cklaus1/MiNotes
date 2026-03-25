@@ -137,7 +137,7 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
   const [boxes, setBoxes] = useState<Box[]>(saved?.boxes ?? []);
   const [mode, setMode] = useState<Mode>("select");
   const [selectedElement, setSelectedElement] = useState<{ type: "note" | "text" | "arrow" | "box" | "image" | "line"; id: string } | null>(null);
-  const [draggingElement, setDraggingElement] = useState<{ type: string; id: string; offsetX: number; offsetY: number } | null>(null);
+  const draggingElementRef = useRef<{ type: string; id: string; offsetX: number; offsetY: number } | null>(null);
   const [textSize, setTextSize] = useState<"S" | "M" | "L">("M");
   const [textStyle, setTextStyle] = useState<"callout" | "plain" | "sticky">("callout");
   const [drawColor, setDrawColor] = useState(DRAW_COLORS[1]);
@@ -704,7 +704,7 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
         const hit = findElementAt(world.x, world.y);
         if (hit) {
           setSelectedElement({ type: hit.type, id: hit.id });
-          setDraggingElement({ type: hit.type, id: hit.id, offsetX: world.x - hit.x, offsetY: world.y - hit.y });
+          draggingElementRef.current = { type: hit.type, id: hit.id, offsetX: world.x - hit.x, offsetY: world.y - hit.y };
           return;
         }
         // Click empty space → deselect
@@ -759,21 +759,21 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
       }
 
       // Dragging any element
-      if (draggingElement) {
+      if (draggingElementRef.current) {
         const world = screenToWorld(sx, sy);
-        const nx = world.x - draggingElement.offsetX;
-        const ny = world.y - draggingElement.offsetY;
-        const id = draggingElement.id;
+        const nx = world.x - draggingElementRef.current.offsetX;
+        const ny = world.y - draggingElementRef.current.offsetY;
+        const id = draggingElementRef.current.id;
 
-        if (draggingElement.type === "note") {
+        if (draggingElementRef.current.type === "note") {
           setNotes((prev) => prev.map((n) => n.id === id ? { ...n, x: nx, y: ny } : n));
-        } else if (draggingElement.type === "text") {
+        } else if (draggingElementRef.current.type === "text") {
           setTexts((prev) => prev.map((t) => t.id === id ? { ...t, x: nx, y: ny } : t));
-        } else if (draggingElement.type === "box") {
+        } else if (draggingElementRef.current.type === "box") {
           setBoxes((prev) => prev.map((b) => b.id === id ? { ...b, x: nx, y: ny } : b));
-        } else if (draggingElement.type === "image") {
+        } else if (draggingElementRef.current.type === "image") {
           setImages((prev) => prev.map((img) => img.id === id ? { ...img, x: nx, y: ny } : img));
-        } else if (draggingElement.type === "arrow") {
+        } else if (draggingElementRef.current.type === "arrow") {
           // Move entire arrow by delta
           const arrow = arrowsRef.current.find((a) => a.id === id);
           if (arrow) {
@@ -781,8 +781,8 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
             const dy = ny - Math.min(arrow.y1, arrow.y2);
             setArrows((prev) => prev.map((a) => a.id === id ? { ...a, x1: a.x1 + dx, y1: a.y1 + dy, x2: a.x2 + dx, y2: a.y2 + dy } : a));
             // Update offset to prevent drift
-            draggingElement.offsetX = world.x - nx;
-            draggingElement.offsetY = world.y - ny;
+            draggingElementRef.current.offsetX = world.x - nx;
+            draggingElementRef.current.offsetY = world.y - ny;
           }
         }
         requestRedraw();
@@ -836,8 +836,8 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
       }
 
       // End drag (any element)
-      if (draggingElement) {
-        setDraggingElement(null);
+      if (draggingElementRef.current) {
+        draggingElementRef.current = null;
         changed = true;
       }
 
@@ -1145,7 +1145,7 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [handleClose, editingNote, finishEdit, contextMenu, saveNow]);
+  }, [handleClose, editingNote, editingTextId, finishEdit, contextMenu, saveNow, selectedElement]);
 
   // Compute editing note screen position
   const editScreenPos = (() => {
