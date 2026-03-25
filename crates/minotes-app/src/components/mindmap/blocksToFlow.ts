@@ -148,11 +148,35 @@ export function blocksToFlow(
   const sourcePos = direction === "LR" ? Position.Right : Position.Bottom;
   const targetPos = direction === "LR" ? Position.Left : Position.Top;
 
-  // Recursively add blocks (skip empty blocks unless being edited)
+  // Check if block content is effectively empty
+  // Whitespace-only and formatting-only (e.g. "- ", "* ", "+ ", "- [ ] ") count as empty
+  const isBlockEmpty = (content: string): boolean => {
+    const stripped = content
+      .replace(/^[-*+]\s*(\[[ x]\]\s*)?/, "") // strip list markers and checkboxes
+      .replace(/^#{1,4}\s*$/, "")              // strip heading markers with no text
+      .trim();
+    return stripped.length === 0;
+  };
+
+  // Recursively add blocks — skip empty blocks (collapse empty chains)
+  // parentNodeId: the visual parent in the mind map (may skip empty ancestors)
   const addBlock = (block: Block, parentNodeId: string) => {
-    const isEmpty = !block.content.trim();
+    const isEmpty = isBlockEmpty(block.content);
     const isBeingEdited = block.id === editingNodeId;
-    if (isEmpty && !isBeingEdited) return; // Hide empty blocks
+
+    if (isEmpty && !isBeingEdited) {
+      // Skip this empty node but still process its children
+      // Children connect to this block's parent — collapsing the empty chain
+      if (!collapsedIds.has(block.id)) {
+        const children = blocks
+          .filter((b) => b.parent_id === block.id)
+          .sort((a, b) => a.position - b.position);
+        for (const child of children) {
+          addBlock(child, parentNodeId); // pass through parent's visual node
+        }
+      }
+      return;
+    }
 
     const isCollapsed = collapsedIds.has(block.id);
     const label = extractLabel(block.content);
