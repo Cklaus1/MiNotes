@@ -1047,6 +1047,77 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
     reader.readAsDataURL(file);
   }, [saveNow, requestRedraw]);
 
+  // Fit All — zoom to show all elements
+  const handleFitAll = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    let hasContent = false;
+
+    for (const n of notesRef.current) {
+      minX = Math.min(minX, n.x); minY = Math.min(minY, n.y);
+      maxX = Math.max(maxX, n.x + n.width); maxY = Math.max(maxY, n.y + n.height);
+      hasContent = true;
+    }
+    for (const te of textsRef.current) {
+      if (!te.text) continue;
+      const fs = te.size === "S" ? 14 : te.size === "L" ? 24 : 18;
+      const h = te.text.split("\n").length * fs * 1.3 + 20;
+      minX = Math.min(minX, te.x - 10); minY = Math.min(minY, te.y - 10);
+      maxX = Math.max(maxX, te.x + 200); maxY = Math.max(maxY, te.y + h);
+      hasContent = true;
+    }
+    for (const a of arrowsRef.current) {
+      minX = Math.min(minX, a.x1, a.x2); minY = Math.min(minY, a.y1, a.y2);
+      maxX = Math.max(maxX, a.x1, a.x2); maxY = Math.max(maxY, a.y1, a.y2);
+      hasContent = true;
+    }
+    for (const b of boxesRef.current) {
+      minX = Math.min(minX, b.x); minY = Math.min(minY, b.y);
+      maxX = Math.max(maxX, b.x + b.width); maxY = Math.max(maxY, b.y + b.height);
+      hasContent = true;
+    }
+    for (const img of imagesRef.current) {
+      minX = Math.min(minX, img.x); minY = Math.min(minY, img.y);
+      maxX = Math.max(maxX, img.x + img.width); maxY = Math.max(maxY, img.y + img.height);
+      hasContent = true;
+    }
+    for (const line of linesRef.current) {
+      for (const pt of line.points) {
+        minX = Math.min(minX, pt.x); minY = Math.min(minY, pt.y);
+        maxX = Math.max(maxX, pt.x); maxY = Math.max(maxY, pt.y);
+      }
+      if (line.points.length > 0) hasContent = true;
+    }
+
+    if (!hasContent) return;
+
+    const pad = 40;
+    const contentW = maxX - minX + pad * 2;
+    const contentH = maxY - minY + pad * 2;
+    const targetZoom = Math.min(canvas.width / contentW, canvas.height / contentH, 2);
+    const targetX = (canvas.width - contentW * targetZoom) / 2 - (minX - pad) * targetZoom;
+    const targetY = (canvas.height - contentH * targetZoom) / 2 - (minY - pad) * targetZoom;
+
+    // Animate to target
+    const startX = cameraRef.current.x;
+    const startY = cameraRef.current.y;
+    const startZoom = cameraRef.current.zoom;
+    const duration = 250;
+    const start = performance.now();
+
+    function tick(now: number) {
+      const t = Math.min((now - start) / duration, 1);
+      const ease = t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2;
+      cameraRef.current.x = startX + (targetX - startX) * ease;
+      cameraRef.current.y = startY + (targetY - startY) * ease;
+      cameraRef.current.zoom = startZoom + (targetZoom - startZoom) * ease;
+      requestRedraw();
+      if (t < 1) requestAnimationFrame(tick);
+    }
+    requestAnimationFrame(tick);
+  }, [requestRedraw]);
+
   const handleClose = useCallback(() => {
     saveNow();
     onClose(notesRef.current.length > 0 || linesRef.current.length > 0 || imagesRef.current.length > 0);
@@ -1191,6 +1262,7 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
         if (e.key === "a" || e.key === "A") setMode("arrow");
         if (e.key === "b" || e.key === "B") setMode("box");
         if (e.key === "d" || e.key === "D") setMode("draw");
+        if (e.key === "f" || e.key === "F") handleFitAll();
       }
       // Delete / Backspace — remove selected element
       // Enter on selected text element → edit it
@@ -1399,6 +1471,7 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
         {/* ── Actions (always visible) ── */}
         <div className="whiteboard-toolbar-group" style={{ marginLeft: "auto", position: "relative" }}>
           {saveStatus && <span className="whiteboard-save-status">{saveStatus}</span>}
+          <button className="btn btn-sm" onClick={handleFitAll} title="Zoom to fit all (F)">Fit</button>
           <button className="btn btn-sm" onClick={() => { setShowExportMenu(v => !v); setShowCanvasSettings(false); }}>Export ▾</button>
           {showExportMenu && (
             <div className="mindmap-dropdown" onClick={() => setShowExportMenu(false)}>
