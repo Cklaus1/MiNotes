@@ -3077,6 +3077,124 @@ body.theme-light { /* matches our light theme */ }
   margin: 0 2px;
 }
 
+/* ── Canvas Layer (unified Graph / Mindmap / Draw) ── */
+
+.canvas-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: var(--bg-primary);
+  display: flex;
+  flex-direction: column;
+  animation: canvas-enter 0.2s ease-out;
+}
+
+@keyframes canvas-enter {
+  from { opacity: 0; transform: scale(0.98); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+.canvas-topbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 16px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  z-index: 10;
+  flex-shrink: 0;
+}
+
+.canvas-back-btn {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  transition: background 0.15s, color 0.15s;
+}
+
+.canvas-back-btn:hover {
+  background: var(--bg-surface);
+  color: var(--text-primary);
+}
+
+.canvas-mode-switcher {
+  display: flex;
+  gap: 2px;
+  background: var(--bg-tertiary);
+  padding: 2px;
+  border-radius: 8px;
+}
+
+.canvas-mode-btn {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 5px 14px;
+  border-radius: 6px;
+  transition: background 0.15s, color 0.15s;
+  white-space: nowrap;
+}
+
+.canvas-mode-btn:hover {
+  color: var(--text-primary);
+}
+
+.canvas-mode-btn.active {
+  background: var(--accent);
+  color: #1e1e2e;
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+.canvas-page-context {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-left: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 200px;
+}
+
+.canvas-content {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+}
+
+/* Canvas children fill the content area */
+.canvas-content > .mindmap-overlay,
+.canvas-content > .graph-view,
+.canvas-content > .whiteboard {
+  position: absolute;
+  inset: 0;
+}
+
+/* Override: remove the mindmap/graph/whiteboard's own fixed positioning when inside canvas */
+.canvas-content > .mindmap-overlay {
+  position: absolute;
+  z-index: auto;
+}
+
+.canvas-content > .graph-view {
+  position: absolute;
+}
+
+.canvas-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+
 /* ── Mind Map ── */
 
 .mindmap-overlay {

@@ -5,10 +5,9 @@ import RightSidebar from "./components/RightSidebar";
 import EmptyState from "./components/EmptyState";
 import SearchPanel from "./components/SearchPanel";
 import QueryPanel from "./components/QueryPanel";
-import GraphView from "./components/GraphView";
 import ReviewPanel from "./components/ReviewPanel";
 import PluginManager from "./components/PluginManager";
-import Whiteboard from "./components/Whiteboard";
+import CanvasMode, { type CanvasModeType } from "./components/CanvasMode";
 import { generateWhiteboardId } from "./lib/whiteboardUtils";
 import SyncPanel from "./components/SyncPanel";
 import PdfViewer from "./components/PdfViewer";
@@ -17,7 +16,6 @@ import ObsidianPluginBrowser from "./components/ObsidianPluginBrowser";
 import CssSnippetManager from "./components/CssSnippetManager";
 import CustomViewContainer from "./components/CustomViewContainer";
 import SettingsPanel from "./components/SettingsPanel";
-import MindMapView from "./components/mindmap/MindMapView";
 import * as api from "./lib/api";
 import { initTheme, toggleTheme } from "./lib/theme";
 import { initTestApi, registerTestApi } from "./lib/testApi";
@@ -30,15 +28,14 @@ export default function App() {
   const [stats, setStats] = useState<api.GraphStats | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [queryOpen, setQueryOpen] = useState(false);
-  const [graphOpen, setGraphOpen] = useState(false);
+  const [canvasMode, setCanvasMode] = useState<CanvasModeType | null>(null);
+  const [whiteboardId, setWhiteboardId] = useState<string | null>(null);
   const [reviewOpen, setReviewOpen] = useState(false);
   const [pluginsOpen, setPluginsOpen] = useState(false);
-  const [whiteboardId, setWhiteboardId] = useState<string | null>(null);
   const [syncOpen, setSyncOpen] = useState(false);
   const [obsidianPluginsOpen, setObsidianPluginsOpen] = useState(false);
   const [cssManagerOpen, setCssManagerOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [mindmapOpen, setMindmapOpen] = useState(false);
   const [pdfViewerPath, setPdfViewerPath] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [mobileTab, setMobileTab] = useState("pages");
@@ -193,11 +190,11 @@ export default function App() {
       closePanel: () => {
         setSearchOpen(false);
         setQueryOpen(false);
-        setGraphOpen(false);
+        setCanvasMode(null);
         setReviewOpen(false);
         setPluginsOpen(false);
         setWhiteboardId(null);
-        setMindmapOpen(false);
+        setCanvasMode(null);
         setSyncOpen(false);
         setObsidianPluginsOpen(false);
         setCssManagerOpen(false);
@@ -207,13 +204,13 @@ export default function App() {
       getCurrentPage: () => activePage?.page.title ?? null,
       isPanelOpen: (name: string) => {
         const map: Record<string, boolean> = {
-          search: searchOpen, query: queryOpen, graph: graphOpen,
+          search: searchOpen, query: queryOpen, graph: canvasMode === "graph",
           review: reviewOpen, settings: settingsOpen,
         };
         return map[name] ?? false;
       },
     });
-  }, [activePage, searchOpen, queryOpen, graphOpen, reviewOpen, settingsOpen]);
+  }, [activePage, searchOpen, queryOpen, canvasMode, reviewOpen, settingsOpen]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -236,7 +233,7 @@ export default function App() {
       // Cmd/Ctrl+G — graph view
       if ((e.metaKey || e.ctrlKey) && e.key === "g") {
         e.preventDefault();
-        setGraphOpen(prev => !prev);
+        setCanvasMode(prev => prev === "graph" ? null : "graph");
       }
       // Cmd/Ctrl+R — review panel
       if ((e.metaKey || e.ctrlKey) && e.key === "r") {
@@ -268,23 +265,25 @@ export default function App() {
         const title = prompt("Page title:");
         if (title?.trim()) createPage(title.trim());
       }
-      // Cmd/Ctrl+W — new whiteboard block in current page
+      // Cmd/Ctrl+W — new whiteboard / toggle draw mode
       if ((e.metaKey || e.ctrlKey) && e.key === "w") {
         e.preventDefault();
-        if (whiteboardId) {
-          setWhiteboardId(null); // close if open
+        if (canvasMode === "draw") {
+          setCanvasMode(null);
+          setWhiteboardId(null);
         } else if (activePage) {
           const wbId = generateWhiteboardId();
           api.createBlock(activePage.page.id, `{{whiteboard:${wbId}}}`).then(() => {
             openPage(activePage.page.id);
           });
           setWhiteboardId(wbId);
+          setCanvasMode("draw");
         }
       }
       // Cmd/Ctrl+M — mind map view
       if ((e.metaKey || e.ctrlKey) && e.key === "m") {
         e.preventDefault();
-        if (activePage) setMindmapOpen(prev => !prev);
+        if (activePage) setCanvasMode(prev => prev === "mindmap" ? null : "mindmap");
       }
       // Cmd/Ctrl+P — open PDF
       if ((e.metaKey || e.ctrlKey) && e.key === "p") {
@@ -310,7 +309,7 @@ export default function App() {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [openJournal, createPage, activePage, whiteboardId]);
+  }, [openJournal, createPage, activePage, whiteboardId, canvasMode]);
 
   // UX-009: Journal as default landing + UX-017: Onboarding tutorial on first launch
   useEffect(() => {
@@ -356,8 +355,8 @@ export default function App() {
         onDeletePage={deletePage}
         onJournalClick={() => openJournal()}
         onSearchClick={() => setSearchOpen(true)}
-        onGraphClick={() => setGraphOpen(prev => !prev)}
-        onMindmapClick={() => { if (activePage) setMindmapOpen(prev => !prev); }}
+        onGraphClick={() => setCanvasMode(prev => prev === "graph" ? null : "graph")}
+        onMindmapClick={() => { if (activePage) setCanvasMode(prev => prev === "mindmap" ? null : "mindmap"); }}
         onWhiteboardClick={() => {
           if (activePage) {
             const wbId = generateWhiteboardId();
@@ -365,10 +364,11 @@ export default function App() {
               openPage(activePage.page.id);
             });
             setWhiteboardId(wbId);
+            setCanvasMode("draw");
           }
         }}
         onSettingsClick={() => setSettingsOpen(prev => !prev)}
-        activeMode={graphOpen ? "graph" : mindmapOpen ? "mindmap" : whiteboardId ? "whiteboard" : null}
+        activeMode={canvasMode === "graph" ? "graph" : canvasMode === "mindmap" ? "mindmap" : canvasMode === "draw" ? "whiteboard" : null}
         refreshKey={refreshKey}
       />
       <div className="main workspace-split mod-root" style={{ position: "relative", display: "flex", flexDirection: "row" }}>
@@ -384,26 +384,18 @@ export default function App() {
               onClose={() => setPdfViewerPath(null)}
             />
           )}
-          {whiteboardId && (
-            <Whiteboard
+          {canvasMode && (
+            <CanvasMode
+              initialMode={canvasMode}
+              pageId={activePage?.page.id ?? null}
+              pageTitle={activePage?.page.title ?? ""}
+              blocks={activePage?.blocks ?? []}
               whiteboardId={whiteboardId}
-              onClose={() => setWhiteboardId(null)}
-            />
-          )}
-          {mindmapOpen && activePage && (
-            <MindMapView
-              pageId={activePage.page.id}
-              pageTitle={activePage.page.title}
-              blocks={activePage.blocks}
-              onClose={() => setMindmapOpen(false)}
-              onRefreshPage={() => { openPage(activePage.page.id); }}
-            />
-          )}
-          {graphOpen && (
-            <GraphView
-              onPageClick={(id) => { openPage(id); setGraphOpen(false); }}
-              onClose={() => setGraphOpen(false)}
-              onGraphSwitch={() => { setGraphOpen(false); setTimeout(() => { refresh(); setGraphOpen(true); }, 200); }}
+              onClose={() => { setCanvasMode(null); }}
+              onPageClick={(id) => { openPage(id); setCanvasMode(null); }}
+              onRefreshPage={() => { if (activePage) openPage(activePage.page.id); }}
+              onGraphSwitch={() => { setCanvasMode(null); setTimeout(() => { refresh(); setCanvasMode("graph"); }, 200); }}
+              onWhiteboardClose={() => { setWhiteboardId(null); setCanvasMode(null); }}
             />
           )}
           {customViews.length > 0 && (
@@ -423,7 +415,7 @@ export default function App() {
               onShiftClick={openInSidebar}
               onJournalNav={openJournal}
               onRefreshPage={() => openPage(activePage.page.id)}
-              onOpenWhiteboard={(wbId: string) => setWhiteboardId(wbId)}
+              onOpenWhiteboard={(wbId: string) => { setWhiteboardId(wbId); setCanvasMode("draw"); }}
             />
           ) : (
             <EmptyState onCreatePage={createPage} />
@@ -448,7 +440,7 @@ export default function App() {
           if (title?.trim()) createPage(title.trim());
         }}
         onJournal={() => { openJournal(); setSearchOpen(false); }}
-        onGraph={() => { setGraphOpen(prev => !prev); setSearchOpen(false); }}
+        onGraph={() => { setCanvasMode(prev => prev === "graph" ? null : "graph"); setSearchOpen(false); }}
         onQuery={() => { setQueryOpen(prev => !prev); setSearchOpen(false); }}
         onReview={() => { setReviewOpen(prev => !prev); setSearchOpen(false); }}
         onPlugins={() => { setPluginsOpen(prev => !prev); setSearchOpen(false); }}
@@ -495,7 +487,7 @@ export default function App() {
         onPagesClick={() => setMobileTab("pages")}
         onJournalClick={() => { setMobileTab("journal"); openJournal(); }}
         onSearchClick={() => { setMobileTab("search"); setSearchOpen(true); }}
-        onGraphClick={() => { setMobileTab("graph"); setGraphOpen(prev => !prev); }}
+        onGraphClick={() => { setMobileTab("graph"); setCanvasMode(prev => prev === "graph" ? null : "graph"); }}
         onMenuClick={() => setMobileTab("menu")}
       />
     </div>
