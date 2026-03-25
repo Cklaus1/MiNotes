@@ -1901,7 +1901,7 @@ body {
 .whiteboard-canvas {
   flex: 1;
   display: block;
-  cursor: crosshair;
+  cursor: default;
 }
 
 .whiteboard-text-editor {

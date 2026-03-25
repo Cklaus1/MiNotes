@@ -136,6 +136,8 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
   const [arrows, setArrows] = useState<Arrow[]>(saved?.arrows ?? []);
   const [boxes, setBoxes] = useState<Box[]>(saved?.boxes ?? []);
   const [mode, setMode] = useState<Mode>("select");
+  const [selectedElement, setSelectedElement] = useState<{ type: "note" | "text" | "arrow" | "box" | "image" | "line"; id: string } | null>(null);
+  const [draggingElement, setDraggingElement] = useState<{ type: string; id: string; offsetX: number; offsetY: number } | null>(null);
   const [textSize, setTextSize] = useState<"S" | "M" | "L">("M");
   const [textStyle, setTextStyle] = useState<"callout" | "plain" | "sticky">("callout");
   const [drawColor, setDrawColor] = useState(DRAW_COLORS[1]);
@@ -186,6 +188,8 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
   canvasBgRef.current = canvasBg;
   const showGridRef = useRef(showGrid);
   showGridRef.current = showGrid;
+  const selectedElementRef = useRef(selectedElement);
+  selectedElementRef.current = selectedElement;
   const notesRef = useRef(notes);
   notesRef.current = notes;
   const linesRef = useRef(lines);
@@ -219,11 +223,62 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
   }, []);
 
   const findNoteAt = useCallback((wx: number, wy: number): StickyNote | null => {
-    // Search in reverse so top-rendered notes are found first
     for (let i = notesRef.current.length - 1; i >= 0; i--) {
       const n = notesRef.current[i];
       if (wx >= n.x && wx <= n.x + n.width && wy >= n.y && wy <= n.y + n.height) {
         return n;
+      }
+    }
+    return null;
+  }, []);
+
+  // Unified hit-test: find any element at world coordinates
+  const findElementAt = useCallback((wx: number, wy: number): { type: "note" | "text" | "arrow" | "box" | "image"; id: string; x: number; y: number } | null => {
+    // Notes (top layer)
+    for (let i = notesRef.current.length - 1; i >= 0; i--) {
+      const n = notesRef.current[i];
+      if (wx >= n.x && wx <= n.x + n.width && wy >= n.y && wy <= n.y + n.height) {
+        return { type: "note", id: n.id, x: n.x, y: n.y };
+      }
+    }
+    // Texts
+    for (let i = textsRef.current.length - 1; i >= 0; i--) {
+      const te = textsRef.current[i];
+      if (!te.text) continue;
+      const fontSize = te.size === "S" ? 14 : te.size === "L" ? 24 : 18;
+      const pad = te.callout ? 10 : 4;
+      const h = te.text.split("\n").length * fontSize * 1.3 + pad * 2;
+      const w = 200 + pad * 2; // approximate
+      if (wx >= te.x - pad && wx <= te.x + w && wy >= te.y - pad && wy <= te.y + h) {
+        return { type: "text", id: te.id, x: te.x, y: te.y };
+      }
+    }
+    // Boxes
+    for (let i = boxesRef.current.length - 1; i >= 0; i--) {
+      const b = boxesRef.current[i];
+      const margin = 6;
+      if (wx >= b.x - margin && wx <= b.x + b.width + margin && wy >= b.y - margin && wy <= b.y + b.height + margin) {
+        return { type: "box", id: b.id, x: b.x, y: b.y };
+      }
+    }
+    // Images
+    for (let i = imagesRef.current.length - 1; i >= 0; i--) {
+      const img = imagesRef.current[i];
+      if (wx >= img.x && wx <= img.x + img.width && wy >= img.y && wy <= img.y + img.height) {
+        return { type: "image", id: img.id, x: img.x, y: img.y };
+      }
+    }
+    // Arrows (hit test with distance to line segment)
+    for (let i = arrowsRef.current.length - 1; i >= 0; i--) {
+      const a = arrowsRef.current[i];
+      const dx = a.x2 - a.x1, dy = a.y2 - a.y1;
+      const len2 = dx * dx + dy * dy;
+      if (len2 === 0) continue;
+      let t = Math.max(0, Math.min(1, ((wx - a.x1) * dx + (wy - a.y1) * dy) / len2));
+      const px = a.x1 + t * dx, py = a.y1 + t * dy;
+      const dist = Math.sqrt((wx - px) ** 2 + (wy - py) ** 2);
+      if (dist < 10) {
+        return { type: "arrow", id: a.id, x: Math.min(a.x1, a.x2), y: Math.min(a.y1, a.y2) };
       }
     }
     return null;
@@ -440,6 +495,44 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
       }
     }
 
+    // Draw selection bounding box
+    const sel = selectedElementRef.current;
+    if (sel) {
+      let sx = 0, sy = 0, sw = 0, sh = 0;
+      let found = false;
+      if (sel.type === "note") {
+        const n = notesRef.current.find((n) => n.id === sel.id);
+        if (n) { sx = n.x; sy = n.y; sw = n.width; sh = n.height; found = true; }
+      } else if (sel.type === "text") {
+        const te = textsRef.current.find((t) => t.id === sel.id);
+        if (te && te.text) {
+          const fs = te.size === "S" ? 14 : te.size === "L" ? 24 : 18;
+          const pad = te.callout ? 10 : 4;
+          const h = te.text.split("\n").length * fs * 1.3 + pad * 2;
+          sx = te.x - pad; sy = te.y - pad; sw = 200 + pad * 2; sh = h; found = true;
+        }
+      } else if (sel.type === "box") {
+        const b = boxesRef.current.find((b) => b.id === sel.id);
+        if (b) { sx = b.x; sy = b.y; sw = b.width; sh = b.height; found = true; }
+      } else if (sel.type === "image") {
+        const img = imagesRef.current.find((i) => i.id === sel.id);
+        if (img) { sx = img.x; sy = img.y; sw = img.width; sh = img.height; found = true; }
+      } else if (sel.type === "arrow") {
+        const a = arrowsRef.current.find((a) => a.id === sel.id);
+        if (a) {
+          sx = Math.min(a.x1, a.x2) - 5; sy = Math.min(a.y1, a.y2) - 5;
+          sw = Math.abs(a.x2 - a.x1) + 10; sh = Math.abs(a.y2 - a.y1) + 10; found = true;
+        }
+      }
+      if (found) {
+        ctx.strokeStyle = "#89b4fa";
+        ctx.lineWidth = 1.5 / cam.zoom;
+        ctx.setLineDash([4 / cam.zoom, 4 / cam.zoom]);
+        ctx.strokeRect(sx - 3, sy - 3, sw + 6, sh + 6);
+        ctx.setLineDash([]);
+      }
+    }
+
     ctx.restore();
   }, [drawColor]);
 
@@ -516,7 +609,7 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
   // Mark redraw needed when state changes
   useEffect(() => {
     requestRedraw();
-  }, [notes, lines, texts, arrows, boxes, requestRedraw]);
+  }, [notes, lines, texts, arrows, boxes, images, selectedElement, requestRedraw]);
 
   // Mouse handlers
   // Save current state (called after every interaction)
@@ -607,35 +700,15 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
           return;
         }
 
-        // Select mode - check texts (click to edit)
-        for (let i = textsRef.current.length - 1; i >= 0; i--) {
-          const te = textsRef.current[i];
-          if (!te.text) continue;
-          const fontSize = te.size === "S" ? 14 : te.size === "L" ? 24 : 18;
-          const pad = te.callout ? 10 : 0;
-          const textLines = te.text.split("\n");
-          const lineH = fontSize * 1.3;
-          const maxW = 200; // approximate
-          const bx = te.x - pad, by = te.y - pad;
-          const bw = maxW + pad * 2, bh = textLines.length * lineH + pad * 2;
-          if (world.x >= bx && world.x <= bx + bw && world.y >= by && world.y <= by + bh) {
-            setEditingTextId(te.id);
-            setEditingTextValue(te.text);
-            setTimeout(() => textInputRef.current?.focus(), 50);
-            return;
-          }
-        }
-
-        // Select mode - check if clicking a note
-        const note = findNoteAt(world.x, world.y);
-        if (note) {
-          draggingNoteRef.current = {
-            noteId: note.id,
-            offsetX: world.x - note.x,
-            offsetY: world.y - note.y,
-          };
+        // Select mode — unified hit test for all elements
+        const hit = findElementAt(world.x, world.y);
+        if (hit) {
+          setSelectedElement({ type: hit.type, id: hit.id });
+          setDraggingElement({ type: hit.type, id: hit.id, offsetX: world.x - hit.x, offsetY: world.y - hit.y });
           return;
         }
+        // Click empty space → deselect
+        setSelectedElement(null);
       }
     },
     [mode, screenToWorld, findNoteAt]
@@ -685,20 +758,34 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
         return;
       }
 
-      // Dragging note
-      if (draggingNoteRef.current.noteId) {
+      // Dragging any element
+      if (draggingElement) {
         const world = screenToWorld(sx, sy);
-        setNotes((prev) =>
-          prev.map((n) =>
-            n.id === draggingNoteRef.current.noteId
-              ? {
-                  ...n,
-                  x: world.x - draggingNoteRef.current.offsetX,
-                  y: world.y - draggingNoteRef.current.offsetY,
-                }
-              : n
-          )
-        );
+        const nx = world.x - draggingElement.offsetX;
+        const ny = world.y - draggingElement.offsetY;
+        const id = draggingElement.id;
+
+        if (draggingElement.type === "note") {
+          setNotes((prev) => prev.map((n) => n.id === id ? { ...n, x: nx, y: ny } : n));
+        } else if (draggingElement.type === "text") {
+          setTexts((prev) => prev.map((t) => t.id === id ? { ...t, x: nx, y: ny } : t));
+        } else if (draggingElement.type === "box") {
+          setBoxes((prev) => prev.map((b) => b.id === id ? { ...b, x: nx, y: ny } : b));
+        } else if (draggingElement.type === "image") {
+          setImages((prev) => prev.map((img) => img.id === id ? { ...img, x: nx, y: ny } : img));
+        } else if (draggingElement.type === "arrow") {
+          // Move entire arrow by delta
+          const arrow = arrowsRef.current.find((a) => a.id === id);
+          if (arrow) {
+            const dx = nx - Math.min(arrow.x1, arrow.x2);
+            const dy = ny - Math.min(arrow.y1, arrow.y2);
+            setArrows((prev) => prev.map((a) => a.id === id ? { ...a, x1: a.x1 + dx, y1: a.y1 + dy, x2: a.x2 + dx, y2: a.y2 + dy } : a));
+            // Update offset to prevent drift
+            draggingElement.offsetX = world.x - nx;
+            draggingElement.offsetY = world.y - ny;
+          }
+        }
+        requestRedraw();
       }
     },
     [screenToWorld, requestRedraw]
@@ -748,9 +835,9 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
         boxDrawRef.current = { active: false, x: 0, y: 0, w: 0, h: 0 };
       }
 
-      // End drag
-      if (draggingNoteRef.current.noteId) {
-        draggingNoteRef.current = { noteId: null, offsetX: 0, offsetY: 0 };
+      // End drag (any element)
+      if (draggingElement) {
+        setDraggingElement(null);
         changed = true;
       }
 
@@ -1024,6 +1111,18 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
         if (e.key === "b" || e.key === "B") setMode("box");
         if (e.key === "d" || e.key === "D") setMode("draw");
       }
+      // Delete / Backspace — remove selected element
+      if ((e.key === "Delete" || e.key === "Backspace") && selectedElement && !editingNote && !editingTextId) {
+        e.preventDefault();
+        const { type, id } = selectedElement;
+        if (type === "note") setNotes((prev) => prev.filter((n) => n.id !== id));
+        else if (type === "text") setTexts((prev) => prev.filter((t) => t.id !== id));
+        else if (type === "arrow") setArrows((prev) => prev.filter((a) => a.id !== id));
+        else if (type === "box") setBoxes((prev) => prev.filter((b) => b.id !== id));
+        else if (type === "image") setImages((prev) => prev.filter((i) => i.id !== id));
+        setSelectedElement(null);
+        setTimeout(saveNow, 50);
+      }
       // Ctrl+Z — undo last stroke
       if ((e.ctrlKey || e.metaKey) && e.key === "z" && !e.shiftKey && !editingNote) {
         e.preventDefault();
@@ -1204,6 +1303,7 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
       <canvas
         ref={canvasRef}
         className="whiteboard-canvas"
+        style={{ cursor: mode === "select" ? "default" : mode === "text" ? "text" : "crosshair" }}
         onMouseDown={(e) => { setShowHint(false); handleMouseDown(e); }}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
