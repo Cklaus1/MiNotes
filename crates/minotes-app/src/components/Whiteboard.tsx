@@ -84,6 +84,7 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
   const [canvasBg, setCanvasBg] = useState<"dark" | "light">("dark");
   const [showGrid, setShowGrid] = useState(true);
   const [undoSnapshot, setUndoSnapshot] = useState<{ notes: StickyNote[]; lines: Line[] } | null>(null);
+  const redoStackRef = useRef<Line[]>([]);
   const [showHint, setShowHint] = useState(() => !saved || ((saved.lines?.length ?? 0) === 0 && (saved.notes?.length ?? 0) === 0));
 
   // Camera / pan / zoom state stored in refs for performance
@@ -445,6 +446,7 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
         const pts = drawingRef.current.points;
         if (pts.length >= 2) {
           setLines((prev) => [...prev, { points: [...pts], color: drawColor, width: 2 }]);
+          redoStackRef.current = []; // New stroke clears redo history
           changed = true;
         }
         drawingRef.current = { active: false, points: [] };
@@ -652,13 +654,23 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
         if (e.key === "d" || e.key === "D") setMode("draw");
       }
       // Ctrl+Z — undo last stroke
-      if ((e.ctrlKey || e.metaKey) && e.key === "z" && !editingNote) {
+      if ((e.ctrlKey || e.metaKey) && e.key === "z" && !e.shiftKey && !editingNote) {
         e.preventDefault();
         setLines((prev) => {
           if (prev.length === 0) return prev;
+          redoStackRef.current.push(prev[prev.length - 1]);
           return prev.slice(0, -1);
         });
         setTimeout(saveNow, 50);
+      }
+      // Ctrl+Shift+Z — redo
+      if ((e.ctrlKey || e.metaKey) && e.key === "Z" && !editingNote) {
+        e.preventDefault();
+        const stroke = redoStackRef.current.pop();
+        if (stroke) {
+          setLines((prev) => [...prev, stroke]);
+          setTimeout(saveNow, 50);
+        }
       }
     };
     window.addEventListener("keydown", handler);
