@@ -535,12 +535,6 @@ function MindMapInner({ pageId, pageTitle, blocks, onClose, onRefreshPage }: Pro
   return (
     <div className="mindmap-overlay" onClick={() => contextMenu && setContextMenu(null)}>
       <div className="mindmap-toolbar">
-        <div className="mindmap-toolbar-group">
-          <button className="btn btn-sm" onClick={onClose} title="Close (Esc)">
-            ← Close
-          </button>
-        </div>
-
         {/* Breadcrumb in focus mode */}
         {focusSubtreeRoot && (
           <div className="mindmap-toolbar-group mindmap-breadcrumb">
