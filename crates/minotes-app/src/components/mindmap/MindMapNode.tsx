@@ -11,8 +11,10 @@ function MindMapNodeInner(props: NodeProps) {
   const [text, setText] = useState(data.label);
 
   const handleSave = useCallback(() => {
-    if (text.trim() !== data.label && data.onSave) {
-      data.onSave(text.trim());
+    const trimmed = text.trim();
+    // Compare against actual content, not display label
+    if (trimmed !== data.fullContent.trim() && data.onSave) {
+      data.onSave(trimmed);
     }
     setEditing(false);
   }, [text, data]);
@@ -46,7 +48,8 @@ function MindMapNodeInner(props: NodeProps) {
       style={data.color && !data.isRoot ? { borderColor: data.color, borderLeftWidth: 3 } : undefined}
       onDoubleClick={() => {
         if (data.blockId) {
-          setText(data.label);
+          // Use actual content, not display label — "(empty)" is a placeholder
+          setText(data.fullContent.trim() || "");
           setEditing(true);
         }
       }}
