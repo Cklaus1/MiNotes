@@ -2867,6 +2867,23 @@ body.theme-light { /* matches our light theme */ }
   padding: 2px 0;
 }
 
+.settings-advanced-toggle {
+  font-size: 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 2px 0;
+  user-select: none;
+  transition: color 0.15s;
+}
+
+.settings-advanced-toggle:hover {
+  color: var(--text-primary);
+}
+
+.settings-advanced-content {
+  margin-top: 10px;
+}
+
 .settings-toggle {
   position: relative;
   display: inline-block;

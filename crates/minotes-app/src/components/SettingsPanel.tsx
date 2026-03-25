@@ -12,6 +12,7 @@ export default function SettingsPanel({ open, onClose }: Props) {
   const [settings, setSettings] = useState<MiNotesSettings>(getSettings);
   const [currentTheme, setCurrentTheme] = useState(getTheme);
   const [stats, setStats] = useState<api.GraphStats | null>(null);
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   useEffect(() => {
     if (open) {
@@ -69,46 +70,6 @@ export default function SettingsPanel({ open, onClose }: Props) {
               <option value="light">Light</option>
             </select>
           </div>
-          <div className="settings-row">
-            <span className="settings-row-label">Full Tree Mode</span>
-            <label className="settings-toggle">
-              <input
-                type="checkbox"
-                checked={settings.fullTreeMode}
-                onChange={e => toggle("fullTreeMode", e.target.checked)}
-              />
-              <span className="settings-toggle-slider" />
-            </label>
-          </div>
-        </div>
-
-        {/* Editor */}
-        <div className="settings-section">
-          <div className="settings-section-title">Editor</div>
-          <div className="settings-row">
-            <span className="settings-row-label">Obsidian Editor Mode</span>
-            <label className="settings-toggle">
-              <input
-                type="checkbox"
-                checked={settings.obsidianEditorEnabled}
-                onChange={e => toggle("obsidianEditorEnabled", e.target.checked)}
-              />
-              <span className="settings-toggle-slider" />
-            </label>
-          </div>
-          {settings.obsidianEditorEnabled && (
-            <div className="settings-row">
-              <span className="settings-row-label">Default Editor</span>
-              <select
-                className="settings-select"
-                value={settings.defaultEditorMode}
-                onChange={e => toggle("defaultEditorMode", e.target.value)}
-              >
-                <option value="minotes">MiNotes</option>
-                <option value="obsidian">Obsidian</option>
-              </select>
-            </div>
-          )}
         </div>
 
         {/* Keyboard shortcuts */}
@@ -146,6 +107,55 @@ export default function SettingsPanel({ open, onClose }: Props) {
             </div>
           </div>
         )}
+
+        {/* Advanced — collapsible */}
+        <div className="settings-section">
+          <div
+            className="settings-advanced-toggle"
+            onClick={() => setShowAdvanced((v) => !v)}
+          >
+            <span>{showAdvanced ? "▼" : "▶"} Advanced</span>
+          </div>
+          {showAdvanced && (
+            <div className="settings-advanced-content">
+              <div className="settings-row">
+                <span className="settings-row-label">Full Tree Mode</span>
+                <label className="settings-toggle">
+                  <input
+                    type="checkbox"
+                    checked={settings.fullTreeMode}
+                    onChange={e => toggle("fullTreeMode", e.target.checked)}
+                  />
+                  <span className="settings-toggle-slider" />
+                </label>
+              </div>
+              <div className="settings-row">
+                <span className="settings-row-label">Obsidian Editor</span>
+                <label className="settings-toggle">
+                  <input
+                    type="checkbox"
+                    checked={settings.obsidianEditorEnabled}
+                    onChange={e => toggle("obsidianEditorEnabled", e.target.checked)}
+                  />
+                  <span className="settings-toggle-slider" />
+                </label>
+              </div>
+              {settings.obsidianEditorEnabled && (
+                <div className="settings-row">
+                  <span className="settings-row-label">Default Editor</span>
+                  <select
+                    className="settings-select"
+                    value={settings.defaultEditorMode}
+                    onChange={e => toggle("defaultEditorMode", e.target.value)}
+                  >
+                    <option value="minotes">MiNotes</option>
+                    <option value="obsidian">Obsidian</option>
+                  </select>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       </div>
     </>
   );
