@@ -5,6 +5,8 @@ import type { MindMapNodeData } from "./blocksToFlow";
 function MindMapNodeInner(props: NodeProps) {
   const data = props.data as unknown as MindMapNodeData;
   const selected = props.selected;
+  const sourcePos = (props.sourcePosition as Position) ?? Position.Right;
+  const targetPos = (props.targetPosition as Position) ?? Position.Left;
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState(data.label);
 
@@ -18,7 +20,7 @@ function MindMapNodeInner(props: NodeProps) {
   if (editing) {
     return (
       <div className="mm-node mm-node-editing">
-        <Handle type="target" position={Position.Left} />
+        <Handle type="target" position={targetPos} />
         <input
           autoFocus
           className="mm-node-input"
@@ -31,7 +33,7 @@ function MindMapNodeInner(props: NodeProps) {
             e.stopPropagation();
           }}
         />
-        <Handle type="source" position={Position.Right} />
+        <Handle type="source" position={sourcePos} />
       </div>
     );
   }
@@ -49,7 +51,7 @@ function MindMapNodeInner(props: NodeProps) {
         }
       }}
     >
-      <Handle type="target" position={Position.Left} />
+      <Handle type="target" position={targetPos} />
       <div className="mm-node-content">
         {data.todoState === "done" && <span className="mm-check done">✓</span>}
         {data.todoState === "doing" && <span className="mm-check doing">◉</span>}
@@ -71,7 +73,7 @@ function MindMapNodeInner(props: NodeProps) {
           </span>
         )}
       </div>
-      <Handle type="source" position={Position.Right} />
+      <Handle type="source" position={sourcePos} />
     </div>
   );
 }
