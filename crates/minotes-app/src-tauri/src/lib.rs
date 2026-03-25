@@ -908,6 +908,12 @@ fn base64_encode(data: &[u8]) -> String {
     result
 }
 
+#[tauri::command]
+fn read_file_base64(path: String) -> Result<String, String> {
+    let bytes = std::fs::read(&path).map_err(|e| format!("Read failed: {e}"))?;
+    Ok(base64_encode(&bytes))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let path = db_path();
@@ -996,6 +1002,7 @@ pub fn run() {
             save_png_to_downloads,
             reorder_block,
             paste_image_wsl,
+            read_file_base64,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

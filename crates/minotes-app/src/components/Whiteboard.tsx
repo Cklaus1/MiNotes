@@ -1236,6 +1236,45 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
     setTimeout(() => setSaveStatus(null), 2000);
   }, [insertImage]);
 
+  // Tauri file drop handler (WebKitGTK doesn't fire HTML5 drag events from OS)
+  useEffect(() => {
+    if (!isTauri) return;
+    let unlisten: (() => void) | undefined;
+    (async () => {
+      try {
+        const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+        const webview = getCurrentWebviewWindow();
+        unlisten = await webview.onDragDropEvent((event) => {
+          if (event.payload.type === "drop") {
+            const paths = event.payload.paths;
+            for (const path of paths) {
+              if (/\.(png|jpg|jpeg|gif|bmp|webp|svg)$/i.test(path)) {
+                // Read file via fetch (Tauri allows file:// or asset://)
+                fetch(`asset://localhost/${path}`).then(r => r.blob()).then(blob => {
+                  insertImage(blob);
+                }).catch(() => {
+                  // Fallback: read via Rust
+                  import("@tauri-apps/api/core").then(({ invoke }) => {
+                    invoke("read_file_base64", { path }).then((base64: unknown) => {
+                      if (typeof base64 === "string" && base64.length > 0) {
+                        const binary = atob(base64);
+                        const bytes = new Uint8Array(binary.length);
+                        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+                        insertImage(new Blob([bytes], { type: "image" }));
+                      }
+                    }).catch(() => {});
+                  });
+                });
+                return;
+              }
+            }
+          }
+        });
+      } catch {}
+    })();
+    return () => { unlisten?.(); };
+  }, [insertImage]);
+
   // Paste image from clipboard (browser paste event + Tauri Ctrl+V)
   useEffect(() => {
     const pasteHandler = (e: ClipboardEvent) => {
