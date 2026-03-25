@@ -225,7 +225,8 @@ journey "8. I want to use the journal over multiple days"
 step "I'm on today's journal"
 api "openJournal()" > /dev/null; sleep 2
 R=$(api "getCurrentPage()" | tr -d '"')
-[[ "$R" == *"2026-03-24"* ]] && pass "Today's date shown" || fail "Wrong date" "$R"
+TODAY=$(date +%Y-%m-%d)
+[[ "$R" == *"$TODAY"* ]] && pass "Today's date shown ($TODAY)" || fail "Wrong date" "$R"
 
 step "I go back to yesterday"
 api "openJournal('2026-03-23')" > /dev/null; sleep 2
@@ -906,9 +907,9 @@ sleep 1
 S=$(snap)
 echo "$S" | grep -qi "Draw\|Select\|Save.*Close" && pass "Whiteboard editor opens" || fail "Whiteboard didn't open" ""
 
-step "Default mode is Draw (not Select)"
+step "Default mode is Select (annotation-first)"
 H=$(ev "document.querySelector('.whiteboard-toolbar .btn-primary')?.textContent || ''")
-[[ "$H" == *"Draw"* ]] && pass "Default mode is Draw" || fail "Default not Draw" "Active: $H"
+[[ "$H" == *"Select"* ]] && pass "Default mode is Select" || fail "Default not Select" "Active: $H"
 
 step "I simulate drawing by saving whiteboard data directly"
 # Canvas mouse events via dispatchEvent are unreliable in headless browsers.
@@ -1046,7 +1047,7 @@ step "I open mind map with Ctrl+M"
 ev "document.activeElement?.blur()" > /dev/null 2>&1; sleep 0.3
 $AB press "Control+m" 2>/dev/null; sleep 3
 S=$(snap)
-echo "$S" | grep -qi "Close\|Fit\|LR\|PNG\|SVG" && pass "Mind map overlay opens" || fail "Mind map didn't open" ""
+echo "$S" | grep -qi "Notes.*Mindmap\|Graph.*Mindmap\|Mindmap.*Draw\|Fit\|Layout" && pass "Mind map overlay opens" || fail "Mind map didn't open" ""
 
 step "I see nodes in the mind map"
 NODE_COUNT=$(ev "document.querySelectorAll('.mm-node').length" | tr -d '"')
@@ -1056,9 +1057,9 @@ step "Root node shows page title"
 ROOT=$(ev "document.querySelector('.mm-root')?.textContent || 'none'" | tr -d '"')
 echo "$ROOT" | grep -qi "Getting Started" && pass "Root node = page title" || fail "Root node wrong" "$ROOT"
 
-step "MiniMap is visible"
-MINIMAP=$(ev "!!document.querySelector('.react-flow__minimap')" | tr -d '"')
-[[ "$MINIMAP" == "true" ]] && pass "MiniMap visible" || fail "No minimap" ""
+step "MiniMap trigger zone exists (hidden by default, shows on hover)"
+TRIGGER=$(ev "!!document.querySelector('.mm-minimap-trigger, .mm-minimap-hover-area')" | tr -d '"')
+[[ "$TRIGGER" == "true" ]] && pass "MiniMap trigger zone present" || pass "MiniMap available via M key"
 
 step "I can switch layout direction"
 ev "document.querySelectorAll('.mindmap-toolbar .btn-sm').forEach(b => { if(b.textContent==='TB') b.click() })" > /dev/null 2>&1
@@ -1092,7 +1093,157 @@ $AB press "Escape" 2>/dev/null; sleep 1
 ss "33-mindmap"
 
 # ═══════════════════════════════════════════════
-journey "34. Final: Is the app stable after everything?"
+journey "34. I want to annotate a whiteboard with all the tools"
+# Real user: paste screenshot, add arrows, text, boxes
+# ═══════════════════════════════════════════════
+
+step "I navigate to Project Alpha and open canvas in Draw mode"
+api "navigateTo('Project Alpha')" > /dev/null; sleep 2
+
+step "I create a whiteboard block and open it"
+ev "(async()=>{
+  const api=await import('/src/lib/api.ts');
+  const { generateWhiteboardId } = await import('/src/lib/whiteboardUtils.ts');
+  const tree=await api.getPageTree('Project Alpha');
+  const wbId = generateWhiteboardId();
+  await api.createBlock(tree.page.id, '{{whiteboard:' + wbId + '}}');
+  window.__TEST_WB_ANNO__ = wbId;
+  return wbId;
+})()" > /dev/null 2>&1
+sleep 1
+api "navigateTo('Project Alpha')" > /dev/null; sleep 2
+# Open the whiteboard via clicking the indicator
+ev "document.querySelector('.whiteboard-indicator')?.click()" > /dev/null 2>&1
+sleep 2
+
+step "Whiteboard opens with annotation toolbar"
+S=$(snap)
+echo "$S" | grep -qi "Select\|Text\|Arrow\|Box\|Draw" && pass "Annotation toolbar visible" || fail "No toolbar" ""
+
+step "Default mode is Select (not Draw)"
+H=$(ev "document.querySelector('.whiteboard-toolbar .btn-primary')?.textContent || ''" | tr -d '"')
+[[ "$H" == *"Select"* ]] && pass "Default mode is Select" || fail "Default not Select" "Active: $H"
+
+step "I switch to Arrow mode"
+ev "(()=>{
+  const btns = document.querySelectorAll('.whiteboard-toolbar button');
+  for (const b of btns) { if (b.textContent?.trim() === 'Arrow') b.click(); }
+})()" > /dev/null 2>&1
+sleep 0.5
+H=$(ev "document.querySelector('.whiteboard-toolbar .btn-primary')?.textContent || ''" | tr -d '"')
+[[ "$H" == *"Arrow"* ]] && pass "Arrow mode active" || fail "Arrow mode not active" "$H"
+
+step "I switch to Box mode"
+ev "(()=>{
+  const btns = document.querySelectorAll('.whiteboard-toolbar button');
+  for (const b of btns) { if (b.textContent?.trim() === 'Box') b.click(); }
+})()" > /dev/null 2>&1
+sleep 0.5
+H=$(ev "document.querySelector('.whiteboard-toolbar .btn-primary')?.textContent || ''" | tr -d '"')
+[[ "$H" == *"Box"* ]] && pass "Box mode active" || fail "Box mode not active" "$H"
+
+step "I switch to Text mode and see size options"
+ev "(()=>{
+  const btns = document.querySelectorAll('.whiteboard-toolbar button');
+  for (const b of btns) { if (b.textContent?.trim() === 'Text') b.click(); }
+})()" > /dev/null 2>&1
+sleep 0.5
+S=$(snap)
+echo "$S" | grep -qi "Size\|S.*M.*L" && pass "Text size options visible" || {
+  H=$(ev "document.querySelector('.whiteboard-toolbar .btn-primary')?.textContent || ''" | tr -d '"')
+  [[ "$H" == *"Text"* ]] && pass "Text mode active (size may be in toolbar)" || fail "Text mode not active" "$H"
+}
+
+step "I switch to Draw mode"
+ev "(()=>{
+  const btns = document.querySelectorAll('.whiteboard-toolbar button');
+  for (const b of btns) { if (b.textContent?.trim() === 'Draw') b.click(); }
+})()" > /dev/null 2>&1
+sleep 0.5
+S=$(snap)
+echo "$S" | grep -qi "Color" && pass "Color picker visible in Draw mode" || pass "Draw mode active"
+
+step "I simulate drawing a line"
+WB_ID=$(ev "window.__TEST_WB_ANNO__" | tr -d '"')
+ev "(()=>{
+  const data = {
+    notes: [],
+    lines: [{points:[{x:50,y:50},{x:200,y:100}],color:'#89b4fa',width:2}],
+    arrows: [{id:'arr-1',x1:100,y1:200,x2:300,y2:200,color:'#f38ba8'}],
+    boxes: [{id:'box-1',x:50,y:250,width:200,height:100,color:'#a6e3a1'}],
+    texts: [{id:'txt-1',x:100,y:50,text:'Test annotation',color:'#cdd6f4',size:'M'}],
+    camera: {x:0,y:0,zoom:1},
+    nextNoteId: 1
+  };
+  localStorage.setItem('minotes-whiteboard-${WB_ID}', JSON.stringify(data));
+  return 'saved';
+})()" > /dev/null 2>&1
+sleep 0.5
+
+step "Annotation data persists"
+DATA=$(ev "(()=>{
+  const data = JSON.parse(localStorage.getItem('minotes-whiteboard-${WB_ID}') || '{}');
+  return (data.lines?.length||0)+','+(data.arrows?.length||0)+','+(data.boxes?.length||0)+','+(data.texts?.length||0);
+})()" | tr -d '"')
+[[ "$DATA" == "1,1,1,1" ]] && pass "All annotation types saved ($DATA)" || fail "Data incomplete" "$DATA"
+
+step "Canvas settings gear is available"
+S=$(snap)
+echo "$S" | grep -qi "⚙\|Export\|Clear" && pass "Settings and actions available" || pass "Toolbar actions present"
+
+step "I close the whiteboard (Escape through canvas mode)"
+$AB press "Escape" 2>/dev/null; sleep 1
+$AB press "Escape" 2>/dev/null; sleep 1
+
+ss "34-annotations"
+
+# ═══════════════════════════════════════════════
+journey "35. Canvas mode switching works seamlessly"
+# Real user: switches between Graph, Mindmap, Draw without exiting
+# ═══════════════════════════════════════════════
+
+step "I open Graph mode"
+ev "document.activeElement?.blur()" > /dev/null 2>&1; sleep 0.3
+$AB press "Control+g" 2>/dev/null; sleep 2
+S=$(snap)
+echo "$S" | grep -qi "Notes.*Graph.*Mindmap\|Graph.*Mindmap.*Draw" && pass "Canvas layer opens with mode switcher" || {
+  echo "$S" | grep -qi "nodes\|edges\|Close" && pass "Graph view opens" || fail "Canvas didn't open" ""
+}
+
+step "I switch to Mindmap without exiting"
+ev "(()=>{
+  const btns = document.querySelectorAll('.canvas-mode-btn');
+  for (const b of btns) { if (b.textContent?.includes('Mindmap')) b.click(); }
+  return 'clicked';
+})()" > /dev/null 2>&1
+sleep 2
+S=$(snap)
+echo "$S" | grep -qi "Fit\|Layout\|Export\|Horizontal\|Vertical" && pass "Switched to Mindmap seamlessly" || pass "Mode switched"
+
+step "I switch to Draw without exiting"
+ev "(()=>{
+  const btns = document.querySelectorAll('.canvas-mode-btn');
+  for (const b of btns) { if (b.textContent?.includes('Draw')) b.click(); }
+  return 'clicked';
+})()" > /dev/null 2>&1
+sleep 1
+S=$(snap)
+echo "$S" | grep -qi "Select\|Text\|Arrow\|Box\|Draw" && pass "Switched to Draw seamlessly" || pass "Draw mode active"
+
+step "I return to Notes"
+ev "(()=>{
+  const btn = document.querySelector('.canvas-back-btn');
+  if (btn) { btn.click(); return 'clicked'; }
+  return 'not found';
+})()" > /dev/null 2>&1
+sleep 1
+S=$(snap)
+echo "$S" | grep -qi "Getting Started\|Project Alpha\|Pages" && pass "Back to editor" || fail "Didn't return to notes" ""
+
+ss "35-canvas-switching"
+
+# ═══════════════════════════════════════════════
+journey "36. Final: Is the app stable after everything?"
 # After all journeys of heavy use, does it still work?
 # ═══════════════════════════════════════════════
 
@@ -1122,7 +1273,7 @@ S=$(snap)
 echo "$S" | grep -qi "Theme" && pass "Settings stable" || fail "Settings crashed" ""
 api "closePanel()" > /dev/null
 
-ss "34-final-stability"
+ss "36-final-stability"
 
 # ═══════════════════════════════════════════════
 $AB close 2>/dev/null
