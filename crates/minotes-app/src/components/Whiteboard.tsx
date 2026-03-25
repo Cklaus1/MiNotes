@@ -145,8 +145,8 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
   const [saveStatus, setSaveStatus] = useState<string | null>(null);
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [showCanvasSettings, setShowCanvasSettings] = useState(false);
-  const [canvasBg, setCanvasBg] = useState<"dark" | "light">("dark");
-  const [showGrid, setShowGrid] = useState(true);
+  const [canvasBg, setCanvasBg] = useState<"dark" | "light">("light");
+  const [showGrid, setShowGrid] = useState(false);
   const [undoSnapshot, setUndoSnapshot] = useState<{ notes: StickyNote[]; lines: Line[]; images: CanvasImage[] } | null>(null);
   const redoStackRef = useRef<Line[]>([]);
   const [showHint, setShowHint] = useState(() => !saved || ((saved.lines?.length ?? 0) === 0 && (saved.notes?.length ?? 0) === 0));
