@@ -85,6 +85,7 @@ function MindMapInner({ pageId, pageTitle, blocks, onClose, onRefreshPage }: Pro
   const [autoEditNodeId, setAutoEditNodeId] = useState<string | null>(null);
   const [showLayoutMenu, setShowLayoutMenu] = useState(false);
   const [showExportMenu, setShowExportMenu] = useState(false);
+  const [showMinimap, setShowMinimap] = useState(false);
   const reactFlow = useReactFlow();
   const prevNodesRef = useRef<Node[]>([]);
 
@@ -237,6 +238,13 @@ function MindMapInner({ pageId, pageTitle, blocks, onClose, onRefreshPage }: Pro
       }))
     );
   }, [selectedNodeId]);
+
+  // Smart minimap: show when zoomed out or many nodes, hide when zoomed in on small content
+  const onViewportChange = useCallback(({ zoom }: { x: number; y: number; zoom: number }) => {
+    const nodeCount = nodes.length;
+    const shouldShow = nodeCount > 10 || zoom < 0.7;
+    setShowMinimap(shouldShow);
+  }, [nodes.length]);
 
   // Fit view on mount
   useEffect(() => {
@@ -618,6 +626,7 @@ function MindMapInner({ pageId, pageTitle, blocks, onClose, onRefreshPage }: Pro
         onNodeDragStop={onNodeDragStop}
         onNodeContextMenu={onNodeContextMenu}
         onPaneClick={() => { setContextMenu(null); setSelectedNodeId(null); setShowLayoutMenu(false); setShowExportMenu(false); }}
+        onViewportChange={onViewportChange}
         nodeTypes={nodeTypes}
         fitView
         minZoom={0.1}
@@ -627,17 +636,20 @@ function MindMapInner({ pageId, pageTitle, blocks, onClose, onRefreshPage }: Pro
         proOptions={{ hideAttribution: true }}
       >
         <Background gap={20} color="rgba(255,255,255,0.03)" />
-        <MiniMap
-          nodeColor={(node) => {
-            const d = node.data as unknown as MindMapNodeData;
-            if (d.isRoot) return "#89b4fa";
-            if (d.todoState === "done") return "#a6e3a1";
-            if (d.todoState === "todo") return "#f9e2af";
-            return "#585b70";
-          }}
-          maskColor="rgba(0,0,0,0.6)"
-          style={{ background: "#1e1e2e" }}
-        />
+        {showMinimap && (
+          <MiniMap
+            nodeColor={(node) => {
+              const d = node.data as unknown as MindMapNodeData;
+              if (d.isRoot) return "#89b4fa";
+              if (d.todoState === "done") return "#a6e3a1";
+              if (d.todoState === "todo") return "#f9e2af";
+              return "#585b70";
+            }}
+            maskColor="rgba(0,0,0,0.6)"
+            style={{ background: "#1e1e2e" }}
+            className="mm-minimap-fade"
+          />
+        )}
       </ReactFlow>
 
       {/* Context menu */}
