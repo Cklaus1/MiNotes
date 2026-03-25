@@ -1917,6 +1917,46 @@ body {
   letter-spacing: 0.05em;
 }
 
+/* Whiteboard canvas settings dropdown */
+.wb-settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  gap: 12px;
+}
+
+.wb-settings-toggle {
+  display: flex;
+  gap: 2px;
+  background: var(--bg-tertiary);
+  padding: 2px;
+  border-radius: 6px;
+}
+
+.wb-settings-toggle button {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 4px;
+  transition: background 0.15s, color 0.15s;
+}
+
+.wb-settings-toggle button.active {
+  background: var(--accent);
+  color: #1e1e2e;
+  font-weight: 600;
+}
+
+.wb-settings-toggle button:hover:not(.active) {
+  color: var(--text-primary);
+}
+
 .whiteboard-undo-toast {
   position: absolute;
   bottom: 24px;

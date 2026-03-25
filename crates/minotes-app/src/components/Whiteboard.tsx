@@ -80,6 +80,9 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
   const [noteColor, setNoteColor] = useState(NOTE_COLORS[0]);
   const [saveStatus, setSaveStatus] = useState<string | null>(null);
   const [showExportMenu, setShowExportMenu] = useState(false);
+  const [showCanvasSettings, setShowCanvasSettings] = useState(false);
+  const [canvasBg, setCanvasBg] = useState<"dark" | "light">("dark");
+  const [showGrid, setShowGrid] = useState(true);
   const [undoSnapshot, setUndoSnapshot] = useState<{ notes: StickyNote[]; lines: Line[] } | null>(null);
   const [showHint, setShowHint] = useState(() => !saved || ((saved.lines?.length ?? 0) === 0 && (saved.notes?.length ?? 0) === 0));
 
@@ -113,6 +116,10 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
 
   // Redraw flag
   const needsRedrawRef = useRef(true);
+  const canvasBgRef = useRef(canvasBg);
+  canvasBgRef.current = canvasBg;
+  const showGridRef = useRef(showGrid);
+  showGridRef.current = showGrid;
   const notesRef = useRef(notes);
   notesRef.current = notes;
   const linesRef = useRef(lines);
@@ -160,8 +167,9 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
     const w = canvas.width;
     const h = canvas.height;
 
-    // Clear
-    ctx.fillStyle = "#1e1e2e";
+    // Clear — background color
+    const isDark = canvasBgRef.current === "dark";
+    ctx.fillStyle = isDark ? "#1e1e2e" : "#eff1f5";
     ctx.fillRect(0, 0, w, h);
 
     ctx.save();
@@ -169,24 +177,26 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
     ctx.scale(cam.zoom, cam.zoom);
 
     // Draw grid
-    const gridSize = 40;
-    const topLeft = { x: -cam.x / cam.zoom, y: -cam.y / cam.zoom };
-    const bottomRight = { x: (w - cam.x) / cam.zoom, y: (h - cam.y) / cam.zoom };
-    const startX = Math.floor(topLeft.x / gridSize) * gridSize;
-    const startY = Math.floor(topLeft.y / gridSize) * gridSize;
+    if (showGridRef.current) {
+      const gridSize = 40;
+      const topLeft = { x: -cam.x / cam.zoom, y: -cam.y / cam.zoom };
+      const bottomRight = { x: (w - cam.x) / cam.zoom, y: (h - cam.y) / cam.zoom };
+      const startX = Math.floor(topLeft.x / gridSize) * gridSize;
+      const startY = Math.floor(topLeft.y / gridSize) * gridSize;
 
-    ctx.strokeStyle = "#313244";
-    ctx.lineWidth = 0.5 / cam.zoom;
-    ctx.beginPath();
-    for (let gx = startX; gx <= bottomRight.x; gx += gridSize) {
-      ctx.moveTo(gx, topLeft.y);
-      ctx.lineTo(gx, bottomRight.y);
+      ctx.strokeStyle = isDark ? "#313244" : "#ccd0da";
+      ctx.lineWidth = 0.5 / cam.zoom;
+      ctx.beginPath();
+      for (let gx = startX; gx <= bottomRight.x; gx += gridSize) {
+        ctx.moveTo(gx, topLeft.y);
+        ctx.lineTo(gx, bottomRight.y);
+      }
+      for (let gy = startY; gy <= bottomRight.y; gy += gridSize) {
+        ctx.moveTo(topLeft.x, gy);
+        ctx.lineTo(bottomRight.x, gy);
+      }
+      ctx.stroke();
     }
-    for (let gy = startY; gy <= bottomRight.y; gy += gridSize) {
-      ctx.moveTo(topLeft.x, gy);
-      ctx.lineTo(bottomRight.x, gy);
-    }
-    ctx.stroke();
 
     // Draw lines
     for (const line of linesRef.current) {
@@ -733,6 +743,29 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
           <button className="btn btn-sm" onClick={clearCanvas} title="Clear canvas">
             Clear
           </button>
+        </div>
+        <div className="whiteboard-toolbar-group" style={{ position: "relative" }}>
+          <button className="btn btn-sm" onClick={() => { setShowCanvasSettings(v => !v); setShowExportMenu(false); }} title="Canvas settings">
+            ⚙
+          </button>
+          {showCanvasSettings && (
+            <div className="mindmap-dropdown" style={{ right: 0, left: "auto" }} onClick={(e) => e.stopPropagation()}>
+              <div className="wb-settings-row">
+                <span>Background</span>
+                <div className="wb-settings-toggle">
+                  <button className={canvasBg === "dark" ? "active" : ""} onClick={() => { setCanvasBg("dark"); requestRedraw(); }}>Dark</button>
+                  <button className={canvasBg === "light" ? "active" : ""} onClick={() => { setCanvasBg("light"); requestRedraw(); }}>Light</button>
+                </div>
+              </div>
+              <div className="wb-settings-row">
+                <span>Grid</span>
+                <div className="wb-settings-toggle">
+                  <button className={showGrid ? "active" : ""} onClick={() => { setShowGrid(true); requestRedraw(); }}>On</button>
+                  <button className={!showGrid ? "active" : ""} onClick={() => { setShowGrid(false); requestRedraw(); }}>Off</button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
