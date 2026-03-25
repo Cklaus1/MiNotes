@@ -1,14 +1,23 @@
-import { memo, useState, useCallback } from "react";
+import { memo, useState, useCallback, useEffect } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import type { MindMapNodeData } from "./blocksToFlow";
 
 function MindMapNodeInner(props: NodeProps) {
-  const data = props.data as unknown as MindMapNodeData;
+  const data = props.data as unknown as MindMapNodeData & { autoEdit?: boolean; onClearAutoEdit?: () => void };
   const selected = props.selected;
   const sourcePos = (props.sourcePosition as Position) ?? Position.Right;
   const targetPos = (props.targetPosition as Position) ?? Position.Left;
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState(data.label);
+
+  // Auto-enter edit mode when flagged (after creating a new node)
+  useEffect(() => {
+    if (data.autoEdit && !editing) {
+      setText(data.fullContent.trim() || "");
+      setEditing(true);
+      data.onClearAutoEdit?.();
+    }
+  }, [data.autoEdit]);
 
   const handleSave = useCallback(() => {
     const trimmed = text.trim();

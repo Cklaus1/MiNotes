@@ -82,6 +82,7 @@ function MindMapInner({ pageId, pageTitle, blocks, onClose, onRefreshPage }: Pro
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [focusSubtreeRoot, setFocusSubtreeRoot] = useState<string | null>(null);
+  const [autoEditNodeId, setAutoEditNodeId] = useState<string | null>(null);
   const reactFlow = useReactFlow();
   const prevNodesRef = useRef<Node[]>([]);
 
@@ -176,7 +177,7 @@ function MindMapInner({ pageId, pageTitle, blocks, onClose, onRefreshPage }: Pro
     setEdges(layoutEdges);
   }, [layoutNodes, layoutEdges, setNodes, setEdges]);
 
-  // Inject callbacks into node data
+  // Inject callbacks + autoEdit into node data
   useEffect(() => {
     setNodes((nds) =>
       nds.map((node) => {
@@ -185,9 +186,11 @@ function MindMapInner({ pageId, pageTitle, blocks, onClose, onRefreshPage }: Pro
           ...node,
           data: {
             ...node.data,
+            autoEdit: autoEditNodeId !== null && d.blockId === autoEditNodeId,
             onSave: d.blockId
               ? (text: string) => { api.updateBlock(d.blockId!, text).then(onRefreshPage); }
               : undefined,
+            onClearAutoEdit: () => setAutoEditNodeId(null),
             onToggleCollapse: d.blockId
               ? () => {
                   setCollapsedIds((prev) => {
@@ -202,7 +205,7 @@ function MindMapInner({ pageId, pageTitle, blocks, onClose, onRefreshPage }: Pro
         };
       })
     );
-  }, [nodes.length, setNodes, onRefreshPage]);
+  }, [nodes.length, setNodes, onRefreshPage, autoEditNodeId]);
 
   // Phase 7: Edge highlighting — highlight path from root to selected node
   useEffect(() => {
@@ -251,6 +254,14 @@ function MindMapInner({ pageId, pageTitle, blocks, onClose, onRefreshPage }: Pro
       reactFlow.setCenter(node.position.x + 80, node.position.y + 20, { zoom: reactFlow.getZoom(), duration: 200 });
     }
   }, [nodes, reactFlow]);
+
+  // Create block and auto-enter edit mode on the new node
+  const createAndEdit = useCallback((parentId?: string) => {
+    api.createBlock(pageId, "", parentId).then((newBlock) => {
+      setAutoEditNodeId(newBlock.id);
+      onRefreshPage();
+    });
+  }, [pageId, onRefreshPage]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -314,19 +325,17 @@ function MindMapInner({ pageId, pageTitle, blocks, onClose, onRefreshPage }: Pro
 
       if (e.key === "Tab") {
         e.preventDefault();
-        api.createBlock(pageId, "", nodeData.blockId ?? undefined).then(onRefreshPage);
+        createAndEdit(nodeData.blockId ?? undefined);
       }
       if (e.key === "Enter" && !e.shiftKey) {
         if (document.activeElement?.tagName === "INPUT") return;
         e.preventDefault();
         if (direction === "radial") {
-          // Radial: Enter = add child (outward from center)
-          api.createBlock(pageId, "", nodeData.blockId ?? undefined).then(onRefreshPage);
+          createAndEdit(nodeData.blockId ?? undefined);
         } else {
-          // LR/TB: Enter = add sibling (same level)
           const block = blocks.find((b) => b.id === nodeData.blockId);
           if (block) {
-            api.createBlock(pageId, "", block.parent_id ?? undefined).then(onRefreshPage);
+            createAndEdit(block.parent_id ?? undefined);
           }
         }
       }
@@ -406,21 +415,20 @@ function MindMapInner({ pageId, pageTitle, blocks, onClose, onRefreshPage }: Pro
   // Context menu actions
   const handleAddChild = useCallback(() => {
     if (!contextMenu) return;
-    api.createBlock(pageId, "", contextMenu.blockId).then(onRefreshPage);
+    createAndEdit(contextMenu.blockId);
     setContextMenu(null);
-  }, [contextMenu, pageId, onRefreshPage]);
+  }, [contextMenu, createAndEdit]);
 
   const handleAddSibling = useCallback(() => {
     if (!contextMenu) return;
     if (direction === "radial") {
-      // Radial: "Add outward" = add child (next ring)
-      api.createBlock(pageId, "", contextMenu.blockId).then(onRefreshPage);
+      createAndEdit(contextMenu.blockId);
     } else {
       const block = blocks.find((b) => b.id === contextMenu.blockId);
-      api.createBlock(pageId, "", block?.parent_id ?? undefined).then(onRefreshPage);
+      createAndEdit(block?.parent_id ?? undefined);
     }
     setContextMenu(null);
-  }, [contextMenu, blocks, pageId, onRefreshPage, direction]);
+  }, [contextMenu, blocks, createAndEdit, direction]);
 
   const handleDeleteNode = useCallback(() => {
     if (!contextMenu) return;
