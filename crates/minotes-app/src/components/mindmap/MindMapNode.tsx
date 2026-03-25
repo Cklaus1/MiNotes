@@ -38,9 +38,10 @@ function MindMapNodeInner(props: NodeProps) {
 
   return (
     <div
-      className={`mm-node ${data.isRoot ? "mm-root" : ""} ${selected ? "mm-selected" : ""}`}
+      className={`mm-node ${data.isRoot ? "mm-root" : ""} ${selected ? "mm-selected" : ""} ${data.isNew ? "mm-node-enter" : ""}`}
       data-depth={data.depth}
       data-todo={data.todoState ?? undefined}
+      style={data.color && !data.isRoot ? { borderColor: data.color, borderLeftWidth: 3 } : undefined}
       onDoubleClick={() => {
         if (data.blockId) {
           setText(data.label);

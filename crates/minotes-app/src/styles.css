@@ -3302,3 +3302,24 @@ body.theme-light { /* matches our light theme */ }
 [data-theme="light"] .mindmap-overlay .react-flow__edge-path {
   stroke: rgba(0, 0, 0, 0.15);
 }
+
+/* Node entrance animation — fade in + scale up */
+.mm-node-enter {
+  animation: mm-enter 0.25s ease-out;
+}
+
+@keyframes mm-enter {
+  from { opacity: 0; transform: scale(0.8); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+/* Edge draw-in animation on expand */
+.mindmap-overlay .react-flow__edge.animated .react-flow__edge-path {
+  stroke-dasharray: 200;
+  stroke-dashoffset: 200;
+  animation: mm-edge-draw 0.4s ease-out forwards;
+}
+
+@keyframes mm-edge-draw {
+  to { stroke-dashoffset: 0; }
+}

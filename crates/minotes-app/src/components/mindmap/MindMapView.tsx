@@ -114,13 +114,35 @@ function MindMapInner({ pageId, pageTitle, blocks, onClose, onRefreshPage }: Pro
   const [nodes, setNodes, onNodesChange] = useNodesState(layoutNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(layoutEdges);
 
-  // Animate layout transitions
+  // Animate layout transitions + entrance animation for new nodes
   useEffect(() => {
     const oldPositions = new Map(prevNodesRef.current.map((n) => [n.id, { ...n.position }]));
+    const oldNodeIds = new Set(prevNodesRef.current.map((n) => n.id));
     prevNodesRef.current = layoutNodes;
 
+    // Mark new nodes for entrance animation
+    const markedNodes = layoutNodes.map((node) => {
+      if (!oldNodeIds.has(node.id) && oldNodeIds.size > 0) {
+        return { ...node, data: { ...node.data, isNew: true } };
+      }
+      return node;
+    });
+
+    // Clear isNew flag after animation completes
+    if (markedNodes.some((n) => (n.data as unknown as MindMapNodeData).isNew)) {
+      setTimeout(() => {
+        setNodes((nds) =>
+          nds.map((n) => {
+            const d = n.data as unknown as MindMapNodeData;
+            if (d.isNew) return { ...n, data: { ...n.data, isNew: false } };
+            return n;
+          })
+        );
+      }, 300);
+    }
+
     if (oldPositions.size === 0) {
-      setNodes(layoutNodes);
+      setNodes(markedNodes);
       setEdges(layoutEdges);
       return;
     }
@@ -133,7 +155,7 @@ function MindMapInner({ pageId, pageTitle, blocks, onClose, onRefreshPage }: Pro
       const ease = t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2;
 
       setNodes(
-        layoutNodes.map((node) => {
+        markedNodes.map((node) => {
           const old = oldPositions.get(node.id);
           if (!old) return node;
           return {

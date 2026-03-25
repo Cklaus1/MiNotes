@@ -11,8 +11,30 @@ export interface MindMapNodeData {
   todoState: "todo" | "doing" | "done" | null;
   collapsed: boolean;
   childCount: number;
+  color: string | null; // from block property "color:: blue"
+  isNew?: boolean; // entrance animation flag
   onSave?: (text: string) => void;
   onToggleCollapse?: () => void;
+}
+
+const COLOR_MAP: Record<string, string> = {
+  blue: "#89b4fa",
+  green: "#a6e3a1",
+  red: "#f38ba8",
+  yellow: "#f9e2af",
+  purple: "#cba6f7",
+  orange: "#fab387",
+  pink: "#f5c2e7",
+  teal: "#94e2d5",
+};
+
+function extractColor(content: string): string | null {
+  // Match "color:: value" anywhere in block content
+  const match = content.match(/color::\s*(\w+)/);
+  if (match && COLOR_MAP[match[1].toLowerCase()]) {
+    return COLOR_MAP[match[1].toLowerCase()];
+  }
+  return null;
 }
 
 /** Strip markdown formatting to get a clean label */
@@ -117,6 +139,7 @@ export function blocksToFlow(
       todoState: null,
       collapsed: false,
       childCount: 0,
+      color: null,
     } satisfies MindMapNodeData,
     position: { x: 0, y: 0 },
   });
@@ -147,6 +170,7 @@ export function blocksToFlow(
         todoState: detectTodoState(block.content),
         collapsed: isCollapsed,
         childCount: countDescendants(block.id, childrenMap),
+        color: extractColor(block.content),
       } satisfies MindMapNodeData,
       position: { x: 0, y: 0 },
       sourcePosition: sourcePos,
