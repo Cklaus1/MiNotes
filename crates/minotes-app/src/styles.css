@@ -1908,7 +1908,7 @@ body {
   position: absolute;
   background: transparent;
   border: none;
-  border-bottom: 2px solid var(--accent);
+  border-bottom: 1px dashed rgba(166, 173, 200, 0.3);
   color: inherit;
   font-family: -apple-system, BlinkMacSystemFont, sans-serif;
   font-weight: 500;
@@ -1927,7 +1927,6 @@ body {
 .whiteboard-text-editor.whiteboard-text-callout {
   border: 1px solid;
   border-radius: 8px;
-  border-bottom-width: 1px;
 }
 
 .whiteboard-canvas.whiteboard-drop-active {

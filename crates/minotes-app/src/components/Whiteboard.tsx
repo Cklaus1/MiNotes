@@ -130,7 +130,9 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
   const [notes, setNotes] = useState<StickyNote[]>(saved?.notes ?? []);
   const [lines, setLines] = useState<Line[]>(saved?.lines ?? []);
   const [images, setImages] = useState<CanvasImage[]>(saved?.images ?? []);
-  const [texts, setTexts] = useState<TextElement[]>(saved?.texts ?? []);
+  const [texts, setTexts] = useState<TextElement[]>(() =>
+    (saved?.texts ?? []).map((t: any) => ({ ...t, callout: t.callout ?? false }))
+  );
   const [arrows, setArrows] = useState<Arrow[]>(saved?.arrows ?? []);
   const [boxes, setBoxes] = useState<Box[]>(saved?.boxes ?? []);
   const [mode, setMode] = useState<Mode>("select");
