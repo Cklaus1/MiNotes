@@ -319,9 +319,15 @@ function MindMapInner({ pageId, pageTitle, blocks, onClose, onRefreshPage }: Pro
       if (e.key === "Enter" && !e.shiftKey) {
         if (document.activeElement?.tagName === "INPUT") return;
         e.preventDefault();
-        const block = blocks.find((b) => b.id === nodeData.blockId);
-        if (block) {
-          api.createBlock(pageId, "", block.parent_id ?? undefined).then(onRefreshPage);
+        if (direction === "radial") {
+          // Radial: Enter = add child (outward from center)
+          api.createBlock(pageId, "", nodeData.blockId ?? undefined).then(onRefreshPage);
+        } else {
+          // LR/TB: Enter = add sibling (same level)
+          const block = blocks.find((b) => b.id === nodeData.blockId);
+          if (block) {
+            api.createBlock(pageId, "", block.parent_id ?? undefined).then(onRefreshPage);
+          }
         }
       }
       if (e.key === "Delete" || e.key === "Backspace") {
@@ -406,10 +412,15 @@ function MindMapInner({ pageId, pageTitle, blocks, onClose, onRefreshPage }: Pro
 
   const handleAddSibling = useCallback(() => {
     if (!contextMenu) return;
-    const block = blocks.find((b) => b.id === contextMenu.blockId);
-    api.createBlock(pageId, "", block?.parent_id ?? undefined).then(onRefreshPage);
+    if (direction === "radial") {
+      // Radial: "Add outward" = add child (next ring)
+      api.createBlock(pageId, "", contextMenu.blockId).then(onRefreshPage);
+    } else {
+      const block = blocks.find((b) => b.id === contextMenu.blockId);
+      api.createBlock(pageId, "", block?.parent_id ?? undefined).then(onRefreshPage);
+    }
     setContextMenu(null);
-  }, [contextMenu, blocks, pageId, onRefreshPage]);
+  }, [contextMenu, blocks, pageId, onRefreshPage, direction]);
 
   const handleDeleteNode = useCallback(() => {
     if (!contextMenu) return;
@@ -616,7 +627,7 @@ function MindMapInner({ pageId, pageTitle, blocks, onClose, onRefreshPage }: Pro
           onClick={(e) => e.stopPropagation()}
         >
           <button onClick={handleAddChild}>Add child</button>
-          <button onClick={handleAddSibling}>Add sibling</button>
+          <button onClick={handleAddSibling}>{direction === "radial" ? "Add outward" : "Add sibling"}</button>
           <button onClick={handleFocusSubtree}>Focus subtree</button>
           <button onClick={handleCopyBranch}>Copy branch</button>
           <div className="mindmap-context-sep" />
