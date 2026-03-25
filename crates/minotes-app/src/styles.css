@@ -1904,6 +1904,11 @@ body {
   cursor: crosshair;
 }
 
+.whiteboard-canvas.whiteboard-drop-active {
+  outline: 3px dashed var(--accent);
+  outline-offset: -3px;
+}
+
 .whiteboard-hint {
   position: absolute;
   top: 50%;

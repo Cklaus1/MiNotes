@@ -17,9 +17,19 @@ interface Line {
   width: number;
 }
 
+interface CanvasImage {
+  id: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  dataUrl: string;
+}
+
 interface WhiteboardData {
   notes: StickyNote[];
   lines: Line[];
+  images?: CanvasImage[];
   camera: { x: number; y: number; zoom: number };
   nextNoteId: number;
 }
@@ -75,6 +85,7 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
 
   const [notes, setNotes] = useState<StickyNote[]>(saved?.notes ?? []);
   const [lines, setLines] = useState<Line[]>(saved?.lines ?? []);
+  const [images, setImages] = useState<CanvasImage[]>(saved?.images ?? []);
   const [mode, setMode] = useState<Mode>("draw");
   const [drawColor, setDrawColor] = useState(DRAW_COLORS[1]);
   const [noteColor, setNoteColor] = useState(NOTE_COLORS[0]);
@@ -83,7 +94,7 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
   const [showCanvasSettings, setShowCanvasSettings] = useState(false);
   const [canvasBg, setCanvasBg] = useState<"dark" | "light">("dark");
   const [showGrid, setShowGrid] = useState(true);
-  const [undoSnapshot, setUndoSnapshot] = useState<{ notes: StickyNote[]; lines: Line[] } | null>(null);
+  const [undoSnapshot, setUndoSnapshot] = useState<{ notes: StickyNote[]; lines: Line[]; images: CanvasImage[] } | null>(null);
   const redoStackRef = useRef<Line[]>([]);
   const [showHint, setShowHint] = useState(() => !saved || ((saved.lines?.length ?? 0) === 0 && (saved.notes?.length ?? 0) === 0));
 
@@ -125,6 +136,9 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
   notesRef.current = notes;
   const linesRef = useRef(lines);
   linesRef.current = lines;
+  const imagesRef = useRef(images);
+  imagesRef.current = images;
+  const loadedImagesRef = useRef<Map<string, HTMLImageElement>>(new Map());
 
   const screenToWorld = useCallback((sx: number, sy: number) => {
     const cam = cameraRef.current;
@@ -229,6 +243,28 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
       ctx.stroke();
     }
 
+    // Draw images
+    for (const img of imagesRef.current) {
+      let htmlImg = loadedImagesRef.current.get(img.id);
+      if (!htmlImg) {
+        htmlImg = new Image();
+        htmlImg.src = img.dataUrl;
+        loadedImagesRef.current.set(img.id, htmlImg);
+        htmlImg.onload = () => requestRedraw();
+      }
+      if (htmlImg.complete && htmlImg.naturalWidth > 0) {
+        ctx.shadowColor = "rgba(0,0,0,0.2)";
+        ctx.shadowBlur = 6;
+        ctx.shadowOffsetX = 1;
+        ctx.shadowOffsetY = 1;
+        ctx.drawImage(htmlImg, img.x, img.y, img.width, img.height);
+        ctx.shadowColor = "transparent";
+        ctx.shadowBlur = 0;
+        ctx.shadowOffsetX = 0;
+        ctx.shadowOffsetY = 0;
+      }
+    }
+
     // Draw sticky notes
     for (const note of notesRef.current) {
       // Shadow
@@ -327,11 +363,12 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
   // Mouse handlers
   // Save current state (called after every interaction)
   const saveNow = useCallback(() => {
-    const hasContent = notesRef.current.length > 0 || linesRef.current.length > 0;
+    const hasContent = notesRef.current.length > 0 || linesRef.current.length > 0 || imagesRef.current.length > 0;
     if (hasContent) {
       saveWhiteboardData(whiteboardId, {
         notes: notesRef.current,
         lines: linesRef.current,
+        images: imagesRef.current,
         camera: { ...cameraRef.current },
         nextNoteId,
       });
@@ -561,7 +598,7 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
   // Auto-save every 10 seconds if there's content
   useEffect(() => {
     const interval = setInterval(() => {
-      if (notesRef.current.length > 0 || linesRef.current.length > 0) {
+      if (notesRef.current.length > 0 || linesRef.current.length > 0 || imagesRef.current.length > 0) {
         saveWhiteboardData(whiteboardId, {
           notes: notesRef.current,
           lines: linesRef.current,
@@ -575,9 +612,41 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
 
   // Save current state (called after every interaction)
   // Close — state is already saved continuously
+  // Insert image from file/blob
+  const insertImage = useCallback((file: File | Blob) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result as string;
+      const img = new Image();
+      img.onload = () => {
+        const cam = cameraRef.current;
+        const canvas = canvasRef.current;
+        // Place at center of current viewport
+        const cx = canvas ? ((canvas.width / 2) - cam.x) / cam.zoom : 200;
+        const cy = canvas ? ((canvas.height / 2) - cam.y) / cam.zoom : 200;
+        // Scale down large images to max 400px
+        let w = img.naturalWidth;
+        let h = img.naturalHeight;
+        const maxDim = 400;
+        if (w > maxDim || h > maxDim) {
+          const scale = maxDim / Math.max(w, h);
+          w = Math.round(w * scale);
+          h = Math.round(h * scale);
+        }
+        const id = "img-" + Date.now();
+        setImages((prev) => [...prev, { id, x: cx - w / 2, y: cy - h / 2, width: w, height: h, dataUrl }]);
+        setShowHint(false);
+        setTimeout(saveNow, 50);
+        requestRedraw();
+      };
+      img.src = dataUrl;
+    };
+    reader.readAsDataURL(file);
+  }, [saveNow, requestRedraw]);
+
   const handleClose = useCallback(() => {
     saveNow();
-    onClose(notesRef.current.length > 0 || linesRef.current.length > 0);
+    onClose(notesRef.current.length > 0 || linesRef.current.length > 0 || imagesRef.current.length > 0);
   }, [saveNow, onClose]);
 
   const exportPng = useCallback(() => {
@@ -619,9 +688,10 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
 
   const clearCanvas = useCallback(() => {
     // Snapshot for undo
-    setUndoSnapshot({ notes: [...notesRef.current], lines: [...linesRef.current] });
+    setUndoSnapshot({ notes: [...notesRef.current], lines: [...linesRef.current], images: [...imagesRef.current] });
     setNotes([]);
     setLines([]);
+    setImages([]);
     localStorage.removeItem(STORAGE_PREFIX + whiteboardId);
     requestRedraw();
     // Auto-dismiss undo after 5 seconds
@@ -632,9 +702,28 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
     if (!undoSnapshot) return;
     setNotes(undoSnapshot.notes);
     setLines(undoSnapshot.lines);
+    setImages(undoSnapshot.images);
     setUndoSnapshot(null);
     setTimeout(saveNow, 50);
   }, [undoSnapshot, saveNow]);
+
+  // Paste image from clipboard
+  useEffect(() => {
+    const handler = (e: ClipboardEvent) => {
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      for (const item of items) {
+        if (item.type.startsWith("image/")) {
+          e.preventDefault();
+          const blob = item.getAsFile();
+          if (blob) insertImage(blob);
+          return;
+        }
+      }
+    };
+    window.addEventListener("paste", handler);
+    return () => window.removeEventListener("paste", handler);
+  }, [insertImage]);
 
   // Keyboard: Escape to close, close editing; S/D to switch modes
   useEffect(() => {
@@ -790,12 +879,25 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
         onDoubleClick={(e) => { setShowHint(false); handleDoubleClick(e); }}
         onWheel={handleWheel}
         onContextMenu={handleContextMenu}
+        onDragOver={(e) => { e.preventDefault(); e.currentTarget.classList.add("whiteboard-drop-active"); }}
+        onDragLeave={(e) => { e.currentTarget.classList.remove("whiteboard-drop-active"); }}
+        onDrop={(e) => {
+          e.preventDefault();
+          e.currentTarget.classList.remove("whiteboard-drop-active");
+          const files = e.dataTransfer.files;
+          for (const file of files) {
+            if (file.type.startsWith("image/")) {
+              insertImage(file);
+              return;
+            }
+          }
+        }}
       />
 
       {/* First-time hint — disappears on first interaction */}
       {showHint && (
         <div className="whiteboard-hint" onMouseDown={() => setShowHint(false)}>
-          Start drawing
+          Draw, paste image (Ctrl+V), or drop file
         </div>
       )}
 
