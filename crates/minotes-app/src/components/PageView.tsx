@@ -782,7 +782,6 @@ export default function PageView({
       {showProps && (
         <div className="page-properties">
           <div className="page-info-summary">
-            <span className="page-info-title">{page.title}</span>
             <span className="page-info-date">Updated: {formatDate(page.updated_at)}</span>
           </div>
           <div className="page-properties-header">
