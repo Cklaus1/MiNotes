@@ -1182,13 +1182,32 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
 
   // Paste from Tauri clipboard
   const pasteFromTauriClipboard = useCallback(async () => {
+    setSaveStatus("Reading clipboard...");
+
+    // Try WSL PowerShell bridge first (reads Windows clipboard)
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const base64: string = await invoke("paste_image_wsl");
+      if (base64 && base64.length > 0) {
+        const binary = atob(base64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        const blob = new Blob([bytes], { type: "image" });
+        insertImage(blob);
+        setSaveStatus("Pasted!");
+        setTimeout(() => setSaveStatus(null), 1500);
+        return;
+      }
+    } catch (wslErr) {
+      console.warn("WSL clipboard bridge:", wslErr);
+    }
+
+    // Fallback: try Tauri clipboard plugin (Linux clipboard)
     try {
       const { readImage } = await import("@tauri-apps/plugin-clipboard-manager");
-      setSaveStatus("Reading clipboard...");
       const img = await readImage();
       if (img) {
         const [rgba, { width: w, height: h }] = await Promise.all([img.rgba(), img.size()]);
-        setSaveStatus(`Image: ${w}x${h}`);
         if (w && h && rgba && rgba.length > 0) {
           const canvas = document.createElement("canvas");
           canvas.width = w;
@@ -1205,33 +1224,16 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
                 setTimeout(() => setSaveStatus(null), 1500);
               }
             }, "image/png");
-          }
-        }
-      } else {
-        // Tauri plugin found nothing — try WSL bridge via backend command
-        try {
-          const { invoke } = await import("@tauri-apps/api/core");
-          const base64: string = await invoke("paste_image_wsl");
-          if (base64) {
-            const binary = atob(base64);
-            const bytes = new Uint8Array(binary.length);
-            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-            const blob = new Blob([bytes], { type: "image/png" });
-            insertImage(blob);
-            setSaveStatus("Pasted!");
-            setTimeout(() => setSaveStatus(null), 1500);
             return;
           }
-        } catch { /* WSL bridge not available */ }
-        setSaveStatus("No image in clipboard");
-        setTimeout(() => setSaveStatus(null), 2000);
+        }
       }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setSaveStatus(`Paste failed: ${msg.slice(0, 40)}`);
-      setTimeout(() => setSaveStatus(null), 3000);
-      console.warn("Tauri clipboard paste failed:", err);
+    } catch (pluginErr) {
+      console.warn("Tauri clipboard plugin:", pluginErr);
     }
+
+    setSaveStatus("No image in clipboard");
+    setTimeout(() => setSaveStatus(null), 2000);
   }, [insertImage]);
 
   // Paste image from clipboard (browser paste event + Tauri Ctrl+V)

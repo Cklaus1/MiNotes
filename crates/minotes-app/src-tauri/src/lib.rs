@@ -868,40 +868,46 @@ fn write_png(dir: PathBuf, filename: &str, data: &[u8]) -> Result<String, String
     Ok(path.to_string_lossy().to_string())
 }
 
-/// WSL clipboard bridge: reads image from Windows clipboard via PowerShell
+/// Clipboard bridge: reads image via wl-paste (works with WSLg shared clipboard)
 #[tauri::command]
 fn paste_image_wsl() -> Result<String, String> {
-    // Check if we're in WSL
-    let version = std::fs::read_to_string("/proc/version").unwrap_or_default();
-    if !version.to_lowercase().contains("microsoft") {
-        return Err("Not WSL".to_string());
-    }
-
-    // Use PowerShell to get clipboard image and save as temp PNG
-    let temp_path = "/tmp/minotes-clipboard.png";
-    let ps_script = format!(
-        r#"$img = Get-Clipboard -Format Image; if ($img) {{ $img.Save('{}', [System.Drawing.Imaging.ImageFormat]::Png) }} else {{ exit 1 }}"#,
-        temp_path.replace('/', "\\")
-    );
-
-    // Convert WSL path to Windows path for PowerShell
-    let output = std::process::Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &format!(
-            r#"Add-Type -AssemblyName System.Windows.Forms; $img = [System.Windows.Forms.Clipboard]::GetImage(); if ($img -ne $null) {{ $ms = New-Object System.IO.MemoryStream; $img.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png); [Convert]::ToBase64String($ms.ToArray()) }} else {{ '' }}"#
-        )])
+    // Try wl-paste for Wayland clipboard (WSLg shares Windows clipboard)
+    let output = std::process::Command::new("wl-paste")
+        .args(["--type", "image/png", "--no-newline"])
         .output()
-        .map_err(|e| format!("PowerShell failed: {e}"))?;
+        .or_else(|_| {
+            // Try BMP if PNG not available
+            std::process::Command::new("wl-paste")
+                .args(["--type", "image/bmp", "--no-newline"])
+                .output()
+        })
+        .map_err(|e| format!("wl-paste failed: {e}"))?;
 
-    if !output.status.success() {
-        return Err("PowerShell clipboard read failed".to_string());
+    if !output.status.success() || output.stdout.is_empty() {
+        return Err("No image in clipboard".to_string());
     }
 
-    let base64 = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if base64.is_empty() {
-        return Err("No image in Windows clipboard".to_string());
-    }
-
+    use std::io::Write;
+    // If BMP, convert to PNG via temp file approach
+    // For simplicity, return raw bytes as base64 (frontend handles both)
+    let base64 = base64_encode(&output.stdout);
     Ok(base64)
+}
+
+fn base64_encode(data: &[u8]) -> String {
+    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut result = String::with_capacity(data.len() * 4 / 3 + 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
+        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        result.push(CHARS[(n >> 18 & 63) as usize] as char);
+        result.push(CHARS[(n >> 12 & 63) as usize] as char);
+        if chunk.len() > 1 { result.push(CHARS[(n >> 6 & 63) as usize] as char); } else { result.push('='); }
+        if chunk.len() > 2 { result.push(CHARS[(n & 63) as usize] as char); } else { result.push('='); }
+    }
+    result
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
