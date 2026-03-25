@@ -119,7 +119,10 @@ export default function SettingsPanel({ open, onClose }: Props) {
           {showAdvanced && (
             <div className="settings-advanced-content">
               <div className="settings-row">
-                <span className="settings-row-label">Full Tree Mode</span>
+                <span className="settings-row-label">
+                  Full Tree Mode
+                  <span className="settings-info-icon" title="Shows ├── / └── connector lines between parent and child blocks, making the hierarchy visible">ⓘ</span>
+                </span>
                 <label className="settings-toggle">
                   <input
                     type="checkbox"
@@ -130,7 +133,10 @@ export default function SettingsPanel({ open, onClose }: Props) {
                 </label>
               </div>
               <div className="settings-row">
-                <span className="settings-row-label">Obsidian Editor</span>
+                <span className="settings-row-label">
+                  Obsidian Editor
+                  <span className="settings-info-icon" title="Enables a CodeMirror 6 source editor per block, similar to Obsidian's markdown editing mode">ⓘ</span>
+                </span>
                 <label className="settings-toggle">
                   <input
                     type="checkbox"

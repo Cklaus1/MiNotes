@@ -2867,6 +2867,21 @@ body.theme-light { /* matches our light theme */ }
   padding: 2px 0;
 }
 
+.settings-info-icon {
+  display: inline-block;
+  margin-left: 5px;
+  font-size: 12px;
+  color: var(--text-muted);
+  cursor: help;
+  opacity: 0.6;
+  vertical-align: middle;
+}
+
+.settings-info-icon:hover {
+  opacity: 1;
+  color: var(--accent);
+}
+
 .settings-advanced-toggle {
   font-size: 12px;
   color: var(--text-muted);
