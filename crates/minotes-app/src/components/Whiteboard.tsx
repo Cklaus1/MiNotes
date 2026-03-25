@@ -1280,16 +1280,16 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
             ⚙
           </button>
           {showCanvasSettings && (
-            <div className="mindmap-dropdown" style={{ right: 0, left: "auto" }} onClick={(e) => e.stopPropagation()}>
-              <div className="wb-settings-row">
-                <span>Background</span>
+            <div className="wb-popover" onClick={(e) => e.stopPropagation()}>
+              <div className="wb-popover-row">
+                <span className="wb-popover-label">Background</span>
                 <div className="wb-settings-toggle">
                   <button className={canvasBg === "dark" ? "active" : ""} onClick={() => { setCanvasBg("dark"); requestRedraw(); }}>Dark</button>
                   <button className={canvasBg === "light" ? "active" : ""} onClick={() => { setCanvasBg("light"); requestRedraw(); }}>Light</button>
                 </div>
               </div>
-              <div className="wb-settings-row">
-                <span>Grid</span>
+              <div className="wb-popover-row">
+                <span className="wb-popover-label">Grid</span>
                 <div className="wb-settings-toggle">
                   <button className={showGrid ? "active" : ""} onClick={() => { setShowGrid(true); requestRedraw(); }}>On</button>
                   <button className={!showGrid ? "active" : ""} onClick={() => { setShowGrid(false); requestRedraw(); }}>Off</button>
