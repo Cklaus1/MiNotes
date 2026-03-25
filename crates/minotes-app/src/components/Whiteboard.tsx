@@ -79,6 +79,7 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
   const [drawColor, setDrawColor] = useState(DRAW_COLORS[1]);
   const [noteColor, setNoteColor] = useState(NOTE_COLORS[0]);
   const [saveStatus, setSaveStatus] = useState<string | null>(null);
+  const [showExportMenu, setShowExportMenu] = useState(false);
   const [showHint, setShowHint] = useState(() => !saved || ((saved.lines?.length ?? 0) === 0 && (saved.notes?.length ?? 0) === 0));
 
   // Camera / pan / zoom state stored in refs for performance
@@ -312,6 +313,21 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
   }, [notes, lines, requestRedraw]);
 
   // Mouse handlers
+  // Save current state (called after every interaction)
+  const saveNow = useCallback(() => {
+    const hasContent = notesRef.current.length > 0 || linesRef.current.length > 0;
+    if (hasContent) {
+      saveWhiteboardData(whiteboardId, {
+        notes: notesRef.current,
+        lines: linesRef.current,
+        camera: { ...cameraRef.current },
+        nextNoteId,
+      });
+    } else {
+      localStorage.removeItem(STORAGE_PREFIX + whiteboardId);
+    }
+  }, [whiteboardId]);
+
   const handleMouseDown = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
       const canvas = canvasRef.current;
@@ -406,6 +422,8 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
 
   const handleMouseUp = useCallback(
     (_e: React.MouseEvent<HTMLCanvasElement>) => {
+      let changed = false;
+
       // End pan
       if (panningRef.current.active) {
         panningRef.current.active = false;
@@ -416,6 +434,7 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
         const pts = drawingRef.current.points;
         if (pts.length >= 2) {
           setLines((prev) => [...prev, { points: [...pts], color: drawColor, width: 2 }]);
+          changed = true;
         }
         drawingRef.current = { active: false, points: [] };
       }
@@ -423,9 +442,13 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
       // End drag
       if (draggingNoteRef.current.noteId) {
         draggingNoteRef.current = { noteId: null, offsetX: 0, offsetY: 0 };
+        changed = true;
       }
+
+      // Auto-save after every interaction
+      if (changed) setTimeout(saveNow, 50);
     },
-    [drawColor]
+    [drawColor, saveNow]
   );
 
   const handleDoubleClick = useCallback(
@@ -518,8 +541,9 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
         prev.map((n) => (n.id === editingNote ? { ...n, text: editText } : n))
       );
       setEditingNote(null);
+      setTimeout(saveNow, 50);
     }
-  }, [editingNote, editText]);
+  }, [editingNote, editText, saveNow]);
 
   // Auto-save every 10 seconds if there's content
   useEffect(() => {
@@ -532,26 +556,16 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
           nextNoteId,
         });
       }
-    }, 10000);
+    }, 2000);
     return () => clearInterval(interval);
   }, [whiteboardId]);
 
-  // Save and close
+  // Save current state (called after every interaction)
+  // Close — state is already saved continuously
   const handleClose = useCallback(() => {
-    const hasContent = notesRef.current.length > 0 || linesRef.current.length > 0;
-    if (hasContent) {
-      saveWhiteboardData(whiteboardId, {
-        notes: notesRef.current,
-        lines: linesRef.current,
-        camera: { ...cameraRef.current },
-        nextNoteId,
-      });
-    } else {
-      // Remove empty whiteboard data
-      localStorage.removeItem(STORAGE_PREFIX + whiteboardId);
-    }
-    onClose(hasContent);
-  }, [whiteboardId, onClose]);
+    saveNow();
+    onClose(notesRef.current.length > 0 || linesRef.current.length > 0);
+  }, [saveNow, onClose]);
 
   const exportPng = useCallback(() => {
     const canvas = canvasRef.current;
@@ -682,18 +696,20 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
           </div>
         )}
 
-        <div className="whiteboard-toolbar-group">
+        <div className="whiteboard-toolbar-group" style={{ position: "relative" }}>
           {saveStatus && (
             <span className="whiteboard-save-status">{saveStatus}</span>
           )}
-          <button className="btn btn-sm" onClick={exportPng} title="Export as PNG (downloads to your default Downloads folder)">
-            Export PNG
+          <button className="btn btn-sm" onClick={() => setShowExportMenu(v => !v)}>
+            Export ▾
           </button>
+          {showExportMenu && (
+            <div className="mindmap-dropdown" style={{ right: "auto", left: 0 }} onClick={() => setShowExportMenu(false)}>
+              <button onClick={exportPng}>PNG Image</button>
+            </div>
+          )}
           <button className="btn btn-sm" onClick={clearCanvas} title="Clear canvas">
             Clear
-          </button>
-          <button className="btn btn-sm btn-primary" onClick={handleClose} title="Save & Close (Esc)">
-            Save & Close
           </button>
         </div>
       </div>
