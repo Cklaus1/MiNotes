@@ -1267,7 +1267,7 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
         ref={canvasRef}
         className="whiteboard-canvas"
         style={{ cursor: mode === "select" ? "default" : mode === "text" ? "text" : "crosshair" }}
-        onMouseDown={(e) => { setShowHint(false); handleMouseDown(e); }}
+        onMouseDown={(e) => { setShowHint(false); setShowCanvasSettings(false); setShowExportMenu(false); handleMouseDown(e); }}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
         onDoubleClick={(e) => { setShowHint(false); handleDoubleClick(e); }}
