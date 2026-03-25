@@ -256,10 +256,40 @@ export function blocksToFlow(
       rn.position = { x: cx - (rp.width ?? 0) / 2, y: cy - (rp.height ?? 0) / 2 };
     }
 
-    // Radial: handles point outward from center (no fixed direction)
+    // Radial: compute handle positions per node based on angle from center
+    // Edges should enter from the side facing the center, exit from the side facing outward
     for (const node of nodes) {
-      node.sourcePosition = Position.Right;
-      node.targetPosition = Position.Left;
+      if (node.id === rootId) {
+        // Root: source handles on all sides — use Bottom as default
+        node.sourcePosition = Position.Bottom;
+        node.targetPosition = Position.Top;
+        continue;
+      }
+      const pos = node.position;
+      const nodeCx = pos.x + 75; // approximate node center
+      const nodeCy = pos.y + 20;
+      const dx = nodeCx - cx;
+      const dy = nodeCy - cy;
+      const angle = Math.atan2(dy, dx);
+
+      // Target handle faces toward center, source faces away
+      if (angle > -Math.PI / 4 && angle <= Math.PI / 4) {
+        // Node is to the right of center
+        node.targetPosition = Position.Left;
+        node.sourcePosition = Position.Right;
+      } else if (angle > Math.PI / 4 && angle <= (3 * Math.PI) / 4) {
+        // Node is below center
+        node.targetPosition = Position.Top;
+        node.sourcePosition = Position.Bottom;
+      } else if (angle > (-3 * Math.PI) / 4 && angle <= -Math.PI / 4) {
+        // Node is above center
+        node.targetPosition = Position.Bottom;
+        node.sourcePosition = Position.Top;
+      } else {
+        // Node is to the left of center
+        node.targetPosition = Position.Right;
+        node.sourcePosition = Position.Left;
+      }
     }
   } else {
     // Apply computed positions (linear layout)
