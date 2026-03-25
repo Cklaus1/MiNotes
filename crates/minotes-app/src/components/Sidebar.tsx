@@ -243,13 +243,13 @@ export default function Sidebar({
         )}
         <div className="stats-modes">
           <button className="stats-mode-btn" onClick={onGraphClick} title="Graph view (Ctrl+G)">
-            🔗
+            🔗 Graph
           </button>
           <button className="stats-mode-btn" onClick={onMindmapClick} title="Mind map (Ctrl+M)">
-            🧠
+            🧠 Mind Map
           </button>
           <button className="stats-mode-btn" onClick={onWhiteboardClick} title="Whiteboard (Ctrl+W)">
-            🎨
+            🎨 Draw
           </button>
         </div>
         <button
