@@ -771,7 +771,7 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
       const sy = e.clientY - rect.top;
       const world = screenToWorld(sx, sy);
 
-      // Check if double-clicking an existing note
+      // Double-click existing note → edit it
       const existing = findNoteAt(world.x, world.y);
       if (existing) {
         setEditingNote(existing.id);
@@ -780,23 +780,25 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
         return;
       }
 
-      // Create new note
-      const id = "note-" + nextNoteId++;
-      const newNote: StickyNote = {
-        id,
-        x: world.x - 75,
-        y: world.y - 50,
-        width: 150,
-        height: 100,
-        text: "",
-        color: noteColor,
-      };
-      setNotes((prev) => [...prev, newNote]);
-      setEditingNote(id);
-      setEditText("");
-      setTimeout(() => editInputRef.current?.focus(), 0);
+      // Double-click existing text → edit it
+      for (let i = textsRef.current.length - 1; i >= 0; i--) {
+        const te = textsRef.current[i];
+        if (!te.text) continue;
+        const fontSize = te.size === "S" ? 14 : te.size === "L" ? 24 : 18;
+        const pad = te.callout ? 10 : 0;
+        const textLines = te.text.split("\n");
+        const lineH = fontSize * 1.3;
+        const maxW = 200;
+        if (world.x >= te.x - pad && world.x <= te.x + maxW + pad &&
+            world.y >= te.y - pad && world.y <= te.y + textLines.length * lineH + pad) {
+          setEditingTextId(te.id);
+          setEditingTextValue(te.text);
+          setTimeout(() => textInputRef.current?.focus(), 50);
+          return;
+        }
+      }
     },
-    [mode, screenToWorld, findNoteAt, noteColor]
+    [mode, screenToWorld, findNoteAt]
   );
 
   const handleWheel = useCallback(
