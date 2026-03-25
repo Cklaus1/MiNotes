@@ -78,7 +78,7 @@ interface WhiteboardData {
   nextNoteId: number;
 }
 
-type Mode = "select" | "text" | "arrow" | "box" | "draw";
+type Mode = "select" | "text" | "arrow" | "box" | "note" | "draw";
 
 interface Props {
   whiteboardId: string;
@@ -578,6 +578,25 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
           return;
         }
 
+        if (mode === "note") {
+          // Create sticky note at click position
+          const id = "note-" + nextNoteId++;
+          const newNote: StickyNote = {
+            id,
+            x: world.x - 75,
+            y: world.y - 50,
+            width: 150,
+            height: 100,
+            text: "",
+            color: noteColor,
+          };
+          setNotes((prev) => [...prev, newNote]);
+          setEditingNote(id);
+          setEditText("");
+          setTimeout(() => editInputRef.current?.focus(), 0);
+          return;
+        }
+
         if (mode === "text") {
           // If already editing a text, finish it first
           if (editingTextId) {
@@ -1008,6 +1027,7 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
         if (e.key === "t" || e.key === "T") setMode("text");
         if (e.key === "a" || e.key === "A") setMode("arrow");
         if (e.key === "b" || e.key === "B") setMode("box");
+        if (e.key === "n" || e.key === "N") setMode("note");
         if (e.key === "d" || e.key === "D") setMode("draw");
       }
       // Ctrl+Z — undo last stroke
@@ -1082,6 +1102,13 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
             Box
           </button>
           <button
+            className={`btn btn-sm ${mode === "note" ? "btn-primary" : ""}`}
+            onClick={() => setMode("note")}
+            title="Sticky Note (N)"
+          >
+            Note
+          </button>
+          <button
             className={`btn btn-sm ${mode === "draw" ? "btn-primary" : ""}`}
             onClick={() => setMode("draw")}
             title="Draw (D)"
@@ -1136,6 +1163,20 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
               ))}
             </div>
           </>
+        )}
+
+        {mode === "note" && (
+          <div className="whiteboard-toolbar-group">
+            <span className="whiteboard-toolbar-label">Note:</span>
+            {NOTE_COLORS.map((c) => (
+              <button
+                key={c}
+                className={`whiteboard-color-swatch ${noteColor === c ? "active" : ""}`}
+                style={{ background: c }}
+                onClick={() => setNoteColor(c)}
+              />
+            ))}
+          </div>
         )}
 
         <div className="whiteboard-toolbar-group" style={{ position: "relative" }}>
