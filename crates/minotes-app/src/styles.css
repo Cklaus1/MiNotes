@@ -446,10 +446,7 @@ body {
   color: #1e1e2e;
 }
 
-.block-content:empty::before {
-  content: "Type something...";
-  color: var(--text-muted);
-}
+/* Placeholder handled by TipTap Placeholder extension (showOnlyCurrent: true) */
 
 /* Drag handle — visible on hover */
 .block-drag-handle {

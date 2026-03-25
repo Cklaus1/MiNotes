@@ -108,7 +108,9 @@ export function useBlockEditor({
       Highlight,
       Typography,
       Placeholder.configure({
-        placeholder: "Type something...",
+        placeholder: ({ editor }) => editor.isFocused ? "Type '/' for commands" : "",
+        showOnlyWhenEditable: true,
+        showOnlyCurrent: true,
       }),
       Markdown.configure({
         html: false,
