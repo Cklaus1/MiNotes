@@ -83,6 +83,8 @@ function MindMapInner({ pageId, pageTitle, blocks, onClose, onRefreshPage }: Pro
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [focusSubtreeRoot, setFocusSubtreeRoot] = useState<string | null>(null);
   const [autoEditNodeId, setAutoEditNodeId] = useState<string | null>(null);
+  const [showLayoutMenu, setShowLayoutMenu] = useState(false);
+  const [showExportMenu, setShowExportMenu] = useState(false);
   const reactFlow = useReactFlow();
   const prevNodesRef = useRef<Node[]>([]);
 
@@ -566,33 +568,50 @@ function MindMapInner({ pageId, pageTitle, blocks, onClose, onRefreshPage }: Pro
           <button className="btn btn-sm" onClick={() => reactFlow.zoomIn()} title="Zoom in">+</button>
           <button className="btn btn-sm" onClick={() => reactFlow.zoomOut()} title="Zoom out">−</button>
         </div>
-        <div className="mindmap-toolbar-group">
+        <div className="mindmap-toolbar-group" style={{ position: "relative" }}>
           <button
-            className={`btn btn-sm ${direction === "LR" ? "btn-primary" : ""}`}
-            onClick={() => { setDirection("LR"); setTimeout(() => reactFlow.fitView({ padding: 0.2 }), 350); }}
-            title="Horizontal layout"
+            className="btn btn-sm"
+            onClick={() => { setShowLayoutMenu((v) => !v); setShowExportMenu(false); }}
           >
-            ↔ Horizontal
+            Layout ▾
           </button>
-          <button
-            className={`btn btn-sm ${direction === "TB" ? "btn-primary" : ""}`}
-            onClick={() => { setDirection("TB"); setTimeout(() => reactFlow.fitView({ padding: 0.2 }), 350); }}
-            title="Vertical layout"
-          >
-            ↕ Vertical
-          </button>
-          <button
-            className={`btn btn-sm ${direction === "radial" ? "btn-primary" : ""}`}
-            onClick={() => { setDirection("radial"); setTimeout(() => reactFlow.fitView({ padding: 0.2 }), 350); }}
-            title="Radial hub-spoke layout"
-          >
-            ◎ Radial
-          </button>
+          {showLayoutMenu && (
+            <div className="mindmap-dropdown" onClick={() => setShowLayoutMenu(false)}>
+              <button
+                className={direction === "LR" ? "active" : ""}
+                onClick={() => { setDirection("LR"); setTimeout(() => reactFlow.fitView({ padding: 0.2 }), 350); }}
+              >
+                ↔ Horizontal
+              </button>
+              <button
+                className={direction === "TB" ? "active" : ""}
+                onClick={() => { setDirection("TB"); setTimeout(() => reactFlow.fitView({ padding: 0.2 }), 350); }}
+              >
+                ↕ Vertical
+              </button>
+              <button
+                className={direction === "radial" ? "active" : ""}
+                onClick={() => { setDirection("radial"); setTimeout(() => reactFlow.fitView({ padding: 0.2 }), 350); }}
+              >
+                ◎ Radial
+              </button>
+            </div>
+          )}
         </div>
-        <div className="mindmap-toolbar-group">
-          <button className="btn btn-sm" onClick={handleExportPng} title="Export as PNG">PNG</button>
-          <button className="btn btn-sm" onClick={handleExportSvg} title="Export as SVG">SVG</button>
-          <button className="btn btn-sm" onClick={handleExportMd} title="Export as Markdown outline">MD</button>
+        <div className="mindmap-toolbar-group" style={{ position: "relative" }}>
+          <button
+            className="btn btn-sm"
+            onClick={() => { setShowExportMenu((v) => !v); setShowLayoutMenu(false); }}
+          >
+            Export ▾
+          </button>
+          {showExportMenu && (
+            <div className="mindmap-dropdown" onClick={() => setShowExportMenu(false)}>
+              <button onClick={handleExportPng}>PNG Image</button>
+              <button onClick={handleExportSvg}>SVG Vector</button>
+              <button onClick={handleExportMd}>Markdown (.md)</button>
+            </div>
+          )}
         </div>
       </div>
 
@@ -604,7 +623,7 @@ function MindMapInner({ pageId, pageTitle, blocks, onClose, onRefreshPage }: Pro
         onSelectionChange={onSelectionChange}
         onNodeDragStop={onNodeDragStop}
         onNodeContextMenu={onNodeContextMenu}
-        onPaneClick={() => { setContextMenu(null); setSelectedNodeId(null); }}
+        onPaneClick={() => { setContextMenu(null); setSelectedNodeId(null); setShowLayoutMenu(false); setShowExportMenu(false); }}
         nodeTypes={nodeTypes}
         fitView
         minZoom={0.1}
