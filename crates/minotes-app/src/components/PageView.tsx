@@ -747,7 +747,7 @@ export default function PageView({
           <div className="page-properties-header">
             <span className="page-properties-label">Properties</span>
             <button
-              className="prop-add-btn"
+              className="page-prop-add-btn"
               onClick={() => setAddingProp(true)}
               title="Add property"
             >
@@ -815,7 +815,7 @@ export default function PageView({
           <div className="page-properties-header" style={{ marginTop: 8 }}>
             <span className="page-properties-label">Aliases</span>
             <button
-              className="prop-add-btn"
+              className="page-prop-add-btn"
               onClick={() => setAddingAlias(true)}
               title="Add alias"
             >

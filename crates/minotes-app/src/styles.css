@@ -965,6 +965,21 @@ body {
   margin-bottom: 6px;
 }
 
+/* + button inside page properties panel (always visible, not the block-level one) */
+.page-prop-add-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0 4px;
+  transition: color 0.1s;
+}
+
+.page-prop-add-btn:hover {
+  color: var(--accent);
+}
+
 .page-properties-label {
   font-size: 11px;
   text-transform: uppercase;
