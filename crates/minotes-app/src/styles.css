@@ -3373,9 +3373,23 @@ body.theme-light { /* matches our light theme */ }
 }
 
 .mindmap-overlay .react-flow__minimap {
-  border-radius: 8px;
-  border: 1px solid var(--border);
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
   overflow: hidden;
+  width: 120px !important;
+  height: 80px !important;
+  opacity: 0.6;
+  background: rgba(30, 30, 46, 0.5) !important;
+  transition: opacity 0.2s;
+}
+
+.mindmap-overlay .react-flow__minimap:hover {
+  opacity: 0.9;
+}
+
+[data-theme="light"] .mindmap-overlay .react-flow__minimap {
+  background: rgba(239, 241, 245, 0.5) !important;
+  border-color: rgba(0, 0, 0, 0.06);
 }
 
 .mm-minimap-fade {
@@ -3384,7 +3398,7 @@ body.theme-light { /* matches our light theme */ }
 
 @keyframes mm-minimap-in {
   from { opacity: 0; transform: translateY(10px); }
-  to { opacity: 1; transform: translateY(0); }
+  to { opacity: 0.6; transform: translateY(0); }
 }
 
 /* Expanded collapse badge — more subtle */
