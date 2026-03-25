@@ -871,26 +871,24 @@ fn write_png(dir: PathBuf, filename: &str, data: &[u8]) -> Result<String, String
 /// Clipboard bridge: reads image via wl-paste (works with WSLg shared clipboard)
 #[tauri::command]
 fn paste_image_wsl() -> Result<String, String> {
-    // Try wl-paste for Wayland clipboard (WSLg shares Windows clipboard)
-    let output = std::process::Command::new("wl-paste")
-        .args(["--type", "image/png", "--no-newline"])
-        .output()
-        .or_else(|_| {
-            // Try BMP if PNG not available
-            std::process::Command::new("wl-paste")
-                .args(["--type", "image/bmp", "--no-newline"])
-                .output()
-        })
-        .map_err(|e| format!("wl-paste failed: {e}"))?;
+    // Try PNG first, then BMP, then any image type
+    let types = ["image/png", "image/bmp", "image/jpeg"];
+    let mut image_bytes: Option<Vec<u8>> = None;
 
-    if !output.status.success() || output.stdout.is_empty() {
-        return Err("No image in clipboard".to_string());
+    for mime in &types {
+        if let Ok(output) = std::process::Command::new("wl-paste")
+            .args(["--type", mime, "--no-newline"])
+            .output()
+        {
+            if output.status.success() && !output.stdout.is_empty() {
+                image_bytes = Some(output.stdout);
+                break;
+            }
+        }
     }
 
-    use std::io::Write;
-    // If BMP, convert to PNG via temp file approach
-    // For simplicity, return raw bytes as base64 (frontend handles both)
-    let base64 = base64_encode(&output.stdout);
+    let bytes = image_bytes.ok_or_else(|| "No image in clipboard".to_string())?;
+    let base64 = base64_encode(&bytes);
     Ok(base64)
 }
 
