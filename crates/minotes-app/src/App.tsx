@@ -438,6 +438,14 @@ export default function App() {
               onJournalNav={openJournal}
               onRefreshPage={() => openPage(activePage.page.id)}
               onOpenWhiteboard={(wbId: string) => { setWhiteboardId(wbId); setCanvasMode("draw"); }}
+              onRenamePage={(newTitle: string) => {
+                if (activePage) {
+                  api.renamePage(activePage.page.id, newTitle).then(() => {
+                    openPage(activePage.page.id);
+                    refresh();
+                  });
+                }
+              }}
             />
           ) : (
             <EmptyState onCreatePage={createPage} />

@@ -18,10 +18,11 @@ interface Props {
   onJournalNav?: (date: string) => void;
   onRefreshPage: () => void;
   onOpenWhiteboard?: (whiteboardId: string) => void;
+  onRenamePage?: (newTitle: string) => void;
 }
 
 export default function PageView({
-  pageTree, onUpdateBlock, onDeleteBlock, onPageLinkClick, onShiftClick, onJournalNav, onRefreshPage, onOpenWhiteboard,
+  pageTree, onUpdateBlock, onDeleteBlock, onPageLinkClick, onShiftClick, onJournalNav, onRefreshPage, onOpenWhiteboard, onRenamePage,
 }: Props) {
   const { page } = pageTree;
   // Local blocks state for optimistic updates (prevents full re-render on Enter)
@@ -706,10 +707,48 @@ export default function PageView({
     setSelectionAnchor(null);
   }, [page.id]);
 
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState(page.title);
+  const titleInputRef = useRef<HTMLInputElement>(null);
+
+  const handleTitleSave = () => {
+    const trimmed = titleDraft.trim();
+    if (trimmed && trimmed !== page.title && onRenamePage) {
+      onRenamePage(trimmed);
+    }
+    setEditingTitle(false);
+  };
+
   return (
     <div className="page-view">
       <div className="main-header">
-        <h2>{page.icon ?? (page.is_journal ? "\u{1F4C5}" : "")} {page.is_journal && page.journal_date ? formatJournalTitle(page.journal_date) : page.title}</h2>
+        {editingTitle && !page.is_journal ? (
+          <input
+            ref={titleInputRef}
+            className="page-title-input"
+            value={titleDraft}
+            onChange={(e) => setTitleDraft(e.target.value)}
+            onBlur={handleTitleSave}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") handleTitleSave();
+              if (e.key === "Escape") { setTitleDraft(page.title); setEditingTitle(false); }
+            }}
+            autoFocus
+          />
+        ) : (
+          <h2
+            className={onRenamePage && !page.is_journal ? "page-title-editable" : ""}
+            onClick={() => {
+              if (onRenamePage && !page.is_journal) {
+                setTitleDraft(page.title);
+                setEditingTitle(true);
+              }
+            }}
+            title={onRenamePage && !page.is_journal ? "Click to rename" : undefined}
+          >
+            {page.icon ?? (page.is_journal ? "\u{1F4C5}" : "")} {page.is_journal && page.journal_date ? formatJournalTitle(page.journal_date) : page.title}
+          </h2>
+        )}
         {page.is_journal && onJournalNav && (
           <div className="journal-nav">
             <button className="btn btn-sm" onClick={() => shiftDate(-1)}>← Prev</button>
