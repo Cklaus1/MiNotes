@@ -233,7 +233,7 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
   }, []);
 
   // Unified hit-test: find any element at world coordinates
-  const findElementAt = useCallback((wx: number, wy: number): { type: "note" | "text" | "arrow" | "box" | "image"; id: string; x: number; y: number } | null => {
+  const findElementAt = useCallback((wx: number, wy: number): { type: "note" | "text" | "arrow" | "box" | "image" | "line"; id: string; x: number; y: number } | null => {
     // Notes (top layer)
     for (let i = notesRef.current.length - 1; i >= 0; i--) {
       const n = notesRef.current[i];
@@ -279,6 +279,24 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
       const dist = Math.sqrt((wx - px) ** 2 + (wy - py) ** 2);
       if (dist < 10) {
         return { type: "arrow", id: a.id, x: Math.min(a.x1, a.x2), y: Math.min(a.y1, a.y2) };
+      }
+    }
+    // Drawing lines (distance to any segment in the polyline)
+    for (let i = linesRef.current.length - 1; i >= 0; i--) {
+      const line = linesRef.current[i];
+      if (line.points.length < 2) continue;
+      let minX = Infinity, minY = Infinity;
+      for (const pt of line.points) { minX = Math.min(minX, pt.x); minY = Math.min(minY, pt.y); }
+      for (let j = 0; j < line.points.length - 1; j++) {
+        const p1 = line.points[j], p2 = line.points[j + 1];
+        const dx = p2.x - p1.x, dy = p2.y - p1.y;
+        const len2 = dx * dx + dy * dy;
+        if (len2 === 0) continue;
+        const t = Math.max(0, Math.min(1, ((wx - p1.x) * dx + (wy - p1.y) * dy) / len2));
+        const px = p1.x + t * dx, py = p1.y + t * dy;
+        if (Math.sqrt((wx - px) ** 2 + (wy - py) ** 2) < 8) {
+          return { type: "line", id: String(i), x: minX, y: minY };
+        }
       }
     }
     return null;
@@ -522,6 +540,17 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
         if (a) {
           sx = Math.min(a.x1, a.x2) - 5; sy = Math.min(a.y1, a.y2) - 5;
           sw = Math.abs(a.x2 - a.x1) + 10; sh = Math.abs(a.y2 - a.y1) + 10; found = true;
+        }
+      } else if (sel.type === "line") {
+        const idx = parseInt(sel.id);
+        const line = linesRef.current[idx];
+        if (line && line.points.length > 0) {
+          let lMinX = Infinity, lMinY = Infinity, lMaxX = -Infinity, lMaxY = -Infinity;
+          for (const pt of line.points) {
+            lMinX = Math.min(lMinX, pt.x); lMinY = Math.min(lMinY, pt.y);
+            lMaxX = Math.max(lMaxX, pt.x); lMaxY = Math.max(lMaxY, pt.y);
+          }
+          sx = lMinX; sy = lMinY; sw = lMaxX - lMinX; sh = lMaxY - lMinY; found = true;
         }
       }
       if (found) {
@@ -781,6 +810,17 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
             const dy = ny - Math.min(arrow.y1, arrow.y2);
             setArrows((prev) => prev.map((a) => a.id === id ? { ...a, x1: a.x1 + dx, y1: a.y1 + dy, x2: a.x2 + dx, y2: a.y2 + dy } : a));
             // Update offset to prevent drift
+            draggingElementRef.current.offsetX = world.x - nx;
+            draggingElementRef.current.offsetY = world.y - ny;
+          }
+        } else if (draggingElementRef.current.type === "line") {
+          const idx = parseInt(id);
+          const line = linesRef.current[idx];
+          if (line) {
+            let minX = Infinity, minY = Infinity;
+            for (const pt of line.points) { minX = Math.min(minX, pt.x); minY = Math.min(minY, pt.y); }
+            const dx = nx - minX, dy = ny - minY;
+            setLines((prev) => prev.map((l, i) => i === idx ? { ...l, points: l.points.map((p) => ({ x: p.x + dx, y: p.y + dy })) } : l));
             draggingElementRef.current.offsetX = world.x - nx;
             draggingElementRef.current.offsetY = world.y - ny;
           }
@@ -1120,6 +1160,7 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
         else if (type === "arrow") setArrows((prev) => prev.filter((a) => a.id !== id));
         else if (type === "box") setBoxes((prev) => prev.filter((b) => b.id !== id));
         else if (type === "image") setImages((prev) => prev.filter((i) => i.id !== id));
+        else if (type === "line") setLines((prev) => prev.filter((_, idx) => String(idx) !== id));
         setSelectedElement(null);
         setTimeout(saveNow, 50);
       }
