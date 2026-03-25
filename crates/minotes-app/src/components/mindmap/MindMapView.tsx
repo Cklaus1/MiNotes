@@ -569,24 +569,24 @@ function MindMapInner({ pageId, pageTitle, blocks, onClose, onRefreshPage }: Pro
         <div className="mindmap-toolbar-group">
           <button
             className={`btn btn-sm ${direction === "LR" ? "btn-primary" : ""}`}
-            onClick={() => setDirection("LR")}
+            onClick={() => { setDirection("LR"); setTimeout(() => reactFlow.fitView({ padding: 0.2 }), 350); }}
             title="Horizontal layout"
           >
-            LR
+            ↔ Horizontal
           </button>
           <button
             className={`btn btn-sm ${direction === "TB" ? "btn-primary" : ""}`}
-            onClick={() => setDirection("TB")}
+            onClick={() => { setDirection("TB"); setTimeout(() => reactFlow.fitView({ padding: 0.2 }), 350); }}
             title="Vertical layout"
           >
-            TB
+            ↕ Vertical
           </button>
           <button
             className={`btn btn-sm ${direction === "radial" ? "btn-primary" : ""}`}
-            onClick={() => setDirection("radial")}
-            title="Radial / hub-spoke layout"
+            onClick={() => { setDirection("radial"); setTimeout(() => reactFlow.fitView({ padding: 0.2 }), 350); }}
+            title="Radial hub-spoke layout"
           >
-            Radial
+            ◎ Radial
           </button>
         </div>
         <div className="mindmap-toolbar-group">
