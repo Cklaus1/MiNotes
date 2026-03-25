@@ -76,6 +76,8 @@ interface WhiteboardData {
   boxes?: Box[];
   camera: { x: number; y: number; zoom: number };
   nextNoteId: number;
+  canvasBg?: "dark" | "light";
+  showGrid?: boolean;
 }
 
 type Mode = "select" | "text" | "arrow" | "box" | "draw";
@@ -145,8 +147,8 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
   const [saveStatus, setSaveStatus] = useState<string | null>(null);
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [showCanvasSettings, setShowCanvasSettings] = useState(false);
-  const [canvasBg, setCanvasBg] = useState<"dark" | "light">("light");
-  const [showGrid, setShowGrid] = useState(false);
+  const [canvasBg, setCanvasBg] = useState<"dark" | "light">(saved?.canvasBg ?? "light");
+  const [showGrid, setShowGrid] = useState(saved?.showGrid ?? false);
   const [undoSnapshot, setUndoSnapshot] = useState<{ notes: StickyNote[]; lines: Line[]; images: CanvasImage[] } | null>(null);
   const redoStackRef = useRef<Line[]>([]);
   const [showHint, setShowHint] = useState(() => !saved || ((saved.lines?.length ?? 0) === 0 && (saved.notes?.length ?? 0) === 0));
@@ -654,6 +656,8 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
         boxes: boxesRef.current,
         camera: { ...cameraRef.current },
         nextNoteId,
+        canvasBg: canvasBgRef.current,
+        showGrid: showGridRef.current,
       });
     } else {
       localStorage.removeItem(STORAGE_PREFIX + whiteboardId);
@@ -998,18 +1002,9 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
     }
   }, [editingTextId, editingTextValue, saveNow]);
 
-  // Auto-save every 10 seconds if there's content
+  // Auto-save every 2 seconds
   useEffect(() => {
-    const interval = setInterval(() => {
-      if (notesRef.current.length > 0 || linesRef.current.length > 0 || imagesRef.current.length > 0) {
-        saveWhiteboardData(whiteboardId, {
-          notes: notesRef.current,
-          lines: linesRef.current,
-          camera: { ...cameraRef.current },
-          nextNoteId,
-        });
-      }
-    }, 2000);
+    const interval = setInterval(saveNow, 2000);
     return () => clearInterval(interval);
   }, [whiteboardId]);
 
@@ -1120,7 +1115,8 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
 
   const handleClose = useCallback(() => {
     saveNow();
-    onClose(notesRef.current.length > 0 || linesRef.current.length > 0 || imagesRef.current.length > 0);
+    const hasContent = notesRef.current.length > 0 || linesRef.current.length > 0 || imagesRef.current.length > 0 || textsRef.current.length > 0 || arrowsRef.current.length > 0 || boxesRef.current.length > 0;
+    onClose(hasContent);
   }, [saveNow, onClose]);
 
   const exportPng = useCallback(() => {
