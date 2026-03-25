@@ -1661,8 +1661,8 @@ body {
 .graph-switcher-dropdown {
   position: absolute;
   top: 100%;
-  left: 8px;
-  right: 8px;
+  left: 0;
+  min-width: 220px;
   background: var(--bg-secondary);
   border: 1px solid var(--border);
   border-radius: 6px;
