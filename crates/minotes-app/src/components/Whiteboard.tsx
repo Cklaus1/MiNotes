@@ -1213,6 +1213,25 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
           }
         }
       }
+      // Arrow keys — move selected element (1px, or 10px with Shift)
+      if (selectedElement && !editingNote && !editingTextId &&
+          (e.key === "ArrowUp" || e.key === "ArrowDown" || e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+        e.preventDefault();
+        const step = e.shiftKey ? 10 : 1;
+        const dx = e.key === "ArrowLeft" ? -step : e.key === "ArrowRight" ? step : 0;
+        const dy = e.key === "ArrowUp" ? -step : e.key === "ArrowDown" ? step : 0;
+        const { type, id } = selectedElement;
+        if (type === "note") setNotes((prev) => prev.map((n) => n.id === id ? { ...n, x: n.x + dx, y: n.y + dy } : n));
+        else if (type === "text") setTexts((prev) => prev.map((t) => t.id === id ? { ...t, x: t.x + dx, y: t.y + dy } : t));
+        else if (type === "box") setBoxes((prev) => prev.map((b) => b.id === id ? { ...b, x: b.x + dx, y: b.y + dy } : b));
+        else if (type === "image") setImages((prev) => prev.map((img) => img.id === id ? { ...img, x: img.x + dx, y: img.y + dy } : img));
+        else if (type === "arrow") setArrows((prev) => prev.map((a) => a.id === id ? { ...a, x1: a.x1 + dx, y1: a.y1 + dy, x2: a.x2 + dx, y2: a.y2 + dy } : a));
+        else if (type === "line") {
+          const idx = parseInt(id);
+          setLines((prev) => prev.map((l, i) => i === idx ? { ...l, points: l.points.map((p) => ({ x: p.x + dx, y: p.y + dy })) } : l));
+        }
+        setTimeout(saveNow, 200);
+      }
       if ((e.key === "Delete" || e.key === "Backspace") && selectedElement && !editingNote && !editingTextId) {
         e.preventDefault();
         const { type, id } = selectedElement;
