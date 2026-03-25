@@ -2869,10 +2869,11 @@ body.theme-light { /* matches our light theme */ }
 
 .settings-info-icon {
   display: inline-block;
+  position: relative;
   margin-left: 5px;
   font-size: 12px;
   color: var(--text-muted);
-  cursor: help;
+  cursor: pointer;
   opacity: 0.6;
   vertical-align: middle;
 }
@@ -2880,6 +2881,26 @@ body.theme-light { /* matches our light theme */ }
 .settings-info-icon:hover {
   opacity: 1;
   color: var(--accent);
+}
+
+.settings-tooltip {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-secondary);
+  white-space: normal;
+  width: 200px;
+  line-height: 1.4;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+  z-index: 10;
+  animation: mm-minimap-in 0.15s ease-out;
 }
 
 .settings-advanced-toggle {

@@ -13,6 +13,8 @@ export default function SettingsPanel({ open, onClose }: Props) {
   const [currentTheme, setCurrentTheme] = useState(getTheme);
   const [stats, setStats] = useState<api.GraphStats | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [activeTooltip, setActiveTooltip] = useState<string | null>(null);
+  const tooltipTimerRef = { current: null as ReturnType<typeof setTimeout> | null };
 
   useEffect(() => {
     if (open) {
@@ -121,7 +123,17 @@ export default function SettingsPanel({ open, onClose }: Props) {
               <div className="settings-row">
                 <span className="settings-row-label">
                   Full Tree Mode
-                  <span className="settings-info-icon" title="Shows ├── / └── connector lines between parent and child blocks, making the hierarchy visible">ⓘ</span>
+                  <span
+                    className="settings-info-icon"
+                    onMouseEnter={() => { tooltipTimerRef.current = setTimeout(() => setActiveTooltip("tree"), 250); }}
+                    onMouseLeave={() => { if (tooltipTimerRef.current) clearTimeout(tooltipTimerRef.current); if (activeTooltip === "tree") setActiveTooltip(null); }}
+                    onClick={() => setActiveTooltip(activeTooltip === "tree" ? null : "tree")}
+                  >
+                    ⓘ
+                    {activeTooltip === "tree" && (
+                      <span className="settings-tooltip">Show block connectors</span>
+                    )}
+                  </span>
                 </span>
                 <label className="settings-toggle">
                   <input
@@ -134,8 +146,18 @@ export default function SettingsPanel({ open, onClose }: Props) {
               </div>
               <div className="settings-row">
                 <span className="settings-row-label">
-                  Obsidian Editor
-                  <span className="settings-info-icon" title="Enables a CodeMirror 6 source editor per block, similar to Obsidian's markdown editing mode">ⓘ</span>
+                  Source Editing Mode
+                  <span
+                    className="settings-info-icon"
+                    onMouseEnter={() => { tooltipTimerRef.current = setTimeout(() => setActiveTooltip("source"), 250); }}
+                    onMouseLeave={() => { if (tooltipTimerRef.current) clearTimeout(tooltipTimerRef.current); if (activeTooltip === "source") setActiveTooltip(null); }}
+                    onClick={() => setActiveTooltip(activeTooltip === "source" ? null : "source")}
+                  >
+                    ⓘ
+                    {activeTooltip === "source" && (
+                      <span className="settings-tooltip">Edit blocks in a source-style editor (like Obsidian). Required for some plugins.</span>
+                    )}
+                  </span>
                 </span>
                 <label className="settings-toggle">
                   <input
