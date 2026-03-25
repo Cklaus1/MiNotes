@@ -1917,6 +1917,40 @@ body {
   letter-spacing: 0.05em;
 }
 
+.whiteboard-undo-toast {
+  position: absolute;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 16px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+  z-index: 20;
+  animation: mm-minimap-in 0.2s ease-out;
+}
+
+.whiteboard-undo-toast button {
+  background: none;
+  border: none;
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+
+.whiteboard-undo-toast button:hover {
+  background: rgba(137, 180, 250, 0.15);
+}
+
 .whiteboard-indicator {
   display: inline-flex;
   align-items: center;

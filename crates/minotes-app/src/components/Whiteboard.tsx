@@ -80,6 +80,7 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
   const [noteColor, setNoteColor] = useState(NOTE_COLORS[0]);
   const [saveStatus, setSaveStatus] = useState<string | null>(null);
   const [showExportMenu, setShowExportMenu] = useState(false);
+  const [undoSnapshot, setUndoSnapshot] = useState<{ notes: StickyNote[]; lines: Line[] } | null>(null);
   const [showHint, setShowHint] = useState(() => !saved || ((saved.lines?.length ?? 0) === 0 && (saved.notes?.length ?? 0) === 0));
 
   // Camera / pan / zoom state stored in refs for performance
@@ -605,11 +606,23 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
   }, [whiteboardId]);
 
   const clearCanvas = useCallback(() => {
+    // Snapshot for undo
+    setUndoSnapshot({ notes: [...notesRef.current], lines: [...linesRef.current] });
     setNotes([]);
     setLines([]);
     localStorage.removeItem(STORAGE_PREFIX + whiteboardId);
     requestRedraw();
+    // Auto-dismiss undo after 5 seconds
+    setTimeout(() => setUndoSnapshot(null), 5000);
   }, [whiteboardId, requestRedraw]);
+
+  const undoClear = useCallback(() => {
+    if (!undoSnapshot) return;
+    setNotes(undoSnapshot.notes);
+    setLines(undoSnapshot.lines);
+    setUndoSnapshot(null);
+    setTimeout(saveNow, 50);
+  }, [undoSnapshot, saveNow]);
 
   // Keyboard: Escape to close, close editing; S/D to switch modes
   useEffect(() => {
@@ -781,6 +794,14 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
             </button>
           </div>
         </>
+      )}
+
+      {/* Undo clear toast */}
+      {undoSnapshot && (
+        <div className="whiteboard-undo-toast">
+          Canvas cleared
+          <button onClick={undoClear}>Undo</button>
+        </div>
       )}
     </div>
   );
