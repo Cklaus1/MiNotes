@@ -1924,6 +1924,12 @@ body {
   color: rgba(166, 173, 200, 0.4);
 }
 
+.whiteboard-text-editor.whiteboard-text-callout {
+  border: 1px solid;
+  border-radius: 8px;
+  border-bottom-width: 1px;
+}
+
 .whiteboard-canvas.whiteboard-drop-active {
   outline: 3px dashed var(--accent);
   outline-offset: -3px;

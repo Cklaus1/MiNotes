@@ -33,6 +33,20 @@ interface TextElement {
   text: string;
   color: string;
   size: "S" | "M" | "L";
+  callout: boolean; // true = rounded bg, false = plain text
+}
+
+// Callout color mapping: user color → light bg + dark text (high contrast)
+const CALLOUT_STYLES: Record<string, { bg: string; text: string; border: string }> = {
+  "#cdd6f4": { bg: "rgba(205,214,244,0.15)", text: "#cdd6f4", border: "rgba(205,214,244,0.3)" },  // white/text
+  "#89b4fa": { bg: "rgba(137,180,250,0.15)", text: "#89b4fa", border: "rgba(137,180,250,0.3)" },  // blue
+  "#a6e3a1": { bg: "rgba(166,227,161,0.15)", text: "#a6e3a1", border: "rgba(166,227,161,0.3)" },  // green
+  "#f9e2af": { bg: "rgba(249,226,175,0.15)", text: "#1e1e2e", border: "rgba(249,226,175,0.4)" },  // yellow
+  "#f38ba8": { bg: "rgba(243,139,168,0.15)", text: "#f38ba8", border: "rgba(243,139,168,0.3)" },  // red
+};
+
+function getCalloutStyle(color: string) {
+  return CALLOUT_STYLES[color] ?? { bg: "rgba(255,255,255,0.1)", text: color, border: "rgba(255,255,255,0.2)" };
 }
 
 interface Arrow {
@@ -121,6 +135,7 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
   const [boxes, setBoxes] = useState<Box[]>(saved?.boxes ?? []);
   const [mode, setMode] = useState<Mode>("select");
   const [textSize, setTextSize] = useState<"S" | "M" | "L">("M");
+  const [textCallout, setTextCallout] = useState(true);
   const [drawColor, setDrawColor] = useState(DRAW_COLORS[1]);
   const [noteColor, setNoteColor] = useState(NOTE_COLORS[0]);
   const [saveStatus, setSaveStatus] = useState<string | null>(null);
@@ -337,15 +352,52 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
       drawArrow(ctx, a.x1, a.y1, a.x2, a.y2, drawColor);
     }
 
-    // Draw text elements
+    // Draw text elements (plain + callout)
     for (const te of textsRef.current) {
+      if (!te.text) continue;
       const fontSize = te.size === "S" ? 14 : te.size === "L" ? 24 : 18;
       ctx.font = `500 ${fontSize}px -apple-system, BlinkMacSystemFont, sans-serif`;
-      ctx.fillStyle = te.color;
       ctx.textBaseline = "top";
-      const lines = te.text.split("\n");
-      for (let i = 0; i < lines.length; i++) {
-        ctx.fillText(lines[i], te.x, te.y + i * (fontSize * 1.3));
+      const textLines = te.text.split("\n");
+      const lineHeight = fontSize * 1.3;
+      const pad = 10;
+
+      if (te.callout) {
+        // Measure text for callout background
+        let maxW = 0;
+        for (const line of textLines) {
+          const w = ctx.measureText(line).width;
+          if (w > maxW) maxW = w;
+        }
+        const totalH = textLines.length * lineHeight;
+        const style = getCalloutStyle(te.color);
+
+        // Background
+        const rx = 8; // border radius
+        const bx = te.x - pad;
+        const by = te.y - pad;
+        const bw = maxW + pad * 2;
+        const bh = totalH + pad * 2;
+
+        ctx.fillStyle = style.bg;
+        ctx.beginPath();
+        ctx.roundRect(bx, by, bw, bh, rx);
+        ctx.fill();
+        ctx.strokeStyle = style.border;
+        ctx.lineWidth = 1;
+        ctx.stroke();
+
+        // Text
+        ctx.fillStyle = style.text;
+        for (let i = 0; i < textLines.length; i++) {
+          ctx.fillText(textLines[i], te.x, te.y + i * lineHeight);
+        }
+      } else {
+        // Plain text
+        ctx.fillStyle = te.color;
+        for (let i = 0; i < textLines.length; i++) {
+          ctx.fillText(textLines[i], te.x, te.y + i * lineHeight);
+        }
       }
     }
 
@@ -533,7 +585,7 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
           }
           // Create text element at click position
           const id = "txt-" + Date.now();
-          setTexts((prev) => [...prev, { id, x: world.x, y: world.y, text: "", color: drawColor, size: textSize }]);
+          setTexts((prev) => [...prev, { id, x: world.x, y: world.y, text: "", color: drawColor, size: textSize, callout: textCallout }]);
           setEditingTextId(id);
           setEditingTextValue("");
           setTimeout(() => textInputRef.current?.focus(), 0);
@@ -1031,19 +1083,37 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
         )}
 
         {mode === "text" && (
-          <div className="whiteboard-toolbar-group">
-            <span className="whiteboard-toolbar-label">Size:</span>
-            {(["S", "M", "L"] as const).map((s) => (
+          <>
+            <div className="whiteboard-toolbar-group">
               <button
-                key={s}
-                className={`btn btn-sm ${textSize === s ? "btn-primary" : ""}`}
-                onClick={() => setTextSize(s)}
-                style={{ minWidth: 28, padding: "2px 6px", fontSize: 11 }}
+                className={`btn btn-sm ${textCallout ? "btn-primary" : ""}`}
+                onClick={() => setTextCallout(true)}
+                style={{ fontSize: 11, padding: "2px 8px" }}
               >
-                {s}
+                Callout
               </button>
-            ))}
-          </div>
+              <button
+                className={`btn btn-sm ${!textCallout ? "btn-primary" : ""}`}
+                onClick={() => setTextCallout(false)}
+                style={{ fontSize: 11, padding: "2px 8px" }}
+              >
+                Plain
+              </button>
+            </div>
+            <div className="whiteboard-toolbar-group">
+              <span className="whiteboard-toolbar-label">Size:</span>
+              {(["S", "M", "L"] as const).map((s) => (
+                <button
+                  key={s}
+                  className={`btn btn-sm ${textSize === s ? "btn-primary" : ""}`}
+                  onClick={() => setTextSize(s)}
+                  style={{ minWidth: 28, padding: "2px 6px", fontSize: 11 }}
+                >
+                  {s}
+                </button>
+              ))}
+            </div>
+          </>
         )}
 
         <div className="whiteboard-toolbar-group" style={{ position: "relative" }}>
@@ -1153,14 +1223,17 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
         return (
           <textarea
             ref={textInputRef}
-            className="whiteboard-text-editor"
+            className={`whiteboard-text-editor ${te.callout ? "whiteboard-text-callout" : ""}`}
             style={{
-              left: sx,
-              top: sy,
+              left: sx - (te.callout ? 10 * cam.zoom : 0),
+              top: sy - (te.callout ? 10 * cam.zoom : 0),
               fontSize: fontSize * cam.zoom,
-              color: te.color,
-              minWidth: 100 * cam.zoom,
+              color: te.callout ? getCalloutStyle(te.color).text : te.color,
+              backgroundColor: te.callout ? getCalloutStyle(te.color).bg : "transparent",
+              borderColor: te.callout ? getCalloutStyle(te.color).border : "var(--accent)",
+              minWidth: 120 * cam.zoom,
               minHeight: fontSize * 1.5 * cam.zoom,
+              padding: te.callout ? `${10 * cam.zoom}px` : "2px 4px",
             }}
             value={editingTextValue}
             onChange={(e) => setEditingTextValue(e.target.value)}
