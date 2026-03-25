@@ -1904,6 +1904,26 @@ body {
   cursor: crosshair;
 }
 
+.whiteboard-text-editor {
+  position: absolute;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid var(--accent);
+  color: inherit;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  font-weight: 500;
+  line-height: 1.3;
+  padding: 2px 4px;
+  resize: none;
+  outline: none;
+  z-index: 20;
+  overflow: hidden;
+}
+
+.whiteboard-text-editor::placeholder {
+  color: rgba(166, 173, 200, 0.4);
+}
+
 .whiteboard-canvas.whiteboard-drop-active {
   outline: 3px dashed var(--accent);
   outline-offset: -3px;

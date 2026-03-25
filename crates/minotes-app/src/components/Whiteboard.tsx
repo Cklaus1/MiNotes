@@ -155,6 +155,9 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
   }>({ noteId: null, offsetX: 0, offsetY: 0 });
 
   const [editingNote, setEditingNote] = useState<string | null>(null);
+  const [editingTextId, setEditingTextId] = useState<string | null>(null);
+  const [editingTextValue, setEditingTextValue] = useState("");
+  const textInputRef = useRef<HTMLTextAreaElement>(null);
   const [editText, setEditText] = useState("");
   const editInputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -524,13 +527,16 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
         }
 
         if (mode === "text") {
+          // If already editing a text, finish it first
+          if (editingTextId) {
+            finishTextEdit();
+          }
           // Create text element at click position
           const id = "txt-" + Date.now();
           setTexts((prev) => [...prev, { id, x: world.x, y: world.y, text: "", color: drawColor, size: textSize }]);
-          // Enter edit mode for this text
-          setEditingNote(id); // reuse editingNote state for text editing
-          setEditText("");
-          setTimeout(() => editInputRef.current?.focus(), 0);
+          setEditingTextId(id);
+          setEditingTextValue("");
+          setTimeout(() => textInputRef.current?.focus(), 0);
           return;
         }
 
@@ -762,6 +768,21 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
     }
   }, [editingNote, editText, saveNow]);
 
+  const finishTextEdit = useCallback(() => {
+    if (editingTextId) {
+      const val = editingTextValue.trim();
+      if (val) {
+        setTexts((prev) => prev.map((t) => (t.id === editingTextId ? { ...t, text: val } : t)));
+      } else {
+        // Remove empty text elements
+        setTexts((prev) => prev.filter((t) => t.id !== editingTextId));
+      }
+      setEditingTextId(null);
+      setEditingTextValue("");
+      setTimeout(saveNow, 50);
+    }
+  }, [editingTextId, editingTextValue, saveNow]);
+
   // Auto-save every 10 seconds if there's content
   useEffect(() => {
     const interval = setInterval(() => {
@@ -908,7 +929,7 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
         }
       }
       // Quick mode switch (only when not editing)
-      if (!editingNote) {
+      if (!editingNote && !editingTextId) {
         if (e.key === "s" || e.key === "S") setMode("select");
         if (e.key === "t" || e.key === "T") setMode("text");
         if (e.key === "a" || e.key === "A") setMode("arrow");
@@ -1120,6 +1141,39 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
           }}
         />
       )}
+
+      {/* Text element editing overlay */}
+      {editingTextId && (() => {
+        const te = texts.find((t) => t.id === editingTextId);
+        if (!te) return null;
+        const cam = cameraRef.current;
+        const sx = te.x * cam.zoom + cam.x;
+        const sy = te.y * cam.zoom + cam.y;
+        const fontSize = te.size === "S" ? 14 : te.size === "L" ? 24 : 18;
+        return (
+          <textarea
+            ref={textInputRef}
+            className="whiteboard-text-editor"
+            style={{
+              left: sx,
+              top: sy,
+              fontSize: fontSize * cam.zoom,
+              color: te.color,
+              minWidth: 100 * cam.zoom,
+              minHeight: fontSize * 1.5 * cam.zoom,
+            }}
+            value={editingTextValue}
+            onChange={(e) => setEditingTextValue(e.target.value)}
+            onBlur={finishTextEdit}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") finishTextEdit();
+              e.stopPropagation();
+            }}
+            autoFocus
+            placeholder="Type here..."
+          />
+        );
+      })()}
 
       {/* Context menu */}
       {contextMenu && (
