@@ -1184,10 +1184,12 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
   const pasteFromTauriClipboard = useCallback(async () => {
     try {
       const { readImage } = await import("@tauri-apps/plugin-clipboard-manager");
+      setSaveStatus("Reading clipboard...");
       const img = await readImage();
       if (img) {
         const [rgba, { width: w, height: h }] = await Promise.all([img.rgba(), img.size()]);
-        if (w && h && rgba) {
+        setSaveStatus(`Image: ${w}x${h}`);
+        if (w && h && rgba && rgba.length > 0) {
           const canvas = document.createElement("canvas");
           canvas.width = w;
           canvas.height = h;
@@ -1197,12 +1199,22 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
             imageData.data.set(new Uint8ClampedArray(rgba));
             ctx.putImageData(imageData, 0, 0);
             canvas.toBlob((blob) => {
-              if (blob) insertImage(blob);
+              if (blob) {
+                insertImage(blob);
+                setSaveStatus("Pasted!");
+                setTimeout(() => setSaveStatus(null), 1500);
+              }
             }, "image/png");
           }
         }
+      } else {
+        setSaveStatus("No image in clipboard");
+        setTimeout(() => setSaveStatus(null), 2000);
       }
     } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setSaveStatus(`Paste failed: ${msg.slice(0, 40)}`);
+      setTimeout(() => setSaveStatus(null), 3000);
       console.warn("Tauri clipboard paste failed:", err);
     }
   }, [insertImage]);
