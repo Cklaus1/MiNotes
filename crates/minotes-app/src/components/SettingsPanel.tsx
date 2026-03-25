@@ -21,6 +21,16 @@ export default function SettingsPanel({ open, onClose }: Props) {
     }
   }, [open]);
 
+  // Close on Escape
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [open, onClose]);
+
   if (!open) return null;
 
   const toggle = (key: keyof MiNotesSettings, value: any) => {
@@ -34,34 +44,33 @@ export default function SettingsPanel({ open, onClose }: Props) {
   };
 
   return (
-    <div className="settings-slide-panel">
-      <div className="settings-header">
-        <span>Settings</span>
-        <button className="btn btn-sm" onClick={onClose}>×</button>
-      </div>
+    <>
+      {/* Click-outside overlay to close */}
+      <div className="settings-backdrop" onClick={onClose} />
 
-      {/* Theme row */}
-      <div className="settings-section">
-        <div className="settings-row">
-          <div className="settings-row-info">
-            <div className="settings-row-name">Theme</div>
-          </div>
-          <select
-            className="settings-select"
-            value={currentTheme}
-            onChange={e => handleThemeChange(e.target.value as "dark" | "light")}
-          >
-            <option value="dark">Dark</option>
-            <option value="light">Light</option>
-          </select>
+      <div className="settings-slide-panel">
+        {/* Header */}
+        <div className="settings-header">
+          <span className="settings-title">Settings</span>
+          <button className="settings-close-btn" onClick={onClose}>×</button>
         </div>
-      </div>
 
-      {/* Toggles row — side by side */}
-      <div className="settings-section">
-        <div className="settings-toggles-row">
-          <div className="settings-toggle-item">
-            <span className="settings-toggle-label">Full Tree Mode</span>
+        {/* Appearance */}
+        <div className="settings-section">
+          <div className="settings-section-title">Appearance</div>
+          <div className="settings-row">
+            <span className="settings-row-label">Theme</span>
+            <select
+              className="settings-select"
+              value={currentTheme}
+              onChange={e => handleThemeChange(e.target.value as "dark" | "light")}
+            >
+              <option value="dark">Dark</option>
+              <option value="light">Light</option>
+            </select>
+          </div>
+          <div className="settings-row">
+            <span className="settings-row-label">Full Tree Mode</span>
             <label className="settings-toggle">
               <input
                 type="checkbox"
@@ -71,8 +80,13 @@ export default function SettingsPanel({ open, onClose }: Props) {
               <span className="settings-toggle-slider" />
             </label>
           </div>
-          <div className="settings-toggle-item">
-            <span className="settings-toggle-label">Obsidian Editor Mode</span>
+        </div>
+
+        {/* Editor */}
+        <div className="settings-section">
+          <div className="settings-section-title">Editor</div>
+          <div className="settings-row">
+            <span className="settings-row-label">Obsidian Editor Mode</span>
             <label className="settings-toggle">
               <input
                 type="checkbox"
@@ -82,71 +96,57 @@ export default function SettingsPanel({ open, onClose }: Props) {
               <span className="settings-toggle-slider" />
             </label>
           </div>
+          {settings.obsidianEditorEnabled && (
+            <div className="settings-row">
+              <span className="settings-row-label">Default Editor</span>
+              <select
+                className="settings-select"
+                value={settings.defaultEditorMode}
+                onChange={e => toggle("defaultEditorMode", e.target.value)}
+              >
+                <option value="minotes">MiNotes</option>
+                <option value="obsidian">Obsidian</option>
+              </select>
+            </div>
+          )}
         </div>
 
-        {settings.obsidianEditorEnabled && (
-          <div className="settings-row" style={{ marginTop: 8 }}>
-            <div className="settings-row-info">
-              <div className="settings-row-name" style={{ fontSize: 12 }}>Default Editor</div>
+        {/* Keyboard shortcuts */}
+        <div className="settings-section">
+          <div className="settings-section-title">Keyboard Shortcuts</div>
+          <div className="shortcuts-grid">
+            {[
+              ["Ctrl+K", "Search"],
+              ["Ctrl+J", "Journal"],
+              ["Ctrl+N", "New Page"],
+              ["Ctrl+G", "Graph"],
+              ["Ctrl+M", "Mind Map"],
+              ["Ctrl+W", "Draw"],
+              ["Ctrl+,", "Settings"],
+              ["Ctrl+Z", "Undo"],
+              ["/", "Commands"],
+              ["Tab", "Indent"],
+              ["Enter", "New Block"],
+              ["Esc", "Close"],
+            ].map(([key, desc]) => (
+              <div key={key} className="shortcut-row">
+                <kbd className="shortcut-key">{key}</kbd>
+                <span className="shortcut-desc">{desc}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Workspace */}
+        {stats && (
+          <div className="settings-section">
+            <div className="settings-section-title">Workspace</div>
+            <div className="settings-workspace-stats">
+              {stats.pages} pages · {stats.blocks} blocks · {stats.links} links
             </div>
-            <select
-              className="settings-select"
-              value={settings.defaultEditorMode}
-              onChange={e => toggle("defaultEditorMode", e.target.value)}
-            >
-              <option value="minotes">Mi Edit</option>
-              <option value="obsidian">Obsidian Edit</option>
-            </select>
           </div>
         )}
       </div>
-
-      {/* Keyboard shortcuts — 2 column */}
-      <div className="settings-section">
-        <div className="settings-section-title">Keyboard Shortcuts</div>
-        <div className="shortcuts-grid">
-          {[
-            ["Ctrl+K", "Search / Commands"],
-            ["Ctrl+J", "Journal"],
-            ["Ctrl+N", "New Page"],
-            ["Ctrl+Q", "SQL Query"],
-            ["Ctrl+G", "Graph View"],
-            ["Ctrl+R", "Flashcards"],
-            ["Ctrl+W", "Whiteboard"],
-            ["Ctrl+M", "Mind Map"],
-            ["Ctrl+P", "Open PDF"],
-            ["Ctrl+,", "Settings"],
-            ["Ctrl+Z", "Undo"],
-            ["Ctrl+Shift+T", "Toggle Theme"],
-            ["/", "Slash Commands"],
-            ["Tab", "Indent Block"],
-            ["Enter", "New Block"],
-            ["Esc", "Close / Blur"],
-          ].map(([key, desc]) => (
-            <div key={key} className="shortcut-row">
-              <kbd className="shortcut-key">{key}</kbd>
-              <span className="shortcut-desc">{desc}</span>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* Workspace */}
-      {stats && (
-        <div className="settings-section">
-          <div className="settings-section-title">Workspace</div>
-          <div style={{ fontSize: 12, color: "var(--text-secondary)", padding: "2px 0" }}>
-            {stats.pages} pages · {stats.blocks} blocks · {stats.links} links
-          </div>
-        </div>
-      )}
-
-      {/* About */}
-      <div className="settings-section">
-        <div style={{ fontSize: 11, color: "var(--text-muted)", textAlign: "center", padding: "4px 0" }}>
-          MiNotes · Rust + TypeScript · Tauri 2
-        </div>
-      </div>
-    </div>
+    </>
   );
 }
