@@ -368,6 +368,7 @@ export default function App() {
           }
         }}
         onSettingsClick={() => setSettingsOpen(prev => !prev)}
+        activeMode={graphOpen ? "graph" : mindmapOpen ? "mindmap" : whiteboardId ? "whiteboard" : null}
         refreshKey={refreshKey}
       />
       <div className="main workspace-split mod-root" style={{ position: "relative", display: "flex", flexDirection: "row" }}>

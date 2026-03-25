@@ -23,12 +23,13 @@ interface Props {
   onMindmapClick: () => void;
   onWhiteboardClick: () => void;
   onSettingsClick: () => void;
+  activeMode: "graph" | "mindmap" | "whiteboard" | null;
   refreshKey: number;
 }
 
 export default function Sidebar({
   activePage, stats, onPageClick, onCreatePage, onDeletePage,
-  onJournalClick, onSearchClick, onGraphClick, onMindmapClick, onWhiteboardClick, onSettingsClick, refreshKey,
+  onJournalClick, onSearchClick, onGraphClick, onMindmapClick, onWhiteboardClick, onSettingsClick, activeMode, refreshKey,
 }: Props) {
   const [newTitle, setNewTitle] = useState("");
   const [showCreate, setShowCreate] = useState(false);
@@ -242,13 +243,13 @@ export default function Sidebar({
           </span>
         )}
         <div className="stats-modes">
-          <button className="stats-mode-btn" onClick={onGraphClick} title="Graph view (Ctrl+G)">
+          <button className={`stats-mode-btn ${activeMode === "graph" ? "active" : ""}`} onClick={onGraphClick} title="Graph (Ctrl+G)">
             🔗 Graph
           </button>
-          <button className="stats-mode-btn" onClick={onMindmapClick} title="Mind map (Ctrl+M)">
+          <button className={`stats-mode-btn ${activeMode === "mindmap" ? "active" : ""}`} onClick={onMindmapClick} title="Mind Map (Ctrl+M)">
             🧠 Mind Map
           </button>
-          <button className="stats-mode-btn" onClick={onWhiteboardClick} title="Whiteboard (Ctrl+W)">
+          <button className={`stats-mode-btn ${activeMode === "whiteboard" ? "active" : ""}`} onClick={onWhiteboardClick} title="Draw (Ctrl+W)">
             🎨 Draw
           </button>
         </div>
