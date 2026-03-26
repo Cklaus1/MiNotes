@@ -115,8 +115,17 @@
 }
 
 .block-content .ProseMirror ul[data-type="taskList"] li > label input[type="checkbox"] {
+  -webkit-appearance: checkbox;
+  appearance: checkbox;
   accent-color: var(--accent);
   cursor: pointer;
+  width: 16px;
+  height: 16px;
+  min-width: 16px;
+  min-height: 16px;
+  margin: 0;
+  border: 2px solid var(--text-muted);
+  border-radius: 3px;
 }
 
 .block-content .ProseMirror ul[data-type="taskList"] li > div {
