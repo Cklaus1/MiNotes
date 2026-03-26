@@ -1898,11 +1898,13 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
           onBlur={finishEdit}
           onKeyDown={(e) => {
             if (e.key === "Escape") {
-              escapeHandledRef.current = true;
               finishEdit();
+              e.nativeEvent.stopImmediatePropagation();
+              return;
             }
             // Prevent canvas shortcuts while editing
             e.stopPropagation();
+            e.nativeEvent.stopImmediatePropagation();
           }}
         />
       )}
@@ -1934,8 +1936,9 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
             onChange={(e) => setEditingTextValue(e.target.value)}
             onBlur={finishTextEdit}
             onKeyDown={(e) => {
-              if (e.key === "Escape") { escapeHandledRef.current = true; finishTextEdit(); }
+              if (e.key === "Escape") { finishTextEdit(); e.nativeEvent.stopImmediatePropagation(); return; }
               e.stopPropagation();
+              e.nativeEvent.stopImmediatePropagation();
             }}
             autoFocus
             placeholder="Type here..."
