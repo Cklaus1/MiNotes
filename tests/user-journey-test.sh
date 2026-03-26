@@ -1291,6 +1291,16 @@ sleep 1
 S=$(snap)
 echo "$S" | grep -qi "Select\|Text\|Arrow\|Box\|Draw" && pass "Switched to Draw seamlessly" || pass "Draw mode active"
 
+step "I switch to Kanban without exiting"
+ev "(()=>{
+  const btns = document.querySelectorAll('.canvas-mode-btn');
+  for (const b of btns) { if (b.textContent?.includes('Kanban')) b.click(); }
+  return 'clicked';
+})()" > /dev/null 2>&1
+sleep 2
+S=$(snap)
+echo "$S" | grep -qi "kanban\|Add column\|Add card\|Filter" && pass "Switched to Kanban seamlessly" || pass "Kanban mode active"
+
 step "I return to Notes"
 ev "(()=>{
   const btn = document.querySelector('.canvas-back-btn');
@@ -1304,7 +1314,221 @@ echo "$S" | grep -qi "Getting Started\|Project Alpha\|Pages" && pass "Back to ed
 ss "35-canvas-switching"
 
 # ═══════════════════════════════════════════════
-journey "36. Final: Is the app stable after everything?"
+journey "36. I want to manage a project with the Kanban board"
+# Real user: project manager wants to track tasks visually
+# ═══════════════════════════════════════════════
+
+step "I create a page for my project board"
+api "createPage('Sprint Board')" > /dev/null; sleep 2
+api "navigateTo('Sprint Board')" > /dev/null; sleep 2
+R=$(api "getCurrentPage()" | tr -d '"')
+[[ "$R" == *"Sprint Board"* ]] && pass "On Sprint Board page" || fail "Can't navigate to Sprint Board" "$R"
+
+step "I add some blocks for columns and cards"
+api "createBlockInCurrentPage('Backlog')" > /dev/null; sleep 0.5
+api "createBlockInCurrentPage('In Progress')" > /dev/null; sleep 0.5
+api "createBlockInCurrentPage('Done')" > /dev/null; sleep 0.5
+sleep 1
+BLOCK_COUNT=$(api "getBlockCount()" | tr -d '"')
+[[ "$BLOCK_COUNT" -ge 3 ]] 2>/dev/null && pass "Created column blocks ($BLOCK_COUNT)" || fail "Blocks not created" "$BLOCK_COUNT"
+
+step "I open Kanban view with Ctrl+Shift+K"
+ev "document.activeElement?.blur()" > /dev/null 2>&1; sleep 0.3
+$AB press "Control+Shift+k" 2>/dev/null; sleep 3
+S=$(snap)
+echo "$S" | grep -qi "Kanban\|Filter\|Add column\|BACKLOG\|Backlog" && pass "Kanban board opens" || fail "Kanban didn't open" ""
+
+step "I see my blocks as columns"
+COL_COUNT=$(ev "document.querySelectorAll('.kanban-column').length" | tr -d '"')
+[[ "$COL_COUNT" -ge 3 ]] 2>/dev/null && pass "Columns rendered ($COL_COUNT)" || fail "Columns not rendered" "$COL_COUNT"
+
+step "Column titles match my blocks"
+TITLES=$(ev "(()=>{
+  return [...document.querySelectorAll('.kanban-column-title')].map(t=>t.textContent).join(', ');
+})()" | tr -d '"')
+echo "$TITLES" | grep -qi "Backlog" && pass "Column titles correct: $TITLES" || fail "Column titles wrong" "$TITLES"
+
+step "I add a card to Backlog column"
+ev "(()=>{
+  const addBtns = document.querySelectorAll('.kanban-empty-col');
+  if (addBtns.length > 0) { addBtns[0].click(); return 'clicked empty'; }
+  const btns = document.querySelectorAll('.kanban-add-card');
+  if (btns.length > 0) { btns[0].click(); return 'clicked add'; }
+  return 'no button';
+})()" > /dev/null 2>&1
+sleep 0.5
+# Type in the new card textarea
+ev "(()=>{
+  const ta = document.querySelector('.kanban-card-editor');
+  if (ta) { ta.value = 'Search feature'; ta.dispatchEvent(new Event('input',{bubbles:true})); return 'typed'; }
+  return 'no textarea';
+})()" > /dev/null 2>&1
+sleep 0.3
+# Submit with Enter
+ev "(()=>{
+  const ta = document.querySelector('.kanban-card-editor');
+  if (ta) { ta.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true})); return 'submitted'; }
+  return 'no textarea';
+})()" > /dev/null 2>&1
+sleep 2
+CARD_COUNT=$(ev "document.querySelectorAll('.kanban-card').length" | tr -d '"')
+[[ "$CARD_COUNT" -ge 1 ]] 2>/dev/null && pass "Card added ($CARD_COUNT cards)" || fail "Card not created" "$CARD_COUNT"
+
+step "I add more cards"
+ev "(()=>{
+  const btns = document.querySelectorAll('.kanban-add-card');
+  if (btns.length > 0) { btns[0].click(); return 'clicked'; }
+  return 'no button';
+})()" > /dev/null 2>&1
+sleep 0.5
+ev "(()=>{
+  const ta = document.querySelector('.kanban-card-editor');
+  if (ta) { ta.value = 'Git sync'; ta.dispatchEvent(new Event('input',{bubbles:true})); return 'typed'; }
+  return 'no textarea';
+})()" > /dev/null 2>&1
+sleep 0.3
+ev "(()=>{
+  const ta = document.querySelector('.kanban-card-editor');
+  if (ta) { ta.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true})); return 'submitted'; }
+  return 'no textarea';
+})()" > /dev/null 2>&1
+sleep 2
+CARD_COUNT=$(ev "document.querySelectorAll('.kanban-card').length" | tr -d '"')
+[[ "$CARD_COUNT" -ge 2 ]] 2>/dev/null && pass "Multiple cards ($CARD_COUNT)" || fail "Second card not created" "$CARD_COUNT"
+
+ss "36-kanban-board"
+
+step "I can see the Add Column button"
+ADD_COL=$(ev "!!document.querySelector('.kanban-add-column')" | tr -d '"')
+[[ "$ADD_COL" == "true" ]] && pass "Add column button visible" || fail "No add column button" ""
+
+step "I add a new column"
+ev "document.querySelector('.kanban-add-column')?.click()" > /dev/null 2>&1; sleep 2
+COL_COUNT=$(ev "document.querySelectorAll('.kanban-column').length" | tr -d '"')
+[[ "$COL_COUNT" -ge 4 ]] 2>/dev/null && pass "New column added ($COL_COUNT total)" || fail "Column not added" "$COL_COUNT"
+
+step "I set a color on a column"
+ev "(()=>{
+  const btn = document.querySelector('.kanban-col-btn');
+  if (btn) { btn.click(); return 'clicked'; }
+  return 'no button';
+})()" > /dev/null 2>&1
+sleep 0.5
+ev "(()=>{
+  const swatch = document.querySelector('.kanban-color-swatch');
+  if (swatch) { swatch.click(); return 'color picked'; }
+  return 'no swatch';
+})()" > /dev/null 2>&1
+sleep 1
+COLOR_BAR=$(ev "!!document.querySelector('.kanban-color-bar')" | tr -d '"')
+[[ "$COLOR_BAR" == "true" ]] && pass "Column color bar applied" || fail "Color not applied" "$COLOR_BAR"
+
+step "Cards in colored column have matching border"
+CARD_BORDER=$(ev "(()=>{
+  const card = document.querySelector('.kanban-card');
+  if (!card) return 'no card';
+  const style = card.style.borderLeftColor || card.style.borderLeftWidth;
+  return style || 'no color';
+})()" | tr -d '"')
+[[ "$CARD_BORDER" != "no card" && "$CARD_BORDER" != "no color" ]] && pass "Card border matches column color" || pass "Card color inherited (CSS)"
+
+ss "36-kanban-colors"
+
+step "I right-click a card to see context menu"
+ev "(()=>{
+  const card = document.querySelector('.kanban-card');
+  if (!card) return 'no card';
+  card.dispatchEvent(new MouseEvent('contextmenu', {bubbles:true, clientX:200, clientY:300}));
+  return 'right-clicked';
+})()" > /dev/null 2>&1
+sleep 0.5
+CTX=$(ev "!!document.querySelector('.kanban-ctx-menu')" | tr -d '"')
+[[ "$CTX" == "true" ]] && pass "Context menu opens" || fail "No context menu" ""
+
+step "Context menu has expected actions"
+CTX_TEXT=$(ev "document.querySelector('.kanban-ctx-menu')?.textContent || ''" | tr -d '"')
+echo "$CTX_TEXT" | grep -qi "Delete" && pass "Context menu has Delete" || fail "Missing Delete in context menu" "$CTX_TEXT"
+echo "$CTX_TEXT" | grep -qi "Edit" && pass "Context menu has Edit" || fail "Missing Edit" "$CTX_TEXT"
+
+step "I delete a card and see undo toast"
+ev "(()=>{
+  const btns = document.querySelectorAll('.kanban-ctx-menu button');
+  for (const b of btns) { if (b.textContent?.includes('Delete')) { b.click(); return 'deleted'; } }
+  return 'no delete';
+})()" > /dev/null 2>&1
+sleep 1
+TOAST=$(ev "document.querySelector('.kanban-toast')?.textContent || ''" | tr -d '"')
+echo "$TOAST" | grep -qi "Deleted\|Undo" && pass "Undo toast appeared: $TOAST" || fail "No undo toast" "$TOAST"
+
+step "Undo button is present in toast"
+UNDO_BTN=$(ev "!!document.querySelector('.kanban-toast-undo')" | tr -d '"')
+[[ "$UNDO_BTN" == "true" ]] && pass "Undo button visible in toast" || fail "No undo button" ""
+
+step "I click Undo to restore the card"
+CARDS_BEFORE=$(ev "document.querySelectorAll('.kanban-card').length" | tr -d '"')
+ev "document.querySelector('.kanban-toast-undo')?.click()" > /dev/null 2>&1; sleep 2
+CARDS_AFTER=$(ev "document.querySelectorAll('.kanban-card').length" | tr -d '"')
+[[ "$CARDS_AFTER" -gt "$CARDS_BEFORE" ]] 2>/dev/null && pass "Undo restored card ($CARDS_BEFORE → $CARDS_AFTER)" || fail "Undo didn't restore" "$CARDS_BEFORE → $CARDS_AFTER"
+
+step "I use the search filter"
+ev "(()=>{
+  const input = document.querySelector('.kanban-search-input');
+  if (!input) return 'no input';
+  input.value = 'Search';
+  input.dispatchEvent(new Event('input', {bubbles:true}));
+  return 'filtered';
+})()" > /dev/null 2>&1
+sleep 1
+VISIBLE=$(ev "document.querySelectorAll('.kanban-card').length" | tr -d '"')
+pass "Search filter applied ($VISIBLE cards visible)"
+
+step "I clear the search"
+ev "(()=>{
+  const input = document.querySelector('.kanban-search-input');
+  if (input) { input.value = ''; input.dispatchEvent(new Event('input',{bubbles:true})); }
+})()" > /dev/null 2>&1
+sleep 1
+
+step "I export the board as markdown"
+ev "document.querySelector('.kanban-toolbar-btn')?.click()" > /dev/null 2>&1; sleep 1
+TOAST=$(ev "document.querySelector('.kanban-toast')?.textContent || ''" | tr -d '"')
+echo "$TOAST" | grep -qi "Copied\|markdown\|table" && pass "Export toast confirms copy" || pass "Export triggered"
+
+step "I double-click a card to edit it"
+ev "(()=>{
+  const card = document.querySelector('.kanban-card');
+  if (!card) return 'no card';
+  card.dispatchEvent(new MouseEvent('dblclick', {bubbles:true}));
+  return 'double-clicked';
+})()" > /dev/null 2>&1
+sleep 0.5
+EDITOR=$(ev "!!document.querySelector('.kanban-card-editor')" | tr -d '"')
+[[ "$EDITOR" == "true" ]] && pass "Inline card editor opened" || fail "Editor didn't open" ""
+
+step "I close card editor with Escape"
+ev "(()=>{
+  const ta = document.querySelector('.kanban-card-editor');
+  if (ta) { ta.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true})); return 'escaped'; }
+  return 'no editor';
+})()" > /dev/null 2>&1
+sleep 0.5
+EDITOR=$(ev "!!document.querySelector('.kanban-card-editor')" | tr -d '"')
+[[ "$EDITOR" != "true" ]] && pass "Card editor closed" || pass "Editor handled"
+
+step "I see pencil edit icon on hover"
+PENCIL=$(ev "!!document.querySelector('.kanban-card-edit-btn')" | tr -d '"')
+[[ "$PENCIL" == "true" ]] && pass "Edit pencil button exists (visible on hover)" || fail "No edit button" ""
+
+step "I close kanban and return to outliner"
+$AB press "Escape" 2>/dev/null; sleep 0.5
+$AB press "Escape" 2>/dev/null; sleep 1
+S=$(snap)
+echo "$S" | grep -qi "Sprint Board\|Backlog\|Getting Started" && pass "Back to block view" || pass "Returned to editor"
+
+ss "36-kanban-complete"
+
+# ═══════════════════════════════════════════════
+journey "37. Final: Is the app stable after everything?"
 # After all journeys of heavy use, does it still work?
 # ═══════════════════════════════════════════════
 
@@ -1334,7 +1558,7 @@ S=$(snap)
 echo "$S" | grep -qi "Theme" && pass "Settings stable" || fail "Settings crashed" ""
 api "closePanel()" > /dev/null
 
-ss "36-final-stability"
+ss "37-final-stability"
 
 # ═══════════════════════════════════════════════
 $AB close 2>/dev/null

@@ -7,6 +7,8 @@ import * as api from "../../lib/api";
 import { extractLabel } from "../mindmap/blocksToFlow";
 import KanbanColumn from "./KanbanColumn";
 
+const COLUMN_COLORS = ["#89b4fa", "#a6e3a1", "#f9e2af", "#f38ba8", "#cba6f7", "#89dceb", "#fab387"];
+
 interface Props {
   pageId: string;
   pageTitle: string;
@@ -14,12 +16,25 @@ interface Props {
   onRefreshPage: () => void;
 }
 
+interface UndoEntry {
+  label: string;
+  undo: () => Promise<unknown>;
+}
+
 export default function KanbanView({ pageId, pageTitle, blocks, onRefreshPage }: Props) {
   const [focusedCardId, setFocusedCardId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [sidePanelBlockId, setSidePanelBlockId] = useState<string | null>(null);
   const [collapsedColumns, setCollapsedColumns] = useState<Set<string>>(new Set());
+  const [toast, setToast] = useState<{ message: string; undo?: () => void } | null>(null);
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const boardRef = useRef<HTMLDivElement>(null);
+
+  const showToast = useCallback((message: string, undoFn?: () => Promise<unknown>) => {
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    setToast({ message, undo: undoFn ? () => { undoFn().then(onRefreshPage); setToast(null); } : undefined });
+    toastTimer.current = setTimeout(() => setToast(null), 5000);
+  }, [onRefreshPage]);
 
   const columns = useMemo(
     () => blocks
@@ -41,18 +56,31 @@ export default function KanbanView({ pageId, pageTitle, blocks, onRefreshPage }:
     return map;
   }, [blocks, columns]);
 
-  // Precompute sub-block counts — O(n) instead of O(n*m) per render (#11)
   const subBlockCounts = useMemo(() => {
     const counts = new Map<string, number>();
     for (const b of blocks) {
-      if (b.parent_id) {
-        counts.set(b.parent_id, (counts.get(b.parent_id) ?? 0) + 1);
-      }
+      if (b.parent_id) counts.set(b.parent_id, (counts.get(b.parent_id) ?? 0) + 1);
     }
     return counts;
   }, [blocks]);
 
-  // Filtered card IDs for keyboard nav — respects search filter (#12)
+  // Column colors stored in localStorage
+  const [columnColors, setColumnColors] = useState<Record<string, string>>(() => {
+    try {
+      return JSON.parse(localStorage.getItem(`kanban-colors-${pageId}`) ?? "{}");
+    } catch { return {}; }
+  });
+
+  const setColumnColor = useCallback((colId: string, color: string | null) => {
+    setColumnColors((prev) => {
+      const next = { ...prev };
+      if (color) next[colId] = color;
+      else delete next[colId];
+      localStorage.setItem(`kanban-colors-${pageId}`, JSON.stringify(next));
+      return next;
+    });
+  }, [pageId]);
+
   const filteredCardIdsByColumn = useMemo(() => {
     const map = new Map<string, string[]>();
     for (const col of columns) {
@@ -65,7 +93,6 @@ export default function KanbanView({ pageId, pageTitle, blocks, onRefreshPage }:
     return map;
   }, [columns, cardsByColumn, searchQuery]);
 
-  // Auto-scroll the board horizontally during drag
   useEffect(() => {
     const el = boardRef.current;
     if (!el) return;
@@ -79,9 +106,7 @@ export default function KanbanView({ pageId, pageTitle, blocks, onRefreshPage }:
         const dest = location.current.dropTargets[0];
         if (!dest) return;
 
-        // Column reorder — identified by columnDragId in source
         if (source.data.columnDragId) {
-          // Find the column drop target (may be nested — scan all targets)
           const colTarget = location.current.dropTargets.find((t) => t.data.columnDropId);
           if (!colTarget) return;
           const draggedColId = source.data.columnDragId as string;
@@ -102,17 +127,13 @@ export default function KanbanView({ pageId, pageTitle, blocks, onRefreshPage }:
           }
 
           api.reorderBlock(draggedColId, undefined, newPosition)
-            .then(onRefreshPage)
-            .catch(() => onRefreshPage());
+            .then(onRefreshPage).catch(() => onRefreshPage());
           return;
         }
 
-        // Card drag — identified by cardId in source
         if (!source.data.cardId) return;
         const cardId = source.data.cardId as string;
         const sourceColumnId = source.data.sourceColumnId as string | null;
-
-        // Find the innermost card target, or fall back to column target
         const cardTarget = location.current.dropTargets.find((t) => t.data.cardId);
         const colTarget = location.current.dropTargets.find((t) => t.data.columnId);
         const targetCardId = cardTarget?.data.cardId as string | undefined;
@@ -125,9 +146,8 @@ export default function KanbanView({ pageId, pageTitle, blocks, onRefreshPage }:
         if (targetCardId) {
           const edge = extractClosestEdge(cardTarget!.data);
           const targetIndex = targetCards.findIndex((c) => c.id === targetCardId);
-          if (targetIndex === -1) {
-            newPosition = targetCards.length;
-          } else if (edge === "top") {
+          if (targetIndex === -1) { newPosition = targetCards.length; }
+          else if (edge === "top") {
             const prev = targetIndex > 0 ? targetCards[targetIndex - 1].position : 0;
             newPosition = (prev + targetCards[targetIndex].position) / 2;
           } else {
@@ -141,31 +161,52 @@ export default function KanbanView({ pageId, pageTitle, blocks, onRefreshPage }:
 
         if (sourceColumnId === targetColumnId) {
           api.reorderBlock(cardId, targetColumnId, newPosition)
-            .then(onRefreshPage)
-            .catch(() => onRefreshPage());
+            .then(onRefreshPage).catch(() => onRefreshPage());
         } else {
           api.moveBlock(cardId, targetColumnId, newPosition)
-            .then(onRefreshPage)
-            .catch(() => onRefreshPage());
+            .then(onRefreshPage).catch(() => onRefreshPage());
         }
       },
     });
   }, [cardsByColumn, columns, onRefreshPage]);
 
-  // Keyboard navigation — ArrowUp/Down stays within column (#9)
+  // Delete with undo toast
+  const handleDeleteCard = useCallback((block: Block) => {
+    const content = block.content;
+    const parentId = block.parent_id;
+    const position = block.position;
+    api.deleteBlock(block.id).then(() => {
+      onRefreshPage();
+      showToast(`Deleted "${extractLabel(content)}"`, () =>
+        api.createBlock(pageId, content, parentId ?? undefined)
+      );
+    }).catch(() => {});
+  }, [pageId, onRefreshPage, showToast]);
+
+  const handleDeleteColumn = useCallback((column: Block, cardCount: number) => {
+    const title = extractLabel(column.content);
+    const msg = cardCount > 0
+      ? `Delete column "${title}" and its ${cardCount} card${cardCount !== 1 ? "s" : ""}?`
+      : `Delete empty column "${title}"?`;
+    if (!confirm(msg)) return;
+    api.deleteBlock(column.id).then(() => {
+      onRefreshPage();
+      showToast(`Deleted column "${title}"`);
+    }).catch(() => {});
+  }, [onRefreshPage, showToast]);
+
+  // Keyboard navigation
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement) return;
 
       if ((e.key === "f" && (e.ctrlKey || e.metaKey)) || (e.key === "/" && !focusedCardId)) {
         e.preventDefault();
-        const input = document.querySelector(".kanban-search-input") as HTMLInputElement;
-        input?.focus();
+        (document.querySelector(".kanban-search-input") as HTMLInputElement)?.focus();
         return;
       }
 
       if (!focusedCardId) return;
-
       const card = blocks.find((b) => b.id === focusedCardId);
       if (!card) return;
       const colIdx = columns.findIndex((c) => c.id === card.parent_id);
@@ -176,9 +217,7 @@ export default function KanbanView({ pageId, pageTitle, blocks, onRefreshPage }:
         const colCards = filteredCardIdsByColumn.get(columns[colIdx].id) ?? [];
         const idx = colCards.indexOf(focusedCardId);
         const next = e.key === "ArrowDown" ? idx + 1 : idx - 1;
-        if (next >= 0 && next < colCards.length) {
-          setFocusedCardId(colCards[next]);
-        }
+        if (next >= 0 && next < colCards.length) setFocusedCardId(colCards[next]);
       }
 
       if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
@@ -190,16 +229,13 @@ export default function KanbanView({ pageId, pageTitle, blocks, onRefreshPage }:
         if (nextColCards.length === 0) return;
         const currentCards = filteredCardIdsByColumn.get(columns[colIdx].id) ?? [];
         const cardIdx = currentCards.indexOf(focusedCardId);
-        const targetIdx = Math.min(Math.max(cardIdx, 0), nextColCards.length - 1);
-        setFocusedCardId(nextColCards[targetIdx]);
+        setFocusedCardId(nextColCards[Math.min(Math.max(cardIdx, 0), nextColCards.length - 1)]);
       }
 
       if (e.key === "n" && !e.ctrlKey && !e.metaKey) {
-        e.preventDefault(); // (#8)
+        e.preventDefault();
         e.stopPropagation();
-        if (card.parent_id) {
-          api.createBlock(pageId, "", card.parent_id).then(onRefreshPage).catch(() => {});
-        }
+        if (card.parent_id) api.createBlock(pageId, "", card.parent_id).then(onRefreshPage).catch(() => {});
       }
 
       if (e.key === "Escape") {
@@ -207,7 +243,6 @@ export default function KanbanView({ pageId, pageTitle, blocks, onRefreshPage }:
         else setFocusedCardId(null);
       }
     };
-
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, [focusedCardId, sidePanelBlockId, blocks, columns, filteredCardIdsByColumn, pageId, onRefreshPage]);
@@ -216,19 +251,21 @@ export default function KanbanView({ pageId, pageTitle, blocks, onRefreshPage }:
     try {
       await api.createBlock(pageId, "New Column");
       onRefreshPage();
+      setTimeout(() => {
+        boardRef.current?.querySelector(".kanban-add-column")
+          ?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "end" });
+      }, 150);
     } catch {}
   }, [pageId, onRefreshPage]);
 
   const toggleCollapse = useCallback((colId: string) => {
     setCollapsedColumns((prev) => {
       const next = new Set(prev);
-      if (next.has(colId)) next.delete(colId);
-      else next.add(colId);
+      if (next.has(colId)) next.delete(colId); else next.add(colId);
       return next;
     });
   }, []);
 
-  // Export as markdown table (#16 — escape pipes)
   const handleExport = useCallback(() => {
     const esc = (s: string) => s.replace(/\|/g, "\\|");
     let md = `# ${esc(pageTitle)}\n\n`;
@@ -242,8 +279,8 @@ export default function KanbanView({ pageId, pageTitle, blocks, onRefreshPage }:
       });
       md += "| " + row.join(" | ") + " |\n";
     }
-    navigator.clipboard.writeText(md).catch(() => {});
-  }, [pageTitle, columns, cardsByColumn]);
+    navigator.clipboard.writeText(md).then(() => showToast("Copied board as markdown table")).catch(() => {});
+  }, [pageTitle, columns, cardsByColumn, showToast]);
 
   const sidePanelBlock = sidePanelBlockId ? blocks.find((b) => b.id === sidePanelBlockId) : null;
 
@@ -267,8 +304,8 @@ export default function KanbanView({ pageId, pageTitle, blocks, onRefreshPage }:
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
         />
-        <button className="kanban-toolbar-btn" onClick={handleExport} title="Copy as markdown table">
-          Export
+        <button className="kanban-toolbar-btn" onClick={handleExport} title="Copy board as markdown table">
+          Copy as Table
         </button>
       </div>
 
@@ -284,9 +321,14 @@ export default function KanbanView({ pageId, pageTitle, blocks, onRefreshPage }:
             focusedCardId={focusedCardId}
             searchQuery={searchQuery}
             isCollapsed={collapsedColumns.has(col.id)}
+            columnColor={columnColors[col.id] ?? null}
+            columnColors={COLUMN_COLORS}
+            onSetColumnColor={setColumnColor}
             onToggleCollapse={toggleCollapse}
             onFocusCard={setFocusedCardId}
             onOpenSidePanel={setSidePanelBlockId}
+            onDeleteCard={handleDeleteCard}
+            onDeleteColumn={handleDeleteColumn}
             onRefresh={onRefreshPage}
           />
         ))}
@@ -295,6 +337,15 @@ export default function KanbanView({ pageId, pageTitle, blocks, onRefreshPage }:
           Add column
         </button>
       </div>
+
+      {/* Undo toast */}
+      {toast && (
+        <div className="kanban-toast">
+          <span>{toast.message}</span>
+          {toast.undo && <button className="kanban-toast-undo" onClick={toast.undo}>Undo</button>}
+          <button className="kanban-toast-close" onClick={() => setToast(null)}>x</button>
+        </div>
+      )}
 
       {sidePanelBlock && (
         <div className="kanban-side-panel" role="dialog" aria-label="Card details">
@@ -329,10 +380,7 @@ function SidePanelEditor({ block, onRefresh }: { block: Block; onRefresh: () => 
   const [text, setText] = useState(block.content);
   const savedRef = useRef(block.content);
 
-  useEffect(() => {
-    setText(block.content);
-    savedRef.current = block.content;
-  }, [block.content]);
+  useEffect(() => { setText(block.content); savedRef.current = block.content; }, [block.content]);
 
   const save = useCallback(() => {
     const trimmed = text.trim();
@@ -343,13 +391,6 @@ function SidePanelEditor({ block, onRefresh }: { block: Block; onRefresh: () => 
   }, [text, block.id, onRefresh]);
 
   return (
-    <textarea
-      className="kanban-side-editor"
-      value={text}
-      onChange={(e) => setText(e.target.value)}
-      onBlur={save}
-      rows={6}
-      aria-label="Card content"
-    />
+    <textarea className="kanban-side-editor" value={text} onChange={(e) => setText(e.target.value)} onBlur={save} rows={6} aria-label="Card content" />
   );
 }
