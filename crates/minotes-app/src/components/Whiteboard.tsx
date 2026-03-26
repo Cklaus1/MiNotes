@@ -198,7 +198,9 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
     offsetY: number;
   }>({ noteId: null, offsetX: 0, offsetY: 0 });
 
-  const [editingNote, setEditingNote] = useState<string | null>(null);
+  const [editingNote, _setEditingNote] = useState<string | null>(null);
+  const editingNoteRef = useRef<string | null>(null);
+  const setEditingNote = useCallback((v: string | null) => { _setEditingNote(v); editingNoteRef.current = v; }, []);
   const [editingTextId, _setEditingTextId] = useState<string | null>(null);
   const [editingTextValue, _setEditingTextValue] = useState("");
   const editingTextIdRef = useRef<string | null>(null);
@@ -206,7 +208,9 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
   const setEditingTextId = useCallback((v: string | null) => { _setEditingTextId(v); editingTextIdRef.current = v; }, []);
   const setEditingTextValue = useCallback((v: string) => { _setEditingTextValue(v); editingTextValueRef.current = v; }, []);
   const textInputRef = useRef<HTMLTextAreaElement>(null);
-  const [editText, setEditText] = useState("");
+  const [editText, _setEditText] = useState("");
+  const editTextRef = useRef("");
+  const setEditText = useCallback((v: string) => { _setEditText(v); editTextRef.current = v; }, []);
   const editInputRef = useRef<HTMLTextAreaElement>(null);
 
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; noteId: string } | null>(null);
@@ -1223,14 +1227,17 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
   }, []);
 
   const finishEdit = useCallback(() => {
-    if (editingNote) {
+    const id = editingNoteRef.current;
+    const text = editTextRef.current;
+    if (id) {
       setNotes((prev) =>
-        prev.map((n) => (n.id === editingNote ? { ...n, text: editText } : n))
+        prev.map((n) => (n.id === id ? { ...n, text } : n))
       );
       setEditingNote(null);
+      setEditText("");
       setTimeout(saveNow, 50);
     }
-  }, [editingNote, editText, saveNow]);
+  }, [saveNow, setEditingNote, setEditText]);
 
   const finishTextEdit = useCallback(() => {
     // Read from refs to avoid stale closure (mouseDown handler may have outdated state)
