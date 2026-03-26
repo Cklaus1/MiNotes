@@ -129,7 +129,7 @@ export default function SettingsPanel({ open, onClose }: Props) {
                     onMouseLeave={() => { if (tooltipTimerRef.current) clearTimeout(tooltipTimerRef.current); if (activeTooltip === "tree") setActiveTooltip(null); }}
                     onClick={() => setActiveTooltip(activeTooltip === "tree" ? null : "tree")}
                   >
-                    ⓘ
+                    ?
                     {activeTooltip === "tree" && (
                       <span className="settings-tooltip">Show block connectors</span>
                     )}
@@ -153,7 +153,7 @@ export default function SettingsPanel({ open, onClose }: Props) {
                     onMouseLeave={() => { if (tooltipTimerRef.current) clearTimeout(tooltipTimerRef.current); if (activeTooltip === "source") setActiveTooltip(null); }}
                     onClick={() => setActiveTooltip(activeTooltip === "source" ? null : "source")}
                   >
-                    ⓘ
+                    ?
                     {activeTooltip === "source" && (
                       <span className="settings-tooltip">Edit blocks in a source-style editor (like Obsidian). Required for some plugins.</span>
                     )}

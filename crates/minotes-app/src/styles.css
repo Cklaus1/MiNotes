@@ -2868,19 +2868,28 @@ body.theme-light { /* matches our light theme */ }
 }
 
 .settings-info-icon {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   position: relative;
-  margin-left: 5px;
-  font-size: 12px;
+  margin-left: 6px;
+  width: 14px;
+  height: 14px;
+  font-size: 9px;
+  font-weight: 700;
   color: var(--text-muted);
+  border: 1px solid var(--text-muted);
+  border-radius: 50%;
   cursor: pointer;
-  opacity: 0.6;
+  opacity: 0.5;
   vertical-align: middle;
+  transition: opacity 0.15s, border-color 0.15s, color 0.15s;
 }
 
 .settings-info-icon:hover {
   opacity: 1;
   color: var(--accent);
+  border-color: var(--accent);
 }
 
 .settings-tooltip {
