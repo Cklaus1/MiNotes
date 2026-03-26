@@ -10,6 +10,7 @@ import LinkPreview from "./LinkPreview";
 import { undoStack } from "../lib/undoStack";
 import { registerTestApi } from "../lib/testApi";
 import TableOfContents from "./TableOfContents";
+import { downloadHtml, printPage } from "../lib/exportPage";
 interface Props {
   pageTree: PageTree;
   onUpdateBlock: (id: string, content: string) => void;
@@ -825,6 +826,13 @@ export default function PageView({
           style={{ marginLeft: "auto" }}
         >
           ≡
+        </button>
+        <button
+          className="prop-toggle-btn"
+          onClick={() => downloadHtml(pageTree)}
+          title="Export as HTML"
+        >
+          ↗
         </button>
         <button
           className="prop-toggle-btn"

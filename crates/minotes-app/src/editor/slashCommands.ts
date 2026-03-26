@@ -5,6 +5,7 @@ import { PluginKey } from "@tiptap/pm/state";
 import tippy, { type Instance as TippyInstance } from "tippy.js";
 import { SlashMenu, type SlashMenuItem } from "./SlashMenu";
 import { generateWhiteboardId } from "../lib/whiteboardUtils";
+import { BUILTIN_TEMPLATES } from "../lib/builtinTemplates";
 
 /*
  * Slash commands use two strategies:
@@ -15,9 +16,14 @@ import { generateWhiteboardId } from "../lib/whiteboardUtils";
  * to avoid a shared module-level singleton race condition across multiple blocks.
  */
 
-export function setSlashCallbacks(editor: any, command: (markdown: string) => void, save: () => void) {
+export function setSlashCallbacks(
+  editor: any,
+  command: (markdown: string) => void,
+  save: () => void,
+  template?: (lines: string[]) => void,
+) {
   if (editor) {
-    (editor.storage as any).slashCallbacks = { command, save };
+    (editor.storage as any).slashCallbacks = { command, save, template };
   }
 }
 
@@ -103,6 +109,20 @@ const COMMANDS: SlashMenuItem[] = [
       (editor.storage as any).slashCallbacks?.command(`{{whiteboard:${wbId}}}`);
     },
   },
+  // Templates — each gets a slash command entry
+  ...BUILTIN_TEMPLATES.map((t) => ({
+    title: `Template: ${t.name}`,
+    description: `template ${t.description}`,
+    command: ({ editor, range }: { editor: any; range: any }) => {
+      // Set current block to first template line, pass remaining lines as multiline insert
+      const [first, ...rest] = t.blocks;
+      (editor.storage as any).slashCallbacks?.command(first ?? "");
+      // Insert remaining blocks via the onPasteMultiline mechanism
+      if (rest.length > 0) {
+        (editor.storage as any).slashCallbacks?.template?.(rest);
+      }
+    },
+  })),
 ];
 
 export const SlashCommands = Extension.create({

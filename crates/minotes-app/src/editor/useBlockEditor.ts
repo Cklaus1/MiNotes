@@ -11,6 +11,7 @@ import { Table } from "@tiptap/extension-table";
 import { TableRow } from "@tiptap/extension-table-row";
 import { TableCell } from "@tiptap/extension-table-cell";
 import { TableHeader } from "@tiptap/extension-table-header";
+import Image from "@tiptap/extension-image";
 import { common, createLowlight } from "lowlight";
 import { Markdown } from "tiptap-markdown";
 import { WikiLinkNode } from "./WikiLinkNode";
@@ -119,6 +120,7 @@ export function useBlockEditor({
         },
       }).configure({ nested: true }),
       Highlight,
+      Image.configure({ inline: false, allowBase64: true }),
       Typography,
       Placeholder.configure({
         placeholder: ({ editor }) => editor.isFocused ? "Type '/' for commands" : "",
@@ -298,6 +300,32 @@ export function useBlockEditor({
         return false;
       },
       handlePaste(view, event) {
+        // Image paste: convert to data URL and insert as image node
+        const files = event.clipboardData?.files;
+        if (files && files.length > 0) {
+          const file = files[0];
+          if (file.type.startsWith('image/')) {
+            event.preventDefault();
+            const reader = new FileReader();
+            reader.onload = () => {
+              const src = reader.result as string;
+              const ed = editorInstanceRef.current;
+              if (ed) {
+                ed.chain().focus().setImage({ src }).run();
+                // Save after inserting image
+                setTimeout(() => {
+                  const md = (ed.storage as any).markdown?.getMarkdown?.() ?? "";
+                  contentRef.current = md.trim();
+                  skipSyncRef.current = true;
+                  onSaveRef.current(md.trim());
+                }, 50);
+              }
+            };
+            reader.readAsDataURL(file);
+            return true;
+          }
+        }
+
         const text = event.clipboardData?.getData('text/plain') ?? '';
 
         // Don't split if inside a code block
@@ -395,6 +423,10 @@ export function useBlockEditor({
             }
             slashActiveRef.current = false;
           }, 20);
+        },
+        // Template callback: insert remaining lines as new blocks
+        (lines: string[]) => {
+          onPasteMultilineRef.current?.(lines);
         },
       );
     }
