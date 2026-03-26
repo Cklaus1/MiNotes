@@ -199,8 +199,12 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
   }>({ noteId: null, offsetX: 0, offsetY: 0 });
 
   const [editingNote, setEditingNote] = useState<string | null>(null);
-  const [editingTextId, setEditingTextId] = useState<string | null>(null);
-  const [editingTextValue, setEditingTextValue] = useState("");
+  const [editingTextId, _setEditingTextId] = useState<string | null>(null);
+  const [editingTextValue, _setEditingTextValue] = useState("");
+  const editingTextIdRef = useRef<string | null>(null);
+  const editingTextValueRef = useRef("");
+  const setEditingTextId = useCallback((v: string | null) => { _setEditingTextId(v); editingTextIdRef.current = v; }, []);
+  const setEditingTextValue = useCallback((v: string) => { _setEditingTextValue(v); editingTextValueRef.current = v; }, []);
   const textInputRef = useRef<HTMLTextAreaElement>(null);
   const [editText, setEditText] = useState("");
   const editInputRef = useRef<HTMLTextAreaElement>(null);
@@ -1229,19 +1233,23 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
   }, [editingNote, editText, saveNow]);
 
   const finishTextEdit = useCallback(() => {
-    if (editingTextId) {
-      const val = editingTextValue.trim();
+    // Read from refs to avoid stale closure (mouseDown handler may have outdated state)
+    const id = editingTextIdRef.current;
+    const val = editingTextValueRef.current.trim();
+    if (id) {
       if (val) {
-        setTexts((prev) => prev.map((t) => (t.id === editingTextId ? { ...t, text: val } : t)));
+        setTexts((prev) => prev.map((t) => (t.id === id ? { ...t, text: val } : t)));
       } else {
         // Remove empty text elements
-        setTexts((prev) => prev.filter((t) => t.id !== editingTextId));
+        setTexts((prev) => prev.filter((t) => t.id !== id));
       }
       setEditingTextId(null);
+      editingTextIdRef.current = null;
       setEditingTextValue("");
+      editingTextValueRef.current = "";
       setTimeout(saveNow, 50);
     }
-  }, [editingTextId, editingTextValue, saveNow]);
+  }, [saveNow]);
 
   // Auto-save every 2 seconds
   useEffect(() => {
