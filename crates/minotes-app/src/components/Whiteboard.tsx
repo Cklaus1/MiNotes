@@ -210,6 +210,7 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
   const textInputRef = useRef<HTMLTextAreaElement>(null);
   const [editText, _setEditText] = useState("");
   const editTextRef = useRef("");
+  const escapeHandledRef = useRef(false);
   const setEditText = useCallback((v: string) => { _setEditText(v); editTextRef.current = v; }, []);
   const editInputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -1574,9 +1575,9 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
-        // If Escape came from inside a text/note editor, the textarea already handled it — skip
-        const target = e.target as HTMLElement;
-        if (target.closest('.whiteboard-text-editor') || target.closest('.whiteboard-note-editor')) {
+        // If a textarea already handled this Escape, skip
+        if (escapeHandledRef.current) {
+          escapeHandledRef.current = false;
           return;
         }
         if (editingNoteRef.current) {
@@ -1897,6 +1898,7 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
           onBlur={finishEdit}
           onKeyDown={(e) => {
             if (e.key === "Escape") {
+              escapeHandledRef.current = true;
               finishEdit();
             }
             // Prevent canvas shortcuts while editing
@@ -1932,7 +1934,7 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
             onChange={(e) => setEditingTextValue(e.target.value)}
             onBlur={finishTextEdit}
             onKeyDown={(e) => {
-              if (e.key === "Escape") finishTextEdit();
+              if (e.key === "Escape") { escapeHandledRef.current = true; finishTextEdit(); }
               e.stopPropagation();
             }}
             autoFocus
