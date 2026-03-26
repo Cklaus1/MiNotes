@@ -192,6 +192,16 @@ export default function App() {
         setWhiteboardId(null);
         return true;
       },
+      createPage: async (title: string) => {
+        await createPage(title);
+        return true;
+      },
+      createBlockInCurrentPage: async (content: string) => {
+        if (!activePage) return false;
+        await api.createBlock(activePage.page.id, content);
+        openPage(activePage.page.id);
+        return true;
+      },
       getCurrentPage: () => activePage?.page.title ?? null,
       isPanelOpen: (name: string) => {
         const map: Record<string, boolean> = {

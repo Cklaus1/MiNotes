@@ -19,6 +19,8 @@ export interface MiNotesTestApi {
   openSettings: () => boolean;
   closePanel: () => boolean;
   refreshSidebar: () => boolean;
+  createPage: (title: string) => Promise<boolean>;
+  createBlockInCurrentPage: (content: string) => Promise<boolean>;
   getCurrentPage: () => string | null;
   getBlockCount: () => number;
   isPanelOpen: (name: string) => boolean;
