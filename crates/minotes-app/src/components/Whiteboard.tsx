@@ -115,22 +115,34 @@ function loadWhiteboardData(id: string): WhiteboardData | null {
   return null;
 }
 
-function saveWhiteboardData(id: string, data: WhiteboardData) {
-  let json = JSON.stringify(data);
-  // If payload is > 4MB, strip image dataUrls to avoid quota issues
-  if (json.length > 4 * 1024 * 1024 && data.images && data.images.length > 0) {
-    const trimmed: WhiteboardData = { ...data, images: data.images.map(img => ({ ...img, dataUrl: "" })) };
-    json = JSON.stringify(trimmed);
-    console.warn("Whiteboard save: payload exceeded 4 MB — image data was stripped to fit localStorage.");
-  }
+let saving = false;
+
+/** Returns true if image data was truncated due to size. */
+function saveWhiteboardData(id: string, data: WhiteboardData): boolean {
+  if (saving) return false;
+  saving = true;
+  let truncated = false;
   try {
-    localStorage.setItem(STORAGE_PREFIX + id, json);
-  } catch (e) {
-    console.warn("Whiteboard save failed (QuotaExceededError). Data may not persist.", e);
-    return;
+    let json = JSON.stringify(data);
+    // If payload is > 4MB, strip image dataUrls to avoid quota issues
+    if (json.length > 4 * 1024 * 1024 && data.images && data.images.length > 0) {
+      const trimmed: WhiteboardData = { ...data, images: data.images.map(img => ({ ...img, dataUrl: "" })) };
+      json = JSON.stringify(trimmed);
+      truncated = true;
+      console.warn("Whiteboard save: payload exceeded 4 MB — image data was stripped to fit localStorage.");
+    }
+    try {
+      localStorage.setItem(STORAGE_PREFIX + id, json);
+    } catch (e) {
+      console.warn("Whiteboard save failed (QuotaExceededError). Data may not persist.", e);
+      return truncated;
+    }
+    // Notify thumbnails to refresh
+    window.dispatchEvent(new CustomEvent("whiteboard-saved", { detail: id }));
+    return truncated;
+  } finally {
+    saving = false;
   }
-  // Notify thumbnails to refresh
-  window.dispatchEvent(new CustomEvent("whiteboard-saved", { detail: id }));
 }
 
 export default function Whiteboard({ whiteboardId, onClose }: Props) {
@@ -678,7 +690,7 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
   const saveNow = useCallback(() => {
     const hasContent = notesRef.current.length > 0 || linesRef.current.length > 0 || imagesRef.current.length > 0 || textsRef.current.length > 0 || arrowsRef.current.length > 0 || boxesRef.current.length > 0;
     if (hasContent) {
-      saveWhiteboardData(whiteboardId, {
+      const truncated = saveWhiteboardData(whiteboardId, {
         notes: notesRef.current,
         lines: linesRef.current,
         images: imagesRef.current,
@@ -690,6 +702,10 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
         canvasBg: canvasBgRef.current,
         showGrid: showGridRef.current,
       });
+      if (truncated) {
+        setSaveStatus("Images too large to save — use smaller images");
+        setTimeout(() => setSaveStatus(null), 5000);
+      }
     } else {
       localStorage.removeItem(STORAGE_PREFIX + whiteboardId);
     }
@@ -917,6 +933,191 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
       }
 
       // Auto-save after every interaction
+      if (changed) setTimeout(saveNow, 50);
+    },
+    [drawColor, saveNow]
+  );
+
+  // --- Touch event support ---
+  const getTouchPos = useCallback((e: React.TouchEvent<HTMLCanvasElement>): { clientX: number; clientY: number } => {
+    const touch = e.touches[0] ?? e.changedTouches[0];
+    return { clientX: touch.clientX, clientY: touch.clientY };
+  }, []);
+
+  const handleTouchStart = useCallback(
+    (e: React.TouchEvent<HTMLCanvasElement>) => {
+      e.preventDefault();
+      const { clientX, clientY } = getTouchPos(e);
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const rect = canvas.getBoundingClientRect();
+      const sx = clientX - rect.left;
+      const sy = clientY - rect.top;
+      const world = screenToWorld(sx, sy);
+
+      setContextMenu(null);
+
+      if (mode === "draw") {
+        drawingRef.current = { active: true, points: [{ x: world.x, y: world.y }] };
+        return;
+      }
+      if (mode === "arrow") {
+        arrowDrawRef.current = { active: true, x1: world.x, y1: world.y, x2: world.x, y2: world.y };
+        return;
+      }
+      if (mode === "box") {
+        boxDrawRef.current = { active: true, x: world.x, y: world.y, w: 0, h: 0 };
+        return;
+      }
+      if (mode === "select") {
+        const hit = findElementAt(world.x, world.y);
+        if (hit) {
+          setSelectedElement({ type: hit.type, id: hit.id });
+          draggingElementRef.current = { type: hit.type, id: hit.id, offsetX: world.x - hit.x, offsetY: world.y - hit.y };
+          return;
+        }
+        // No element hit — start panning
+        panningRef.current = {
+          active: true,
+          startX: clientX,
+          startY: clientY,
+          camStartX: cameraRef.current.x,
+          camStartY: cameraRef.current.y,
+        };
+        setSelectedElement(null);
+      }
+    },
+    [mode, screenToWorld, findElementAt, getTouchPos]
+  );
+
+  const handleTouchMove = useCallback(
+    (e: React.TouchEvent<HTMLCanvasElement>) => {
+      e.preventDefault();
+      const { clientX, clientY } = getTouchPos(e);
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const rect = canvas.getBoundingClientRect();
+      const sx = clientX - rect.left;
+      const sy = clientY - rect.top;
+
+      if (panningRef.current.active) {
+        const dx = clientX - panningRef.current.startX;
+        const dy = clientY - panningRef.current.startY;
+        cameraRef.current.x = panningRef.current.camStartX + dx;
+        cameraRef.current.y = panningRef.current.camStartY + dy;
+        requestRedraw();
+        return;
+      }
+
+      if (drawingRef.current.active) {
+        const world = screenToWorld(sx, sy);
+        drawingRef.current.points.push({ x: world.x, y: world.y });
+        requestRedraw();
+        return;
+      }
+
+      if (arrowDrawRef.current.active) {
+        const world = screenToWorld(sx, sy);
+        arrowDrawRef.current.x2 = world.x;
+        arrowDrawRef.current.y2 = world.y;
+        requestRedraw();
+        return;
+      }
+
+      if (boxDrawRef.current.active) {
+        const world = screenToWorld(sx, sy);
+        boxDrawRef.current.w = world.x - boxDrawRef.current.x;
+        boxDrawRef.current.h = world.y - boxDrawRef.current.y;
+        requestRedraw();
+        return;
+      }
+
+      if (draggingElementRef.current) {
+        const world = screenToWorld(sx, sy);
+        const nx = world.x - draggingElementRef.current.offsetX;
+        const ny = world.y - draggingElementRef.current.offsetY;
+        const id = draggingElementRef.current.id;
+
+        if (draggingElementRef.current.type === "note") {
+          setNotes((prev) => prev.map((n) => n.id === id ? { ...n, x: nx, y: ny } : n));
+        } else if (draggingElementRef.current.type === "text") {
+          setTexts((prev) => prev.map((t) => t.id === id ? { ...t, x: nx, y: ny } : t));
+        } else if (draggingElementRef.current.type === "box") {
+          setBoxes((prev) => prev.map((b) => b.id === id ? { ...b, x: nx, y: ny } : b));
+        } else if (draggingElementRef.current.type === "image") {
+          setImages((prev) => prev.map((img) => img.id === id ? { ...img, x: nx, y: ny } : img));
+        } else if (draggingElementRef.current.type === "arrow") {
+          const arrow = arrowsRef.current.find((a) => a.id === id);
+          if (arrow) {
+            const dx = nx - Math.min(arrow.x1, arrow.x2);
+            const dy = ny - Math.min(arrow.y1, arrow.y2);
+            setArrows((prev) => prev.map((a) => a.id === id ? { ...a, x1: a.x1 + dx, y1: a.y1 + dy, x2: a.x2 + dx, y2: a.y2 + dy } : a));
+            draggingElementRef.current.offsetX = world.x - nx;
+            draggingElementRef.current.offsetY = world.y - ny;
+          }
+        } else if (draggingElementRef.current.type === "line") {
+          const idx = parseInt(id);
+          const line = linesRef.current[idx];
+          if (line) {
+            let minX = Infinity, minY = Infinity;
+            for (const pt of line.points) { minX = Math.min(minX, pt.x); minY = Math.min(minY, pt.y); }
+            const dx = nx - minX, dy = ny - minY;
+            setLines((prev) => prev.map((l, i) => i === idx ? { ...l, points: l.points.map((p) => ({ x: p.x + dx, y: p.y + dy })) } : l));
+            draggingElementRef.current.offsetX = world.x - nx;
+            draggingElementRef.current.offsetY = world.y - ny;
+          }
+        }
+        requestRedraw();
+      }
+    },
+    [screenToWorld, requestRedraw, getTouchPos]
+  );
+
+  const handleTouchEnd = useCallback(
+    (e: React.TouchEvent<HTMLCanvasElement>) => {
+      e.preventDefault();
+      let changed = false;
+
+      if (panningRef.current.active) {
+        panningRef.current.active = false;
+      }
+
+      if (drawingRef.current.active) {
+        const pts = drawingRef.current.points;
+        if (pts.length >= 2) {
+          setLines((prev) => [...prev, { id: "line-" + Date.now(), points: [...pts], color: drawColor, width: 2 }]);
+          redoStackRef.current = [];
+          changed = true;
+        }
+        drawingRef.current = { active: false, points: [] };
+      }
+
+      if (arrowDrawRef.current.active) {
+        const a = arrowDrawRef.current;
+        const dist = Math.sqrt((a.x2 - a.x1) ** 2 + (a.y2 - a.y1) ** 2);
+        if (dist > 10) {
+          setArrows((prev) => [...prev, { id: "arr-" + Date.now(), x1: a.x1, y1: a.y1, x2: a.x2, y2: a.y2, color: drawColor }]);
+          changed = true;
+        }
+        arrowDrawRef.current = { active: false, x1: 0, y1: 0, x2: 0, y2: 0 };
+      }
+
+      if (boxDrawRef.current.active) {
+        const b = boxDrawRef.current;
+        if (Math.abs(b.w) > 10 && Math.abs(b.h) > 10) {
+          const x = b.w < 0 ? b.x + b.w : b.x;
+          const y = b.h < 0 ? b.y + b.h : b.y;
+          setBoxes((prev) => [...prev, { id: "box-" + Date.now(), x, y, width: Math.abs(b.w), height: Math.abs(b.h), color: drawColor }]);
+          changed = true;
+        }
+        boxDrawRef.current = { active: false, x: 0, y: 0, w: 0, h: 0 };
+      }
+
+      if (draggingElementRef.current) {
+        draggingElementRef.current = null;
+        changed = true;
+      }
+
       if (changed) setTimeout(saveNow, 50);
     },
     [drawColor, saveNow]
@@ -1620,6 +1821,9 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
         onMouseDown={(e) => { setShowHint(false); setShowCanvasSettings(false); setShowExportMenu(false); handleMouseDown(e); }}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
+        onTouchStart={(e) => { setShowHint(false); setShowCanvasSettings(false); setShowExportMenu(false); handleTouchStart(e); }}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
         onDoubleClick={(e) => { setShowHint(false); handleDoubleClick(e); }}
         onWheel={handleWheel}
         onContextMenu={handleContextMenu}

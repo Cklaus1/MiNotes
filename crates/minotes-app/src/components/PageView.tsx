@@ -61,26 +61,38 @@ export default function PageView({
   const [selectedBlockIds, setSelectedBlockIds] = useState<Set<string>>(new Set());
   const [selectionAnchor, setSelectionAnchor] = useState<number | null>(null);
   const blockRefs = useRef<Array<BlockItemHandle | null>>([]);
+  const creatingBlockRef = useRef(false);
 
   // Load page properties
   useEffect(() => {
+    let cancelled = false;
     api.getProperties(page.id).then(props => {
+      if (cancelled) return;
       setPageProps(props);
       if (props.length > 0) setShowProps(true);
     }).catch(() => {});
+    return () => { cancelled = true; };
   }, [page.id]);
 
   // Load aliases
   useEffect(() => {
-    api.getAliases(page.id).then(setAliases).catch(() => {});
+    let cancelled = false;
+    api.getAliases(page.id).then(a => {
+      if (cancelled) return;
+      setAliases(a);
+    }).catch(() => {});
+    return () => { cancelled = true; };
   }, [page.id]);
 
   // Auto-create empty block on empty pages (debounced to avoid race with programmatic block creation)
+  const localBlocksRef = useRef(localBlocks);
+  localBlocksRef.current = localBlocks;
   useEffect(() => {
     if (blocks.length === 0) {
       const timer = setTimeout(async () => {
         // Re-check — blocks might have been added in the meantime
-        if (localBlocks.length === 0) {
+        if (localBlocksRef.current.length === 0 && !creatingBlockRef.current) {
+          creatingBlockRef.current = true;
           try {
             // For virtual journal pages, ensure the page exists first
             if (page.is_journal) {
@@ -101,6 +113,8 @@ export default function PageView({
                 onRefreshPage();
               } catch {}
             }
+          } finally {
+            creatingBlockRef.current = false;
           }
         }
       }, 300);
@@ -408,12 +422,31 @@ export default function PageView({
     const targetSibIdx = siblings.findIndex(b => b.id === targetBlockId);
 
     let newPos: number;
+    let needsRenormalize = false;
     if (position === "above") {
       const prev = targetSibIdx > 0 ? siblings[targetSibIdx - 1].position : 0;
       newPos = (prev + target.position) / 2;
+      if (target.position - prev < 0.001) needsRenormalize = true;
     } else {
       const next = targetSibIdx < siblings.length - 1 ? siblings[targetSibIdx + 1].position : target.position + 1;
       newPos = (target.position + next) / 2;
+      if (next - target.position < 0.001) needsRenormalize = true;
+    }
+
+    if (needsRenormalize) {
+      // Precision exhausted — renormalize all sibling positions to integers
+      const ordered = siblings.filter(b => b.id !== draggedBlockId);
+      const insertIdx = position === "above"
+        ? ordered.findIndex(b => b.id === targetBlockId)
+        : ordered.findIndex(b => b.id === targetBlockId) + 1;
+      ordered.splice(insertIdx, 0, { id: draggedBlockId } as (typeof siblings)[0]);
+      newPos = insertIdx + 1;
+      // Persist renormalized positions for all other siblings
+      for (let i = 0; i < ordered.length; i++) {
+        if (ordered[i].id !== draggedBlockId) {
+          api.reorderBlock(ordered[i].id, target.parent_id ?? undefined, i + 1).catch(() => {});
+        }
+      }
     }
 
     // Optimistic update — update position and re-sort
@@ -436,12 +469,14 @@ export default function PageView({
   const blockTreeInfo = useMemo(() => {
     const childrenMap = new Map<string, string[]>();
     const depthMap = new Map<string, number>();
+    const parentMap = new Map<string, string | null>();
 
-    // Build children map
+    // Build children map and parent map
     for (const block of blocks) {
       const parentKey = block.parent_id ?? "__root__";
       if (!childrenMap.has(parentKey)) childrenMap.set(parentKey, []);
       childrenMap.get(parentKey)!.push(block.id);
+      parentMap.set(block.id, block.parent_id ?? null);
     }
 
     // Compute depths
@@ -461,27 +496,26 @@ export default function PageView({
       getDepth: (id: string) => depthMap.get(id) ?? 0,
       hasChildren: (id: string) => (childrenMap.get(id) ?? []).length > 0,
       isLastSibling: (id: string) => {
-        const block = blocks.find(b => b.id === id);
-        if (!block) return true;
-        const parentKey = block.parent_id ?? "__root__";
+        const pid = parentMap.get(id);
+        const parentKey = pid ?? "__root__";
         const siblings = childrenMap.get(parentKey) ?? [];
         return siblings[siblings.length - 1] === id;
       },
       getAncestorIds: (id: string): string[] => {
         const ancestors: string[] = [];
-        let current = blocks.find(b => b.id === id);
-        while (current?.parent_id) {
-          ancestors.push(current.parent_id);
-          current = blocks.find(b => b.id === current!.parent_id);
+        let pid = parentMap.get(id) ?? null;
+        while (pid) {
+          ancestors.push(pid);
+          pid = parentMap.get(pid) ?? null;
         }
         return ancestors;
       },
       isHiddenByCollapse: (id: string) => {
         // Walk up the parent chain; if any ancestor is collapsed, this block is hidden
-        let current = blocks.find(b => b.id === id);
-        while (current?.parent_id) {
-          if (collapsedBlocks.has(current.parent_id)) return true;
-          current = blocks.find(b => b.id === current!.parent_id);
+        let pid = parentMap.get(id) ?? null;
+        while (pid) {
+          if (collapsedBlocks.has(pid)) return true;
+          pid = parentMap.get(pid) ?? null;
         }
         return false;
       },

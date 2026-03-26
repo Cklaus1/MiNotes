@@ -113,6 +113,8 @@ export default function App() {
       }
     } catch (e) {
       console.error("Failed to update block:", e);
+      setLastError("Failed to save — check your connection");
+      setTimeout(() => setLastError(null), 5000);
     }
   }, [activePage]);
 
@@ -122,6 +124,8 @@ export default function App() {
       if (activePage) await openPage(activePage.page.id);
     } catch (e) {
       console.error("Failed to delete block:", e);
+      setLastError("Failed to delete block — check your connection");
+      setTimeout(() => setLastError(null), 5000);
     }
   }, [activePage, openPage]);
 
@@ -134,6 +138,8 @@ export default function App() {
       await refresh();
     } catch (e) {
       console.error("Failed to delete page:", e);
+      setLastError("Failed to delete page — check your connection");
+      setTimeout(() => setLastError(null), 5000);
     }
   }, [activePage, refresh]);
 
@@ -230,19 +236,19 @@ export default function App() {
         const target = e.target as HTMLElement;
         if (!target.closest(".ProseMirror")) {
           e.preventDefault();
-          executeUndo().then(() => {
-            if (activePage) openPage(activePage.page.id);
-            refresh();
-          });
+          executeUndo()
+            .then(() => activePage ? openPage(activePage.page.id) : Promise.resolve())
+            .then(() => refresh())
+            .catch(() => setLastError("Undo failed"));
         }
       }
       // Cmd/Ctrl+Shift+Z — redo
       if ((e.metaKey || e.ctrlKey) && e.key === "z" && e.shiftKey) {
         e.preventDefault();
-        executeRedo().then(() => {
-          if (activePage) openPage(activePage.page.id);
-          refresh();
-        });
+        executeRedo()
+          .then(() => activePage ? openPage(activePage.page.id) : Promise.resolve())
+          .then(() => refresh())
+          .catch(() => setLastError("Redo failed"));
       }
       // Cmd/Ctrl+N — new page
       if ((e.metaKey || e.ctrlKey) && e.key === "n") {
