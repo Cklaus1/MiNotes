@@ -623,13 +623,14 @@ body {
 
 /* Stats bar */
 .stats-bar {
-  padding: 8px 16px;
+  padding: 8px 12px;
   border-top: 1px solid var(--border);
   font-size: 11px;
   color: var(--text-muted);
   display: flex;
   align-items: center;
-  gap: 8px;
+  justify-content: center;
+  gap: 4px;
 }
 
 .stats-icon-wrapper {
@@ -671,7 +672,15 @@ body {
 .stats-modes {
   display: flex;
   gap: 1px;
-  margin-left: auto;
+}
+
+.stats-bar-divider {
+  width: 1px;
+  height: 16px;
+  background: var(--border);
+  margin: 0 6px;
+  align-self: center;
+  opacity: 0.6;
 }
 
 .stats-mode-btn {

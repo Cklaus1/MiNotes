@@ -245,11 +245,11 @@ export default function Sidebar({
             🎨 Draw
           </button>
         </div>
+        <span className="stats-bar-divider" />
         <button
           className="stats-mode-btn"
           onClick={onSettingsClick}
           title="Settings (Ctrl+,)"
-          style={{ marginLeft: "auto" }}
         >
           ⚙
         </button>
