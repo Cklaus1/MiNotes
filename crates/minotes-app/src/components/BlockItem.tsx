@@ -203,13 +203,16 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
       return;
     }
     // Focus the TipTap editor if it exists and isn't already focused
+    // Use 100ms delay — must fire AFTER the 50ms activeBlockId debounce
+    // to survive the re-render it causes
     if (editorRef.current && !editorRef.current.isFocused) {
-      // Use setTimeout(0) so the native click completes first, then we ensure focus
+      editorRef.current.commands.focus();
+      // Re-assert focus after the debounced re-render
       setTimeout(() => {
         if (editorRef.current && !editorRef.current.isFocused) {
           editorRef.current.commands.focus();
         }
-      }, 0);
+      }, 100);
     }
   }, []);
 
