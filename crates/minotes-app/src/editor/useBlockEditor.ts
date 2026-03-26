@@ -54,6 +54,8 @@ export function useBlockEditor({
 }: UseBlockEditorOptions) {
   const onSaveRef = useRef(onSave);
   const contentRef = useRef(content);
+  const onPageLinkClickRef = useRef(onPageLinkClick);
+  const onBlockRefClickRef = useRef(onBlockRefClick);
   const onEnterRef = useRef(onEnter);
   const onBackspaceAtStartRef = useRef(onBackspaceAtStart);
   const onArrowUpRef = useRef(onArrowUp);
@@ -65,8 +67,11 @@ export function useBlockEditor({
   const onSlashCommandRef = useRef(onSlashCommand);
   const editorInstanceRef = useRef<any>(null);
   const skipSyncRef = useRef(false);
+  const slashActiveRef = useRef(false);
   onSaveRef.current = onSave;
   contentRef.current = content;
+  onPageLinkClickRef.current = onPageLinkClick;
+  onBlockRefClickRef.current = onBlockRefClick;
   onEnterRef.current = onEnter;
   onBackspaceAtStartRef.current = onBackspaceAtStart;
   onArrowUpRef.current = onArrowUp;
@@ -90,8 +95,29 @@ export function useBlockEditor({
       TableRow,
       TableCell,
       TableHeader,
-      TaskList,
-      TaskItem.configure({ nested: true }),
+      TaskList.extend({
+        parseHTML() {
+          return [
+            { tag: 'ul[data-type="taskList"]', priority: 51 },
+            { tag: 'ul.contains-task-list', priority: 51 },
+          ];
+        },
+      }),
+      TaskItem.extend({
+        parseHTML() {
+          return [
+            { tag: `li[data-type="taskItem"]`, priority: 52 },
+            {
+              tag: 'li.task-list-item',
+              priority: 52,
+              getAttrs: (el: HTMLElement) => {
+                const checkbox = el.querySelector('input[type="checkbox"]');
+                return { checked: checkbox ? (checkbox as HTMLInputElement).checked : false };
+              },
+            },
+          ];
+        },
+      }).configure({ nested: true }),
       Highlight,
       Typography,
       Placeholder.configure({
@@ -104,8 +130,8 @@ export function useBlockEditor({
         transformPastedText: true,
         transformCopiedText: true,
       }),
-      WikiLinkNode.configure({ onPageLinkClick }),
-      BlockRefNode.configure({ onBlockRefClick: onBlockRefClick ?? (() => {}) }),
+      WikiLinkNode.configure({ onPageLinkClick: (title: string, shiftKey?: boolean) => onPageLinkClickRef.current(title, shiftKey) }),
+      BlockRefNode.configure({ onBlockRefClick: (blockId: string) => onBlockRefClickRef.current?.(blockId) }),
       SlashCommands,
       PageLinkSuggestion,
       BlockRefSuggestion,
@@ -325,16 +351,24 @@ export function useBlockEditor({
       },
     },
     onBlur({ editor }) {
-      const markdown = (editor.storage as any).markdown?.getMarkdown() ?? "";
-      const normalized = markdown.trim();
-      const originalNormalized = contentRef.current.trim();
-      if (normalized !== originalNormalized) {
-        contentRef.current = normalized;
-        skipSyncRef.current = true;
-        onSaveRef.current(normalized);
-      }
+      // Delay blur save to let slash commands set their flag first.
+      // Blur fires on mousedown (before click), but slash command fires on click.
+      // 50ms delay ensures the slash command's flag is checked after it's set.
+      setTimeout(() => {
+        if (slashActiveRef.current) return;
+        const markdown = (editor.storage as any).markdown?.getMarkdown() ?? "";
+        const normalized = markdown.trim();
+        const originalNormalized = contentRef.current.trim();
+        if (normalized !== originalNormalized) {
+          contentRef.current = normalized;
+          skipSyncRef.current = true;
+          onSaveRef.current(normalized);
+        }
+      }, 50);
     },
-  }, [onPageLinkClick, onBlockRefClick]);
+  // IMPORTANT: empty deps — never recreate the editor. All callbacks use refs.
+  // Recreating destroys complex node state (task lists, tables) that can't round-trip through markdown.
+  }, []);
 
   // Keep editorInstanceRef in sync so handleKeyDown can access storage
   useEffect(() => {
@@ -343,15 +377,23 @@ export function useBlockEditor({
     if (editor) {
       setSlashCallbacks(
         editor,
-        (md: string) => onSlashCommandRef.current?.(md),
+        (md: string) => {
+          slashActiveRef.current = true;
+          onSlashCommandRef.current?.(md);
+          setTimeout(() => { slashActiveRef.current = false; }, 100);
+        },
         () => {
+          slashActiveRef.current = true;
           setTimeout(() => {
             if (editor) {
               const md = (editor.storage as any).markdown?.getMarkdown?.() ?? "";
               contentRef.current = md.trim();
               skipSyncRef.current = true;
               onSaveRef.current(md.trim());
+              // Refocus editor after slash command save
+              editor.commands.focus();
             }
+            slashActiveRef.current = false;
           }, 20);
         },
       );

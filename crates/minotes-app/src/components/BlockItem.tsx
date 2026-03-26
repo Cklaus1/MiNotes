@@ -139,35 +139,13 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
   }), []);
 
   // Sync external content changes for TipTap
+  // NOTE: The primary sync effect is in useBlockEditor.ts (with skipSyncRef protection).
+  // This effect handles editorMode changes only.
   useEffect(() => {
     if (!tiptapEditor || editorMode !== "minotes") return;
-    const currentMarkdown = ((tiptapEditor.storage as any).markdown?.getMarkdown() ?? "").trim();
-    if (block.content.trim() !== currentMarkdown) {
-      tiptapEditor.commands.setContent(block.content);
-    }
-  }, [block.content, tiptapEditor, editorMode]);
-
-  // WebKitGTK checkbox fix: TipTap's mousedown.preventDefault on checkboxes
-  // can prevent the click from toggling the checkbox in WebKitGTK.
-  // Programmatically toggle and dispatch change event.
-  useEffect(() => {
-    const blockEl = document.querySelector(`[data-block-id="${block.id}"]`);
-    if (!blockEl) return;
-
-    const handler = (e: Event) => {
-      const target = e.target as HTMLElement;
-      if (target.tagName !== 'INPUT' || (target as HTMLInputElement).type !== 'checkbox') return;
-
-      const checkbox = target as HTMLInputElement;
-      // Toggle the checked state programmatically
-      checkbox.checked = !checkbox.checked;
-      // Dispatch change event so TipTap's handler picks it up
-      checkbox.dispatchEvent(new Event('change', { bubbles: true }));
-    };
-
-    blockEl.addEventListener('click', handler, true);
-    return () => blockEl.removeEventListener('click', handler, true);
-  }, [block.id, tiptapEditor]);
+    // Only sync when switching editor modes, not on every content change
+    // (useBlockEditor.ts handles content sync with skipSyncRef to avoid corrupting complex nodes)
+  }, [tiptapEditor, editorMode]);
 
   // MouseDown on block → ensure TipTap editor gets focus (WebKitGTK fix)
   // WebKitGTK doesn't always focus contenteditable on first click. Pre-focus on mousedown.
@@ -180,19 +158,8 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
         target.closest('label')) {
       return;
     }
-    // Pre-focus on mousedown; ProseMirror's native click handler positions cursor after.
-    // Also guard against anything stealing focus within the next 500ms.
-    if (editorRef.current) {
-      if (!editorRef.current.isFocused) {
-        editorRef.current.commands.focus();
-      }
-      // WebKitGTK: re-assert focus periodically to combat anything stealing it
-      const guard = setInterval(() => {
-        if (editorRef.current && !editorRef.current.isFocused) {
-          editorRef.current.commands.focus();
-        }
-      }, 50);
-      setTimeout(() => clearInterval(guard), 500);
+    if (editorRef.current && !editorRef.current.isFocused) {
+      editorRef.current.commands.focus();
     }
   }, []);
 

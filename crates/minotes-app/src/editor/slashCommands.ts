@@ -92,8 +92,7 @@ const COMMANDS: SlashMenuItem[] = [
     title: "Divider",
     description: "horizontal line separator",
     command: ({ editor, range }) => {
-      editor.chain().focus().deleteRange(range).setHorizontalRule().run();
-      (editor.storage as any).slashCallbacks?.save();
+      (editor.storage as any).slashCallbacks?.command("---");
     },
   },
   {

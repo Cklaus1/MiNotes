@@ -1586,6 +1586,11 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
           finishTextEdit();
         } else if (contextMenu) {
           setContextMenu(null);
+        } else if (selectedElement) {
+          setSelectedElement(null);
+        } else if (mode !== "select") {
+          // Escape from a tool mode → go back to select, don't close whiteboard
+          setMode("select");
         } else {
           handleClose();
         }
@@ -1674,7 +1679,7 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [handleClose, editingNote, editingTextId, finishEdit, contextMenu, saveNow, selectedElement]);
+  }, [handleClose, editingNote, editingTextId, finishEdit, contextMenu, saveNow, selectedElement, mode]);
 
   // Compute editing note screen position
   const editScreenPos = (() => {
@@ -1898,6 +1903,7 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
           onBlur={finishEdit}
           onKeyDown={(e) => {
             if (e.key === "Escape") {
+              escapeHandledRef.current = Date.now();
               e.nativeEvent.stopImmediatePropagation();
               finishEdit();
               return;
@@ -1936,6 +1942,7 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
             onBlur={finishTextEdit}
             onKeyDown={(e) => {
               if (e.key === "Escape") {
+                escapeHandledRef.current = Date.now();
                 e.nativeEvent.stopImmediatePropagation();
                 finishTextEdit();
                 return;
