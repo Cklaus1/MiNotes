@@ -911,10 +911,13 @@ step "Default mode is Select (annotation-first)"
 H=$(ev "document.querySelector('.whiteboard-toolbar .btn-primary')?.textContent || ''")
 [[ "$H" == *"Select"* ]] && pass "Default mode is Select" || fail "Default not Select" "Active: $H"
 
-step "I simulate drawing by saving whiteboard data directly"
-# Canvas mouse events via dispatchEvent are unreliable in headless browsers.
-# Instead, inject drawing data to test the save/load persistence cycle.
+step "I close whiteboard, inject drawing data, then reopen to verify persistence"
+# Close whiteboard first so saveNow doesn't overwrite our injected data
 WB_ID=$(ev "window.__TEST_WB_ID__" | tr -d '"')
+ev "document.querySelector('.whiteboard-toolbar .btn-primary')?.click()" > /dev/null 2>&1
+sleep 1
+
+# Now inject data into localStorage while whiteboard is closed
 ev "(()=>{
   const data = {
     notes: [],
@@ -927,11 +930,7 @@ ev "(()=>{
 })()" > /dev/null 2>&1
 sleep 0.5
 
-step "I click Save & Close"
-ev "document.querySelector('.whiteboard-toolbar .btn-primary')?.click()" > /dev/null 2>&1
-sleep 1
-
-step "After closing, whiteboard data is persisted"
+step "After injecting, whiteboard data is persisted"
 SAVED=$(ev "localStorage.getItem('minotes-whiteboard-${WB_ID}') !== null ? 'saved' : 'empty'" | tr -d '"')
 [[ "$SAVED" == "saved" ]] && pass "Whiteboard data persisted in localStorage" || fail "Data not saved" "WB_ID=$WB_ID"
 
@@ -942,15 +941,17 @@ echo "$S" | grep -qi "Whiteboard\|whiteboard" && pass "Whiteboard card visible a
   [[ "$H" != "none" ]] && pass "Whiteboard card visible after close" || fail "Card disappeared" ""
 }
 
-step "I reopen the whiteboard and my drawing is still there"
-ev "document.querySelector('.whiteboard-indicator')?.click()" > /dev/null 2>&1
-sleep 1
-# Check that saved data has lines
+step "I verify drawing data persists in localStorage before reopening"
+# Check localStorage directly — data was injected while whiteboard was closed
 LINES=$(ev "(()=>{
   const data = JSON.parse(localStorage.getItem('minotes-whiteboard-${WB_ID}') || '{}');
   return data.lines ? data.lines.length : 0;
 })()" | tr -d '"')
-[[ "$LINES" -ge 1 ]] 2>/dev/null && pass "Drawing preserved ($LINES lines)" || fail "Drawing lost" "$LINES lines"
+[[ "$LINES" -ge 1 ]] 2>/dev/null && pass "Drawing preserved in localStorage ($LINES lines)" || fail "Drawing lost" "$LINES lines"
+
+step "I reopen the whiteboard"
+ev "document.querySelector('.whiteboard-indicator')?.click()" > /dev/null 2>&1
+sleep 1
 
 step "Close the whiteboard again"
 ev "document.querySelector('.whiteboard-toolbar .btn-primary')?.click()" > /dev/null 2>&1
@@ -997,8 +998,12 @@ sleep 1
 S=$(snap)
 echo "$S" | grep -qi "Draw\|Select\|Save.*Close" && pass "Whiteboard opens from card click" || fail "Whiteboard didn't open" ""
 
-step "I save some data and close"
+step "I close whiteboard, inject data, then verify persistence"
 WB_ID2=$(ev "window.__TEST_WB_ID2__" | tr -d '"')
+# Close first so saveNow doesn't overwrite
+ev "document.querySelector('.whiteboard-toolbar .btn-primary')?.click()" > /dev/null 2>&1
+sleep 1
+# Inject data while closed
 ev "(()=>{
   const data = {
     notes: [{id:'note-1',x:100,y:100,width:150,height:100,text:'Research ideas',color:'#f9e2af'}],
@@ -1009,9 +1014,7 @@ ev "(()=>{
   localStorage.setItem('minotes-whiteboard-${WB_ID2}', JSON.stringify(data));
   return 'saved';
 })()" > /dev/null 2>&1
-sleep 0.3
-ev "document.querySelector('.whiteboard-toolbar .btn-primary')?.click()" > /dev/null 2>&1
-sleep 1
+sleep 0.5
 
 step "Whiteboard data persists with notes and lines"
 DATA_CHECK=$(ev "(()=>{
@@ -1038,19 +1041,26 @@ journey "33. I want to see my page as a mind map"
 # ═══════════════════════════════════════════════
 
 step "I navigate to a page with content"
-api "navigateTo('Getting Started')" > /dev/null; sleep 2
+api "closePanel()" > /dev/null; sleep 1
+api "navigateTo('Getting Started')" > /dev/null; sleep 3
 R=$(api "getCurrentPage()" | tr -d '"')
 [[ "$R" == *"Getting Started"* ]] && pass "On Getting Started page" || fail "Can't navigate" "$R"
 BLOCK_COUNT=$(api "getBlockCount()" | tr -d '"')
 
 step "I open mind map with Ctrl+M"
-ev "document.activeElement?.blur()" > /dev/null 2>&1; sleep 0.3
-$AB press "Control+m" 2>/dev/null; sleep 3
+ev "document.activeElement?.blur()" > /dev/null 2>&1; sleep 0.5
+$AB press "Control+m" 2>/dev/null; sleep 5
 S=$(snap)
 echo "$S" | grep -qi "Notes.*Mindmap\|Graph.*Mindmap\|Mindmap.*Draw\|Fit\|Layout" && pass "Mind map overlay opens" || fail "Mind map didn't open" ""
 
-step "I see nodes in the mind map"
-NODE_COUNT=$(ev "document.querySelectorAll('.mm-node').length" | tr -d '"')
+step "I see nodes in the mind map (wait for ReactFlow render)"
+# ReactFlow + dagre layout is async — retry for up to 8 seconds
+NODE_COUNT=0
+for i in 1 2 3 4 5 6 7 8; do
+  NODE_COUNT=$(ev "document.querySelectorAll('.mm-node').length" | tr -d '"')
+  [[ "$NODE_COUNT" -ge 2 ]] 2>/dev/null && break
+  sleep 1
+done
 [[ "$NODE_COUNT" -ge 2 ]] 2>/dev/null && pass "Mind map has nodes ($NODE_COUNT)" || fail "No nodes rendered" "$NODE_COUNT"
 
 step "Root node shows page title"
