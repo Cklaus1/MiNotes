@@ -26,16 +26,9 @@ import { executeUndo, executeRedo } from "./lib/undoManager";
 export default function App() {
   const [activePage, setActivePage] = useState<api.PageTree | null>(null);
   const [stats, setStats] = useState<api.GraphStats | null>(null);
-  const [searchOpen, setSearchOpen] = useState(false);
-  const [queryOpen, setQueryOpen] = useState(false);
+  const [openPanel, setOpenPanel] = useState<string | null>(null);
   const [canvasMode, setCanvasMode] = useState<CanvasModeType | null>(null);
   const [whiteboardId, setWhiteboardId] = useState<string | null>(null);
-  const [reviewOpen, setReviewOpen] = useState(false);
-  const [pluginsOpen, setPluginsOpen] = useState(false);
-  const [syncOpen, setSyncOpen] = useState(false);
-  const [obsidianPluginsOpen, setObsidianPluginsOpen] = useState(false);
-  const [cssManagerOpen, setCssManagerOpen] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const [pdfViewerPath, setPdfViewerPath] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [mobileTab, setMobileTab] = useState("pages");
@@ -180,37 +173,29 @@ export default function App() {
         return true;
       },
       openSearch: () => {
-        setSearchOpen(true);
+        setOpenPanel("search");
         return true;
       },
       openSettings: () => {
-        setSettingsOpen(true);
+        setOpenPanel("settings");
         return true;
       },
       closePanel: () => {
-        setSearchOpen(false);
-        setQueryOpen(false);
+        setOpenPanel(null);
         setCanvasMode(null);
-        setReviewOpen(false);
-        setPluginsOpen(false);
         setWhiteboardId(null);
-        setCanvasMode(null);
-        setSyncOpen(false);
-        setObsidianPluginsOpen(false);
-        setCssManagerOpen(false);
-        setSettingsOpen(false);
         return true;
       },
       getCurrentPage: () => activePage?.page.title ?? null,
       isPanelOpen: (name: string) => {
         const map: Record<string, boolean> = {
-          search: searchOpen, query: queryOpen, graph: canvasMode === "graph",
-          review: reviewOpen, settings: settingsOpen,
+          search: openPanel === "search", query: openPanel === "query", graph: canvasMode === "graph",
+          review: openPanel === "review", settings: openPanel === "settings",
         };
         return map[name] ?? false;
       },
     });
-  }, [activePage, searchOpen, queryOpen, canvasMode, reviewOpen, settingsOpen]);
+  }, [activePage, openPanel, canvasMode]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -218,7 +203,7 @@ export default function App() {
       // Cmd/Ctrl+K — search
       if ((e.metaKey || e.ctrlKey) && e.key === "k") {
         e.preventDefault();
-        setSearchOpen(prev => !prev);
+        setOpenPanel(prev => prev === "search" ? null : "search");
       }
       // Cmd/Ctrl+J — today's journal
       if ((e.metaKey || e.ctrlKey) && e.key === "j") {
@@ -228,7 +213,7 @@ export default function App() {
       // Cmd/Ctrl+Q — query panel
       if ((e.metaKey || e.ctrlKey) && e.key === "q") {
         e.preventDefault();
-        setQueryOpen(prev => !prev);
+        setOpenPanel(prev => prev === "query" ? null : "query");
       }
       // Cmd/Ctrl+G — graph view
       if ((e.metaKey || e.ctrlKey) && e.key === "g") {
@@ -238,7 +223,7 @@ export default function App() {
       // Cmd/Ctrl+R — review panel
       if ((e.metaKey || e.ctrlKey) && e.key === "r") {
         e.preventDefault();
-        setReviewOpen(prev => !prev);
+        setOpenPanel(prev => prev === "review" ? null : "review");
       }
       // Cmd/Ctrl+Z — undo (only when not inside editor)
       if ((e.metaKey || e.ctrlKey) && e.key === "z" && !e.shiftKey) {
@@ -299,7 +284,7 @@ export default function App() {
       // Ctrl+, — settings
       if ((e.metaKey || e.ctrlKey) && e.key === ",") {
         e.preventDefault();
-        setSettingsOpen(prev => !prev);
+        setOpenPanel(prev => prev === "settings" ? null : "settings");
       }
       // Ctrl+\ — toggle right sidebar
       if ((e.metaKey || e.ctrlKey) && e.key === "\\") {
@@ -354,7 +339,7 @@ export default function App() {
         onCreatePage={createPage}
         onDeletePage={deletePage}
         onJournalClick={() => openJournal()}
-        onSearchClick={() => setSearchOpen(true)}
+        onSearchClick={() => setOpenPanel("search")}
         onGraphClick={() => setCanvasMode(prev => prev === "graph" ? null : "graph")}
         onMindmapClick={() => { if (activePage) setCanvasMode(prev => prev === "mindmap" ? null : "mindmap"); }}
         onWhiteboardClick={() => {
@@ -367,7 +352,7 @@ export default function App() {
             setCanvasMode("draw");
           }
         }}
-        onSettingsClick={() => setSettingsOpen(prev => !prev)}
+        onSettingsClick={() => setOpenPanel(prev => prev === "settings" ? null : "settings")}
         activeMode={canvasMode === "graph" ? "graph" : canvasMode === "mindmap" ? "mindmap" : canvasMode === "draw" ? "whiteboard" : null}
         refreshKey={refreshKey}
       />
@@ -460,53 +445,53 @@ export default function App() {
         )}
       </div>
       <SearchPanel
-        open={searchOpen}
-        onClose={() => setSearchOpen(false)}
-        onPageClick={(id) => { openPage(id); setSearchOpen(false); }}
-        onToggleTheme={() => { toggleTheme(); setSearchOpen(false); }}
+        open={openPanel === "search"}
+        onClose={() => setOpenPanel(null)}
+        onPageClick={(id) => { openPage(id); setOpenPanel(null); }}
+        onToggleTheme={() => { toggleTheme(); setOpenPanel(null); }}
         onNewPage={() => {
-          setSearchOpen(false);
+          setOpenPanel(null);
           const title = prompt("Page title:");
           if (title?.trim()) createPage(title.trim());
         }}
-        onJournal={() => { openJournal(); setSearchOpen(false); }}
-        onGraph={() => { setCanvasMode(prev => prev === "graph" ? null : "graph"); setSearchOpen(false); }}
-        onQuery={() => { setQueryOpen(prev => !prev); setSearchOpen(false); }}
-        onReview={() => { setReviewOpen(prev => !prev); setSearchOpen(false); }}
-        onPlugins={() => { setPluginsOpen(prev => !prev); setSearchOpen(false); }}
-        onSync={() => { setSyncOpen(prev => !prev); setSearchOpen(false); }}
-        onObsidianPlugins={() => { setObsidianPluginsOpen(prev => !prev); setSearchOpen(false); }}
-        onCssManager={() => { setCssManagerOpen(prev => !prev); setSearchOpen(false); }}
-        onSettings={() => { setSettingsOpen(prev => !prev); setSearchOpen(false); }}
+        onJournal={() => { openJournal(); setOpenPanel(null); }}
+        onGraph={() => { setCanvasMode(prev => prev === "graph" ? null : "graph"); setOpenPanel(null); }}
+        onQuery={() => { setOpenPanel("query"); }}
+        onReview={() => { setOpenPanel("review"); }}
+        onPlugins={() => { setOpenPanel("plugins"); }}
+        onSync={() => { setOpenPanel("sync"); }}
+        onObsidianPlugins={() => { setOpenPanel("obsidianPlugins"); }}
+        onCssManager={() => { setOpenPanel("cssManager"); }}
+        onSettings={() => { setOpenPanel("settings"); }}
       />
       <QueryPanel
-        open={queryOpen}
-        onClose={() => setQueryOpen(false)}
-        onPageClick={(id) => { openPage(id); setQueryOpen(false); }}
+        open={openPanel === "query"}
+        onClose={() => setOpenPanel(null)}
+        onPageClick={(id) => { openPage(id); setOpenPanel(null); }}
       />
       <ReviewPanel
-        open={reviewOpen}
-        onClose={() => setReviewOpen(false)}
+        open={openPanel === "review"}
+        onClose={() => setOpenPanel(null)}
       />
       <PluginManager
-        open={pluginsOpen}
-        onClose={() => setPluginsOpen(false)}
+        open={openPanel === "plugins"}
+        onClose={() => setOpenPanel(null)}
       />
       <ObsidianPluginBrowser
-        open={obsidianPluginsOpen}
-        onClose={() => setObsidianPluginsOpen(false)}
+        open={openPanel === "obsidianPlugins"}
+        onClose={() => setOpenPanel(null)}
       />
       <CssSnippetManager
-        open={cssManagerOpen}
-        onClose={() => setCssManagerOpen(false)}
+        open={openPanel === "cssManager"}
+        onClose={() => setOpenPanel(null)}
       />
       <SettingsPanel
-        open={settingsOpen}
-        onClose={() => setSettingsOpen(false)}
+        open={openPanel === "settings"}
+        onClose={() => setOpenPanel(null)}
       />
       <SyncPanel
-        open={syncOpen}
-        onClose={() => setSyncOpen(false)}
+        open={openPanel === "sync"}
+        onClose={() => setOpenPanel(null)}
         currentPageId={activePage?.page.id ?? null}
         onPageRestored={() => {
           if (activePage) openPage(activePage.page.id);
@@ -516,7 +501,7 @@ export default function App() {
         activeTab={mobileTab}
         onPagesClick={() => setMobileTab("pages")}
         onJournalClick={() => { setMobileTab("journal"); openJournal(); }}
-        onSearchClick={() => { setMobileTab("search"); setSearchOpen(true); }}
+        onSearchClick={() => { setMobileTab("search"); setOpenPanel("search"); }}
         onGraphClick={() => { setMobileTab("graph"); setCanvasMode(prev => prev === "graph" ? null : "graph"); }}
         onMenuClick={() => setMobileTab("menu")}
       />

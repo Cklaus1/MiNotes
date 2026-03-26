@@ -361,8 +361,28 @@ export default function PageView({
     // We'll do this with local state.
   };
 
-  // Track collapsed blocks locally
-  const [collapsedBlocks, setCollapsedBlocks] = useState<Set<string>>(new Set());
+  // Track collapsed blocks locally, persisted to localStorage per page
+  const [collapsedBlocks, setCollapsedBlocks] = useState<Set<string>>(() => {
+    try {
+      const stored = localStorage.getItem("minotes-collapsed-" + page.id);
+      if (stored) return new Set(JSON.parse(stored) as string[]);
+    } catch {}
+    return new Set();
+  });
+
+  // Re-read from localStorage when page changes
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem("minotes-collapsed-" + page.id);
+      if (stored) {
+        setCollapsedBlocks(new Set(JSON.parse(stored) as string[]));
+      } else {
+        setCollapsedBlocks(new Set());
+      }
+    } catch {
+      setCollapsedBlocks(new Set());
+    }
+  }, [page.id]);
 
   const toggleCollapse = (blockId: string) => {
     setCollapsedBlocks(prev => {
@@ -372,6 +392,7 @@ export default function PageView({
       } else {
         next.add(blockId);
       }
+      localStorage.setItem("minotes-collapsed-" + page.id, JSON.stringify([...next]));
       return next;
     });
   };

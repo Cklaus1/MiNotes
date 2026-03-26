@@ -116,7 +116,19 @@ function loadWhiteboardData(id: string): WhiteboardData | null {
 }
 
 function saveWhiteboardData(id: string, data: WhiteboardData) {
-  localStorage.setItem(STORAGE_PREFIX + id, JSON.stringify(data));
+  let json = JSON.stringify(data);
+  // If payload is > 4MB, strip image dataUrls to avoid quota issues
+  if (json.length > 4 * 1024 * 1024 && data.images && data.images.length > 0) {
+    const trimmed: WhiteboardData = { ...data, images: data.images.map(img => ({ ...img, dataUrl: "" })) };
+    json = JSON.stringify(trimmed);
+    console.warn("Whiteboard save: payload exceeded 4 MB — image data was stripped to fit localStorage.");
+  }
+  try {
+    localStorage.setItem(STORAGE_PREFIX + id, json);
+  } catch (e) {
+    console.warn("Whiteboard save failed (QuotaExceededError). Data may not persist.", e);
+    return;
+  }
   // Notify thumbnails to refresh
   window.dispatchEvent(new CustomEvent("whiteboard-saved", { detail: id }));
 }
@@ -235,6 +247,21 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
 
   // Unified hit-test: find any element at world coordinates
   const findElementAt = useCallback((wx: number, wy: number): { type: "note" | "text" | "arrow" | "box" | "image" | "line"; id: string; x: number; y: number } | null => {
+    // Early exit: compute a rough content bounding box across all elements.
+    // If the click is far outside, skip individual checks entirely.
+    const MARGIN = 50;
+    let contentMinX = Infinity, contentMinY = Infinity, contentMaxX = -Infinity, contentMaxY = -Infinity;
+    let hasAny = false;
+    for (const n of notesRef.current) { hasAny = true; contentMinX = Math.min(contentMinX, n.x); contentMinY = Math.min(contentMinY, n.y); contentMaxX = Math.max(contentMaxX, n.x + n.width); contentMaxY = Math.max(contentMaxY, n.y + n.height); }
+    for (const te of textsRef.current) { hasAny = true; contentMinX = Math.min(contentMinX, te.x); contentMinY = Math.min(contentMinY, te.y); contentMaxX = Math.max(contentMaxX, te.x + 220); contentMaxY = Math.max(contentMaxY, te.y + 100); }
+    for (const b of boxesRef.current) { hasAny = true; contentMinX = Math.min(contentMinX, b.x); contentMinY = Math.min(contentMinY, b.y); contentMaxX = Math.max(contentMaxX, b.x + b.width); contentMaxY = Math.max(contentMaxY, b.y + b.height); }
+    for (const img of imagesRef.current) { hasAny = true; contentMinX = Math.min(contentMinX, img.x); contentMinY = Math.min(contentMinY, img.y); contentMaxX = Math.max(contentMaxX, img.x + img.width); contentMaxY = Math.max(contentMaxY, img.y + img.height); }
+    for (const a of arrowsRef.current) { hasAny = true; contentMinX = Math.min(contentMinX, Math.min(a.x1, a.x2)); contentMinY = Math.min(contentMinY, Math.min(a.y1, a.y2)); contentMaxX = Math.max(contentMaxX, Math.max(a.x1, a.x2)); contentMaxY = Math.max(contentMaxY, Math.max(a.y1, a.y2)); }
+    for (const line of linesRef.current) { for (const pt of line.points) { hasAny = true; contentMinX = Math.min(contentMinX, pt.x); contentMinY = Math.min(contentMinY, pt.y); contentMaxX = Math.max(contentMaxX, pt.x); contentMaxY = Math.max(contentMaxY, pt.y); } }
+    if (hasAny && (wx < contentMinX - MARGIN || wx > contentMaxX + MARGIN || wy < contentMinY - MARGIN || wy > contentMaxY + MARGIN)) {
+      return null;
+    }
+
     // Notes (top layer)
     for (let i = notesRef.current.length - 1; i >= 0; i--) {
       const n = notesRef.current[i];
@@ -275,7 +302,7 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
       const dx = a.x2 - a.x1, dy = a.y2 - a.y1;
       const len2 = dx * dx + dy * dy;
       if (len2 === 0) continue;
-      let t = Math.max(0, Math.min(1, ((wx - a.x1) * dx + (wy - a.y1) * dy) / len2));
+      const t = Math.max(0, Math.min(1, ((wx - a.x1) * dx + (wy - a.y1) * dy) / len2));
       const px = a.x1 + t * dx, py = a.y1 + t * dy;
       const dist = Math.sqrt((wx - px) ** 2 + (wy - py) ** 2);
       if (dist < 10) {
@@ -283,11 +310,15 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
       }
     }
     // Drawing lines (distance to any segment in the polyline)
+    // Use bounding-box pre-check per line to skip expensive segment iteration
+    const LINE_HIT = 8;
     for (let i = linesRef.current.length - 1; i >= 0; i--) {
       const line = linesRef.current[i];
       if (line.points.length < 2) continue;
-      let minX = Infinity, minY = Infinity;
-      for (const pt of line.points) { minX = Math.min(minX, pt.x); minY = Math.min(minY, pt.y); }
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      for (const pt of line.points) { minX = Math.min(minX, pt.x); minY = Math.min(minY, pt.y); maxX = Math.max(maxX, pt.x); maxY = Math.max(maxY, pt.y); }
+      // Skip line if click is outside its bounding box (with margin)
+      if (wx < minX - LINE_HIT || wx > maxX + LINE_HIT || wy < minY - LINE_HIT || wy > maxY + LINE_HIT) continue;
       for (let j = 0; j < line.points.length - 1; j++) {
         const p1 = line.points[j], p2 = line.points[j + 1];
         const dx = p2.x - p1.x, dy = p2.y - p1.y;
@@ -295,7 +326,7 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
         if (len2 === 0) continue;
         const t = Math.max(0, Math.min(1, ((wx - p1.x) * dx + (wy - p1.y) * dy) / len2));
         const px = p1.x + t * dx, py = p1.y + t * dy;
-        if (Math.sqrt((wx - px) ** 2 + (wy - py) ** 2) < 8) {
+        if (Math.sqrt((wx - px) ** 2 + (wy - py) ** 2) < LINE_HIT) {
           return { type: "line", id: line.id ?? String(i), x: minX, y: minY };
         }
       }
@@ -387,6 +418,7 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
         htmlImg.src = img.dataUrl;
         loadedImagesRef.current.set(img.id, htmlImg);
         htmlImg.onload = () => requestRedraw();
+        htmlImg.onerror = () => { loadedImagesRef.current.delete(img.id); };
       }
       if (htmlImg.complete && htmlImg.naturalWidth > 0) {
         ctx.shadowColor = "rgba(0,0,0,0.2)";
