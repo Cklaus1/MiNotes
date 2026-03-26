@@ -3473,6 +3473,8 @@ body.theme-light { /* matches our light theme */ }
 .canvas-content > .whiteboard {
   position: absolute;
   inset: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 /* Override: remove the mindmap/graph/whiteboard's own fixed positioning when inside canvas */
