@@ -759,10 +759,10 @@ export default function PageView({
         <button
           className="prop-toggle-btn"
           onClick={() => setShowProps(p => !p)}
-          title="Page info (Ctrl+,)"
+          title="Page info"
           style={{ marginLeft: "auto" }}
         >
-          ⚙
+          ℹ
         </button>
       </div>
 
