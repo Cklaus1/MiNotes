@@ -723,6 +723,13 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
       // Close context menu on any click
       setContextMenu(null);
 
+      // Clicking canvas commits any active text/note edit (like clicking away)
+      // Skip if clicking inside the text mode handler (it handles its own finish)
+      if (mode !== "text") {
+        if (editingTextId) finishTextEdit();
+        if (editingNote) finishEdit();
+      }
+
       // Right or middle click => pan
       if (e.button === 1 || e.button === 2) {
         e.preventDefault();
@@ -754,6 +761,10 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
         }
 
         if (mode === "text") {
+          // Finish any active edit first (clicking away = save)
+          if (editingTextId) finishTextEdit();
+          if (editingNote) finishEdit();
+
           if (textStyle === "sticky") {
             // Create sticky note
             const id = "note-" + nextNoteIdRef.current++;
@@ -766,8 +777,6 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
             setEditText("");
             setTimeout(() => editInputRef.current?.focus(), 0);
           } else {
-            // If already editing a text, finish it first
-            if (editingTextId) finishTextEdit();
             // Create text element
             const id = "txt-" + Date.now();
             setTexts((prev) => [...prev, { id, x: world.x, y: world.y, text: "", color: drawColor, size: textSize, callout: textStyle === "callout" }]);
