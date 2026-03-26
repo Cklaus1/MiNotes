@@ -12,6 +12,7 @@ interface StickyNote {
 }
 
 interface Line {
+  id?: string;
   points: Array<{ x: number; y: number }>;
   color: string;
   width: number;
@@ -120,8 +121,6 @@ function saveWhiteboardData(id: string, data: WhiteboardData) {
   window.dispatchEvent(new CustomEvent("whiteboard-saved", { detail: id }));
 }
 
-let nextNoteId = 1;
-
 export default function Whiteboard({ whiteboardId, onClose }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -149,7 +148,7 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
   const [showCanvasSettings, setShowCanvasSettings] = useState(false);
   const [canvasBg, setCanvasBg] = useState<"dark" | "light">(saved?.canvasBg ?? "light");
   const [showGrid, setShowGrid] = useState(saved?.showGrid ?? false);
-  const [undoSnapshot, setUndoSnapshot] = useState<{ notes: StickyNote[]; lines: Line[]; images: CanvasImage[] } | null>(null);
+  const [undoSnapshot, setUndoSnapshot] = useState<{ notes: StickyNote[]; lines: Line[]; images: CanvasImage[]; texts: TextElement[]; arrows: Arrow[]; boxes: Box[] } | null>(null);
   const redoStackRef = useRef<Line[]>([]);
   const [showHint, setShowHint] = useState(() => !saved || ((saved.lines?.length ?? 0) === 0 && (saved.notes?.length ?? 0) === 0));
 
@@ -157,7 +156,7 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
   const cameraRef = useRef(saved?.camera ?? { x: 0, y: 0, zoom: 1 });
 
   // Initialize nextNoteId from saved data
-  if (saved?.nextNoteId) nextNoteId = saved.nextNoteId;
+  const nextNoteIdRef = useRef(saved?.nextNoteId ?? 1);
   const drawingRef = useRef<{ active: boolean; points: Array<{ x: number; y: number }> }>({
     active: false,
     points: [],
@@ -297,7 +296,7 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
         const t = Math.max(0, Math.min(1, ((wx - p1.x) * dx + (wy - p1.y) * dy) / len2));
         const px = p1.x + t * dx, py = p1.y + t * dy;
         if (Math.sqrt((wx - px) ** 2 + (wy - py) ** 2) < 8) {
-          return { type: "line", id: String(i), x: minX, y: minY };
+          return { type: "line", id: line.id ?? String(i), x: minX, y: minY };
         }
       }
     }
@@ -655,7 +654,7 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
         arrows: arrowsRef.current,
         boxes: boxesRef.current,
         camera: { ...cameraRef.current },
-        nextNoteId,
+        nextNoteId: nextNoteIdRef.current,
         canvasBg: canvasBgRef.current,
         showGrid: showGridRef.current,
       });
@@ -709,7 +708,7 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
         if (mode === "text") {
           if (textStyle === "sticky") {
             // Create sticky note
-            const id = "note-" + nextNoteId++;
+            const id = "note-" + nextNoteIdRef.current++;
             const newNote: StickyNote = {
               id, x: world.x - 75, y: world.y - 50,
               width: 150, height: 100, text: "", color: noteColor,
@@ -848,7 +847,7 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
       if (drawingRef.current.active) {
         const pts = drawingRef.current.points;
         if (pts.length >= 2) {
-          setLines((prev) => [...prev, { points: [...pts], color: drawColor, width: 2 }]);
+          setLines((prev) => [...prev, { id: "line-" + Date.now(), points: [...pts], color: drawColor, width: 2 }]);
           redoStackRef.current = []; // New stroke clears redo history
           changed = true;
         }
@@ -1158,7 +1157,7 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
 
   const clearCanvas = useCallback(() => {
     // Snapshot for undo
-    setUndoSnapshot({ notes: [...notesRef.current], lines: [...linesRef.current], images: [...imagesRef.current] });
+    setUndoSnapshot({ notes: [...notesRef.current], lines: [...linesRef.current], images: [...imagesRef.current], texts: [...textsRef.current], arrows: [...arrowsRef.current], boxes: [...boxesRef.current] });
     setNotes([]);
     setLines([]);
     setImages([]);
@@ -1176,6 +1175,9 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
     setNotes(undoSnapshot.notes);
     setLines(undoSnapshot.lines);
     setImages(undoSnapshot.images);
+    setTexts(undoSnapshot.texts);
+    setArrows(undoSnapshot.arrows);
+    setBoxes(undoSnapshot.boxes);
     setUndoSnapshot(null);
     setTimeout(saveNow, 50);
   }, [undoSnapshot, saveNow]);

@@ -122,6 +122,11 @@ impl Database {
     }
 
     pub fn delete_block(&self, id: &Uuid, actor: &str) -> Result<bool> {
+        // Cascade: delete children first
+        let children = self.get_children(id)?;
+        for child in &children {
+            self.delete_block(&child.id, actor)?;
+        }
         if let Some(ref block) = self.get_block(id)? {
             self.emit_event("block.deleted", &block.id, "block", block, actor)?;
         }

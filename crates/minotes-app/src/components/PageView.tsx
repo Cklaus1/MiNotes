@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import type { Block, PageTree, Property } from "../lib/api";
 import * as api from "../lib/api";
 import { getSettings } from "../lib/settings";
@@ -412,7 +412,7 @@ export default function PageView({
   }, [blocks, onRefreshPage]);
 
   // Build block tree structure for computing depth and children info
-  const blockTreeInfo = (() => {
+  const blockTreeInfo = useMemo(() => {
     const childrenMap = new Map<string, string[]>();
     const depthMap = new Map<string, number>();
 
@@ -465,7 +465,7 @@ export default function PageView({
         return false;
       },
     };
-  })();
+  }, [blocks]);
 
   // Ensure blockRefs array is properly sized
   useEffect(() => {
