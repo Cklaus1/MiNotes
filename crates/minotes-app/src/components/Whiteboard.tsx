@@ -210,7 +210,7 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
   const textInputRef = useRef<HTMLTextAreaElement>(null);
   const [editText, _setEditText] = useState("");
   const editTextRef = useRef("");
-  const escapeHandledRef = useRef(false);
+  const escapeHandledRef = useRef(0);
   const setEditText = useCallback((v: string) => { _setEditText(v); editTextRef.current = v; }, []);
   const editInputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -1575,9 +1575,8 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
-        // If a textarea already handled this Escape, skip
-        if (escapeHandledRef.current) {
-          escapeHandledRef.current = false;
+        // If a textarea recently handled Escape (within 100ms), skip
+        if (Date.now() - escapeHandledRef.current < 100) {
           return;
         }
         if (editingNoteRef.current) {
@@ -1898,13 +1897,11 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
           onBlur={finishEdit}
           onKeyDown={(e) => {
             if (e.key === "Escape") {
+              escapeHandledRef.current = Date.now();
               finishEdit();
-              e.nativeEvent.stopImmediatePropagation();
-              return;
             }
             // Prevent canvas shortcuts while editing
             e.stopPropagation();
-            e.nativeEvent.stopImmediatePropagation();
           }}
         />
       )}
@@ -1936,9 +1933,8 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
             onChange={(e) => setEditingTextValue(e.target.value)}
             onBlur={finishTextEdit}
             onKeyDown={(e) => {
-              if (e.key === "Escape") { finishTextEdit(); e.nativeEvent.stopImmediatePropagation(); return; }
+              if (e.key === "Escape") { escapeHandledRef.current = Date.now(); finishTextEdit(); }
               e.stopPropagation();
-              e.nativeEvent.stopImmediatePropagation();
             }}
             autoFocus
             placeholder="Type here..."
