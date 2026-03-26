@@ -16,6 +16,7 @@ import { common, createLowlight } from "lowlight";
 import { Markdown } from "tiptap-markdown";
 import { WikiLinkNode } from "./WikiLinkNode";
 import { BlockRefNode } from "./BlockRefNode";
+import { TagNode } from "./TagNode";
 import { SlashCommands, setSlashCallbacks } from "./slashCommands";
 import { PageLinkSuggestion } from "./PageLinkSuggestion";
 import { BlockRefSuggestion } from "./BlockRefSuggestion";
@@ -36,6 +37,7 @@ interface UseBlockEditorOptions {
   onIndent?: () => void;
   onOutdent?: () => void;
   onSlashCommand?: (newMarkdown: string) => void;
+  onTagClick?: (tag: string) => void;
 }
 
 export function useBlockEditor({
@@ -52,6 +54,7 @@ export function useBlockEditor({
   onIndent,
   onOutdent,
   onSlashCommand,
+  onTagClick,
 }: UseBlockEditorOptions) {
   const onSaveRef = useRef(onSave);
   const contentRef = useRef(content);
@@ -66,6 +69,7 @@ export function useBlockEditor({
   const onIndentRef = useRef(onIndent);
   const onOutdentRef = useRef(onOutdent);
   const onSlashCommandRef = useRef(onSlashCommand);
+  const onTagClickRef = useRef(onTagClick);
   const editorInstanceRef = useRef<any>(null);
   const skipSyncRef = useRef(false);
   const slashActiveRef = useRef(false);
@@ -82,6 +86,7 @@ export function useBlockEditor({
   onIndentRef.current = onIndent;
   onOutdentRef.current = onOutdent;
   onSlashCommandRef.current = onSlashCommand;
+  onTagClickRef.current = onTagClick;
 
   // Slash callbacks are set per-editor instance after creation (see useEffect below)
 
@@ -134,6 +139,7 @@ export function useBlockEditor({
       }),
       WikiLinkNode.configure({ onPageLinkClick: (title: string, shiftKey?: boolean) => onPageLinkClickRef.current(title, shiftKey) }),
       BlockRefNode.configure({ onBlockRefClick: (blockId: string) => onBlockRefClickRef.current?.(blockId) }),
+      TagNode.configure({ onTagClick: (tag: string) => onTagClickRef.current?.(tag) }),
       SlashCommands,
       PageLinkSuggestion,
       BlockRefSuggestion,
