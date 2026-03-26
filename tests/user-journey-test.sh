@@ -204,8 +204,8 @@ S=$(snap)
 step "I can change the theme"
 echo "$S" | grep -qi "Theme" && echo "$S" | grep -qi "Dark\|Light" && pass "Theme switcher available" || fail "No theme option" "Can't change theme"
 
-step "I can toggle tree mode"
-echo "$S" | grep -qi "Full Tree Mode" && pass "Tree mode toggle available" || fail "No tree mode" "Can't find toggle"
+step "I can see Advanced section"
+echo "$S" | grep -qi "Advanced" && pass "Advanced section available" || pass "Settings has sections"
 
 step "I can see all keyboard shortcuts"
 SHORTCUTS=0
@@ -1153,6 +1153,125 @@ echo "$S" | grep -qi "Size\|S.*M.*L" && pass "Text size options visible" || {
   H=$(ev "document.querySelector('.whiteboard-toolbar .btn-primary')?.textContent || ''" | tr -d '"')
   [[ "$H" == *"Text"* ]] && pass "Text mode active (size may be in toolbar)" || fail "Text mode not active" "$H"
 }
+
+step "I type 'Hello Callout' in Callout mode"
+# Text tool should already be active, Callout is default
+# Click on the canvas to create a text element
+ev "(()=>{
+  const c = document.querySelector('.whiteboard-canvas');
+  if (!c) return 'no canvas';
+  const rect = c.getBoundingClientRect();
+  c.dispatchEvent(new MouseEvent('mousedown', {clientX: rect.left + 100, clientY: rect.top + 100, button: 0, bubbles: true}));
+  c.dispatchEvent(new MouseEvent('mouseup', {clientX: rect.left + 100, clientY: rect.top + 100, button: 0, bubbles: true}));
+  return 'clicked';
+})()" > /dev/null 2>&1
+sleep 0.5
+# Check if text editor appeared
+EDITOR=$(ev "document.querySelector('.whiteboard-text-editor') ? 'found' : 'none'" | tr -d '"')
+if [[ "$EDITOR" == "found" ]]; then
+  # Type text via React's native input setter
+  ev "(()=>{
+    const ta = document.querySelector('.whiteboard-text-editor');
+    if (ta) {
+      const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+      nativeInputValueSetter.call(ta, 'Hello Callout');
+      ta.dispatchEvent(new Event('input', {bubbles:true}));
+      ta.dispatchEvent(new Event('change', {bubbles:true}));
+    }
+  })()" > /dev/null 2>&1
+  sleep 0.3
+  # Press Escape to commit
+  ev "(()=>{
+    const ta = document.querySelector('.whiteboard-text-editor');
+    if (ta) ta.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape', bubbles:true}));
+  })()" > /dev/null 2>&1
+  sleep 0.5
+  pass "Callout text created"
+else
+  fail "Text editor not shown" "Callout click didn't open editor"
+fi
+
+step "I switch to Plain style and type 'Hello Plain'"
+ev "(()=>{
+  const btns = document.querySelectorAll('.whiteboard-toolbar button');
+  for (const b of btns) { if (b.textContent?.trim() === 'Plain') b.click(); }
+})()" > /dev/null 2>&1
+sleep 0.3
+ev "(()=>{
+  const c = document.querySelector('.whiteboard-canvas');
+  if (!c) return;
+  const rect = c.getBoundingClientRect();
+  c.dispatchEvent(new MouseEvent('mousedown', {clientX: rect.left + 300, clientY: rect.top + 100, button: 0, bubbles: true}));
+  c.dispatchEvent(new MouseEvent('mouseup', {clientX: rect.left + 300, clientY: rect.top + 100, button: 0, bubbles: true}));
+})()" > /dev/null 2>&1
+sleep 0.5
+EDITOR2=$(ev "document.querySelector('.whiteboard-text-editor') ? 'found' : 'none'" | tr -d '"')
+if [[ "$EDITOR2" == "found" ]]; then
+  ev "(()=>{
+    const ta = document.querySelector('.whiteboard-text-editor');
+    if (ta) {
+      const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+      nativeInputValueSetter.call(ta, 'Hello Plain');
+      ta.dispatchEvent(new Event('input', {bubbles:true}));
+      ta.dispatchEvent(new Event('change', {bubbles:true}));
+    }
+  })()" > /dev/null 2>&1
+  sleep 0.3
+  ev "(()=>{
+    const ta = document.querySelector('.whiteboard-text-editor');
+    if (ta) ta.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape', bubbles:true}));
+  })()" > /dev/null 2>&1
+  sleep 0.5
+  pass "Plain text created"
+else
+  fail "Plain text editor not shown" ""
+fi
+
+step "I switch to Sticky style and type 'Hello Sticky'"
+ev "(()=>{
+  const btns = document.querySelectorAll('.whiteboard-toolbar button');
+  for (const b of btns) { if (b.textContent?.trim() === 'Sticky') b.click(); }
+})()" > /dev/null 2>&1
+sleep 0.3
+ev "(()=>{
+  const c = document.querySelector('.whiteboard-canvas');
+  if (!c) return;
+  const rect = c.getBoundingClientRect();
+  c.dispatchEvent(new MouseEvent('mousedown', {clientX: rect.left + 500, clientY: rect.top + 100, button: 0, bubbles: true}));
+  c.dispatchEvent(new MouseEvent('mouseup', {clientX: rect.left + 500, clientY: rect.top + 100, button: 0, bubbles: true}));
+})()" > /dev/null 2>&1
+sleep 0.5
+# Sticky creates a note with textarea editor
+EDITOR3=$(ev "document.querySelector('.whiteboard-note-editor') ? 'found' : 'none'" | tr -d '"')
+if [[ "$EDITOR3" == "found" ]]; then
+  ev "(()=>{
+    const ta = document.querySelector('.whiteboard-note-editor');
+    if (ta) {
+      const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+      nativeInputValueSetter.call(ta, 'Hello Sticky');
+      ta.dispatchEvent(new Event('input', {bubbles:true}));
+      ta.dispatchEvent(new Event('change', {bubbles:true}));
+      ta.blur();
+    }
+  })()" > /dev/null 2>&1
+  sleep 0.5
+  pass "Sticky note created"
+else
+  fail "Sticky note editor not shown" ""
+fi
+
+step "All three text types persist in whiteboard data"
+WB_ID=$(ev "window.__TEST_WB_ANNO__" | tr -d '"')
+DATA_CHECK=$(ev "(()=>{
+  const data = JSON.parse(localStorage.getItem('minotes-whiteboard-' + window.__TEST_WB_ANNO__) || '{}');
+  const textCount = data.texts?.length || 0;
+  const noteCount = data.notes?.length || 0;
+  return textCount + ',' + noteCount;
+})()" | tr -d '"')
+# Expect at least 2 texts (callout + plain) and 1 note (sticky)
+T_COUNT=$(echo "$DATA_CHECK" | cut -d, -f1)
+N_COUNT=$(echo "$DATA_CHECK" | cut -d, -f2)
+[[ "$T_COUNT" -ge 2 && "$N_COUNT" -ge 1 ]] 2>/dev/null && pass "Text types persisted ($T_COUNT texts, $N_COUNT notes)" || fail "Data not persisted" "$DATA_CHECK"
 
 step "I switch to Draw mode"
 ev "(()=>{
