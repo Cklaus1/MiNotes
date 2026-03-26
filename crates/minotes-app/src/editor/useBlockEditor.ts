@@ -15,7 +15,7 @@ import { common, createLowlight } from "lowlight";
 import { Markdown } from "tiptap-markdown";
 import { WikiLinkNode } from "./WikiLinkNode";
 import { BlockRefNode } from "./BlockRefNode";
-import { SlashCommands, setSlashCommandCallback, setSlashSaveCallback } from "./slashCommands";
+import { SlashCommands, setSlashCallbacks } from "./slashCommands";
 import { PageLinkSuggestion } from "./PageLinkSuggestion";
 import { BlockRefSuggestion } from "./BlockRefSuggestion";
 
@@ -64,6 +64,7 @@ export function useBlockEditor({
   const onOutdentRef = useRef(onOutdent);
   const onSlashCommandRef = useRef(onSlashCommand);
   const editorInstanceRef = useRef<any>(null);
+  const skipSyncRef = useRef(false);
   onSaveRef.current = onSave;
   contentRef.current = content;
   onEnterRef.current = onEnter;
@@ -76,21 +77,7 @@ export function useBlockEditor({
   onOutdentRef.current = onOutdent;
   onSlashCommandRef.current = onSlashCommand;
 
-  // Set the module-level callbacks for slash commands
-  setSlashCommandCallback((md: string) => {
-    onSlashCommandRef.current?.(md);
-  });
-  setSlashSaveCallback(() => {
-    // Save whatever the editor currently contains (after TipTap commands ran)
-    setTimeout(() => {
-      const ed = editorInstanceRef.current;
-      if (ed) {
-        const md = (ed.storage as any).markdown?.getMarkdown?.() ?? "";
-        contentRef.current = md.trim();
-        onSaveRef.current(md.trim());
-      }
-    }, 20);
-  });
+  // Slash callbacks are set per-editor instance after creation (see useEffect below)
 
   const editor = useEditor({
     extensions: [
@@ -188,6 +175,7 @@ export function useBlockEditor({
           // Save current block with before-cursor content
           const savedContent = markdownBefore.trim();
           contentRef.current = savedContent;
+          skipSyncRef.current = true;
           onSaveRef.current(savedContent);
 
           // Create new block with after-cursor text
@@ -341,6 +329,8 @@ export function useBlockEditor({
       const normalized = markdown.trim();
       const originalNormalized = contentRef.current.trim();
       if (normalized !== originalNormalized) {
+        contentRef.current = normalized;
+        skipSyncRef.current = true;
         onSaveRef.current(normalized);
       }
     },
@@ -349,11 +339,33 @@ export function useBlockEditor({
   // Keep editorInstanceRef in sync so handleKeyDown can access storage
   useEffect(() => {
     editorInstanceRef.current = editor;
+    // Set per-editor slash command callbacks (avoids module-level singleton race)
+    if (editor) {
+      setSlashCallbacks(
+        editor,
+        (md: string) => onSlashCommandRef.current?.(md),
+        () => {
+          setTimeout(() => {
+            if (editor) {
+              const md = (editor.storage as any).markdown?.getMarkdown?.() ?? "";
+              contentRef.current = md.trim();
+              skipSyncRef.current = true;
+              onSaveRef.current(md.trim());
+            }
+          }, 20);
+        },
+      );
+    }
   }, [editor]);
 
   // Sync external content changes (e.g. after backend refresh)
   useEffect(() => {
     if (!editor) return;
+    // Skip sync if we just saved from this editor (avoids setContent corrupting complex nodes)
+    if (skipSyncRef.current) {
+      skipSyncRef.current = false;
+      return;
+    }
     const currentMarkdown = ((editor.storage as any).markdown?.getMarkdown() ?? "").trim();
     if (content.trim() !== currentMarkdown) {
       editor.commands.setContent(content);

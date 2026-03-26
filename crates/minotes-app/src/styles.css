@@ -1963,7 +1963,7 @@ body {
   top: 50%;
   left: 50%;
   transform: translate(-50%, -50%);
-  color: rgba(166, 173, 200, 0.3);
+  color: rgba(166, 173, 200, 0.38);
   font-size: 24px;
   font-weight: 300;
   pointer-events: none;

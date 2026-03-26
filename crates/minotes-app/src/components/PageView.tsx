@@ -587,12 +587,17 @@ export default function PageView({
     return true;
   });
 
-  // Active path: the focused block + all its ancestors
-  const activePathIds = new Set<string>(
-    activeBlockId
-      ? [activeBlockId, ...blockTreeInfo.getAncestorIds(activeBlockId)]
-      : []
-  );
+  // Active path: set via DOM to avoid re-rendering blocks (which steals focus in WebKitGTK)
+  useEffect(() => {
+    document.querySelectorAll('[data-active-path="true"]').forEach(el => el.removeAttribute('data-active-path'));
+    if (activeBlockId) {
+      const ids = [activeBlockId, ...blockTreeInfo.getAncestorIds(activeBlockId)];
+      ids.forEach(id => {
+        const el = document.querySelector(`[data-block-id="${id}"]`);
+        if (el) el.setAttribute('data-active-path', 'true');
+      });
+    }
+  }, [activeBlockId, blockTreeInfo]);
 
   // Register block-level test API
   useEffect(() => {
@@ -987,7 +992,7 @@ export default function PageView({
                 if (!next) return true;
                 return (next.parent_id ?? null) !== (block.parent_id ?? null);
               })()}
-              isOnActivePath={activePathIds.has(block.id)}
+              isOnActivePath={false}
               onFocusBlock={setActiveBlockId}
               onBlurBlock={() => {
                 // Only clear if no other block takes focus within 100ms

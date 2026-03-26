@@ -11,19 +11,14 @@ import { generateWhiteboardId } from "../lib/whiteboardUtils";
  * 1. Markdown-based (headings): save "# text" via onSlashCommand callback
  * 2. Editor-based (lists, hr): use TipTap API then save the resulting markdown
  *
- * For strategy 2, we use the editor directly then call onSlashSave
- * to persist whatever the editor now contains.
+ * Callbacks are stored on each editor instance ((editor.storage as any).slashCallbacks)
+ * to avoid a shared module-level singleton race condition across multiple blocks.
  */
 
-let slashCommandCallback: ((markdown: string) => void) | null = null;
-let slashSaveCallback: (() => void) | null = null;
-
-export function setSlashCommandCallback(cb: (markdown: string) => void) {
-  slashCommandCallback = cb;
-}
-
-export function setSlashSaveCallback(cb: () => void) {
-  slashSaveCallback = cb;
+export function setSlashCallbacks(editor: any, command: (markdown: string) => void, save: () => void) {
+  if (editor) {
+    (editor.storage as any).slashCallbacks = { command, save };
+  }
 }
 
 function getTextBeforeSlash(editor: any, range: { from: number; to: number }): string {
@@ -42,7 +37,7 @@ const COMMANDS: SlashMenuItem[] = [
     description: "large heading",
     command: ({ editor, range }) => {
       const text = getTextBeforeSlash(editor, range);
-      slashCommandCallback?.(`# ${text}`);
+      (editor.storage as any).slashCallbacks?.command(`# ${text}`);
     },
   },
   {
@@ -50,7 +45,7 @@ const COMMANDS: SlashMenuItem[] = [
     description: "medium heading",
     command: ({ editor, range }) => {
       const text = getTextBeforeSlash(editor, range);
-      slashCommandCallback?.(`## ${text}`);
+      (editor.storage as any).slashCallbacks?.command(`## ${text}`);
     },
   },
   {
@@ -58,7 +53,7 @@ const COMMANDS: SlashMenuItem[] = [
     description: "small heading",
     command: ({ editor, range }) => {
       const text = getTextBeforeSlash(editor, range);
-      slashCommandCallback?.(`### ${text}`);
+      (editor.storage as any).slashCallbacks?.command(`### ${text}`);
     },
   },
   {
@@ -66,7 +61,7 @@ const COMMANDS: SlashMenuItem[] = [
     description: "list bullet unordered",
     command: ({ editor, range }) => {
       editor.chain().focus().deleteRange(range).toggleBulletList().run();
-      slashSaveCallback?.();
+      (editor.storage as any).slashCallbacks?.save();
     },
   },
   {
@@ -74,7 +69,7 @@ const COMMANDS: SlashMenuItem[] = [
     description: "task checkbox todo",
     command: ({ editor, range }) => {
       editor.chain().focus().deleteRange(range).toggleTaskList().run();
-      slashSaveCallback?.();
+      (editor.storage as any).slashCallbacks?.save();
     },
   },
   {
@@ -82,7 +77,7 @@ const COMMANDS: SlashMenuItem[] = [
     description: "code snippet",
     command: ({ editor, range }) => {
       editor.chain().focus().deleteRange(range).toggleCodeBlock().run();
-      slashSaveCallback?.();
+      (editor.storage as any).slashCallbacks?.save();
     },
   },
   {
@@ -90,14 +85,15 @@ const COMMANDS: SlashMenuItem[] = [
     description: "blockquote",
     command: ({ editor, range }) => {
       editor.chain().focus().deleteRange(range).toggleBlockquote().run();
-      slashSaveCallback?.();
+      (editor.storage as any).slashCallbacks?.save();
     },
   },
   {
     title: "Divider",
     description: "horizontal line separator",
     command: ({ editor, range }) => {
-      slashCommandCallback?.("---");
+      editor.chain().focus().deleteRange(range).setHorizontalRule().run();
+      (editor.storage as any).slashCallbacks?.save();
     },
   },
   {
@@ -105,7 +101,7 @@ const COMMANDS: SlashMenuItem[] = [
     description: "drawing canvas sketch",
     command: ({ editor, range }) => {
       const wbId = generateWhiteboardId();
-      slashCommandCallback?.(`{{whiteboard:${wbId}}}`);
+      (editor.storage as any).slashCallbacks?.command(`{{whiteboard:${wbId}}}`);
     },
   },
 ];

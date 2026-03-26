@@ -1575,8 +1575,9 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
-        // If a textarea recently handled Escape (within 100ms), skip
-        if (Date.now() - escapeHandledRef.current < 100) {
+        // If a textarea recently handled Escape (within 500ms), skip
+        // WebKitGTK has different event timing than Chrome — need wider window
+        if (Date.now() - escapeHandledRef.current < 500) {
           return;
         }
         if (editingNoteRef.current) {
@@ -1897,8 +1898,9 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
           onBlur={finishEdit}
           onKeyDown={(e) => {
             if (e.key === "Escape") {
-              escapeHandledRef.current = Date.now();
+              e.nativeEvent.stopImmediatePropagation();
               finishEdit();
+              return;
             }
             // Prevent canvas shortcuts while editing
             e.stopPropagation();
@@ -1933,7 +1935,11 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
             onChange={(e) => setEditingTextValue(e.target.value)}
             onBlur={finishTextEdit}
             onKeyDown={(e) => {
-              if (e.key === "Escape") { escapeHandledRef.current = Date.now(); finishTextEdit(); }
+              if (e.key === "Escape") {
+                e.nativeEvent.stopImmediatePropagation();
+                finishTextEdit();
+                return;
+              }
               e.stopPropagation();
             }}
             autoFocus

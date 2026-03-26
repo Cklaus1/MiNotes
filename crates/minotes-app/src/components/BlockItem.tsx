@@ -147,72 +147,52 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
     }
   }, [block.content, tiptapEditor, editorMode]);
 
-  // Fix: checkbox toggle via document-level native event listener
-  // React synthetic events don't fire for contenteditable="false" elements
+  // WebKitGTK checkbox fix: TipTap's mousedown.preventDefault on checkboxes
+  // can prevent the click from toggling the checkbox in WebKitGTK.
+  // Programmatically toggle and dispatch change event.
   useEffect(() => {
     const blockEl = document.querySelector(`[data-block-id="${block.id}"]`);
     if (!blockEl) return;
 
     const handler = (e: Event) => {
       const target = e.target as HTMLElement;
-      const isCheckbox = target.tagName === 'INPUT' && (target as HTMLInputElement).type === 'checkbox';
-      const isLabel = target.tagName === 'LABEL' || (target.tagName === 'SPAN' && !!target.closest('label'));
-      if (!isCheckbox && !isLabel) return;
-      if (!editorRef.current) return;
+      if (target.tagName !== 'INPUT' || (target as HTMLInputElement).type !== 'checkbox') return;
 
-      e.preventDefault();
-      e.stopPropagation();
-
-      const li = target.closest('li[data-checked]');
-      if (!li) return;
-      const isChecked = li.getAttribute('data-checked') === 'true';
-
-      try {
-        const editor = editorRef.current;
-        const { doc } = editor.state;
-        doc.descendants((node: any, pos: number) => {
-          if (node.type.name === 'taskItem') {
-            const domNode = editor.view.nodeDOM(pos) as HTMLElement;
-            if (domNode && (domNode === li || domNode.contains(target))) {
-              editor.chain()
-                .focus(undefined, { scrollIntoView: false })
-                .command(({ tr }: any) => {
-                  tr.setNodeMarkup(pos, undefined, { ...node.attrs, checked: !isChecked });
-                  return true;
-                })
-                .run();
-              return false;
-            }
-          }
-        });
-      } catch {}
+      const checkbox = target as HTMLInputElement;
+      // Toggle the checked state programmatically
+      checkbox.checked = !checkbox.checked;
+      // Dispatch change event so TipTap's handler picks it up
+      checkbox.dispatchEvent(new Event('change', { bubbles: true }));
     };
 
     blockEl.addEventListener('click', handler, true);
     return () => blockEl.removeEventListener('click', handler, true);
   }, [block.id, tiptapEditor]);
 
-  // Click on block → ensure TipTap editor gets focus (WebKitGTK fix)
-  // Without this, WebKitGTK requires two clicks: one to focus the div, another for contenteditable
-  const handleBlockClick = useCallback((e: React.MouseEvent) => {
-    // Don't steal focus from drag handle, collapse button, or property inputs
+  // MouseDown on block → ensure TipTap editor gets focus (WebKitGTK fix)
+  // WebKitGTK doesn't always focus contenteditable on first click. Pre-focus on mousedown.
+  const handleBlockMouseDown = useCallback((e: React.MouseEvent) => {
     const target = e.target as HTMLElement;
     if (target.closest('.block-drag-handle') || target.closest('.block-collapse') ||
         target.closest('.block-properties') || target.closest('.prop-add-btn') ||
-        target.closest('.whiteboard-indicator') || target.closest('.editor-mode-toggle')) {
+        target.closest('.whiteboard-indicator') || target.closest('.editor-mode-toggle') ||
+        (target.tagName === 'INPUT' && (target as unknown as HTMLInputElement).type === 'checkbox') ||
+        target.closest('label')) {
       return;
     }
-    // Focus the TipTap editor if it exists and isn't already focused
-    // Use 100ms delay — must fire AFTER the 50ms activeBlockId debounce
-    // to survive the re-render it causes
-    if (editorRef.current && !editorRef.current.isFocused) {
-      editorRef.current.commands.focus();
-      // Re-assert focus after the debounced re-render
-      setTimeout(() => {
+    // Pre-focus on mousedown; ProseMirror's native click handler positions cursor after.
+    // Also guard against anything stealing focus within the next 500ms.
+    if (editorRef.current) {
+      if (!editorRef.current.isFocused) {
+        editorRef.current.commands.focus();
+      }
+      // WebKitGTK: re-assert focus periodically to combat anything stealing it
+      const guard = setInterval(() => {
         if (editorRef.current && !editorRef.current.isFocused) {
           editorRef.current.commands.focus();
         }
-      }, 100);
+      }, 50);
+      setTimeout(() => clearInterval(guard), 500);
     }
   }, []);
 
@@ -278,7 +258,7 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
       onFocusCapture={() => onFocusBlock?.(block.id)}
       onBlurCapture={() => onBlurBlock?.()}
       onContextMenu={handleContextMenu}
-      onClickCapture={handleBlockClick}
+      onMouseDownCapture={handleBlockMouseDown}
       onClick={(e) => {
         if (e.shiftKey && onShiftClick) {
           e.preventDefault();
@@ -503,7 +483,6 @@ export default React.memo(BlockItem, (prev, next) => {
     prev.selected === next.selected &&
     prev.hasChildren === next.hasChildren &&
     prev.isLastSibling === next.isLastSibling &&
-    prev.isOnActivePath === next.isOnActivePath &&
     !!prev.onDragReorder === !!next.onDragReorder
   );
 });
