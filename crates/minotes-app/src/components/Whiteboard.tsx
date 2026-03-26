@@ -734,8 +734,8 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
       // Clicking canvas commits any active text/note edit (like clicking away)
       // Skip if clicking inside the text mode handler (it handles its own finish)
       if (mode !== "text") {
-        if (editingTextId) finishTextEdit();
-        if (editingNote) finishEdit();
+        if (editingTextIdRef.current) finishTextEdit();
+        if (editingNoteRef.current) finishEdit();
       }
 
       // Right or middle click => pan
@@ -770,8 +770,8 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
 
         if (mode === "text") {
           // Finish any active edit first (clicking away = save)
-          if (editingTextId) finishTextEdit();
-          if (editingNote) finishEdit();
+          if (editingTextIdRef.current) finishTextEdit();
+          if (editingNoteRef.current) finishEdit();
 
           if (textStyle === "sticky") {
             // Create sticky note
@@ -808,7 +808,7 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
         setSelectedElement(null);
       }
     },
-    [mode, screenToWorld, findNoteAt, findElementAt, textStyle, textSize, drawColor, noteColor, editingTextId]
+    [mode, screenToWorld, findNoteAt, findElementAt, textStyle, textSize, drawColor, noteColor]
   );
 
   const handleMouseMove = useCallback(
