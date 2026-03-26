@@ -22,14 +22,15 @@ interface Props {
   onGraphClick: () => void;
   onMindmapClick: () => void;
   onWhiteboardClick: () => void;
+  onKanbanClick: () => void;
   onSettingsClick: () => void;
-  activeMode: "graph" | "mindmap" | "whiteboard" | null;
+  activeMode: "graph" | "mindmap" | "whiteboard" | "kanban" | null;
   refreshKey: number;
 }
 
 export default function Sidebar({
   activePage, stats, onPageClick, onCreatePage, onDeletePage,
-  onJournalClick, onSearchClick, onGraphClick, onMindmapClick, onWhiteboardClick, onSettingsClick, activeMode, refreshKey,
+  onJournalClick, onSearchClick, onGraphClick, onMindmapClick, onWhiteboardClick, onKanbanClick, onSettingsClick, activeMode, refreshKey,
 }: Props) {
   const [newTitle, setNewTitle] = useState("");
   const [showCreate, setShowCreate] = useState(false);
@@ -237,15 +238,19 @@ export default function Sidebar({
       </div>
 
       <div className="stats-bar">
-        <div className="stats-modes">
+        <div className="stats-modes-divider" />
+        <div className="stats-modes-grid">
           <button className={`stats-mode-btn ${activeMode === "graph" ? "active" : ""}`} onClick={onGraphClick} title="Graph (Ctrl+G)">
-            🔗 Graph
+            📊 Graph
           </button>
-          <button className={`stats-mode-btn ${activeMode === "mindmap" ? "active" : ""}`} onClick={onMindmapClick} title="Mind Map (Ctrl+M)">
-            🧠 Mind Map
+          <button className={`stats-mode-btn ${activeMode === "mindmap" ? "active" : ""}`} onClick={onMindmapClick} title="Mindmap (Ctrl+M)">
+            🧠 Mindmap
           </button>
           <button className={`stats-mode-btn ${activeMode === "whiteboard" ? "active" : ""}`} onClick={onWhiteboardClick} title="Draw (Ctrl+W)">
             🎨 Draw
+          </button>
+          <button className={`stats-mode-btn ${activeMode === "kanban" ? "active" : ""}`} onClick={onKanbanClick} title="Kanban (Ctrl+Shift+K)">
+            🗂 Kanban
           </button>
         </div>
       </div>

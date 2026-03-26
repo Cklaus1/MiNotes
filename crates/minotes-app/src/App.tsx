@@ -276,6 +276,11 @@ export default function App() {
         e.preventDefault();
         if (activePage) setCanvasMode(prev => prev === "mindmap" ? null : "mindmap");
       }
+      // Cmd/Ctrl+Shift+K — kanban view
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === "K") {
+        e.preventDefault();
+        if (activePage) setCanvasMode(prev => prev === "kanban" ? null : "kanban");
+      }
       // Cmd/Ctrl+P — open PDF
       if ((e.metaKey || e.ctrlKey) && e.key === "p") {
         e.preventDefault();
@@ -358,8 +363,9 @@ export default function App() {
             setCanvasMode("draw");
           }
         }}
+        onKanbanClick={() => { if (activePage) setCanvasMode(prev => prev === "kanban" ? null : "kanban"); }}
         onSettingsClick={() => setOpenPanel(prev => prev === "settings" ? null : "settings")}
-        activeMode={canvasMode === "graph" ? "graph" : canvasMode === "mindmap" ? "mindmap" : canvasMode === "draw" ? "whiteboard" : null}
+        activeMode={canvasMode === "graph" ? "graph" : canvasMode === "mindmap" ? "mindmap" : canvasMode === "draw" ? "whiteboard" : canvasMode === "kanban" ? "kanban" : null}
         refreshKey={refreshKey}
       />
       <div className="main workspace-split mod-root" style={{ position: "relative", display: "flex", flexDirection: "row" }}>

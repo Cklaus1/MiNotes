@@ -2,9 +2,10 @@ import { useState, useCallback } from "react";
 import type { Block } from "../lib/api";
 import GraphView from "./GraphView";
 import MindMapView from "./mindmap/MindMapView";
+import KanbanView from "./kanban/KanbanView";
 import Whiteboard from "./Whiteboard";
 
-export type CanvasModeType = "graph" | "mindmap" | "draw";
+export type CanvasModeType = "graph" | "mindmap" | "draw" | "kanban";
 
 interface Props {
   initialMode: CanvasModeType;
@@ -65,6 +66,16 @@ export default function CanvasMode({
             onClose={onWhiteboardClose}
           />
         );
+      case "kanban":
+        if (!pageId) return <div className="canvas-empty">Open a page to use Kanban</div>;
+        return (
+          <KanbanView
+            pageId={pageId}
+            pageTitle={pageTitle}
+            blocks={blocks}
+            onRefreshPage={onRefreshPage}
+          />
+        );
     }
   };
 
@@ -93,6 +104,12 @@ export default function CanvasMode({
             onClick={() => handleModeSwitch("draw")}
           >
             🎨 Draw
+          </button>
+          <button
+            className={`canvas-mode-btn ${mode === "kanban" ? "active" : ""}`}
+            onClick={() => handleModeSwitch("kanban")}
+          >
+            📋 Kanban
           </button>
         </div>
 

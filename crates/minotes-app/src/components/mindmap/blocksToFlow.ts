@@ -53,6 +53,8 @@ export function extractLabel(content: string): string {
   text = text.replace(/`(.+?)`/g, "$1");
   // Strip wiki links
   text = text.replace(/\[\[(.+?)\]\]/g, "$1");
+  // Replace whiteboard embeds with label
+  text = text.replace(/\{\{whiteboard:[^}]+\}\}/g, "(Whiteboard)");
   // Strip checkbox markers
   text = text.replace(/^- \[[ x]\]\s*/, "");
   // Strip list markers
@@ -64,7 +66,7 @@ export function extractLabel(content: string): string {
   return text || "(empty)";
 }
 
-function detectTodoState(content: string): "todo" | "doing" | "done" | null {
+export function detectTodoState(content: string): "todo" | "doing" | "done" | null {
   if (content.startsWith("DONE ") || content.includes("- [x]")) return "done";
   if (content.startsWith("DOING ")) return "doing";
   if (content.startsWith("TODO ") || content.includes("- [ ]")) return "todo";
