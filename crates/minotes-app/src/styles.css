@@ -674,13 +674,22 @@ body {
   gap: 1px;
 }
 
-.stats-bar-divider {
-  width: 1px;
-  height: 16px;
-  background: var(--border);
-  margin: 0 6px;
-  align-self: center;
-  opacity: 0.6;
+.sidebar-gear-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  transition: color 0.15s, background 0.15s;
+  opacity: 0.7;
+}
+
+.sidebar-gear-btn:hover {
+  color: var(--text-primary);
+  background: var(--bg-surface);
+  opacity: 1;
 }
 
 .stats-mode-btn {

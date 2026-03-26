@@ -100,12 +100,15 @@ export default function Sidebar({
     <div className="sidebar workspace-ribbon">
       <div className="sidebar-header">
         <h1>MiNotes</h1>
-        <div style={{ display: "flex", gap: 4 }}>
+        <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
           <button className="btn btn-sm" onClick={onSearchClick} title="Search (Ctrl+K)">
             Search
           </button>
           <button className="btn btn-sm btn-primary" onClick={() => setShowCreate(!showCreate)}>
             + New
+          </button>
+          <button className="sidebar-gear-btn" onClick={onSettingsClick} title="Settings (Ctrl+,)">
+            ⚙
           </button>
         </div>
       </div>
@@ -245,14 +248,6 @@ export default function Sidebar({
             🎨 Draw
           </button>
         </div>
-        <span className="stats-bar-divider" />
-        <button
-          className="stats-mode-btn"
-          onClick={onSettingsClick}
-          title="Settings (Ctrl+,)"
-        >
-          ⚙
-        </button>
       </div>
     </div>
   );
