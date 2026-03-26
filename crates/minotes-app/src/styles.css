@@ -2863,10 +2863,12 @@ body.theme-light { /* matches our light theme */ }
   color: var(--text-primary);
 }
 
-.settings-workspace-stats {
-  font-size: 12px;
-  color: var(--text-secondary);
-  padding: 2px 0;
+.settings-workspace {
+  padding: 14px 24px;
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: auto;
+  opacity: 0.6;
 }
 
 .settings-info-icon {

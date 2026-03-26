@@ -100,16 +100,6 @@ export default function SettingsPanel({ open, onClose }: Props) {
           </div>
         </div>
 
-        {/* Workspace */}
-        {stats && (
-          <div className="settings-section">
-            <div className="settings-section-title">Workspace</div>
-            <div className="settings-workspace-stats">
-              {stats.pages} pages · {stats.blocks} blocks · {stats.links} links
-            </div>
-          </div>
-        )}
-
         {/* Advanced — collapsible */}
         <div className="settings-section">
           <div
@@ -184,6 +174,13 @@ export default function SettingsPanel({ open, onClose }: Props) {
             </div>
           )}
         </div>
+
+        {/* Workspace — bottom, light status info */}
+        {stats && (
+          <div className="settings-workspace">
+            {stats.pages} pages · {stats.blocks} blocks · {stats.links} links
+          </div>
+        )}
       </div>
     </>
   );
