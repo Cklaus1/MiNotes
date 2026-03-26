@@ -69,8 +69,7 @@ body {
 }
 
 .sidebar-header {
-  padding: 16px;
-  border-bottom: 1px solid var(--border);
+  padding: 12px 16px 8px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -80,6 +79,13 @@ body {
   font-size: 16px;
   font-weight: 600;
   color: var(--accent);
+}
+
+.sidebar-actions-bar {
+  display: flex;
+  gap: 6px;
+  padding: 0 16px 10px;
+  border-bottom: 1px solid var(--border);
 }
 
 .sidebar-actions {
