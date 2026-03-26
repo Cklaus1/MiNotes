@@ -2774,7 +2774,7 @@ body.theme-light { /* matches our light theme */ }
 .settings-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.15);
+  background: rgba(0, 0, 0, 0.08);
   z-index: 99;
 }
 
@@ -2783,16 +2783,16 @@ body.theme-light { /* matches our light theme */ }
   top: 0;
   right: 0;
   bottom: 0;
-  width: 340px;
+  width: 380px;
   max-width: 90vw;
   background: var(--bg-secondary);
   border-left: 1px solid var(--border);
-  box-shadow: -4px 0 20px rgba(0, 0, 0, 0.15);
+  box-shadow: -2px 0 12px rgba(0, 0, 0, 0.08);
   display: flex;
   flex-direction: column;
   overflow-y: auto;
   z-index: 100;
-  animation: slide-in-right 0.2s ease-out;
+  animation: slide-in-right 0.18s ease-out;
 }
 
 @keyframes slide-in-right {
@@ -2804,24 +2804,26 @@ body.theme-light { /* matches our light theme */ }
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 16px 20px;
+  padding: 18px 24px;
   border-bottom: 1px solid var(--border);
 }
 
 .settings-title {
   font-weight: 700;
-  font-size: 16px;
+  font-size: 17px;
   color: var(--text-primary);
+  letter-spacing: -0.01em;
 }
 
 .settings-close-btn {
   background: none;
   border: none;
   color: var(--text-muted);
-  font-size: 18px;
+  font-size: 20px;
   cursor: pointer;
-  padding: 2px 6px;
-  border-radius: 4px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  line-height: 1;
   transition: background 0.15s, color 0.15s;
 }
 
@@ -2831,7 +2833,7 @@ body.theme-light { /* matches our light theme */ }
 }
 
 .settings-section {
-  padding: 16px 20px;
+  padding: 18px 24px;
   border-bottom: 1px solid var(--border);
 }
 
@@ -2913,10 +2915,13 @@ body.theme-light { /* matches our light theme */ }
 }
 
 .settings-advanced-toggle {
-  font-size: 12px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 600;
   color: var(--text-muted);
   cursor: pointer;
-  padding: 2px 0;
+  padding: 0;
   user-select: none;
   transition: color 0.15s;
 }
@@ -2926,7 +2931,7 @@ body.theme-light { /* matches our light theme */ }
 }
 
 .settings-advanced-content {
-  margin-top: 10px;
+  margin-top: 12px;
 }
 
 .settings-toggle {
@@ -3078,14 +3083,14 @@ body.theme-light { /* matches our light theme */ }
 .shortcuts-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 6px 20px;
+  gap: 8px 24px;
 }
 
 .shortcut-row {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 3px 0;
+  padding: 2px 0;
 }
 
 .shortcut-key {
