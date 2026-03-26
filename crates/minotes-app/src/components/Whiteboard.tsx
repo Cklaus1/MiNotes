@@ -1574,13 +1574,16 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
-        if (editingNote) {
+        if (editingNoteRef.current) {
           finishEdit();
+        } else if (editingTextIdRef.current) {
+          finishTextEdit();
         } else if (contextMenu) {
           setContextMenu(null);
         } else {
           handleClose();
         }
+        return; // Don't process other shortcuts on Escape
       }
       // Quick mode switch (only when not editing)
       if (!editingNote && !editingTextId) {
