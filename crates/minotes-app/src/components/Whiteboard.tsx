@@ -1574,6 +1574,11 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
+        // If Escape came from inside a text/note editor, the textarea already handled it — skip
+        const target = e.target as HTMLElement;
+        if (target.closest('.whiteboard-text-editor') || target.closest('.whiteboard-note-editor')) {
+          return;
+        }
         if (editingNoteRef.current) {
           finishEdit();
         } else if (editingTextIdRef.current) {
@@ -1583,7 +1588,7 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
         } else {
           handleClose();
         }
-        return; // Don't process other shortcuts on Escape
+        return;
       }
       // Quick mode switch (only when not editing)
       if (!editingNote && !editingTextId) {
