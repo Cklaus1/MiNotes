@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import * as api from "../lib/api";
+import { getRecentPages } from "../lib/recentFiles";
 
 interface Props {
   open: boolean;
@@ -186,6 +187,20 @@ export default function SearchPanel({
             </>
           ) : (
             <>
+              {!query && getRecentPages().length > 0 && (
+                <>
+                  <div className="command-palette-section">Recent</div>
+                  {getRecentPages().slice(0, 5).map((r, i) => (
+                    <div
+                      key={r.id}
+                      className={`command-palette-item ${i === selectedIndex ? "selected" : ""}`}
+                      onClick={() => { onPageClick(r.id); onClose(); }}
+                    >
+                      🕐 {r.title}
+                    </div>
+                  ))}
+                </>
+              )}
               {filteredPages.length > 0 && (
                 <>
                   <div className="command-palette-section">Pages</div>

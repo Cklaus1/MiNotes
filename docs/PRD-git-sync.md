@@ -649,6 +649,57 @@ Track (locally, not phoned home):
 
 Displayed in Sync Panel for user visibility.
 
+## Version History / Time Travel
+
+Git sync unlocks page-level version history — every sync commit is a snapshot users can browse and restore.
+
+### UI: Version History Panel
+
+Accessible from the page header or Sync Panel. Shows a timeline of all versions of the current page:
+
+```
+┌─ Version History: Meeting Notes ──────────────┐
+│                                                │
+│  Mar 26, 2026 — 3:42 PM (this device)        │
+│  "Added action items section"                  │
+│  +12 lines, -3 lines                     [View]│
+│                                                │
+│  Mar 25, 2026 — 10:15 AM (laptop)            │
+│  "Initial meeting notes"                       │
+│  +28 lines                          [View] [↺] │
+│                                                │
+│  Mar 24, 2026 — 5:00 PM (auto-sync)          │
+│  "Created page"                                │
+│  +3 lines                           [View] [↺] │
+└────────────────────────────────────────────────┘
+```
+
+Each entry shows: timestamp, device/author, commit message (auto-generated from diff summary), line diff stats, and action buttons (View, Restore).
+
+### Diff View
+
+Clicking "View" opens a read-only diff of the page at that point:
+
+- **Inline diff**: additions highlighted green, deletions red
+- **Side-by-side**: current version vs selected version
+- Block-level granularity — shows which blocks were added, removed, or modified
+
+### Restore
+
+"Restore this version" creates a NEW commit that reverts the page to the selected historical state. Non-destructive — does not rewrite Git history. The current version becomes the "before" in the next diff.
+
+### Tauri Commands
+
+- `git_page_history(pageId, limit)` — filters `git log` to commits that touched the page's markdown file. Returns `Vec<{hash, timestamp, author, message, additions, deletions}>`
+- `git_page_at_version(pageId, commitHash)` — retrieves the page's markdown content at a specific commit via `git show <hash>:<path>`
+- `git_restore_page(pageId, commitHash)` — checks out the file at the given commit, writes it to the working tree, stages, and commits with message "Restored <page> to version <hash>"
+
+The existing `SyncPanel.tsx` already has version history UI scaffolding and a restore button. These commands power the actual data retrieval.
+
+### Timeline Visualization (Future)
+
+Optional enhancement: a visual timeline with dots per version, branching indicators when multiple devices contribute, and a scrubber to quickly browse versions.
+
 ## Future Enhancements
 
 - **Block-level merge**: Three-way merge at block granularity using common ancestor

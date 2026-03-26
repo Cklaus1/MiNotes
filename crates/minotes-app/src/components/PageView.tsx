@@ -9,6 +9,7 @@ import UnlinkedRefsPanel from "./UnlinkedRefsPanel";
 import LinkPreview from "./LinkPreview";
 import { undoStack } from "../lib/undoStack";
 import { registerTestApi } from "../lib/testApi";
+import TableOfContents from "./TableOfContents";
 interface Props {
   pageTree: PageTree;
   onUpdateBlock: (id: string, content: string) => void;
@@ -768,6 +769,7 @@ export default function PageView({
   }, [page.id]);
 
   const [editingTitle, setEditingTitle] = useState(false);
+  const [showToc, setShowToc] = useState(false);
   const [titleDraft, setTitleDraft] = useState(page.title);
   const titleInputRef = useRef<HTMLInputElement>(null);
 
@@ -818,13 +820,22 @@ export default function PageView({
         )}
         <button
           className="prop-toggle-btn"
+          onClick={() => setShowToc(t => !t)}
+          title="Table of contents"
+          style={{ marginLeft: "auto" }}
+        >
+          ≡
+        </button>
+        <button
+          className="prop-toggle-btn"
           onClick={() => setShowProps(p => !p)}
           title="Page info"
-          style={{ marginLeft: "auto" }}
         >
           ℹ
         </button>
       </div>
+
+      <TableOfContents blocks={blocks} visible={showToc} onClose={() => setShowToc(false)} />
 
       {/* Show existing aliases inline (compact, no add button — use ⚙ properties to add) */}
       {aliases.length > 0 && (

@@ -9,6 +9,7 @@ import ReviewPanel from "./components/ReviewPanel";
 import PluginManager from "./components/PluginManager";
 import CanvasMode, { type CanvasModeType } from "./components/CanvasMode";
 import { generateWhiteboardId } from "./lib/whiteboardUtils";
+import { addRecentPage } from "./lib/recentFiles";
 import SyncPanel from "./components/SyncPanel";
 import PdfViewer from "./components/PdfViewer";
 import MobileNav from "./components/MobileNav";
@@ -55,6 +56,7 @@ export default function App() {
       console.log("[openPage] got tree:", tree.page.title, "blocks:", tree.blocks.length);
       setActivePage(tree);
       setRefreshKey(k => k + 1);
+      addRecentPage(tree.page.id, tree.page.title);
     } catch (e: any) {
       const msg = typeof e === "string" ? e : e?.message ?? JSON.stringify(e);
       console.error("Failed to open page:", msg);
@@ -359,7 +361,7 @@ export default function App() {
         onPageClick={openPage}
         onCreatePage={createPage}
         onDeletePage={deletePage}
-        onJournalClick={() => openJournal()}
+        onJournalClick={(date?: string) => openJournal(date)}
         onSearchClick={() => setOpenPanel("search")}
         onGraphClick={() => setCanvasMode(prev => prev === "graph" ? null : "graph")}
         onMindmapClick={() => { if (activePage) setCanvasMode(prev => prev === "mindmap" ? null : "mindmap"); }}

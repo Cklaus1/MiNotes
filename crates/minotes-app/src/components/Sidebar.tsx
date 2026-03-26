@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import type { Page, GraphStats, FolderTree, FolderTreeRoot } from "../lib/api";
 import * as api from "../lib/api";
+import CalendarWidget from "./CalendarWidget";
 function formatJournalDate(dateStr: string): string {
   try {
     const [y, m, d] = dateStr.split("-").map(Number);
@@ -17,7 +18,7 @@ interface Props {
   onPageClick: (id: string) => void;
   onCreatePage: (title: string) => void;
   onDeletePage: (id: string) => void;
-  onJournalClick: () => void;
+  onJournalClick: (date?: string) => void;
   onSearchClick: () => void;
   onGraphClick: () => void;
   onMindmapClick: () => void;
@@ -131,7 +132,7 @@ export default function Sidebar({
       )}
 
       <div className="sidebar-actions" style={{ padding: "4px 16px", display: "flex", gap: 4 }}>
-        <button className="btn" onClick={onJournalClick} style={{ flex: 1, textAlign: "left" }}>
+        <button className="btn" onClick={() => onJournalClick()} style={{ flex: 1, textAlign: "left" }}>
           📅 Journal
         </button>
         <button
@@ -220,6 +221,11 @@ export default function Sidebar({
             </div>
           </>
         )}
+
+        <CalendarWidget
+          journalDates={new Set(journals.map(j => j.journal_date).filter(Boolean) as string[])}
+          onDateClick={(date) => onJournalClick(date)}
+        />
 
         {journals.length > 0 && (
           <>
