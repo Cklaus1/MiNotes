@@ -524,4 +524,16 @@ export const mockHandlers: Record<string, (args: any) => any> = {
   delete_css_snippet: () => true,
   get_enabled_css_snippets: () => [],
   save_png_to_downloads: ({ filename }: { filename: string }) => `Downloads/${filename}`,
+
+  // Feature 8: Link Preview — mock OG metadata
+  fetch_og_metadata: ({ url }: { url: string }) => ({
+    title: new URL(url).hostname + " — Page Title",
+    description: "A brief description of the linked page content.",
+    image: "",
+  }),
+
+  // Feature 9: Block Transclusion — get single block by ID
+  get_block: ({ id }: { id: string }) => {
+    return blocks.get(id) ?? null;
+  },
 };

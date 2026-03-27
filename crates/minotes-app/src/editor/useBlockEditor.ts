@@ -351,8 +351,14 @@ export function useBlockEditor({
             view.dispatch(view.state.tr.insertText(`[${selectedText}](${text.trim()})`, from, to));
             return true;
           }
-          // No selection — insert as markdown link, try to auto-title
-          // For now, insert as clickable [url](url) — title fetch would be async
+          // No selection on empty/near-empty block — create link preview card
+          const docText = view.state.doc.textContent.trim();
+          if (docText.length === 0 && onSlashCommandRef.current) {
+            event.preventDefault();
+            onSlashCommandRef.current(`{{link-preview:${text.trim()}}}`);
+            return true;
+          }
+          // Non-empty block — insert as markdown link
           event.preventDefault();
           view.dispatch(view.state.tr.insertText(`[${text.trim()}](${text.trim()})`));
           return true;

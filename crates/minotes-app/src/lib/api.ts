@@ -480,4 +480,18 @@ export const undo = () =>
 export const savePngToDownloads = (filename: string, data: number[]) =>
   invoke<string>("save_png_to_downloads", { filename, data });
 
+// Feature 8: Link Preview — fetch OpenGraph metadata
+export interface OgMetadata {
+  title: string;
+  description: string;
+  image: string;
+}
+
+export const fetchOgMetadata = (url: string) =>
+  invoke<OgMetadata>("fetch_og_metadata", { url });
+
+// Feature 9: Block Transclusion — get single block by ID
+export const getBlock = (id: string) =>
+  invoke<Block | null>("get_block", { id });
+
 export { isTauri };

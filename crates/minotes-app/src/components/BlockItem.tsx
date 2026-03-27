@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useRef, useCallback, lazy, Suspense, forwardRef, useImperativeHandle } from "react";
 import { EditorContent } from "@tiptap/react";
-import type { Block, Property } from "../lib/api";
+import type { Block, Property, OgMetadata } from "../lib/api";
 import * as api from "../lib/api";
 import { useBlockEditor } from "../editor";
 import { getSettings } from "../lib/settings";
@@ -63,6 +63,22 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
   const [editValue, setEditValue] = useState("");
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [dropPosition, setDropPosition] = useState<"above" | "below" | null>(null);
+
+  // Feature 8: Link Preview state
+  const [ogMeta, setOgMeta] = useState<OgMetadata | null>(null);
+  const linkPreviewMatch = block.content.match(/^\{\{link-preview:(https?:\/\/[^}]+)\}\}$/);
+  const linkPreviewUrl = linkPreviewMatch ? linkPreviewMatch[1] : null;
+
+  // Feature 9: Block Transclusion state
+  const [transcludedBlocks, setTranscludedBlocks] = useState<Map<string, Block>>(new Map());
+  const blockRefPattern = /\(\(([0-9a-fA-F-]{8,36})\)\)/g;
+  const blockRefIds: string[] = [];
+  let refMatch: RegExpExecArray | null;
+  const contentForRefs = block.content;
+  const refRegex = new RegExp(blockRefPattern.source, "g");
+  while ((refMatch = refRegex.exec(contentForRefs)) !== null) {
+    blockRefIds.push(refMatch[1]);
+  }
 
   const handleToggleTodo = () => {
     const content = block.content;
@@ -167,6 +183,28 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
   useEffect(() => {
     api.getProperties(block.id).then(setProperties).catch(() => {});
   }, [block.id]);
+
+  // Feature 8: Fetch OG metadata for link preview blocks
+  useEffect(() => {
+    if (!linkPreviewUrl) { setOgMeta(null); return; }
+    api.fetchOgMetadata(linkPreviewUrl).then(setOgMeta).catch(() => setOgMeta(null));
+  }, [linkPreviewUrl]);
+
+  // Feature 9: Fetch transcluded block content
+  useEffect(() => {
+    if (blockRefIds.length === 0) { setTranscludedBlocks(new Map()); return; }
+    const fetchAll = async () => {
+      const entries = new Map<string, Block>();
+      for (const bid of blockRefIds) {
+        try {
+          const b = await api.getBlock(bid);
+          if (b) entries.set(bid, b);
+        } catch {}
+      }
+      setTranscludedBlocks(entries);
+    };
+    fetchAll();
+  }, [block.content]);
 
   // Listen for settings changes
   useEffect(() => {
@@ -318,7 +356,7 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
         <span className="todo-badge todo-badge-done" onClick={handleToggleTodo} title="Click to remove DONE state">DONE</span>
       )}
 
-      {/* Editor content — whiteboard blocks render as clickable cards */}
+      {/* Editor content — whiteboard blocks render as clickable cards, link previews as cards */}
       {(() => {
         const wbMatch = block.content.match(WHITEBOARD_REGEX);
         if (wbMatch) {
@@ -336,6 +374,35 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
             </div>
           );
         }
+        // Feature 8: Link Preview Card
+        if (linkPreviewUrl) {
+          return (
+            <a
+              className="link-preview-card"
+              href={linkPreviewUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              {ogMeta?.image && (
+                <img
+                  className="link-preview-image"
+                  src={ogMeta.image}
+                  alt=""
+                  onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+                />
+              )}
+              <div className="link-preview-body">
+                <div className="link-preview-title">
+                  {ogMeta?.title || linkPreviewUrl}
+                </div>
+                {ogMeta?.description && (
+                  <div className="link-preview-description">{ogMeta.description}</div>
+                )}
+                <div className="link-preview-url">{linkPreviewUrl}</div>
+              </div>
+            </a>
+          );
+        }
         return editorMode === "minotes" ? (
           <>
             {tiptapEditor && <BubbleToolbar editor={tiptapEditor} />}
@@ -347,6 +414,22 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
           </Suspense>
         );
       })()}
+
+      {/* Feature 9: Block Transclusion — show referenced blocks inline */}
+      {blockRefIds.length > 0 && transcludedBlocks.size > 0 && (
+        <div className="block-transclusions">
+          {blockRefIds.map((bid) => {
+            const tb = transcludedBlocks.get(bid);
+            if (!tb) return null;
+            return (
+              <div key={bid} className="block-transclusion" onClick={() => onBlockRefClick?.(bid)}>
+                <span className="block-transclusion-label">Transcluded block</span>
+                <div className="block-transclusion-content">{tb.content}</div>
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {/* Properties */}
       {(properties.length > 0 || addingProp) && (

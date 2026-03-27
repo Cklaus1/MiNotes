@@ -914,6 +914,87 @@ fn read_file_base64(path: String) -> Result<String, String> {
     Ok(base64_encode(&bytes))
 }
 
+// ── Feature 8: Fetch OpenGraph metadata for link preview cards ──
+
+#[derive(Debug, Serialize, Clone)]
+struct OgMetadata {
+    title: String,
+    description: String,
+    image: String,
+}
+
+#[tauri::command]
+async fn fetch_og_metadata(url: String) -> Result<OgMetadata, String> {
+    match fetch_og_inner(&url).await {
+        Ok(meta) => Ok(meta),
+        Err(_) => Ok(OgMetadata {
+            title: String::new(),
+            description: String::new(),
+            image: String::new(),
+        }),
+    }
+}
+
+async fn fetch_og_inner(url: &str) -> std::result::Result<OgMetadata, Box<dyn std::error::Error>> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()?;
+    let resp = client.get(url).send().await?;
+    let html = resp.text().await?;
+
+    let og_re = regex::Regex::new(
+        r#"<meta\s+(?:[^>]*?\s+)?(?:property|name)\s*=\s*"og:(\w+)"[^>]*?\s+content\s*=\s*"([^"]*)"[^>]*/?\s*>"#,
+    ).unwrap();
+    let og_re2 = regex::Regex::new(
+        r#"<meta\s+(?:[^>]*?\s+)?content\s*=\s*"([^"]*)"[^>]*?\s+(?:property|name)\s*=\s*"og:(\w+)"[^>]*/?\s*>"#,
+    ).unwrap();
+
+    let mut title = String::new();
+    let mut description = String::new();
+    let mut image = String::new();
+
+    for cap in og_re.captures_iter(&html) {
+        let key = &cap[1];
+        let val = cap[2].to_string();
+        match key {
+            "title" => title = val,
+            "description" => description = val,
+            "image" => image = val,
+            _ => {}
+        }
+    }
+    // Also check reversed attribute order
+    for cap in og_re2.captures_iter(&html) {
+        let val = cap[1].to_string();
+        let key = &cap[2];
+        match key {
+            "title" if title.is_empty() => title = val,
+            "description" if description.is_empty() => description = val,
+            "image" if image.is_empty() => image = val,
+            _ => {}
+        }
+    }
+
+    // Fallback: use <title> tag if no og:title
+    if title.is_empty() {
+        let title_re = regex::Regex::new(r"<title[^>]*>([^<]+)</title>").unwrap();
+        if let Some(cap) = title_re.captures(&html) {
+            title = cap[1].trim().to_string();
+        }
+    }
+
+    Ok(OgMetadata { title, description, image })
+}
+
+// ── Feature 9: Get single block by ID ──
+
+#[tauri::command]
+fn get_block(state: State<'_, AppState>, id: String) -> Result<Option<Block>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+    db.get_block(&uuid).map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let path = db_path();
@@ -1003,6 +1084,8 @@ pub fn run() {
             reorder_block,
             paste_image_wsl,
             read_file_base64,
+            fetch_og_metadata,
+            get_block,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
