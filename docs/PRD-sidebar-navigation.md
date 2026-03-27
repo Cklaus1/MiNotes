@@ -10,21 +10,15 @@ As users accumulate pages, the sidebar becomes overwhelmed. The current layout s
 ┌─────────────────────┐
 │ 🔍 Search...        │
 │ 📅 Journal  + Project│
-│                     │
-│ ⭐ Favorites        │  ← good, but buried
-│                     │
+│ ⭐ Favorites        │  ← buried, not discoverable
 │ 📁 Work             │  ← always expanded
-│   Page 1            │
-│   Page 2            │
-│   ...12 more...     │
+│   ...12 pages...    │
 │ 📁 Personal         │  ← also expanded
 │   ...8 pages...     │
-│ Pages (15)          │  ← unfiled pages, long list
-│   ...               │
+│ Pages (15)          │  ← unfiled, long list
 │ Recent Journals     │  ← separate section, redundant
 │   📅 Mar 26         │
 │   📅 Mar 25         │
-│   📅 Mar 24         │
 │ ─────────────────── │
 │ 📊Graph 🧠Mind ...  │
 └─────────────────────┘
@@ -33,165 +27,218 @@ As users accumulate pages, the sidebar becomes overwhelmed. The current layout s
 **Problems:**
 1. Everything expanded = no information hierarchy
 2. Folders compete with Pages compete with Journals — too many sections
-3. No "pinned" quick-access for daily drivers
-4. Recent Journals is separate from Recent Pages — artificial split
-5. As pages grow, sidebar scrolling becomes the bottleneck
+3. Favorites buried and not discoverable (right-click only)
+4. Recent Journals split from Recent Pages — artificial separation
+5. Sidebar scrolling becomes the bottleneck at 30+ pages
+6. New users see 5 empty sections — intimidating
 
 ## Design: New Sidebar Layout
 
 ```
 ┌─────────────────────┐
-│ 🔍 Search...        │  ← always visible, Ctrl+K
-│                     │
-│ 📅 TODAY             │  ← one-tap to today's journal
-│   Thursday, Mar 26  │     📅 calendar toggle
-│                     │
-│ ★ PINNED            │  ← 3-7 starred pages, drag to reorder
-│   Project Alpha     │
-│   Meeting Notes     │
-│   Sprint Board      │
-│                     │
-│ 🕐 RECENT            │  ← last 5 opened (pages + journals mixed)
-│   Research Notes    │
-│   Journal/Mar 25    │
-│   Bug Tracker       │
-│                     │
-│ 📁 PROJECTS          │  ← accordion: one open at a time
-│ ▸ Work (12)         │  ← collapsed, shows count
-│ ▾ Personal (4)      │  ← expanded (last opened)
-│     Ideas           │
-│     Reading List    │
-│     Goals           │
-│     Recipes         │
-│ ▸ Archive (23)      │  ← collapsed
-│                     │
-│ 📄 Pages (7)        │  ← unfiled pages, collapsible
-│                     │
-│ ─────────────────── │
-│ 📊Graph 🧠Mind 🎨Draw 🗂Kanban │
+│ 🔍 Search     [+ New]│  ← always visible, two primary actions
+│                       │
+│ 📅 Thu, Mar 26    [📅]│  ← 1 line, calendar toggle on right
+│                       │
+│ QUICK ACCESS          │  ← merged Pinned + Recent
+│ 📌 Project Alpha      │  ← pinned (stable, user-curated)
+│ 📌 Meeting Notes      │  ← pinned (stable)
+│    Sprint Board       │  ← recent (auto-tracked, no pin icon)
+│    Research Notes     │  ← recent (auto-tracked)
+│                       │
+│ PROJECTS              │  ← max 2 open at a time
+│ ▾ Work                │  ← expanded
+│     API Design        │
+│     Bug Tracker       │
+│     ...+8 more        │  ← expands inline on click
+│ ▸ Personal            │  ← collapsed
+│ ▸ Archive             │  ← collapsed
+│                       │
+│ PAGES                 │  ← unfiled, collapsed by default
+│ ▸ 7 unfiled pages     │
+│                       │
+│ ─────────────────────│
+│📊Graph 🧠Mind 🎨Draw 🗂Kanban│
 └─────────────────────┘
 ```
 
 ## Key Design Decisions
 
-### 1. Journal Gets a Dedicated Top Slot
+### 1. Search + New Always Visible
 
-**What**: Single "Today" entry always visible at the top. Calendar dropdown behind 📅 icon for browsing other dates.
+**What**: `🔍 Search` and `[+ New]` side by side at the top. Always visible, never scroll away.
 
-**Why**: Journals are a daily habit. One tap to today. Calendar handles date browsing. No need for a "Recent Journals" list — journals appear in the unified Recent section.
+**Why**: The two most frequent sidebar actions — find something, create something. Every app puts these at the top (Notion, Obsidian, Linear, Slack).
 
-**Soft-create**: Clicking a date with no journal shows "No entry yet / + Start writing" (already built). Only materializes the page when user starts writing.
+**+ New**: Creates a new page. Future: dropdown with "New Page" / "New Project" / "New Journal Entry". For v1, just new page.
 
-### 2. Pinned Section (Favorites Upgraded)
+### 2. Journal: One Line, Not a Section
 
-**What**: Right-click any page → "Pin to sidebar". Max 7 pins. Drag to reorder. Always visible below Journal.
+**What**: `📅 Thu, Mar 26` — single line. Click text → open today's journal. Click 📅 icon → expand calendar dropdown for other dates.
 
-**Why**: Every user has 3-5 pages they open daily. These shouldn't require scrolling or searching. The existing "Favorites" feature already supports this — just needs better placement and a rename.
+**Why**: Journals are a daily habit but don't need two lines of prime sidebar space. One line gives instant access. Calendar handles browsing.
 
-**Implementation**: Reuse existing `addFavorite`/`removeFavorite` API. Rename "Favorites" to "Pinned". Move to top of sidebar.
+**Soft-create**: Clicking a date with no journal shows "No entry yet / + Start writing" (already built). No empty page pollution.
 
-### 3. Unified Recent Section
+### 3. Quick Access (Merged Pinned + Recent)
 
-**What**: Last 5 opened pages (any type — regular pages and journals mixed). Already tracked via `recentFiles.ts` localStorage.
+**What**: One section combining pinned pages (user-curated, stable) and recent pages (auto-tracked, dynamic). Pinned pages show 📌 icon, recent pages don't.
 
-**Why**: Replaces "Recent Journals" with a unified list. Users don't think in categories ("is this a journal or a page?") — they think "what was I working on?"
+**Why**:
+- Two separate sections (Pinned, Recent) create choice paralysis — "where do I look?"
+- Merged section answers one question: "what are my active pages right now?"
+- Pinned pages are always at the top (stable). Recent pages fill below (dynamic).
+- If a recent page is also pinned, it shows once (in pinned position).
 
-**Implementation**: Already have `getRecentPages()` returning last 10 entries. Show top 5 in sidebar. Remove the separate "Recent Journals" section.
+**Pinning**:
+- Hover any page → 📌 pin icon appears. One click to pin.
+- Pinned pages reorderable via drag.
+- Max 7 pins. Right-click → Unpin to remove.
+- NOT buried in right-click context menu only — visible on hover.
 
-### 4. Accordion Projects (One Open at a Time)
+**Recent**:
+- Last 5 unique pages opened (pages + journals mixed).
+- Already tracked via `recentFiles.ts` localStorage.
+- Auto-updates. No user action needed.
 
-**What**: Click a project/folder → it expands, all others collapse. Show page count badge: `▸ Work (12)`. Remember last-opened project in localStorage.
+### 4. Projects (Renamed from Folders)
 
-**Why**: At 3+ projects with 10+ pages each, having all expanded is unusable. Accordion enforces focus — you're working in one project context at a time.
+**What**: "Folders" renamed to "Projects". Max 2 projects open simultaneously. Opening a 3rd closes the oldest. Shift+click to force a third open.
 
-**Rename**: "Folders" → "Projects". More meaningful, matches how users think about grouped work.
+**Why**:
+- "Projects" matches how users think about grouped work
+- Strict single-accordion (one open at a time) breaks cross-project comparison
+- 2-max balances focus vs flexibility
+- Page count shows on hover only (not when collapsed) — avoids "pile of work" anxiety
 
-**Implementation**:
-- Track `expandedProjectId` in state (single string, not a set)
-- Click project header → `setExpandedProjectId(id)`
-- Page count from `folder.pages.length`
-- Persist in localStorage
+**Expand/collapse**:
+- Click project name → toggle expand
+- If 2 already open and a 3rd is clicked → oldest auto-collapses
+- Shift+click → force open without closing others
+- Remember expanded state in localStorage
 
-### 5. Capped Page Lists
+**Capped pages**:
+- Show first 8 pages when expanded
+- If more: `...+N more` that expands inline (not a navigation event)
+- Expanded state shows all pages within the sidebar, scrollable
 
-**What**: Within an expanded project, show first 8 pages. If more, show "Show all (47)" link that opens a searchable list in the main content area.
+### 5. Unfiled Pages (Collapsed by Default)
 
-**Why**: Prevents any single project from dominating the sidebar. Users with 50-page projects get the same sidebar footprint as users with 5-page projects.
+**What**: Root pages not in any project. Collapsed by default showing count: `▸ 7 unfiled pages`. Click to expand.
 
-**Implementation**: `pages.slice(0, 8)` in the folder renderer. "Show all" link opens an "All Pages" filtered view.
+**Why**: Unfiled pages are usually the "inbox" — things not yet organized. Showing them collapsed keeps the sidebar clean while still giving access.
 
-### 6. "All Pages" Canvas View (Future)
+### 6. Progressive Disclosure
 
-**What**: New canvas mode `📄 Pages` showing a searchable, sortable table of all pages. Filter by project, tag, date range. Sort by title, modified date, word count.
+**What**: Sections appear only when they have content.
 
-**Why**: The sidebar is for quick access to known pages. Discovery and bulk management belong in a dedicated view, not a scrollable list.
+**Why**: New user with 0 pages sees:
+```
+🔍 Search        [+ New]
+📅 Thu, Mar 26
+Getting Started         ← seeded page
+```
+Not five empty sections. Quick Access appears after first pin or second page open. Projects appears after first project creation.
 
-**Scope**: Future phase. The sidebar redesign works without this.
+**Rules**:
+- Journal: always visible
+- Quick Access: visible when ≥1 pinned page OR ≥2 recent pages
+- Projects: visible when ≥1 project exists
+- Pages: visible when ≥1 unfiled page exists
 
 ## Information Hierarchy
 
-The sidebar should feel like layers of urgency:
+The sidebar reads top-to-bottom as layers of decreasing urgency:
 
-| Section | Purpose | Items | Persistence |
-|---------|---------|-------|-------------|
-| **Journal** | What's happening today | 1 (today) | Always |
-| **Pinned** | My daily drivers | 3-7 | User-curated |
-| **Recent** | What I was just doing | 5 | Auto-tracked |
-| **Projects** | Deep work contexts | 1 expanded | Accordion |
-| **Pages** | Unfiled pages | Max 8 shown | Collapsible |
+| Section | Purpose | Visible Items | Behavior |
+|---------|---------|---------------|----------|
+| **Search + New** | Find / Create | 1 row | Always visible, sticky |
+| **Journal** | Today's entry point | 1 line | Always visible |
+| **Quick Access** | Active context | 5-12 (pinned + recent) | Pinned stable, recent auto |
+| **Projects** | Deep work contexts | Max 2 expanded | Accordion, max 8 pages each |
+| **Pages** | Unfiled inbox | Collapsed count | Click to expand |
+| **Mode buttons** | Canvas views | 1 row | Always visible, sticky bottom |
 
-Total visible items at any time: ~20-25. Fits on screen without scrolling for most users.
+**Total visible at any time**: ~20-25 items. Fits on screen without scrolling.
 
 ## Interactions
 
 ### Pin a Page
-- Right-click page → "Pin to sidebar" (or ⭐ icon)
-- Pinned pages show at top with ★ prefix
+- Hover any page item → 📌 icon appears on right
+- Click 📌 → pinned (appears in Quick Access with 📌 prefix)
 - Right-click pinned page → "Unpin"
-- Drag pinned pages to reorder
+- Drag pinned pages to reorder within Quick Access
+- Max 7 pinned pages
 
 ### Expand/Collapse Project
-- Click project name → expand (others collapse)
-- Click again → collapse (no project expanded)
-- Page count badge updates in real-time
-- Transition: smooth 150ms height animation
+- Click project name → toggle expand
+- Max 2 expanded simultaneously
+- Opening 3rd auto-collapses oldest
+- Shift+click → force open without collapse
+- `...+N more` link expands inline within sidebar
+- Page count shown on hover (not always)
+
+### Create New Page
+- `[+ New]` button → creates untitled page, opens in editor
+- Future: dropdown with New Page / New Project / New Journal
 
 ### Create New Project
-- `+ Project` button in sidebar header
+- Click `+` next to PROJECTS section header
 - Inline text input → Enter to create
 - New project auto-expands
 
 ### Move Page to Project
-- Drag page from anywhere → drop on project header
+- Drag page → drop on project header
 - Right-click page → "Move to..." → project list
 
-## Migration
+## Empty States
 
-- **Favorites → Pinned**: Rename in UI, same underlying API
-- **Recent Journals → Recent**: Remove section, journals appear in unified recent
-- **Folders → Projects**: Rename in UI, same data model
-- **Expanded state**: Default all projects collapsed, remember user's last choice
+### New user (0 pages)
+```
+🔍 Search        [+ New]
+📅 Thu, Mar 26
+
+Welcome to MiNotes!
+Click [+ New] to create your first page.
+```
+
+### No pinned pages
+Quick Access section hidden until first pin or second page opened.
+
+### Empty project
+```
+▾ Work
+  No pages yet — create or drag one here
+```
+
+### No unfiled pages
+Pages section hidden entirely.
 
 ## Implementation Phases
 
-### Phase 1: Restructure (MVP)
-- [ ] Reorder sections: Journal → Pinned → Recent → Projects → Pages
-- [ ] Rename "Folders" → "Projects", "Favorites" → "Pinned"
-- [ ] Add unified Recent section from `getRecentPages()`
+### Phase 1: Restructure Layout
+- [ ] Reorder sections: Search+New → Journal → Quick Access → Projects → Pages → Modes
+- [ ] Rename "Folders" → "Projects" in all UI text
+- [ ] Merge Pinned + Recent into Quick Access section
+- [ ] Add unified Recent from `getRecentPages()` below pinned
 - [ ] Remove "Recent Journals" section
-- [ ] Move calendar toggle next to Journal entry
+- [ ] Journal as single line with calendar toggle
+- [ ] Progressive disclosure (hide empty sections)
 
-### Phase 2: Accordion + Caps
-- [ ] Single-project-expanded accordion behavior
-- [ ] Page count badges on collapsed projects
-- [ ] Cap expanded project to 8 pages + "Show all" link
-- [ ] Remember expanded project in localStorage
+### Phase 2: Pin Discoverability + Accordion
+- [ ] Pin icon visible on hover for every page item
+- [ ] Max 2 projects expanded simultaneously
+- [ ] Auto-collapse oldest when 3rd opened
+- [ ] Cap expanded project to 8 pages + "...+N more" inline expand
+- [ ] Remember expanded projects in localStorage
+- [ ] Page count on hover for collapsed projects
 
 ### Phase 3: Polish
-- [ ] Smooth expand/collapse animations
+- [ ] Smooth expand/collapse animations (150ms)
 - [ ] Drag to reorder pinned pages
-- [ ] "Move to project" context menu option
-- [ ] Empty project state: "No pages yet — create or drag one here"
+- [ ] "Move to project" in page context menu
+- [ ] Shift+click to force-open third project
+- [ ] Keyboard shortcuts: Ctrl+1-7 for pinned pages
 
 ### Phase 4: All Pages View
 - [ ] New canvas mode: 📄 Pages
@@ -204,15 +251,18 @@ Total visible items at any time: ~20-25. Fits on screen without scrolling for mo
 | Key | Action |
 |-----|--------|
 | `Ctrl+K` | Focus search (existing) |
+| `Ctrl+N` | New page (existing) |
 | `Ctrl+J` | Open today's journal (existing) |
-| `Ctrl+1-7` | Open pinned page by position |
-| `Ctrl+[` / `Ctrl+]` | Prev/next project |
+| `Ctrl+1` through `Ctrl+7` | Open pinned page by position |
+| `Ctrl+[` / `Ctrl+]` | Previous / next project |
 
-## CSS Sizing Constraints
+## CSS Constraints
 
 - Sidebar width: 240-280px (existing)
-- Section title: 11px uppercase, muted
-- Page items: 13px, single line with ellipsis
-- Project header: 13px, bold, with count badge
-- Pinned items: 13px, ★ prefix
-- Max sidebar scroll: should rarely need to scroll with accordion
+- Section headers: 10px uppercase, muted, letter-spacing
+- Page items: 13px, single line with text-overflow ellipsis
+- Project headers: 13px, 600 weight, with expand chevron
+- Pinned items: 13px, 📌 prefix
+- Pin icon on hover: 12px, right-aligned, opacity transition
+- Mode buttons: sticky bottom, compact single row
+- Max sidebar content height: should rarely scroll with 2-max accordion
