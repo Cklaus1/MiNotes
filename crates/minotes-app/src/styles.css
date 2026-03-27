@@ -4644,29 +4644,45 @@ body.theme-light { /* matches our light theme */ }
 }
 
 /* ═══════════════════════════════════════════════════ */
-/*  Table of Contents Panel                            */
+/*  Table of Contents — Right Panel                    */
 /* ═══════════════════════════════════════════════════ */
 
-.toc-panel {
-  background: var(--bg-secondary);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  margin-bottom: 12px;
-  max-height: 300px;
+.page-view-wrapper {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.page-view-wrapper > .page-view {
+  flex: 1;
+  min-width: 0;
   overflow-y: auto;
 }
 
-.toc-header {
+.toc-right-panel {
+  width: 200px;
+  min-width: 200px;
+  flex-shrink: 0;
+  border-left: 1px solid var(--border);
+  overflow-y: auto;
+  position: sticky;
+  top: 0;
+  align-self: flex-start;
+  max-height: 100vh;
+  padding: 12px 0;
+}
+
+.toc-right-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 8px 12px;
-  font-size: 12px;
+  padding: 0 12px 8px;
+  font-size: 11px;
   font-weight: 600;
-  color: var(--text-secondary);
+  color: var(--text-muted);
   text-transform: uppercase;
-  letter-spacing: 0.04em;
-  border-bottom: 1px solid var(--border);
+  letter-spacing: 0.05em;
 }
 
 .toc-close {
@@ -4674,40 +4690,59 @@ body.theme-light { /* matches our light theme */ }
   border: none;
   color: var(--text-muted);
   cursor: pointer;
-  font-size: 14px;
+  font-size: 12px;
   padding: 0 4px;
+  border-radius: 3px;
 }
 
-.toc-list {
-  padding: 4px 0;
+.toc-close:hover {
+  color: var(--text-primary);
+  background: var(--bg-surface);
 }
 
-.toc-item {
+.toc-right-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.toc-right-item {
   display: block;
   width: 100%;
   text-align: left;
   background: none;
   border: none;
-  color: var(--text-secondary);
-  font-size: 13px;
-  padding: 5px 12px;
+  border-left: 2px solid transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  padding: 4px 10px;
   cursor: pointer;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  border-radius: 0;
+  transition: color 0.1s, border-color 0.1s;
 }
 
-.toc-item:hover {
-  background: var(--bg-surface);
+.toc-right-item:hover {
   color: var(--text-primary);
 }
 
-.toc-empty {
-  padding: 12px;
-  color: var(--text-muted);
+.toc-right-item.active {
+  color: var(--accent);
+  border-left-color: var(--accent);
+}
+
+.toc-right-item[data-level="1"] {
+  font-weight: 600;
   font-size: 12px;
-  text-align: center;
+}
+
+.toc-right-item[data-level="2"] {
+  font-size: 12px;
+}
+
+.toc-right-item[data-level="3"],
+.toc-right-item[data-level="4"] {
+  font-size: 11px;
 }
 
 /* ═══════════════════════════════════════════════════ */

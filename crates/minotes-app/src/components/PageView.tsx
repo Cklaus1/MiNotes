@@ -783,6 +783,7 @@ export default function PageView({
   };
 
   return (
+    <div className="page-view-wrapper">
     <div className="page-view">
       <div className="main-header">
         {editingTitle && !page.is_journal ? (
@@ -842,8 +843,6 @@ export default function PageView({
           ℹ
         </button>
       </div>
-
-      <TableOfContents blocks={blocks} visible={showToc} onClose={() => setShowToc(false)} />
 
       {/* Show existing aliases inline (compact, no add button — use ⚙ properties to add) */}
       {aliases.length > 0 && (
@@ -1045,6 +1044,8 @@ export default function PageView({
           onPageClick={onPageLinkClick}
         />
       )}
+    </div>
+    <TableOfContents blocks={blocks} visible={showToc} onClose={() => setShowToc(false)} />
     </div>
   );
 }
