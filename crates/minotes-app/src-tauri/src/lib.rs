@@ -62,6 +62,13 @@ fn get_page_tree(state: State<'_, AppState>, title_or_id: String) -> Result<Page
 #[tauri::command]
 fn create_page(state: State<'_, AppState>, title: String) -> Result<Page, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
+    // Auto-detect journal pages by title format "Journal/YYYY-MM-DD"
+    if let Some(date_str) = title.strip_prefix("Journal/") {
+        if let Ok(date) = chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
+            return db.create_page(&title, None, true, Some(date), "user")
+                .map_err(|e| e.to_string());
+        }
+    }
     db.create_page(&title, None, false, None, "user")
         .map_err(|e| e.to_string())
 }

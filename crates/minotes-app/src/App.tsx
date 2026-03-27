@@ -106,7 +106,11 @@ export default function App() {
   const materializeJournal = useCallback(async () => {
     if (!pendingJournalDate) return;
     try {
-      const tree = await api.getJournal(pendingJournalDate);
+      // Create the journal page by title — the backend treats Journal/YYYY-MM-DD as journal pages
+      const title = `Journal/${pendingJournalDate}`;
+      await api.createPage(title).catch(() => {}); // OK if it already exists
+      // Now open it — it should exist in the database
+      const tree = await api.getPageTree(title);
       setActivePage(tree);
       setRefreshKey(k => k + 1);
       addRecentPage(tree.page.id, tree.page.title);
