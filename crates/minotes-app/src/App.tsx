@@ -83,11 +83,12 @@ export default function App() {
     try {
       const tree = await api.getJournal(date);
       setActivePage(tree);
-      await refresh();
+      setRefreshKey(k => k + 1);
+      addRecentPage(tree.page.id, tree.page.title);
     } catch (e) {
       console.error("Failed to open journal:", e);
     }
-  }, [refresh]);
+  }, []);
 
   const createBlock = useCallback(async (content: string) => {
     if (!activePage) return;

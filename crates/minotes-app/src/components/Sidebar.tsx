@@ -40,6 +40,7 @@ export default function Sidebar({
   // Theme toggle removed — now under Settings (Ctrl+,)
   const [treeData, setTreeData] = useState<FolderTreeRoot | null>(null);
   const [journals, setJournals] = useState<Page[]>([]);
+  const [showCalendar, setShowCalendar] = useState(false);
   const [favorites, setFavorites] = useState<Page[]>([]);
 
   const loadTree = useCallback(async () => {
@@ -222,14 +223,24 @@ export default function Sidebar({
           </>
         )}
 
-        <CalendarWidget
-          journalDates={new Set(journals.map(j => j.journal_date).filter(Boolean) as string[])}
-          onDateClick={(date) => onJournalClick(date)}
-        />
-
         {journals.length > 0 && (
           <>
-            <div className="sidebar-section-title">Recent Journals</div>
+            <div className="sidebar-section-title" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span>Recent Journals</span>
+              <button
+                className="cal-toggle-btn"
+                onClick={() => setShowCalendar(c => !c)}
+                title="Toggle calendar"
+              >
+                📅
+              </button>
+            </div>
+            {showCalendar && (
+              <CalendarWidget
+                journalDates={new Set(journals.map(j => j.journal_date).filter(Boolean) as string[])}
+                onDateClick={(date) => onJournalClick(date)}
+              />
+            )}
             {journals.map(page => (
               <div
                 key={page.id}
