@@ -83,7 +83,19 @@ export default function App() {
   const openJournal = useCallback(async (date?: string) => {
     try {
       const d = date ?? new Date().toISOString().slice(0, 10);
-      // Check if journal exists without creating it
+      const isToday = !date || d === new Date().toISOString().slice(0, 10);
+
+      if (isToday) {
+        // Today's journal: always force-create (expected UX on launch and Ctrl+J)
+        const tree = await api.getJournal(d);
+        setActivePage(tree);
+        setRefreshKey(k => k + 1);
+        addRecentPage(tree.page.id, tree.page.title);
+        setPendingJournalDate(null);
+        return;
+      }
+
+      // Other dates: soft-create (check if exists first)
       const allPages = await api.listPages(200);
       const existing = allPages.find(p => p.is_journal && p.journal_date === d);
       if (existing) {
