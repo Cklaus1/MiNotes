@@ -4,8 +4,9 @@ import GraphView from "./GraphView";
 import MindMapView from "./mindmap/MindMapView";
 import KanbanView from "./kanban/KanbanView";
 import Whiteboard from "./Whiteboard";
+import AllPagesView from "./AllPagesView";
 
-export type CanvasModeType = "graph" | "mindmap" | "draw" | "kanban";
+export type CanvasModeType = "graph" | "mindmap" | "draw" | "kanban" | "pages";
 
 interface Props {
   initialMode: CanvasModeType;
@@ -76,6 +77,13 @@ export default function CanvasMode({
             onRefreshPage={onRefreshPage}
           />
         );
+      case "pages":
+        return (
+          <AllPagesView
+            onPageClick={(id) => { onPageClick(id); onClose(); }}
+            onClose={onClose}
+          />
+        );
     }
   };
 
@@ -110,6 +118,12 @@ export default function CanvasMode({
             onClick={() => handleModeSwitch("kanban")}
           >
             📋 Kanban
+          </button>
+          <button
+            className={`canvas-mode-btn ${mode === "pages" ? "active" : ""}`}
+            onClick={() => handleModeSwitch("pages")}
+          >
+            📄 Pages
           </button>
         </div>
 

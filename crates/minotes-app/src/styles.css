@@ -908,6 +908,198 @@ body {
   letter-spacing: 0;
 }
 
+/* Phase 2d: Collapse/expand all button */
+.sidebar-collapse-all-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-muted);
+  opacity: 0;
+  padding: 0 4px;
+  transition: opacity 0.15s;
+  line-height: 1;
+}
+
+.sidebar-section-hover-actions:hover .sidebar-collapse-all-btn {
+  opacity: 0.7;
+}
+
+.sidebar-collapse-all-btn:hover {
+  opacity: 1 !important;
+  color: var(--text-secondary);
+}
+
+/* Phase 2c: [+] button on folder hover */
+.folder-add-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted);
+  opacity: 0;
+  padding: 0 4px;
+  margin-left: auto;
+  transition: opacity 0.15s;
+  line-height: 1;
+}
+
+.folder-item:hover .folder-add-btn {
+  opacity: 0.7;
+}
+
+.folder-add-btn:hover {
+  opacity: 1 !important;
+  color: var(--accent);
+}
+
+/* When [+] is visible, hide the count to avoid overlap */
+.folder-item:hover .folder-count {
+  display: none;
+}
+
+/* Phase 3: page count only on hover for collapsed */
+.folder-count-hover {
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.folder-item:hover .folder-count-hover {
+  opacity: 1;
+}
+
+/* Phase 3b: ...+N more pages link */
+.sidebar-more-pages {
+  color: var(--text-muted) !important;
+  font-size: 12px !important;
+  font-style: italic;
+}
+
+.sidebar-more-pages:hover {
+  color: var(--text-secondary) !important;
+}
+
+/* All Pages View */
+.all-pages-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 24px;
+  overflow: hidden;
+}
+
+.all-pages-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 16px;
+  flex-shrink: 0;
+}
+
+.all-pages-header h2 {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+.all-pages-search {
+  flex: 1;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-size: 13px;
+  outline: none;
+}
+
+.all-pages-search:focus {
+  border-color: var(--accent);
+}
+
+.all-pages-count {
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.all-pages-table-wrap {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.all-pages-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.all-pages-th {
+  text-align: left;
+  padding: 8px 12px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  font-weight: 600;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.all-pages-th:hover {
+  color: var(--text-secondary);
+}
+
+.all-pages-row {
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.all-pages-row:hover {
+  background: var(--bg-surface);
+}
+
+.all-pages-td {
+  padding: 8px 12px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 0;
+}
+
+.all-pages-title {
+  width: 50%;
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.all-pages-project {
+  width: 25%;
+}
+
+.all-pages-date {
+  width: 25%;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.all-pages-row:hover .all-pages-td {
+  color: var(--text-primary);
+}
+
+.all-pages-empty {
+  text-align: center;
+  padding: 32px 12px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
 .root-drop-zone.drop-target .drop-hint {
   display: inline;
   color: var(--accent);

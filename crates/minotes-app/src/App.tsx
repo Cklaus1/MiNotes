@@ -407,8 +407,9 @@ export default function App() {
           }
         }}
         onKanbanClick={() => { if (activePage) setCanvasMode(prev => prev === "kanban" ? null : "kanban"); }}
+        onPagesClick={() => setCanvasMode(prev => prev === "pages" ? null : "pages")}
         onSettingsClick={() => setOpenPanel(prev => prev === "settings" ? null : "settings")}
-        activeMode={canvasMode === "graph" ? "graph" : canvasMode === "mindmap" ? "mindmap" : canvasMode === "draw" ? "whiteboard" : canvasMode === "kanban" ? "kanban" : null}
+        activeMode={canvasMode === "graph" ? "graph" : canvasMode === "mindmap" ? "mindmap" : canvasMode === "draw" ? "whiteboard" : canvasMode === "kanban" ? "kanban" : canvasMode === "pages" ? "pages" : null}
         refreshKey={refreshKey}
       />
       <div className="main workspace-split mod-root" style={{ position: "relative", display: "flex", flexDirection: "row" }}>
