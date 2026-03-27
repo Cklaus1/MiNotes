@@ -29,7 +29,7 @@ The apps that scale best (Bear, Linear, Logseq, Roam) **never put all pages in t
 | Feature | MiNotes | Why it's better |
 |---------|---------|----------------|
 | Quick Access | Merged Pinned + Recent in one section | Cleaner than Logseq's separate Favorites + Recent |
-| Projects | Max 2 open accordion | Novel constraint — prevents scroll bloat that Notion/Obsidian suffer |
+| Projects | Max 2 open accordion + overflow dropdown | Prevents scroll bloat that Notion/Obsidian suffer |
 | Journal | 1 line with calendar toggle | More compact than Logseq's full section |
 | Progressive disclosure | Hide empty sections | Matches Notion's best onboarding pattern |
 | Mode buttons | Graph/Mind/Draw/Kanban | Unique — no competitor has this density of views |
@@ -47,19 +47,21 @@ The apps that scale best (Bear, Linear, Logseq, Roam) **never put all pages in t
 │ 📌 Meeting Notes          │  ← pinned (hover → 📌 visible)
 │    Sprint Board           │  ← recent (auto-tracked)
 │    Research Notes         │  ← recent (auto-tracked)
+│    Journal/Mar 25         │  ← recent (journals mixed in)
 │                           │
-│ PROJECTS              [+] │  ← [+] creates new project
-│ ▾ Work                [+] │  ← [+] on hover: new page inside
+│ PROJECTS              [▾] │  ← [▾] on hover: collapse/expand all
+│ ▾ Work                [+] │  ← expanded, [+] on hover: new page inside
 │     API Design            │
 │     Bug Tracker           │
-│     ...+8 more            │  ← inline expand on click
+│     Onboarding Flow       │
+│     ...+9 more            │  ← click = expand inline
 │ ▸ Personal                │  ← collapsed
 │ ▸ Archive                 │  ← collapsed
+│ ▸ Mobile App              │
+│ ⋯ 4 more                  │  ← dropdown shows remaining projects
+│ + New Project             │  ← always visible, last item in list
 │                           │
-│ PAGES                 [+] │  ← [+] creates unfiled page
-│ ▸ 7 unfiled pages         │
-│                           │
-│ ─────────────────────── │
+│ ─────────────────────────│
 │📊Graph 🧠Mind 🎨Draw 🗂Kanban│  ← sticky bottom
 └───────────────────────────┘
 ```
@@ -84,7 +86,6 @@ New user with 0 pages, 0 projects:
 Sections appear as they gain content:
 - **Quick Access**: after first pin or 2+ pages opened
 - **Projects**: after first project created
-- **Pages**: after first unfiled page exists
 
 ## Key Design Decisions
 
@@ -94,7 +95,7 @@ Sections appear as they gain content:
 
 The two most frequent sidebar actions — find something, create something. Every major app puts these at the top.
 
-`[+ New]` creates a new unfiled page (most common action). Future: dropdown with "New Page" / "New Project" / "New Journal Entry".
+`[+ New]` creates a new page in the currently active project. If no project is active, creates in the most recently used project. Future: dropdown with "New Page" / "New Project" / "New Journal Entry".
 
 ### 2. Journal: One Line, Not a Section
 
@@ -116,20 +117,23 @@ If a recent page is also pinned, it shows once (in pinned position). Removes the
 
 "Folders" → "Projects". Max 2 expanded simultaneously. Opening a 3rd closes the oldest (Shift+click to override).
 
-**[+] buttons** (Notion hover-to-add pattern):
-- `PROJECTS [+]` — creates new project (inline name input)
-- `▾ Work [+]` — creates new page inside that project (on hover)
-- `PAGES [+]` — creates unfiled page
+**No unfiled pages concept.** Every page lives in a project. `[+ New]` at top creates in the active/last-used project. This encourages organization from the start.
 
-**Capped pages**: Show first 8 per project. `...+N more` expands inline within the sidebar (not a navigation event).
+**Section header**: `PROJECTS [▾]`
+- `[▾]` caret appears on hover — click to collapse/expand all projects at once
+- Useful for cleanup ("hide everything, start fresh")
+
+**Project items**: Each project header shows `▾`/`▸` chevron + name. On hover, `[+]` appears to create a new page inside that project.
+
+**Project overflow**: First 5 projects shown directly. Beyond 5, a `⋯ N more` link shows a dropdown popover listing the remaining projects. Keeps sidebar bounded regardless of project count.
+
+**`+ New Project`**: Always the last item in the projects section. Click → inline text input → Enter to create. New project auto-expands.
+
+**Capped pages per project**: Show first 8 pages when expanded. `...+N more` expands inline within the sidebar (not a navigation event).
 
 **Page count**: Shown on hover only for collapsed projects. Avoids "pile of work" anxiety.
 
-### 5. Unfiled Pages (Collapsed by Default)
-
-Root pages not in any project. Collapsed showing count: `▸ 7 unfiled pages`. Click to expand. These are the "inbox" — things not yet organized.
-
-### 6. All Pages View (Pressure Valve)
+### 5. All Pages View (Pressure Valve)
 
 New canvas mode: `📄 Pages`. Searchable, sortable table of all pages. Filter by project, tag, date. This is what lets the sidebar stay compact — discovery and bulk management happen here, not in the sidebar.
 
@@ -145,20 +149,30 @@ New canvas mode: `📄 Pages`. Searchable, sortable table of all pages. Filter b
 - Max 7 pins
 
 ### Create New Page
-- `[+ New]` at top → creates untitled page, opens in editor
-- `PAGES [+]` → same, creates unfiled
-- `▾ Work [+]` (hover) → creates inside that project
+- `[+ New]` at top → creates in active/last-used project, opens in editor
+- `▾ Work [+]` (hover) → creates inside that specific project
 
 ### Create New Project
-- `PROJECTS [+]` → inline text input, Enter to create
+- `+ New Project` at bottom of projects list → inline text input, Enter to create
 - New project auto-expands
 
-### Expand/Collapse Project
+### Collapse/Expand All Projects
+- `PROJECTS [▾]` caret on hover → click to collapse all
+- Click again `[▸]` → expand previously-open projects
+- Individual project chevrons still work independently
+
+### Expand/Collapse Individual Project
 - Click project name → toggle expand
 - Max 2 expanded simultaneously
 - Opening 3rd → auto-collapse oldest
 - Shift+click → force open without collapse
 - `...+N more` → expand all pages inline (scrollable within sidebar)
+
+### Project Overflow
+- First 5 projects shown in sidebar
+- Projects 6+ hidden behind `⋯ N more` link
+- Click → dropdown popover listing remaining projects
+- Click a project in dropdown → expands it (may push one from the visible 5 into overflow)
 
 ### Move Page to Project
 - Drag page → drop on project header
@@ -173,8 +187,8 @@ Top-to-bottom = decreasing urgency:
 | **Search + New** | Find / Create | 1 row | Sticky top |
 | **Journal** | Today's entry | 1 line | Always visible |
 | **Quick Access** | Active context | 5-12 | Pinned stable, recent auto |
-| **Projects** | Deep work | Max 2 expanded, 8 pages each | Accordion |
-| **Pages** | Inbox | Collapsed count | Click to expand |
+| **Projects** | Deep work | Max 5 visible + overflow, max 2 expanded | Accordion |
+| **+ New Project** | Create | 1 item | Always visible in projects |
 | **Modes** | Canvas views | 1 row | Sticky bottom |
 
 Total visible: ~20-25 items. Fits on screen without scrolling.
@@ -182,26 +196,28 @@ Total visible: ~20-25 items. Fits on screen without scrolling.
 ## Implementation Phases
 
 ### Phase 1: Restructure Layout
-- [ ] Reorder sections: Search+New → Journal → Quick Access → Projects → Pages → Modes
+- [ ] Reorder sections: Search+New → Journal → Quick Access → Projects → Modes
+- [ ] Remove "Recent Journals" section and "Pages" (unfiled) section
 - [ ] Rename "Folders" → "Projects" in all UI text
 - [ ] Merge Pinned + Recent into Quick Access section
 - [ ] Add unified Recent from `getRecentPages()` below pinned
-- [ ] Remove "Recent Journals" section
 - [ ] Journal as single line with calendar toggle
-- [ ] Progressive disclosure (hide empty sections)
 - [ ] `[+ New]` button next to search
-- [ ] `PROJECTS [+]` and `PAGES [+]` section buttons
+- [ ] `+ New Project` as last item in projects list
+- [ ] Progressive disclosure (hide empty sections)
 
 ### Phase 2: All Pages View + Pin Discoverability
 - [ ] New canvas mode: 📄 Pages (searchable, sortable table)
 - [ ] Filter by project, tag, date range
 - [ ] Pin icon visible on hover for every page item (one-click pin)
 - [ ] `▾ Project [+]` hover button to add page inside project
+- [ ] `PROJECTS [▾]` collapse/expand all toggle
 
-### Phase 3: Accordion + Caps
+### Phase 3: Accordion + Overflow
 - [ ] Max 2 projects expanded simultaneously
 - [ ] Auto-collapse oldest when 3rd opened
 - [ ] Cap expanded project to 8 pages + "...+N more" inline expand
+- [ ] Project overflow: first 5 visible, `⋯ N more` dropdown for rest
 - [ ] Remember expanded projects in localStorage
 - [ ] Page count on hover for collapsed projects
 
@@ -231,6 +247,9 @@ Total visible: ~20-25 items. Fits on screen without scrolling.
 - Project headers: 13px, 600 weight, with expand chevron
 - Pinned items: 13px, 📌 prefix
 - Pin icon on hover: 12px, right-aligned, opacity transition
-- `[+]` buttons: 12px, muted, visible on section/project hover
+- `[+]` buttons: 12px, muted, visible on project hover only
+- `[▾]` collapse-all: 12px, muted, visible on PROJECTS hover only
+- `+ New Project`: 12px, muted, always visible
+- `⋯ N more`: 12px, muted, click → dropdown popover
 - Mode buttons: sticky bottom, compact single row
-- Max sidebar content height: should rarely scroll with 2-max accordion
+- Max sidebar content height: should rarely scroll with 2-max accordion + 5-max projects
