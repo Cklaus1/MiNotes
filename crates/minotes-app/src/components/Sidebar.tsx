@@ -267,7 +267,7 @@ export default function Sidebar({
             🎨Draw
           </button>
           <button className={`stats-mode-btn ${activeMode === "kanban" ? "active" : ""}`} onClick={onKanbanClick} title="Kanban (Ctrl+Shift+K)">
-            🗂Kan
+            🗂Kanban
           </button>
         </div>
       </div>
