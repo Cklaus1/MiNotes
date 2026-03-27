@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import type { Page, GraphStats, FolderTree, FolderTreeRoot } from "../lib/api";
+import type { Page, GraphStats, FolderTree, FolderTreeRoot, Folder } from "../lib/api";
 import * as api from "../lib/api";
 import CalendarWidget from "./CalendarWidget";
 import { getRecentPages } from "../lib/recentFiles";
@@ -298,6 +298,7 @@ export default function Sidebar({
                 onPageClick={onPageClick}
                 onDeletePage={onDeletePage}
                 onRefresh={loadTree}
+                allFolders={allProjects}
               />
             ))}
 
@@ -315,6 +316,7 @@ export default function Sidebar({
                     onPageClick={onPageClick}
                     onDeletePage={onDeletePage}
                     onRefresh={loadTree}
+                    allFolders={allProjects}
                   />
                 ))}
               </details>
@@ -338,6 +340,7 @@ export default function Sidebar({
                     onDeletePage={onDeletePage}
                     siblings={treeData.root_pages.filter(p => !p.is_journal)}
                     onRefresh={loadTree}
+                    allFolders={allProjects}
                   />
                 ))}
               </div>
@@ -395,9 +398,9 @@ export default function Sidebar({
   );
 }
 
-// Draggable page item with reorder drop zones
+// Draggable page item with reorder drop zones and context menu
 function DraggablePage({
-  page, activePage, depth, onPageClick, onDeletePage, siblings, onRefresh, showPinButton,
+  page, activePage, depth, onPageClick, onDeletePage, siblings, onRefresh, showPinButton, allFolders,
 }: {
   page: Page;
   activePage: Page | null;
@@ -407,9 +410,21 @@ function DraggablePage({
   siblings: Page[];
   onRefresh: () => void;
   showPinButton?: boolean;
+  allFolders?: FolderTree[];
 }) {
   const [dropPosition, setDropPosition] = useState<"above" | "below" | null>(null);
   const mouseStart = useRef<{ x: number; y: number } | null>(null);
+  // Phase 4: context menu state
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null);
+  const [showMoveSubmenu, setShowMoveSubmenu] = useState(false);
+
+  // Close context menu on outside click
+  useEffect(() => {
+    if (!ctxMenu) return;
+    const close = () => { setCtxMenu(null); setShowMoveSubmenu(false); };
+    window.addEventListener("click", close);
+    return () => window.removeEventListener("click", close);
+  }, [ctxMenu]);
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
@@ -443,6 +458,13 @@ function DraggablePage({
     onRefresh();
   };
 
+  const handleMoveToFolder = async (folderId: string | undefined) => {
+    await api.movePageToFolder(page.id, folderId);
+    setCtxMenu(null);
+    setShowMoveSubmenu(false);
+    onRefresh();
+  };
+
   return (
     <div
       className={`page-item ${activePage?.id === page.id ? "active" : ""} ${dropPosition === "above" ? "drop-above" : ""} ${dropPosition === "below" ? "drop-below" : ""}`}
@@ -472,7 +494,9 @@ function DraggablePage({
       onDrop={handleDrop}
       onContextMenu={e => {
         e.preventDefault();
-        if (confirm(`Delete "${page.title}"?`)) onDeletePage(page.id);
+        e.stopPropagation();
+        setCtxMenu({ x: e.clientX, y: e.clientY });
+        setShowMoveSubmenu(false);
       }}
     >
       <span>{page.icon ?? "\uD83D\uDCC4"} {page.title}</span>
@@ -484,13 +508,62 @@ function DraggablePage({
           title="Pin to Quick Access"
         >&#128204;</button>
       )}
+      {/* Phase 4: context menu */}
+      {ctxMenu && (
+        <div
+          className="sidebar-context-menu"
+          style={{ top: ctxMenu.y, left: ctxMenu.x }}
+          onClick={e => e.stopPropagation()}
+        >
+          <button
+            className="sidebar-context-menu-item"
+            onMouseEnter={() => setShowMoveSubmenu(true)}
+          >
+            Move to...
+          </button>
+          {showMoveSubmenu && allFolders && (
+            <div className="sidebar-context-submenu">
+              {page.folder_id && (
+                <button
+                  className="sidebar-context-menu-item"
+                  onClick={() => handleMoveToFolder(undefined)}
+                >
+                  (No project)
+                </button>
+              )}
+              {allFolders.filter(f => f.id !== page.folder_id).map(f => (
+                <button
+                  key={f.id}
+                  className="sidebar-context-menu-item"
+                  onClick={() => handleMoveToFolder(f.id)}
+                >
+                  {f.icon ?? "\uD83D\uDCC1"} {f.name}
+                </button>
+              ))}
+            </div>
+          )}
+          <button
+            className="sidebar-context-menu-item"
+            onClick={() => { api.addFavorite(page.id).then(onRefresh); setCtxMenu(null); }}
+          >
+            Pin
+          </button>
+          <div className="sidebar-context-menu-sep" />
+          <button
+            className="sidebar-context-menu-item danger"
+            onClick={() => { setCtxMenu(null); onDeletePage(page.id); }}
+          >
+            Delete
+          </button>
+        </div>
+      )}
     </div>
   );
 }
 
 // Recursive folder component with drop target
 function FolderItem({
-  folder, activePage, depth, isExpanded, onToggleExpanded, onPageClick, onDeletePage, onRefresh,
+  folder, activePage, depth, isExpanded, onToggleExpanded, onPageClick, onDeletePage, onRefresh, allFolders,
 }: {
   folder: FolderTree;
   activePage: Page | null;
@@ -500,6 +573,7 @@ function FolderItem({
   onPageClick: (id: string) => void;
   onDeletePage: (id: string) => void;
   onRefresh: () => void;
+  allFolders?: FolderTree[];
 }) {
   const [dragOver, setDragOver] = useState(false);
   // Phase 3b: show all pages or capped at 8
@@ -586,8 +660,9 @@ function FolderItem({
           />
         </div>
       )}
-      {isExpanded && (
-        <>
+      {/* Phase 4: animated expand/collapse */}
+      <div className={`folder-children ${isExpanded ? "folder-children-expanded" : ""}`}>
+        <div className="folder-children-inner">
           {folder.children.map(child => (
             <FolderItem
               key={child.id}
@@ -599,6 +674,7 @@ function FolderItem({
               onPageClick={onPageClick}
               onDeletePage={onDeletePage}
               onRefresh={onRefresh}
+              allFolders={allFolders}
             />
           ))}
           {displayedPages.map(page => (
@@ -612,6 +688,7 @@ function FolderItem({
               siblings={folder.pages}
               onRefresh={onRefresh}
               showPinButton={true}
+              allFolders={allFolders}
             />
           ))}
           {/* Phase 3b: ...+N more link */}
@@ -624,8 +701,8 @@ function FolderItem({
               ...+{hiddenCount} more
             </div>
           )}
-        </>
-      )}
+        </div>
+      </div>
     </>
   );
 }

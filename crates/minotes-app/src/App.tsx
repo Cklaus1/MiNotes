@@ -345,6 +345,18 @@ export default function App() {
         e.preventDefault();
         setRightSidebarVisible(prev => !prev);
       }
+      // Phase 4: Ctrl+1-7 — open pinned pages by position
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey) {
+        const num = parseInt(e.key, 10);
+        if (num >= 1 && num <= 7) {
+          e.preventDefault();
+          api.listFavorites().then(favs => {
+            if (favs.length >= num) {
+              openPage(favs[num - 1].id);
+            }
+          }).catch(() => {});
+        }
+      }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
