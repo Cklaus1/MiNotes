@@ -258,16 +258,16 @@ export default function Sidebar({
         <div className="stats-modes-divider" />
         <div className="stats-modes-grid">
           <button className={`stats-mode-btn ${activeMode === "graph" ? "active" : ""}`} onClick={onGraphClick} title="Graph (Ctrl+G)">
-            📊
+            Graph
           </button>
           <button className={`stats-mode-btn ${activeMode === "mindmap" ? "active" : ""}`} onClick={onMindmapClick} title="Mindmap (Ctrl+M)">
-            🧠
+            Mind
           </button>
           <button className={`stats-mode-btn ${activeMode === "whiteboard" ? "active" : ""}`} onClick={onWhiteboardClick} title="Draw (Ctrl+W)">
-            🎨
+            Draw
           </button>
           <button className={`stats-mode-btn ${activeMode === "kanban" ? "active" : ""}`} onClick={onKanbanClick} title="Kanban (Ctrl+Shift+K)">
-            🗂
+            Kan
           </button>
         </div>
       </div>
