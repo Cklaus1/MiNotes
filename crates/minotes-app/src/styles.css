@@ -1380,11 +1380,28 @@ body {
 
 .page-info-summary {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   margin-bottom: 10px;
   padding-bottom: 8px;
   border-bottom: 1px solid var(--border);
+}
+
+.page-export-btn {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.page-export-btn:hover {
+  color: var(--text-secondary);
+  border-color: var(--text-muted);
 }
 
 .page-info-title {

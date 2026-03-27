@@ -834,13 +834,6 @@ export default function PageView({
         {!hasHeadings && <span style={{ marginLeft: "auto" }} />}
         <button
           className="prop-toggle-btn"
-          onClick={() => downloadHtml(pageTree)}
-          title="Export as HTML"
-        >
-          ↗
-        </button>
-        <button
-          className="prop-toggle-btn"
           onClick={() => setShowProps(p => !p)}
           title="Page info"
         >
@@ -865,6 +858,13 @@ export default function PageView({
         <div className="page-properties">
           <div className="page-info-summary">
             <span className="page-info-date">Updated: {formatDate(page.updated_at)}</span>
+            <button
+              className="page-export-btn"
+              onClick={() => downloadHtml(pageTree)}
+              title="Export as HTML"
+            >
+              ↗ Export
+            </button>
           </div>
           <div className="page-properties-header">
             <span className="page-properties-label">Properties</span>
