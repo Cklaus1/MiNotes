@@ -771,6 +771,7 @@ export default function PageView({
 
   const [editingTitle, setEditingTitle] = useState(false);
   const [showToc, setShowToc] = useState(false);
+  const hasHeadings = blocks.some(b => /^#{1,4}\s+/.test(b.content));
   const [titleDraft, setTitleDraft] = useState(page.title);
   const titleInputRef = useRef<HTMLInputElement>(null);
 
@@ -820,14 +821,17 @@ export default function PageView({
             <button className="btn btn-sm" onClick={() => shiftDate(1)}>Next →</button>
           </div>
         )}
-        <button
-          className="prop-toggle-btn"
-          onClick={() => setShowToc(t => !t)}
-          title="Table of contents"
-          style={{ marginLeft: "auto" }}
-        >
-          ≡
-        </button>
+        {hasHeadings && (
+          <button
+            className="prop-toggle-btn"
+            onClick={() => setShowToc(t => !t)}
+            title="Table of contents"
+            style={{ marginLeft: "auto" }}
+          >
+            ≡
+          </button>
+        )}
+        {!hasHeadings && <span style={{ marginLeft: "auto" }} />}
         <button
           className="prop-toggle-btn"
           onClick={() => downloadHtml(pageTree)}
