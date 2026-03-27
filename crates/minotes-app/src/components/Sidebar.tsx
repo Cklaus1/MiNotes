@@ -1,7 +1,8 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import type { Page, GraphStats, FolderTree, FolderTreeRoot } from "../lib/api";
 import * as api from "../lib/api";
 import CalendarWidget from "./CalendarWidget";
+import { getRecentPages } from "../lib/recentFiles";
 function formatJournalDate(dateStr: string): string {
   try {
     const [y, m, d] = dateStr.split("-").map(Number);
@@ -99,17 +100,31 @@ export default function Sidebar({
     }
   };
 
+  const today = new Date();
+  const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+  const todayLabel = today.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+
+  // Quick Access: pinned (favorites) + recent, deduped
+  const recentPages = getRecentPages().slice(0, 5);
+  const pinnedIds = new Set(favorites.map(f => f.id));
+  const recentFiltered = recentPages.filter(r => !pinnedIds.has(r.id));
+  const showQuickAccess = favorites.length > 0 || recentFiltered.length > 0;
+
+  // Projects: first 5 visible, rest overflow
+  const allProjects = treeData?.folders ?? [];
+  const visibleProjects = allProjects.slice(0, 5);
+  const overflowProjects = allProjects.slice(5);
+
   return (
     <div className="sidebar workspace-ribbon">
+      {/* ── Sticky top: Search + New ── */}
       <div className="sidebar-header">
         <h1>MiNotes</h1>
-        <button className="sidebar-gear-btn" onClick={onSettingsClick} title="Settings (Ctrl+,)">
-          ⚙
-        </button>
+        <button className="sidebar-gear-btn" onClick={onSettingsClick} title="Settings (Ctrl+,)">⚙</button>
       </div>
       <div className="sidebar-actions-bar">
         <button className="btn btn-sm" onClick={onSearchClick} title="Search (Ctrl+K)" style={{ flex: 1 }}>
-          Search
+          🔍 Search
         </button>
         <button className="btn btn-sm btn-primary" onClick={() => setShowCreate(!showCreate)}>
           + New
@@ -132,39 +147,31 @@ export default function Sidebar({
         </div>
       )}
 
-      <div className="sidebar-actions" style={{ padding: "4px 16px", display: "flex", gap: 4 }}>
-        <button className="btn" onClick={() => onJournalClick()} style={{ flex: 1, textAlign: "left" }}>
-          📅 Journal
-        </button>
+      {/* ── Journal: one line ── */}
+      <div className="sidebar-journal-row">
+        <span className="sidebar-journal-text" onClick={() => onJournalClick()} title="Open today's journal (Ctrl+J)">
+          📅 {todayLabel}
+        </span>
         <button
-          className="btn btn-sm"
-          onClick={() => setShowFolderCreate(!showFolderCreate)}
-          title="New project"
+          className="cal-toggle-btn"
+          onClick={() => setShowCalendar(c => !c)}
+          title="Toggle calendar"
         >
-          + Project
+          📅
         </button>
       </div>
-
-      {showFolderCreate && (
-        <div className="sidebar-actions">
-          <input
-            className="search-input"
-            placeholder="Project name..."
-            value={newFolderName}
-            onChange={e => setNewFolderName(e.target.value)}
-            onKeyDown={e => {
-              if (e.key === "Enter") handleCreateFolder();
-              if (e.key === "Escape") setShowFolderCreate(false);
-            }}
-            autoFocus
-          />
-        </div>
+      {showCalendar && (
+        <CalendarWidget
+          journalDates={new Set(journals.map(j => j.journal_date).filter(Boolean) as string[])}
+          onDateClick={(date) => onJournalClick(date)}
+        />
       )}
 
       <div className="sidebar-section">
-        {favorites.length > 0 && (
+        {/* ── Quick Access: Pinned + Recent ── */}
+        {showQuickAccess && (
           <>
-            <div className="sidebar-section-title">Favorites ({favorites.length})</div>
+            <div className="sidebar-section-title">Quick Access</div>
             {favorites.map(page => (
               <div
                 key={page.id}
@@ -174,17 +181,36 @@ export default function Sidebar({
                   e.preventDefault();
                   api.removeFavorite(page.id).then(loadTree);
                 }}
+                title="Right-click to unpin"
               >
-                ⭐ {page.title}
+                <span>📌 {page.title}</span>
+              </div>
+            ))}
+            {recentFiltered.map(r => (
+              <div
+                key={r.id}
+                className={`page-item ${activePage?.id === r.id ? "active" : ""}`}
+                onClick={() => onPageClick(r.id)}
+              >
+                <span>{r.title}</span>
+                <button
+                  className="pin-btn"
+                  onClick={(e) => { e.stopPropagation(); api.addFavorite(r.id).then(loadTree); }}
+                  title="Pin to Quick Access"
+                >📌</button>
               </div>
             ))}
           </>
         )}
 
-        {treeData && (
+        {/* ── Projects ── */}
+        {(allProjects.length > 0 || treeData) && (
           <>
-            {/* Folder tree */}
-            {treeData.folders.map(folder => (
+            <div className="sidebar-section-title sidebar-section-hover-actions">
+              <span>Projects</span>
+            </div>
+
+            {visibleProjects.map(folder => (
               <FolderItem
                 key={folder.id}
                 folder={folder}
@@ -196,64 +222,74 @@ export default function Sidebar({
               />
             ))}
 
-            {/* Root pages drop zone */}
-            <div
-              className="root-drop-zone"
-              onDragOver={e => { e.preventDefault(); e.currentTarget.classList.add("drop-target"); }}
-              onDragLeave={e => e.currentTarget.classList.remove("drop-target")}
-              onDrop={handleDropOnRoot}
-            >
-              <div className="sidebar-section-title">
-                Pages ({treeData.root_pages.filter(p => !p.is_journal).length})
-                <span className="drop-hint"> — drop here for root</span>
-              </div>
-              {treeData.root_pages.filter(p => !p.is_journal).map(page => (
-                <DraggablePage
-                  key={page.id}
-                  page={page}
-                  activePage={activePage}
-                  depth={0}
-                  onPageClick={onPageClick}
-                  onDeletePage={onDeletePage}
-                  siblings={treeData.root_pages.filter(p => !p.is_journal)}
-                  onRefresh={loadTree}
-                />
-              ))}
-            </div>
-          </>
-        )}
-
-        {journals.length > 0 && (
-          <>
-            <div className="sidebar-section-title" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <span>Recent Journals</span>
-              <button
-                className="cal-toggle-btn"
-                onClick={() => setShowCalendar(c => !c)}
-                title="Toggle calendar"
-              >
-                📅
-              </button>
-            </div>
-            {showCalendar && (
-              <CalendarWidget
-                journalDates={new Set(journals.map(j => j.journal_date).filter(Boolean) as string[])}
-                onDateClick={(date) => onJournalClick(date)}
-              />
+            {overflowProjects.length > 0 && (
+              <details className="sidebar-overflow">
+                <summary className="sidebar-overflow-trigger">⋯ {overflowProjects.length} more</summary>
+                {overflowProjects.map(folder => (
+                  <FolderItem
+                    key={folder.id}
+                    folder={folder}
+                    activePage={activePage}
+                    depth={0}
+                    onPageClick={onPageClick}
+                    onDeletePage={onDeletePage}
+                    onRefresh={loadTree}
+                  />
+                ))}
+              </details>
             )}
-            {journals.map(page => (
+
+            {/* Root pages (not in any project) */}
+            {treeData && treeData.root_pages.filter(p => !p.is_journal).length > 0 && (
               <div
-                key={page.id}
-                className={`page-item ${activePage?.id === page.id ? "active" : ""}`}
-                onClick={() => onPageClick(page.id)}
+                className="root-drop-zone"
+                onDragOver={e => { e.preventDefault(); e.currentTarget.classList.add("drop-target"); }}
+                onDragLeave={e => e.currentTarget.classList.remove("drop-target")}
+                onDrop={handleDropOnRoot}
               >
-                📅 {page.journal_date ? formatJournalDate(page.journal_date) : page.title}
+                {treeData.root_pages.filter(p => !p.is_journal).map(page => (
+                  <DraggablePage
+                    key={page.id}
+                    page={page}
+                    activePage={activePage}
+                    depth={0}
+                    onPageClick={onPageClick}
+                    onDeletePage={onDeletePage}
+                    siblings={treeData.root_pages.filter(p => !p.is_journal)}
+                    onRefresh={loadTree}
+                  />
+                ))}
               </div>
-            ))}
+            )}
+
+            {/* + New Project */}
+            {showFolderCreate ? (
+              <div className="sidebar-actions" style={{ padding: "2px 16px" }}>
+                <input
+                  className="search-input"
+                  placeholder="Project name..."
+                  value={newFolderName}
+                  onChange={e => setNewFolderName(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === "Enter") handleCreateFolder();
+                    if (e.key === "Escape") setShowFolderCreate(false);
+                  }}
+                  autoFocus
+                />
+              </div>
+            ) : (
+              <div
+                className="page-item sidebar-new-project"
+                onClick={() => setShowFolderCreate(true)}
+              >
+                + New Project
+              </div>
+            )}
           </>
         )}
       </div>
 
+      {/* ── Sticky bottom: Mode buttons ── */}
       <div className="stats-bar">
         <div className="stats-modes-divider" />
         <div className="stats-modes-grid">
