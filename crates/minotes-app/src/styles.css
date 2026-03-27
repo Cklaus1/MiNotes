@@ -4921,3 +4921,29 @@ body.theme-light { /* matches our light theme */ }
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+/* ═══════════════════════════════════════════════════ */
+/*  Pending Journal (soft-created)                     */
+/* ═══════════════════════════════════════════════════ */
+
+.pending-journal {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: 12px;
+  padding: 40px;
+}
+
+.pending-journal-date {
+  font-size: 1.5em;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.pending-journal-hint {
+  color: var(--text-muted);
+  font-size: 14px;
+  margin: 0;
+}

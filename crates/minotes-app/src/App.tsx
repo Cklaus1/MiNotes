@@ -26,6 +26,7 @@ import { executeUndo, executeRedo } from "./lib/undoManager";
 
 export default function App() {
   const [activePage, setActivePage] = useState<api.PageTree | null>(null);
+  const [pendingJournalDate, setPendingJournalDate] = useState<string | null>(null);
   const [stats, setStats] = useState<api.GraphStats | null>(null);
   const [openPanel, setOpenPanel] = useState<string | null>(null);
   const [canvasMode, setCanvasMode] = useState<CanvasModeType | null>(null);
@@ -81,14 +82,39 @@ export default function App() {
 
   const openJournal = useCallback(async (date?: string) => {
     try {
-      const tree = await api.getJournal(date);
-      setActivePage(tree);
-      setRefreshKey(k => k + 1);
-      addRecentPage(tree.page.id, tree.page.title);
+      const d = date ?? new Date().toISOString().slice(0, 10);
+      // Check if journal exists without creating it
+      const allPages = await api.listPages(200);
+      const existing = allPages.find(p => p.is_journal && p.journal_date === d);
+      if (existing) {
+        const tree = await api.getPageTree(existing.id);
+        setActivePage(tree);
+        setRefreshKey(k => k + 1);
+        addRecentPage(tree.page.id, tree.page.title);
+        setPendingJournalDate(null);
+      } else {
+        // Show pending state — don't create page yet
+        setActivePage(null);
+        setPendingJournalDate(d);
+      }
     } catch (e) {
       console.error("Failed to open journal:", e);
     }
   }, []);
+
+  // Materialize a pending journal when user clicks "Start writing"
+  const materializeJournal = useCallback(async () => {
+    if (!pendingJournalDate) return;
+    try {
+      const tree = await api.getJournal(pendingJournalDate);
+      setActivePage(tree);
+      setRefreshKey(k => k + 1);
+      addRecentPage(tree.page.id, tree.page.title);
+      setPendingJournalDate(null);
+    } catch (e) {
+      console.error("Failed to create journal:", e);
+    }
+  }, [pendingJournalDate]);
 
   const createBlock = useCallback(async (content: string) => {
     if (!activePage) return;
@@ -457,6 +483,19 @@ export default function App() {
                 }
               }}
             />
+          ) : pendingJournalDate ? (
+            <div className="pending-journal">
+              <div className="pending-journal-date">
+                {(() => {
+                  const [y, m, d] = pendingJournalDate.split("-").map(Number);
+                  return new Date(y, m - 1, d).toLocaleDateString(undefined, {
+                    weekday: "long", month: "long", day: "numeric", year: "numeric",
+                  });
+                })()}
+              </div>
+              <p className="pending-journal-hint">No journal entry yet</p>
+              <button className="btn btn-primary" onClick={materializeJournal}>+ Start writing</button>
+            </div>
           ) : (
             <EmptyState onCreatePage={createPage} />
           )}
