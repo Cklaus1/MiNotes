@@ -2,7 +2,7 @@
 
 ## Overview
 
-Git-based sync for MiNotes that uses a standard Git repository as the sync transport between devices. Each device pushes and pulls markdown files to/from a shared Git remote (GitHub, GitLab, self-hosted, or any bare repo). This gives users version history, conflict visibility, offline-first sync, and full ownership of their data — no proprietary sync service required.
+Git-based sync for MiNotes that uses a standard Git repository as the sync transport between devices. Each device pushes and pulls markdown files to/from a shared Git remote (GitHub, GitLab, self-hosted, or any bare repo). This gives users version history, offline-first sync, and full ownership of their data — no proprietary sync service required.
 
 ## Problem Statement
 
@@ -12,7 +12,6 @@ MiNotes is local-first — data lives in a SQLite database on your machine. User
 2. Have automatic version history without manual snapshots
 3. Recover from mistakes (deleted pages, bad edits)
 4. Own their data in an open format (plain markdown files, not opaque blobs)
-5. Optionally share specific folders with collaborators
 
 Today, MiNotes has two incomplete sync primitives:
 - **`sync_dir`**: Bidirectional filesystem ↔ database sync (import/export markdown files)
@@ -24,24 +23,33 @@ Neither is connected to Git. The `sync_dir` feature syncs to a local folder but 
 
 ## Goals
 
-1. One-click sync: push local changes, pull remote changes, resolve conflicts
+1. One-toggle sync: enable auto sync, everything else is automatic
 2. Works with any Git remote (GitHub, GitLab, Gitea, bare SSH, local path)
 3. Markdown files on disk — readable, grep-able, portable
 4. Automatic version history via Git commits
-5. Conflict detection with user-friendly resolution
-6. Works offline — sync when connectivity is available
-7. Compatible with Obsidian Git plugin users (same folder structure)
-8. Integrates with encrypted folders (encrypted content syncs as ciphertext)
+5. Works offline — sync when connectivity is available
+6. Compatible with Obsidian Git plugin users (same folder structure)
 
 ## Non-Goals
 
 - Real-time collaborative editing (Google Docs style)
 - Proprietary sync protocol or server
 - Binary attachment sync optimization (Git LFS — future enhancement)
-- Three-way merge at block level (use page-level merge for v1)
-- Mobile sync (Git on mobile is complex — future via cloud relay)
+- Manual conflict resolution UI — most recent change wins, old version recoverable via git history
+- Per-folder selective sync — sync the whole repo, exclude files via `.gitignore`
+- Multi-graph sync — v1 syncs the default graph only
+- Mobile sync — future, via Git hosting REST API (GitHub/GitLab) instead of git binary
 
 ## How It Works
+
+### Git Approach: System Git (not libgit2)
+
+MiNotes calls the system `git` binary via `std::process::Command`. No bundled `git2`/libgit2. This means:
+
+- **Inherits existing credentials** — SSH keys, SSH agent, `~/.ssh/config`, credential helpers, `.gitconfig` — all work automatically
+- **Requires git installed** — but anyone doing git-based sync already has it
+- **Easier to debug** — users can run the same git commands manually if something goes wrong
+- **Zero native dependencies** — no libgit2/OpenSSL build issues
 
 ### Architecture
 
@@ -52,15 +60,13 @@ Neither is connected to Git. The `sync_dir` feature syncs to a local folder but 
 │  SQLite DB ◄──► sync_dir ◄──► Git Working Dir │
 │                                               │
 │                    │                          │
+│          std::process::Command                │
 │              git add/commit                   │
 │              git pull --rebase                │
 │              git push                         │
 │                    │                          │
 │              ┌─────▼─────┐                    │
 │              │ Git Remote │                    │
-│              │ (GitHub,   │                    │
-│              │  GitLab,   │                    │
-│              │  SSH, etc) │                    │
 │              └────────────┘                    │
 └──────────────────────────────────────────────┘
 ```
@@ -74,26 +80,32 @@ Every sync operation follows this sequence:
 2. git add -A         (stage all changes)
 3. git commit         (auto-commit with timestamp message)
 4. git pull --rebase  (fetch remote changes, rebase local on top)
-5. Handle conflicts   (if any — see Conflict Resolution)
+5. Auto-resolve       (if conflict — most recent wins)
 6. git push           (push to remote)
-7. Filesystem → DB    (import any new/changed files from remote)
+7. If push fails      (remote updated between pull and push), retry steps 4-6 once
+8. Filesystem → DB    (import any new/changed files from remote)
 ```
+
+### When Auto-Sync Triggers
+
+Every trigger runs a **full sync** (export → commit → pull → push → import):
+
+- **On save** — after 30s of no edits (debounced)
+- **On app open** — grab changes from other devices + push any local changes
+- **On app focus** — when user alt-tabs back to MiNotes
+
+No polling intervals. Event-driven. If no remote is configured, sync still exports + commits locally.
 
 ### Folder Structure on Disk
 
 ```
-~/.minotes/sync/default/
+~/MiNotes_Sync/
 ├── .git/
-├── .minotes-sync.json          ← Sync metadata (device ID, last sync)
 ├── Getting Started.md
 ├── Research Notes.md
 ├── Project Alpha/              ← Folder = subdirectory
 │   ├── Design Doc.md
 │   └── Sprint Notes.md
-├── Private Journal/            ← Encrypted folder
-│   ├── .encrypted              ← Marker file (signals encrypted folder)
-│   ├── 2026-03-24.md.enc      ← Encrypted page content
-│   └── 2026-03-25.md.enc
 └── Journals/
     ├── 2026-03-22.md
     ├── 2026-03-23.md
@@ -112,7 +124,6 @@ created: 2026-03-15T10:30:00Z
 updated: 2026-03-24T14:22:00Z
 icon: 📐
 tags: [design, architecture]
-aliases: [Design Document, Arch Doc]
 ---
 
 # Design Doc
@@ -147,93 +158,68 @@ This matches Obsidian's daily notes convention, enabling cross-compatibility.
 
 ## Conflict Resolution
 
-### When Conflicts Happen
+### Auto-Merge Behavior
 
-Conflicts occur when:
-- Two devices edit the same page between syncs
-- A page is deleted on one device and edited on another
-- A folder is renamed on one device and pages added on another
+Most syncs resolve automatically with no user interaction:
 
-### Resolution Strategy
+| Scenario | What happens | User sees |
+|----------|-------------|-----------|
+| Different pages edited on different devices | Git auto-merges | Nothing — fully automatic |
+| Same page, different sections | Git auto-merges the text | Nothing — fully automatic |
+| Same page, same lines | Most recent change wins | Toast: "Conflict resolved — previous version in history" |
+| Page deleted on one device, edited on another | Keep the edited version | Nothing — fully automatic |
 
-**v1: Page-level, user-assisted**
+**In practice, conflicts are rare for a single user on multiple devices** — you'd have to edit the exact same lines of the same page on two devices between syncs.
 
-```
-┌─────────────────────────────────────────────┐
-│  ⚠ Conflict: "Design Doc.md"               │
-│                                              │
-│  Your version and the remote version both    │
-│  changed since the last sync.                │
-│                                              │
-│  ┌─────────────┐  ┌─────────────┐           │
-│  │ Your Version│  │Remote Version│           │
-│  │             │  │              │           │
-│  │ Block 1     │  │ Block 1 mod │           │
-│  │ Block 2 new │  │ Block 2     │           │
-│  │ Block 3     │  │ Block 3 del │           │
-│  └─────────────┘  └─────────────┘           │
-│                                              │
-│  [Keep Mine] [Keep Theirs] [Keep Both] [Open │
-│                                     Editor]  │
-└─────────────────────────────────────────────┘
-```
+### Most Recent Wins + Git History
 
-**Options:**
-- **Keep Mine**: Force-overwrite remote with local version
-- **Keep Theirs**: Accept remote version, discard local changes
-- **Keep Both**: Save local as `Design Doc (conflict 2026-03-24).md`, keep remote as `Design Doc.md`
-- **Open Editor**: Open a diff view showing both versions side-by-side for manual merge
+**No conflict UI.** When git cannot auto-merge (same lines edited on both sides):
 
-**Auto-resolution (no conflict UI needed):**
-- Same content on both sides → no conflict
-- Only one side changed → take the changed version
-- Non-overlapping changes (different pages) → both applied automatically
-- Page created on both devices with same title → rename one with `(device-name)` suffix
-
-### Future: Block-Level Merge (v2)
-
-Block-level three-way merge using the common ancestor from Git history:
-- Parse both versions and ancestor into block trees
-- Match blocks by content hash + position
-- Merge non-conflicting block changes automatically
-- Only prompt user for true block-level conflicts (same block edited differently)
+1. MiNotes accepts the most recent change (by commit timestamp)
+2. The "losing" version is preserved in git history — nothing is ever lost
+3. A toast notification: *"Sync conflict on 'Design Doc' — resolved with latest version. Previous version available in git history."*
 
 ## Configuration
 
-### Setup Flow
+### Auto-Create on Enable
+
+When the user toggles "Enable Sync" on:
+
+1. MiNotes checks if `~/MiNotes_Sync/` exists
+2. If not, creates it and runs `git init`
+3. Exports the entire DB to markdown files (first sync)
+4. Commits with message `sync: {hostname} @ {timestamp}`
+5. If a remote is configured, pushes
+
+The user only needs to add a remote to sync across devices:
+
+```bash
+cd ~/MiNotes_Sync
+git remote add origin git@github.com:user/MiNotes_Sync.git
+```
+
+After that, all syncs push/pull automatically. Without a remote, MiNotes still exports to markdown and commits locally — giving version history even without a remote.
+
+### Settings Panel — Sync Toggle
+
+- **Git not installed**: "Sync" option is hidden
+- **Git installed**: Shows the toggle
 
 ```
 ┌────────────────────────────────────────────┐
-│  📁 Set Up Git Sync                        │
+│  ☁ Sync                               │
 │                                             │
-│  Sync your notes to a Git repository.       │
-│  Works with GitHub, GitLab, or any remote.  │
+│  [■] Enable Sync                      │
 │                                             │
-│  Remote URL:                                │
-│  [git@github.com:user/my-notes.git    ]    │
+│  Sync directory: ~/MiNotes_Sync             │
+│  Remote: git@github.com:user/MiNotes_Sync   │
+│  Branch: main                               │
 │                                             │
-│  ─── or ───                                 │
-│                                             │
-│  [Create new repo on GitHub]                │
-│  [Use existing local folder]                │
-│                                             │
-│  Sync directory:                            │
-│  [~/.minotes/sync/default            ] [📁] │
-│                                             │
-│  Branch: [main                        ]     │
-│                                             │
-│  Sync frequency:                            │
-│  (•) Manual only                            │
-│  ( ) Every 5 minutes                        │
-│  ( ) Every 15 minutes                       │
-│  ( ) Every hour                             │
-│                                             │
-│  Author name:  [Chris                  ]    │
-│  Author email: [chris@example.com      ]    │
-│                                             │
-│  [Cancel]                     [Set Up Sync] │
+│  Last synced: 2 minutes ago                 │
 └────────────────────────────────────────────┘
 ```
+
+One toggle. Directory is always `~/MiNotes_Sync`. Remote and branch are read-only labels detected from the git repo (remote shows "not configured" if none set).
 
 ### Settings Storage
 
@@ -241,128 +227,56 @@ Block-level three-way merge using the common ancestor from Git history:
 {
   "git_sync": {
     "enabled": true,
-    "remote_url": "git@github.com:user/my-notes.git",
-    "sync_dir": "~/.minotes/sync/default",
-    "branch": "main",
-    "auto_sync_interval_minutes": 0,
-    "author_name": "Chris",
-    "author_email": "chris@example.com",
-    "device_id": "macbook-pro-2024",
-    "last_sync": "2026-03-24T14:22:00Z",
-    "sync_journals": true,
-    "sync_encrypted_folders": true,
-    "commit_message_format": "sync: {device} @ {timestamp}"
+    "last_sync": "2026-03-24T14:22:00Z"
   }
 }
 ```
 
-### .minotes-sync.json (in Git repo)
-
-```json
-{
-  "version": 1,
-  "devices": {
-    "macbook-pro-2024": {
-      "last_sync": "2026-03-24T14:22:00Z",
-      "minotes_version": "0.1.0"
-    },
-    "work-desktop": {
-      "last_sync": "2026-03-24T12:00:00Z",
-      "minotes_version": "0.1.0"
-    }
-  }
-}
-```
-
-## Selective Sync
-
-Not every folder needs to sync. Users can configure per-folder sync:
-
-| Folder | Sync Setting | Behavior |
-|--------|-------------|----------|
-| Project Alpha | Sync | Pushed to remote, pulled from remote |
-| Private Journal | Sync (encrypted) | Pushed as `.enc` files, encrypted at rest |
-| Work Notes | Don't sync | Stays local only |
-| Journals | Sync | Pushed to `Journals/` directory |
-
-**UI**: Right-click folder → "Sync Settings" → toggle sync on/off
+Sync dir is always `~/MiNotes_Sync`. Everything else (remote, branch, author) is read from the git repo.
 
 ## Git Authentication
 
-### Supported Methods
+All authentication is inherited from the user's existing git setup. MiNotes does not manage or store any credentials.
 
-1. **SSH key** (recommended) — uses `~/.ssh/id_ed25519` or `~/.ssh/id_rsa`
-2. **HTTPS + credential helper** — uses system git credential manager
-3. **HTTPS + personal access token** — stored in MiNotes settings (encrypted)
-4. **Local path** — no auth needed (`/mnt/nas/notes-repo`)
+- **SSH key** (recommended) — uses `~/.ssh/id_ed25519`, `~/.ssh/id_rsa`, or SSH agent
+- **HTTPS + credential helper** — uses system git credential manager
+- **Local path** — no auth needed (`/mnt/nas/notes-repo`, bare repos)
 
-### WSL Considerations
-
-- SSH keys: use Linux `~/.ssh/` keys (not Windows `C:\Users\...\.ssh\`)
-- Git credential manager: can bridge to Windows credential manager via `git credential-manager`
-- Default: prompt user to set up SSH key if none found
+If git auth fails during sync, MiNotes surfaces the git error message in a toast.
 
 ## API / Tauri Commands
 
-### New Commands
-
 ```rust
 #[tauri::command]
-fn setup_git_sync(config: GitSyncConfig) -> Result<(), String>
-// Initialize sync dir, git init, git remote add, initial export + commit + push
+fn git_available() -> bool
+// Check if git is installed (used by Settings to show/hide toggle)
 
 #[tauri::command]
-fn git_sync() -> Result<GitSyncResult, String>
-// Full sync cycle: export → commit → pull → resolve → push → import
-
-#[tauri::command]
-fn git_sync_status() -> Result<GitSyncStatus, String>
-// Check for uncommitted changes, unpushed commits, remote ahead
-
-#[tauri::command]
-fn git_sync_pull() -> Result<GitSyncResult, String>
-// Pull-only: fetch + rebase + import (no push)
-
-#[tauri::command]
-fn git_sync_push() -> Result<GitSyncResult, String>
-// Push-only: export + commit + push (no pull)
-
-#[tauri::command]
-fn git_sync_history(limit: Option<i32>) -> Result<Vec<GitCommitInfo>, String>
-// Git log — show recent sync commits
-
-#[tauri::command]
-fn git_sync_diff() -> Result<Vec<GitFileDiff>, String>
-// Show what would be committed (git diff --staged + untracked)
-
-#[tauri::command]
-fn git_sync_resolve_conflict(file: String, resolution: ConflictResolution) -> Result<(), String>
-// Resolve a specific conflict (keep-mine, keep-theirs, keep-both)
+fn git_sync_enable() -> Result<GitSyncStatus, String>
+// Create ~/MiNotes_Sync if needed, git init, initial export + commit + push
 
 #[tauri::command]
 fn git_sync_disable() -> Result<(), String>
-// Stop syncing (doesn't delete the git repo)
+// Stop syncing (doesn't delete the repo)
 
 #[tauri::command]
-fn get_git_sync_config() -> Result<Option<GitSyncConfig>, String>
-// Return current sync configuration
+fn git_sync() -> Result<GitSyncResult, String>
+// Full sync cycle: export → commit → pull (most-recent-wins) → push → import
+
+#[tauri::command]
+fn git_sync_status() -> Result<GitSyncStatus, String>
+// Current state: enabled, remote, branch, last sync
 ```
 
 ### Data Structures
 
 ```rust
-#[derive(Serialize, Deserialize)]
-struct GitSyncConfig {
-    remote_url: String,
-    sync_dir: String,
-    branch: String,
-    auto_sync_interval_minutes: u32,
-    author_name: String,
-    author_email: String,
-    device_id: String,
-    sync_journals: bool,
-    sync_encrypted_folders: bool,
-    commit_message_format: String,
+#[derive(Serialize)]
+struct GitSyncStatus {
+    enabled: bool,
+    remote_url: Option<String>,   // None if no remote configured
+    branch: Option<String>,
+    last_sync: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -370,138 +284,40 @@ struct GitSyncResult {
     success: bool,
     pages_exported: u32,
     pages_imported: u32,
-    pages_conflicted: u32,
-    conflicts: Vec<GitConflict>,
-    commit_hash: Option<String>,
+    conflicts_resolved: u32,
     error: Option<String>,
 }
-
-#[derive(Serialize)]
-struct GitSyncStatus {
-    configured: bool,
-    remote_url: Option<String>,
-    branch: Option<String>,
-    last_sync: Option<String>,
-    uncommitted_changes: u32,
-    unpushed_commits: u32,
-    remote_ahead: u32,
-    conflicts: Vec<String>,
-}
-
-#[derive(Serialize)]
-struct GitCommitInfo {
-    hash: String,
-    short_hash: String,
-    message: String,
-    author: String,
-    timestamp: String,
-    files_changed: u32,
-}
-
-#[derive(Serialize)]
-struct GitConflict {
-    file_path: String,
-    page_title: String,
-    conflict_type: String,  // "both-modified", "delete-modify", "add-add"
-    local_content: String,
-    remote_content: String,
-}
-
-#[derive(Deserialize)]
-enum ConflictResolution {
-    KeepMine,
-    KeepTheirs,
-    KeepBoth,
-    Manual(String),  // User-edited merged content
-}
 ```
 
-## UX Design
+## UX
 
-### Sync Button in Sidebar
+### Stats Bar Indicator
+
+When sync is enabled, shows in the bottom bar:
 
 ```
-┌──────────────────┐
-│ ☁ Sync           │  ← Always visible in stats bar
-│   Last: 2m ago   │
-│   2 pending      │
-└──────────────────┘
+5 pages · 42 blocks · 12 links    ☁ Synced 2m ago    Graph  ⚙
 ```
 
 States:
-- **Not configured**: `☁ Set up Sync` (links to setup)
-- **Synced**: `☁ Synced` with last sync time
-- **Pending changes**: `☁ 3 pending` with count
+- **Synced**: `☁ Synced 2m ago`
 - **Syncing**: `☁ Syncing...` with spinner
-- **Conflict**: `⚠ 1 conflict` in warning color
 - **Error**: `✗ Sync failed` with error detail on hover
 - **Offline**: `☁ Offline` (grayed out)
 
-### Sync Panel (Ctrl+Shift+S)
-
-```
-┌──────────────────────────────────────────┐
-│  ☁ Git Sync                              │
-│                                           │
-│  Remote: github.com:user/my-notes.git     │
-│  Branch: main                             │
-│  Last sync: 2026-03-24 14:22              │
-│  Device: macbook-pro-2024                 │
-│                                           │
-│  Status: 3 pages changed locally          │
-│          1 new commit on remote           │
-│                                           │
-│  [↕ Sync Now]  [↓ Pull]  [↑ Push]        │
-│                                           │
-│  ── Recent Syncs ──                       │
-│  8bc9edd  sync: macbook @ 14:22   3 files │
-│  a172466  sync: desktop @ 12:00   1 file  │
-│  527b0d8  sync: macbook @ 09:15   5 files │
-│                                           │
-│  ── Pending Changes ──                    │
-│  M  Project Alpha/Design Doc.md           │
-│  A  Research Notes.md                     │
-│  D  Old Page.md                           │
-│                                           │
-│  [Settings]              [View on GitHub] │
-└──────────────────────────────────────────┘
-```
-
-### Conflict Resolution Panel
+### Conflict Toast
 
 ```
 ┌──────────────────────────────────────────────┐
-│  ⚠ Sync Conflict: Design Doc.md             │
-│                                               │
-│  Both you and another device edited this      │
-│  page since the last sync.                    │
-│                                               │
-│  ┌─ Your version ──────┐┌─ Remote version ──┐│
-│  │ # Design Doc        ││ # Design Doc      ││
-│  │                     ││                    ││
-│  │ Updated intro       ││ New intro text     ││
-│  │ paragraph here.     ││ from other device. ││
-│  │                     ││                    ││
-│  │ ## Architecture     ││ ## Architecture    ││
-│  │ Same content...     ││ Same content...    ││
-│  │                     ││ + New section      ││
-│  └─────────────────────┘└────────────────────┘│
-│                                               │
-│  [Keep Mine] [Keep Theirs] [Keep Both] [Edit] │
+│  ☁ Sync conflict on "Design Doc" — resolved  │
+│  with latest version. Previous version        │
+│  available in git history.                     │
 └──────────────────────────────────────────────┘
-```
-
-### Auto-Sync Indicator
-
-When auto-sync is enabled, a subtle indicator shows in the bottom bar:
-
-```
-5 pages · 42 blocks · 12 links    ☁ Auto-sync: 5m    Graph  ⚙
 ```
 
 ## Obsidian Compatibility
 
-MiNotes Git Sync is designed to be compatible with Obsidian Git plugin users:
+MiNotes Git Sync is compatible with Obsidian Git plugin users:
 
 | Feature | MiNotes | Obsidian Git | Compatible? |
 |---------|---------|-------------|-------------|
@@ -511,202 +327,89 @@ MiNotes Git Sync is designed to be compatible with Obsidian Git plugin users:
 | Wiki links | `[[Page Name]]` in content | `[[Page Name]]` in content | Yes |
 | Properties | `key:: value` inline | `key:: value` inline | Yes |
 | Frontmatter | Standard YAML | Standard YAML | Yes |
-| Attachments | `attachments/` subfolder | User-configurable | Configurable |
 | Auto-commit | Timestamp-based messages | Timestamp-based messages | Yes |
 
-**Migration path**: An Obsidian user can point MiNotes at their existing Obsidian vault Git repo and import everything. MiNotes writes back in a compatible format.
-
-## Integration with Encrypted Folders
-
-When an encrypted folder has sync enabled:
-
-1. **Export**: Encrypted content is written as `.md.enc` files (ciphertext, not plaintext markdown)
-2. **Marker file**: `.encrypted` file in the folder signals it's encrypted
-3. **Git sees**: Opaque binary changes in `.enc` files
-4. **Other devices**: Must have the passphrase to decrypt after pulling
-5. **Conflict resolution**: Conflicts on encrypted files can only be resolved as keep-mine/keep-theirs (no diff view)
-
-```
-Private Journal/
-├── .encrypted                    ← Signals encrypted folder
-├── .encryption-meta.json         ← Salt, wrapped FEK (needed to unlock on other devices)
-├── 2026-03-24.md.enc            ← AES-256-GCM ciphertext
-└── 2026-03-25.md.enc
-```
+An Obsidian user can point MiNotes at their existing Obsidian vault Git repo and import everything.
 
 ## Implementation Plan
 
 ### Phase 1: Git Operations Core (Rust)
 
-1. Add `git2` crate (libgit2 bindings) to `minotes-core`
-2. Create `git_sync.rs` module:
-   - `init_sync_repo(dir, remote_url, branch)` — git init + remote add
-   - `clone_sync_repo(remote_url, dir, branch)` — git clone for first-time setup
-   - `commit_all(dir, message, author)` — add all + commit
+1. Create `git_cmd.rs` — thin wrapper around `std::process::Command` for git:
+   - `git_available()` — run `git --version`, return bool
+   - `init_repo(dir)` — `git init` if `~/MiNotes_Sync` doesn't exist yet
+   - `repo_info(dir)` — read remote URL, branch from existing repo
+   - `commit_all(dir, message)` — add all + commit (author from git config, message: `sync: {hostname} @ {timestamp}`)
    - `pull_rebase(dir)` — fetch + rebase
-   - `push(dir, branch)` — push to remote
-   - `get_status(dir)` — uncommitted changes, unpushed, remote ahead
-   - `get_log(dir, limit)` — recent commits
-   - `get_conflicts(dir)` — list conflicted files
-   - `resolve_conflict(dir, file, resolution)` — write resolution, mark resolved
-3. Error handling for: no remote, auth failure, network down, conflicts
+   - `push(dir, branch)` — push to remote, retry pull-rebase-push once on failure
+   - `auto_resolve_conflicts(dir)` — on conflict, accept most recent change, continue rebase
+   - `has_remote(dir)` — check if a remote is configured (skip push/pull if not)
+2. Error handling: parse git stderr for auth failure, network down, merge conflicts
 
 ### Phase 2: Sync Cycle (Rust)
 
-4. Create `sync_manager.rs`:
-   - `full_sync(config)` — the complete export → commit → pull → push → import cycle
+3. Create `sync_manager.rs`:
+   - `full_sync(config)` — export → commit → pull → auto-resolve → push → import
    - Calls existing `sync_dir` for DB ↔ filesystem
-   - Calls new git operations for filesystem ↔ remote
-   - Handles conflict detection and tracking
-5. Wire up to existing `sync_dir` bidirectional sync
-6. Frontmatter generation on export (id, title, created, updated, tags)
-7. Frontmatter parsing on import (restore page metadata)
-8. Journal file naming convention (`Journals/YYYY-MM-DD.md`)
+   - Calls `git_cmd` for filesystem ↔ remote
+4. Wire up to existing `sync_dir` bidirectional sync
+5. Frontmatter generation on export (id, title, created, updated, tags)
+6. Frontmatter parsing on import (restore page metadata)
+7. Journal file naming convention (`Journals/YYYY-MM-DD.md`)
 
-### Phase 3: Tauri Commands
+### Phase 3: Tauri Commands + Auto-Sync
 
-9. Implement all `git_sync_*` Tauri commands
-10. Store `GitSyncConfig` in a JSON file (`~/.minotes/sync-config.json`)
-11. Background auto-sync timer (when configured)
-12. SSH key detection and validation
+8. Implement `git_available`, `git_sync_enable`, `git_sync_disable`, `git_sync`, `git_sync_status`
+9. Store config in `~/.minotes/sync-config.json`
+10. Event-driven triggers: sync on save (30s debounce), on app open, on app focus
+11. Offline detection: queue sync, retry when online
 
-### Phase 4: Frontend — Setup & Sync Panel
+### Phase 4: Frontend
 
-13. Git Sync setup wizard (remote URL, branch, auth, interval)
-14. Sync button in stats bar with status indicator
-15. Sync Panel (Ctrl+Shift+S) — status, history, pending changes
-16. Manual sync trigger (button click or keyboard shortcut)
+12. "Sync" toggle in Settings panel (hidden when no git repo detected)
+13. Stats bar sync indicator (`☁ Synced 2m ago`)
+14. Toast notifications for errors and auto-resolved conflicts
 
-### Phase 5: Frontend — Conflict Resolution
+### Phase 5: Testing
 
-17. Conflict detection notification (toast + badge on sync button)
-18. Conflict resolution panel with side-by-side diff
-19. Keep Mine / Keep Theirs / Keep Both / Manual Edit options
-20. Post-resolution: auto-commit + push the resolution
-
-### Phase 6: Auto-Sync & Polish
-
-21. Background auto-sync with configurable interval
-22. Debounce: don't sync while user is actively typing (wait 30s after last edit)
-23. Offline detection: queue sync, retry when online
-24. Sync progress indicator for large repos
-25. "View on GitHub" button (open remote URL in browser)
-
-### Phase 7: Encrypted Folder Sync
-
-26. Export encrypted folders as `.md.enc` files
-27. Include `.encrypted` marker and `.encryption-meta.json`
-28. Import encrypted files: store ciphertext in DB, decrypt only when folder is unlocked
-29. Conflict resolution for encrypted files (keep-mine/keep-theirs only)
-
-### Phase 8: Testing
-
-30. Unit tests: git operations (init, commit, push, pull, conflict)
-31. Integration tests: full sync cycle with two simulated devices
-32. Conflict resolution tests: all four resolution strategies
-33. Encrypted folder sync tests
-34. User journey tests: setup → sync → conflict → resolve → verify
+15. Unit tests: git operations (commit, push, pull, auto-resolve)
+16. Integration tests: full sync cycle with two simulated devices
+17. Conflict auto-resolution tests (most recent wins, version preserved in history)
+18. User journey tests: enable → sync → conflict → toast
 
 ## Dependencies
 
-### Rust Crates
+### Rust
 
-- `git2` — libgit2 bindings for Git operations (clone, commit, push, pull, status, diff)
 - `serde_yaml` — YAML frontmatter parsing/generation
 - Existing: `minotes-core` sync_dir module (filesystem ↔ DB sync)
+- No `git2` crate — all git operations via `std::process::Command`
 
-### System Dependencies
+### System
 
-- `libgit2` — native library (bundled by `git2` crate with `vendored` feature)
-- SSH agent or key file for SSH auth
-- Git credential helper for HTTPS auth
+- `git` — must be installed (MiNotes hides sync toggle if missing)
+- User's existing SSH keys / credential helpers for authentication
 
 ### Frontend
 
 - No new npm packages — uses existing Tauri invoke pattern
-- Diff view: simple text diff (highlight changed lines), no external lib needed for v1
 
 ## Security Considerations
 
 | Concern | Mitigation |
 |---------|-----------|
-| Credentials stored on disk | SSH keys managed by OS; PAT stored encrypted in settings |
-| Sensitive content in Git history | Encrypted folders sync as ciphertext; unencrypted folders are user's choice |
-| Commit messages leak info | Default message is `sync: {device} @ {timestamp}` — no page titles |
-| Force push data loss | MiNotes never force pushes; rebase conflicts halt sync |
-| Shared repo access | Git repo permissions (read/write) managed by hosting provider |
-| Man-in-the-middle | SSH or HTTPS — standard Git transport security |
-
-## Metrics & Monitoring
-
-Track (locally, not phoned home):
-
-- Sync frequency and duration
-- Conflict rate (conflicts per sync)
-- Pages synced per cycle
-- Sync failures and error types
-- Time since last successful sync
-
-Displayed in Sync Panel for user visibility.
-
-## Version History / Time Travel
-
-Git sync unlocks page-level version history — every sync commit is a snapshot users can browse and restore.
-
-### UI: Version History Panel
-
-Accessible from the page header or Sync Panel. Shows a timeline of all versions of the current page:
-
-```
-┌─ Version History: Meeting Notes ──────────────┐
-│                                                │
-│  Mar 26, 2026 — 3:42 PM (this device)        │
-│  "Added action items section"                  │
-│  +12 lines, -3 lines                     [View]│
-│                                                │
-│  Mar 25, 2026 — 10:15 AM (laptop)            │
-│  "Initial meeting notes"                       │
-│  +28 lines                          [View] [↺] │
-│                                                │
-│  Mar 24, 2026 — 5:00 PM (auto-sync)          │
-│  "Created page"                                │
-│  +3 lines                           [View] [↺] │
-└────────────────────────────────────────────────┘
-```
-
-Each entry shows: timestamp, device/author, commit message (auto-generated from diff summary), line diff stats, and action buttons (View, Restore).
-
-### Diff View
-
-Clicking "View" opens a read-only diff of the page at that point:
-
-- **Inline diff**: additions highlighted green, deletions red
-- **Side-by-side**: current version vs selected version
-- Block-level granularity — shows which blocks were added, removed, or modified
-
-### Restore
-
-"Restore this version" creates a NEW commit that reverts the page to the selected historical state. Non-destructive — does not rewrite Git history. The current version becomes the "before" in the next diff.
-
-### Tauri Commands
-
-- `git_page_history(pageId, limit)` — filters `git log` to commits that touched the page's markdown file. Returns `Vec<{hash, timestamp, author, message, additions, deletions}>`
-- `git_page_at_version(pageId, commitHash)` — retrieves the page's markdown content at a specific commit via `git show <hash>:<path>`
-- `git_restore_page(pageId, commitHash)` — checks out the file at the given commit, writes it to the working tree, stages, and commits with message "Restored <page> to version <hash>"
-
-The existing `SyncPanel.tsx` already has version history UI scaffolding and a restore button. These commands power the actual data retrieval.
-
-### Timeline Visualization (Future)
-
-Optional enhancement: a visual timeline with dots per version, branching indicators when multiple devices contribute, and a scrubber to quickly browse versions.
+| Credentials | MiNotes stores no credentials — delegated entirely to system git |
+| Sensitive content in history | User's choice what goes in the repo; use encryption PRD for sensitive folders |
+| Commit messages | Default: `sync: {hostname} @ {timestamp}` — no page titles |
+| Force push | MiNotes never force pushes |
+| Transport security | SSH or HTTPS — standard Git |
 
 ## Future Enhancements
 
+- **Version History UI**: Browse and restore past versions of any page via git log
+- **Encrypted folder sync**: `.md.enc` files with passphrase-protected content
 - **Block-level merge**: Three-way merge at block granularity using common ancestor
-- **Selective page sync**: Sync individual pages, not just folders
 - **Git LFS**: Large attachment support for images and PDFs
-- **Mobile relay**: Cloud service that syncs on behalf of mobile devices (no Git on phone)
-- **Shared cursors**: Show which device last edited a page (via commit metadata)
-- **Branch workflows**: Feature branches for experimental note reorganization
-- **Webhook triggers**: Auto-sync when remote receives a push (GitHub webhook → local pull)
-- **Sync dashboard**: Visualize sync activity over time (graph of commits per day)
+- **Mobile sync**: Use GitHub/GitLab REST API to commit/pull files directly — no git binary needed on phone
+- **Selective sync**: Per-folder sync/don't-sync toggles
+- **Multi-graph sync**: Sync multiple graphs (currently v1 syncs the default graph only)

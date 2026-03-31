@@ -1,4 +1,8 @@
-# MiNotes — Claude Code Project Guide
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+# MiNotes — Project Guide
 
 ## What is this?
 
@@ -30,10 +34,13 @@ crates/
 ## Build & test
 
 ```bash
+# Install frontend dependencies (required first time)
+cd crates/minotes-app && npm install
+
 # Frontend dev server (browser mode with mock backend)
 cd crates/minotes-app && npx vite --port 1420
 
-# TypeScript check
+# TypeScript check (must run from crates/minotes-app/)
 cd crates/minotes-app && npx tsc --noEmit
 
 # Vite production build
@@ -43,8 +50,14 @@ cd crates/minotes-app && npx vite build
 cargo check -p minotes-app
 cargo check -p minotes-cli
 
+# Rust unit tests
+cargo test
+
 # Run user journey tests (requires dev server on :1420)
 bash tests/user-journey-test.sh
+
+# Desktop app (Tauri dev mode)
+cd crates/minotes-app && npm run tauri dev
 
 # CLI
 cargo run -p minotes-cli -- --graph ~/.minotes/default.db page list
@@ -52,9 +65,9 @@ cargo run -p minotes-cli -- --graph ~/.minotes/default.db page list
 
 ## Testing
 
-- Tests use `agent-browser` (headless Chrome via CDP)
+- Tests use `agent-browser` (headless Chrome via CDP) — must be installed separately
 - Test API exposed on `window.__MINOTES__` for automation
-- 33 user journeys, 127 tests in `tests/user-journey-test.sh`
+- 37 user journeys, ~190 assertions in `tests/user-journey-test.sh`
 - ProseMirror doesn't respond to CDP keyboard events — use `window.__MINOTES__` API instead
 
 ## Important gotchas
@@ -72,7 +85,9 @@ cargo run -p minotes-cli -- --graph ~/.minotes/default.db page list
 
 ## PRDs
 
+- `docs/PRD-editor-improvements.md` — 10 editor/UX features (tables, templates, kanban, etc.)
 - `docs/PRD-encryption.md` — per-folder AES-256-GCM encryption
 - `docs/PRD-git-sync.md` — Git-based sync with conflict resolution
-- `docs/PRD-editor-improvements.md` — 10 editor/UX features (tables, templates, kanban, etc.)
+- `docs/PRD-kanban.md` — Kanban board view
 - `docs/PRD-mindmap.md` — ReactFlow + dagre mind map view
+- `docs/PRD-sidebar-navigation.md` — Sidebar navigation design

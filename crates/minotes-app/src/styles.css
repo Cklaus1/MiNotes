@@ -115,22 +115,37 @@ body {
   color: var(--text-secondary) !important;
 }
 
-.pin-btn {
+.page-more-btn {
   background: none;
   border: none;
   cursor: pointer;
-  font-size: 11px;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--text-muted);
   opacity: 0;
-  padding: 0 2px;
+  padding: 0 4px;
   transition: opacity 0.15s;
+  flex-shrink: 0;
 }
 
-.page-item:hover .pin-btn {
+.page-item:hover .page-more-btn {
   opacity: 0.6;
 }
 
-.pin-btn:hover {
+.page-more-btn:hover {
   opacity: 1 !important;
+  color: var(--text-primary);
+}
+
+.sidebar-rename-input {
+  background: var(--background-primary);
+  border: 1px solid var(--interactive-accent);
+  border-radius: 3px;
+  color: var(--text-primary);
+  font-size: 13px;
+  padding: 1px 4px;
+  width: 100%;
+  outline: none;
 }
 
 .sidebar-overflow summary {
@@ -971,13 +986,15 @@ body {
 
 /* Phase 3b: ...+N more pages link */
 .sidebar-more-pages {
-  color: var(--text-muted) !important;
+  color: var(--interactive-accent, #89b4fa) !important;
   font-size: 12px !important;
-  font-style: italic;
+  cursor: pointer;
+  user-select: none;
 }
 
 .sidebar-more-pages:hover {
-  color: var(--text-secondary) !important;
+  color: var(--interactive-accent-hover, #b4d0fb) !important;
+  background: var(--bg-surface, rgba(255,255,255,0.05));
 }
 
 /* Phase 4: Smooth expand/collapse animation for folder children */
@@ -1027,9 +1044,100 @@ body {
   color: var(--text-primary);
 }
 
+.sidebar-context-menu-item.danger {
+  color: #f38ba8;
+}
+
 .sidebar-context-menu-item.danger:hover {
   background: #f38ba8;
   color: #1e1e2e;
+}
+
+/* Group spacer — subtle gap between journal/page groups in pinned */
+.sidebar-group-spacer {
+  height: 6px;
+}
+
+/* Overflow fade — subtle gradient hinting at hidden items */
+.sidebar-overflow-fade {
+  height: 16px;
+  margin-top: -16px;
+  background: linear-gradient(to bottom, transparent, var(--background-secondary, #1e1e2e));
+  pointer-events: none;
+  position: relative;
+  z-index: 1;
+}
+
+/* Section gap — extra breathing room between Pinned and Projects */
+.sidebar-section-gap {
+  height: 10px;
+}
+
+/* Pinned reorder drop indicators */
+.pinned-drop-wrapper.drop-above {
+  border-top: 2px solid var(--interactive-accent, #89b4fa);
+}
+
+.pinned-drop-wrapper.drop-below {
+  border-bottom: 2px solid var(--interactive-accent, #89b4fa);
+}
+
+/* Pinned drop zone */
+.pinned-drop-zone.drop-target {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent, #fff);
+  border-radius: 4px;
+}
+
+/* Delete confirmation dialog */
+.confirm-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 9999;
+}
+
+.confirm-dialog {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: var(--background-secondary, #313244);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 20px 24px;
+  z-index: 10000;
+  min-width: 300px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+}
+
+.confirm-dialog-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 6px;
+}
+
+.confirm-dialog-text {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin: 0 0 16px 0;
+}
+
+.confirm-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.btn-danger {
+  background: #f38ba8 !important;
+  color: #1e1e2e !important;
+  font-weight: 600;
+}
+
+.btn-danger:hover {
+  background: #e06c88 !important;
 }
 
 .sidebar-context-menu-sep {
@@ -5099,18 +5207,17 @@ body.theme-light { /* matches our light theme */ }
 /*  Calendar Widget                                    */
 /* ═══════════════════════════════════════════════════ */
 
-.cal-toggle-btn {
-  background: none;
-  border: none;
+.sidebar-section-chevron {
   cursor: pointer;
-  font-size: 14px;
-  padding: 0 2px;
-  opacity: 0.7;
-  transition: opacity 0.15s;
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 2px 4px;
+  user-select: none;
+  transition: color 0.15s;
 }
 
-.cal-toggle-btn:hover {
-  opacity: 1;
+.sidebar-section-chevron:hover {
+  color: var(--text-primary);
 }
 
 .cal-widget {
@@ -5331,4 +5438,49 @@ body.theme-light { /* matches our light theme */ }
   color: var(--text-muted);
   font-size: 14px;
   margin: 0;
+}
+
+/* ── Git Sync indicator ── */
+.sync-indicator {
+  font-size: 11px;
+  padding: 2px 8px;
+  color: var(--text-muted);
+  text-align: center;
+}
+.sync-syncing { color: var(--interactive-accent); }
+.sync-error { color: var(--text-error, #f38ba8); }
+.sync-offline { opacity: 0.5; }
+
+/* ── Toast notification ── */
+.minotes-toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%) translateY(20px);
+  background: var(--background-secondary, #313244);
+  color: var(--text-primary, #cdd6f4);
+  padding: 10px 20px;
+  border-radius: 8px;
+  font-size: 13px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+  opacity: 0;
+  transition: opacity 0.3s, transform 0.3s;
+  z-index: 10000;
+  pointer-events: none;
+  max-width: 500px;
+  text-align: center;
+}
+.minotes-toast-visible {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+/* Settings — sync row value (read-only label) */
+.settings-row-value {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-family: monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 200px;
 }

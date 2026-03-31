@@ -15,12 +15,17 @@ export default function SettingsPanel({ open, onClose }: Props) {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [activeTooltip, setActiveTooltip] = useState<string | null>(null);
   const tooltipTimerRef = { current: null as ReturnType<typeof setTimeout> | null };
+  const [gitInstalled, setGitInstalled] = useState<boolean | null>(null);
+  const [syncStatus, setSyncStatus] = useState<api.GitSyncStatus | null>(null);
+  const [syncLoading, setSyncLoading] = useState(false);
 
   useEffect(() => {
     if (open) {
       api.getGraphStats().then(setStats).catch(() => {});
       setSettings(getSettings());
       setCurrentTheme(getTheme());
+      api.gitAvailable().then(setGitInstalled).catch(() => setGitInstalled(false));
+      api.gitSyncStatus().then(setSyncStatus).catch(() => {});
     }
   }, [open]);
 
@@ -73,6 +78,68 @@ export default function SettingsPanel({ open, onClose }: Props) {
             </select>
           </div>
         </div>
+
+        {/* Sync */}
+        {gitInstalled && (
+          <div className="settings-section">
+            <div className="settings-section-title">Sync</div>
+            <div className="settings-row">
+              <span className="settings-row-label">Enable Sync</span>
+              <label className="settings-toggle">
+                <input
+                  type="checkbox"
+                  checked={syncStatus?.enabled ?? false}
+                  disabled={syncLoading}
+                  onChange={async (e) => {
+                    setSyncLoading(true);
+                    try {
+                      if (e.target.checked) {
+                        const status = await api.gitSyncEnable();
+                        setSyncStatus(status);
+                      } else {
+                        await api.gitSyncDisable();
+                        setSyncStatus(prev => prev ? { ...prev, enabled: false } : null);
+                      }
+                    } catch (err) {
+                      console.error("Sync toggle failed:", err);
+                    } finally {
+                      setSyncLoading(false);
+                    }
+                  }}
+                />
+                <span className="settings-toggle-slider" />
+              </label>
+            </div>
+            {syncStatus?.enabled && (
+              <>
+                <div className="settings-row">
+                  <span className="settings-row-label">Directory</span>
+                  <span className="settings-row-value">~/MiNotes_Sync</span>
+                </div>
+                <div className="settings-row">
+                  <span className="settings-row-label">Remote</span>
+                  <span className="settings-row-value">
+                    {syncStatus.remote_url ?? "Not configured"}
+                  </span>
+                </div>
+                <div className="settings-row">
+                  <span className="settings-row-label">Branch</span>
+                  <span className="settings-row-value">
+                    {syncStatus.branch ?? "—"}
+                  </span>
+                </div>
+                {syncStatus.last_sync && (
+                  <div className="settings-row">
+                    <span className="settings-row-label">Last synced</span>
+                    <span className="settings-row-value">
+                      {new Date(syncStatus.last_sync).toLocaleString()}
+                    </span>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        )}
 
         {/* Keyboard shortcuts */}
         <div className="settings-section">

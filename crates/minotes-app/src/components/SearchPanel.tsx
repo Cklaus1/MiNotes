@@ -2,6 +2,17 @@ import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import * as api from "../lib/api";
 import { getRecentPages } from "../lib/recentFiles";
 
+function formatTitle(title: string, isJournal?: boolean, journalDate?: string): string {
+  const dateStr = journalDate ?? (title.startsWith("Journal/") ? title.slice(8) : null);
+  if ((isJournal || title.startsWith("Journal/")) && dateStr) {
+    try {
+      const [y, m, d] = dateStr.split("-").map(Number);
+      return new Date(y, m - 1, d).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+    } catch { /* fall through */ }
+  }
+  return title;
+}
+
 interface Props {
   open: boolean;
   onClose: () => void;
@@ -99,7 +110,7 @@ export default function SearchPanel({
     return () => clearTimeout(timer);
   }, [query, doSearch, isCommandMode]);
 
-  const filteredPages = isCommandMode ? [] : pages.filter(p =>
+  const filteredPages = isCommandMode || !query.trim() ? [] : pages.filter(p =>
     p.title.toLowerCase().includes(query.toLowerCase())
   ).slice(0, 5);
 
@@ -189,28 +200,27 @@ export default function SearchPanel({
             <>
               {!query && getRecentPages().length > 0 && (
                 <>
-                  <div className="command-palette-section">Recent</div>
+                  <div className="command-palette-section">&#128336; Recent</div>
                   {getRecentPages().slice(0, 5).map((r, i) => (
                     <div
                       key={r.id}
                       className={`command-palette-item ${i === selectedIndex ? "selected" : ""}`}
                       onClick={() => { onPageClick(r.id); onClose(); }}
                     >
-                      🕐 {r.title}
+                      {formatTitle(r.title)}
                     </div>
                   ))}
                 </>
               )}
               {filteredPages.length > 0 && (
                 <>
-                  <div className="command-palette-section">Pages</div>
                   {filteredPages.map((page, i) => (
                     <div
                       key={page.id}
                       className={`command-palette-item ${i === selectedIndex ? "selected" : ""}`}
                       onClick={() => { onPageClick(page.id); onClose(); }}
                     >
-                      {page.is_journal ? "\uD83D\uDCC5" : "\uD83D\uDCC4"} {page.title}
+                      {formatTitle(page.title, page.is_journal, page.journal_date)}
                     </div>
                   ))}
                 </>

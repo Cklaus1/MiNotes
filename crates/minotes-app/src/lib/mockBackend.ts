@@ -24,6 +24,7 @@ const pages: Map<string, Page> = new Map();
 const blocks: Map<string, Block> = new Map();
 const properties: Map<string, Property[]> = new Map();
 const pendingJournals: Map<string, Page> = new Map();
+const favorites: Map<string, number> = new Map(); // pageId -> position
 
 // ── Seed test data ──
 
@@ -477,9 +478,26 @@ export const mockHandlers: Record<string, (args: any) => any> = {
   },
 
   // Stubs for features that don't need full mock
-  add_favorite: () => {},
-  remove_favorite: () => true,
-  list_favorites: () => [],
+  add_favorite: ({ pageId }: { pageId: string }) => {
+    if (!favorites.has(pageId)) {
+      const maxPos = favorites.size > 0 ? Math.max(...favorites.values()) : 0;
+      favorites.set(pageId, maxPos + 1);
+    }
+  },
+  remove_favorite: ({ pageId }: { pageId: string }) => {
+    favorites.delete(pageId);
+    return true;
+  },
+  list_favorites: () => {
+    return Array.from(favorites.entries())
+      .sort((a, b) => a[1] - b[1])
+      .map(([id, pos]) => {
+        const page = pages.get(id);
+        if (!page) return null;
+        return { ...page, position: pos }; // Use favorites position, not page position
+      })
+      .filter(Boolean) as Page[];
+  },
   add_alias: () => {},
   remove_alias: () => true,
   get_aliases: () => [],
@@ -536,4 +554,33 @@ export const mockHandlers: Record<string, (args: any) => any> = {
   get_block: ({ id }: { id: string }) => {
     return blocks.get(id) ?? null;
   },
+
+  reorder_favorite: ({ pageId, newPosition }: { pageId: string; newPosition: number }) => {
+    if (favorites.has(pageId)) {
+      favorites.set(pageId, newPosition);
+    }
+  },
+
+  // Git Sync
+  git_available: () => true,
+  git_sync_enable: () => ({
+    enabled: true,
+    remote_url: null,
+    branch: "main",
+    last_sync: new Date().toISOString(),
+  }),
+  git_sync_disable: () => {},
+  git_sync: () => ({
+    success: true,
+    pages_exported: 0,
+    pages_imported: 0,
+    conflicts_resolved: 0,
+    error: null,
+  }),
+  git_sync_status: () => ({
+    enabled: false,
+    remote_url: null,
+    branch: null,
+    last_sync: null,
+  }),
 };

@@ -33,7 +33,7 @@ impl Database {
 
     pub fn list_favorites(&self) -> Result<Vec<Page>> {
         let mut stmt = self.conn.prepare(
-            "SELECT p.id, p.title, p.icon, p.folder_id, p.position, p.is_journal, p.journal_date, p.created_at, p.updated_at
+            "SELECT p.id, p.title, p.icon, p.folder_id, f.position, p.is_journal, p.journal_date, p.created_at, p.updated_at
              FROM favorites f
              JOIN pages p ON p.id = f.page_id
              ORDER BY f.position",
@@ -66,6 +66,14 @@ impl Database {
             pages.push(row.map_err(Error::Database)?);
         }
         Ok(pages)
+    }
+
+    pub fn reorder_favorite(&self, page_id: &Uuid, new_position: f64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE favorites SET position = ?1 WHERE page_id = ?2",
+            rusqlite::params![new_position, page_id.to_string()],
+        )?;
+        Ok(())
     }
 
     pub fn is_favorite(&self, page_id: &Uuid) -> Result<bool> {

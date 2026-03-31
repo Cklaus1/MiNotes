@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import Sidebar from "./components/Sidebar";
 import PageView from "./components/PageView";
 import RightSidebar from "./components/RightSidebar";
@@ -23,6 +23,7 @@ import { initTestApi, registerTestApi } from "./lib/testApi";
 import { loadEnabledSnippets } from "./lib/cssLoader";
 import { isOnboardingComplete, markOnboardingComplete, TUTORIAL_BLOCKS } from "./lib/onboarding";
 import { executeUndo, executeRedo } from "./lib/undoManager";
+import { showToast } from "./lib/toast";
 
 export default function App() {
   const [activePage, setActivePage] = useState<api.PageTree | null>(null);
@@ -38,6 +39,12 @@ export default function App() {
   const [lastError, setLastError] = useState<string | null>(null);
   const [rightSidebarPanels, setRightSidebarPanels] = useState<Array<{id: string, title: string}>>([]);
   const [rightSidebarVisible, setRightSidebarVisible] = useState(true);
+
+  // Git Sync state
+  const [syncStatus, setSyncStatus] = useState<api.GitSyncStatus | null>(null);
+  const [syncState, setSyncState] = useState<"idle" | "syncing" | "error" | "offline">("idle");
+  const syncingRef = useRef(false);
+  const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -145,6 +152,7 @@ export default function App() {
   const updateBlock = useCallback(async (id: string, content: string) => {
     try {
       await api.updateBlock(id, content);
+      window.dispatchEvent(new Event("minotes-content-saved"));
       // Don't refresh the full page on every keystroke save — it kills focus.
       // Only refresh if content contains [[ links that might need resolving.
       if (content.includes("[[") && activePage) {
@@ -200,6 +208,67 @@ export default function App() {
       console.error("Failed to open in sidebar:", e);
     }
   }, []);
+
+  // ── Git Sync ──
+
+  const triggerSync = useCallback(async () => {
+    if (syncingRef.current) return;
+    try {
+      const status = await api.gitSyncStatus().catch(() => null);
+      if (!status?.enabled) return;
+      syncingRef.current = true;
+      setSyncState("syncing");
+      const result = await api.gitSync();
+      if (result.success) {
+        setSyncState("idle");
+        setSyncStatus(prev => prev ? { ...prev, last_sync: new Date().toISOString() } : prev);
+        if (result.conflicts_resolved > 0) {
+          showToast(`Sync conflict resolved — previous version available in git history.`);
+        }
+        if (result.pages_imported > 0) {
+          refresh();
+          if (activePage) openPage(activePage.page.id).catch(() => {});
+        }
+      } else {
+        setSyncState("error");
+        showToast(`Sync failed: ${result.error ?? "Unknown error"}`);
+      }
+    } catch {
+      setSyncState("error");
+    } finally {
+      syncingRef.current = false;
+    }
+  }, [activePage, refresh, openPage]);
+
+  // Load sync status on mount + sync on app open
+  useEffect(() => {
+    api.gitSyncStatus().then(status => {
+      setSyncStatus(status);
+      if (status.enabled) triggerSync();
+    }).catch(() => {});
+  }, []);
+
+  // Sync on app focus (visibilitychange)
+  useEffect(() => {
+    const handler = () => {
+      if (document.visibilityState === "visible") triggerSync();
+    };
+    document.addEventListener("visibilitychange", handler);
+    return () => document.removeEventListener("visibilitychange", handler);
+  }, [triggerSync]);
+
+  // Sync on save (30s debounce) — listens for custom event from PageView
+  useEffect(() => {
+    const handler = () => {
+      if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
+      syncTimerRef.current = setTimeout(triggerSync, 30000);
+    };
+    window.addEventListener("minotes-content-saved", handler);
+    return () => {
+      window.removeEventListener("minotes-content-saved", handler);
+      if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
+    };
+  }, [triggerSync]);
 
   // Initialize test API, theme, and CSS snippets on mount
   useEffect(() => {
@@ -435,6 +504,7 @@ export default function App() {
         onSettingsClick={() => setOpenPanel(prev => prev === "settings" ? null : "settings")}
         activeMode={canvasMode === "graph" ? "graph" : canvasMode === "mindmap" ? "mindmap" : canvasMode === "draw" ? "whiteboard" : canvasMode === "kanban" ? "kanban" : canvasMode === "pages" ? "pages" : null}
         refreshKey={refreshKey}
+        syncState={syncStatus?.enabled ? syncState : undefined}
       />
       <div className="main workspace-split mod-root" style={{ position: "relative", display: "flex", flexDirection: "row" }}>
         <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }}>

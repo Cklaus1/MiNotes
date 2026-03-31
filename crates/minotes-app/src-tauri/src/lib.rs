@@ -5,6 +5,7 @@ use minotes_core::db::Database;
 use minotes_core::models::{Block, Card, CssSnippet, GraphInfo, Highlight, Page, PageTree, Plugin, Property, SrsStats, SyncStatus, Template, VersionInfo};
 use minotes_core::repo::graph::GraphStats;
 use minotes_core::repo::graphs;
+use minotes_core::sync_manager::{self, GitSyncResult, GitSyncStatus};
 use serde::Serialize;
 use tauri::State;
 
@@ -403,6 +404,13 @@ fn remove_favorite(state: State<'_, AppState>, page_id: String) -> Result<bool, 
 fn list_favorites(state: State<'_, AppState>) -> Result<Vec<Page>, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
     db.list_favorites().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn reorder_favorite(state: State<'_, AppState>, page_id: String, new_position: f64) -> Result<(), String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let uuid = uuid::Uuid::parse_str(&page_id).map_err(|e| e.to_string())?;
+    db.reorder_favorite(&uuid, new_position).map_err(|e| e.to_string())
 }
 
 // ── Alias Commands ──
@@ -1002,6 +1010,73 @@ fn get_block(state: State<'_, AppState>, id: String) -> Result<Option<Block>, St
     db.get_block(&uuid).map_err(|e| e.to_string())
 }
 
+// ── Git Sync ──
+
+#[tauri::command]
+fn git_available() -> bool {
+    sync_manager::git_available()
+}
+
+#[tauri::command]
+fn git_sync_enable(state: State<'_, AppState>) -> Result<GitSyncStatus, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    sync_manager::enable_sync(&db).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn git_sync_disable() -> Result<(), String> {
+    sync_manager::disable_sync().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn git_sync(state: State<'_, AppState>) -> Result<GitSyncResult, String> {
+    let config = sync_manager::get_sync_status().map_err(|e| e.to_string())?;
+    if !config.enabled {
+        return Ok(GitSyncResult {
+            success: false, pages_exported: 0, pages_imported: 0,
+            conflicts_resolved: 0, error: Some("Sync is not enabled".to_string()),
+        });
+    }
+
+    // Phase 1: Export (hold DB lock briefly)
+    let pages_exported = {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        sync_manager::sync_export(&db).map_err(|e| e.to_string())?
+    }; // DB lock released here
+
+    // Phase 2: Git network ops (no DB lock — other commands can run)
+    let (remote_had_changes, conflicts_resolved, git_error) =
+        sync_manager::sync_git_ops().map_err(|e| e.to_string())?;
+
+    if let Some(err) = git_error {
+        return Ok(GitSyncResult {
+            success: false, pages_exported, pages_imported: 0,
+            conflicts_resolved, error: Some(err),
+        });
+    }
+
+    // Phase 3: Import (hold DB lock briefly, only if remote had changes)
+    let pages_imported = if remote_had_changes {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        sync_manager::sync_import(&db).map_err(|e| e.to_string())?
+    } else {
+        0
+    }; // DB lock released here
+
+    // Update last_sync timestamp
+    sync_manager::update_last_sync().ok();
+
+    Ok(GitSyncResult {
+        success: true, pages_exported, pages_imported,
+        conflicts_resolved, error: None,
+    })
+}
+
+#[tauri::command]
+fn git_sync_status() -> Result<GitSyncStatus, String> {
+    sync_manager::get_sync_status().map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let path = db_path();
@@ -1049,6 +1124,7 @@ pub fn run() {
             add_favorite,
             remove_favorite,
             list_favorites,
+            reorder_favorite,
             add_alias,
             remove_alias,
             get_aliases,
@@ -1093,6 +1169,11 @@ pub fn run() {
             read_file_base64,
             fetch_og_metadata,
             get_block,
+            git_available,
+            git_sync_enable,
+            git_sync_disable,
+            git_sync,
+            git_sync_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

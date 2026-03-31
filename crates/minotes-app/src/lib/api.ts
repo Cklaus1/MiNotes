@@ -266,6 +266,9 @@ export const removeFavorite = (pageId: string) =>
 export const listFavorites = () =>
   invoke<Page[]>("list_favorites");
 
+export const reorderFavorite = (pageId: string, newPosition: number) =>
+  invoke<void>("reorder_favorite", { pageId, newPosition });
+
 // Block move
 export const moveBlock = (id: string, newParent: string, position: number) =>
   invoke<Block>("move_block", { id, newParent, position });
@@ -493,5 +496,36 @@ export const fetchOgMetadata = (url: string) =>
 // Feature 9: Block Transclusion — get single block by ID
 export const getBlock = (id: string) =>
   invoke<Block | null>("get_block", { id });
+
+// Git Sync
+export interface GitSyncStatus {
+  enabled: boolean;
+  remote_url: string | null;
+  branch: string | null;
+  last_sync: string | null;
+}
+
+export interface GitSyncResult {
+  success: boolean;
+  pages_exported: number;
+  pages_imported: number;
+  conflicts_resolved: number;
+  error: string | null;
+}
+
+export const gitAvailable = () =>
+  invoke<boolean>("git_available");
+
+export const gitSyncEnable = () =>
+  invoke<GitSyncStatus>("git_sync_enable");
+
+export const gitSyncDisable = () =>
+  invoke<void>("git_sync_disable");
+
+export const gitSync = () =>
+  invoke<GitSyncResult>("git_sync");
+
+export const gitSyncStatus = () =>
+  invoke<GitSyncStatus>("git_sync_status");
 
 export { isTauri };
