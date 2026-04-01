@@ -151,7 +151,11 @@ export function useBlockEditor({
       },
       handleKeyDown(view, event) {
         if (event.key === "Escape") {
-          view.dom.blur();
+          // Unindent block (same as Shift+Tab), or do nothing if already at root
+          if (onOutdentRef.current) {
+            event.preventDefault();
+            onOutdentRef.current();
+          }
           return true;
         }
 

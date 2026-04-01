@@ -272,19 +272,21 @@ export default function PageView({
     const idx = blocks.findIndex(b => b.id === blockId);
     if (idx === -1) return;
 
-    // Create the new block in backend
-    const newBlock = await api.createBlock(page.id, contentAfterCursor);
+    const currentBlock = blocks[idx];
+    // Create new block at the same indent level (same parent_id)
+    const newBlock = await api.createBlock(page.id, contentAfterCursor, currentBlock.parent_id ?? undefined);
     undoStack.push({ type: 'create', blockId: newBlock.id, pageId: page.id, newContent: contentAfterCursor, timestamp: Date.now() });
 
     // Optimistically update local state:
     // - Update current block's content to the saved before-cursor text
-    // - Insert new block after it
+    // - Insert new block after it (with same parent_id)
     setLocalBlocks(prev => {
       const copy = [...prev];
       if (savedContent !== undefined) {
         copy[idx] = { ...copy[idx], content: savedContent };
       }
-      copy.splice(idx + 1, 0, newBlock);
+      const newBlockWithParent = { ...newBlock, parent_id: currentBlock.parent_id };
+      copy.splice(idx + 1, 0, newBlockWithParent);
       return copy;
     });
 
