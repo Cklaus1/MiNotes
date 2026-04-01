@@ -147,6 +147,13 @@ export default function Sidebar({
 
   useEffect(() => { loadTree(); }, [loadTree, refreshKey]);
 
+  // Listen for direct sidebar refresh events (from FolderSettingsPanel, etc.)
+  useEffect(() => {
+    const handler = () => loadTree();
+    window.addEventListener("minotes-sidebar-refresh", handler);
+    return () => window.removeEventListener("minotes-sidebar-refresh", handler);
+  }, [loadTree]);
+
   const handleCreate = () => {
     if (newTitle.trim()) {
       onCreatePage(newTitle.trim());

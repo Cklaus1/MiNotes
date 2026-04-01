@@ -27,8 +27,10 @@ export default function FolderSettingsPanel({ folderId, onClose, onRefresh }: Pr
     const currentFolder = folderRef.current;
     if (currentFolder && trimmed && trimmed !== currentFolder.name) {
       await api.renameFolder(folderId, trimmed).catch(() => {});
-      onRefresh();
     }
+    // Always refresh sidebar on close (icon/color/name might have changed)
+    onRefresh();
+    window.dispatchEvent(new Event("minotes-sidebar-refresh"));
     setClosing(true);
     setTimeout(onClose, 200);
   }, [onClose, folderId, onRefresh]);
@@ -84,8 +86,13 @@ export default function FolderSettingsPanel({ folderId, onClose, onRefresh }: Pr
       await api.renameFolder(folderId, trimmed);
       setFolder({ ...folder, name: trimmed });
       folderRef.current = { ...folder, name: trimmed };
-      onRefresh();
+      refreshSidebar();
     }
+  };
+
+  const refreshSidebar = () => {
+    refreshSidebar();
+    window.dispatchEvent(new Event("minotes-sidebar-refresh"));
   };
 
   const handleIconChange = async (newIcon: string) => {
@@ -93,16 +100,16 @@ export default function FolderSettingsPanel({ folderId, onClose, onRefresh }: Pr
     setFolder(updated);
     folderRef.current = updated;
     await api.updateFolderAppearance(folderId, newIcon, folder.color ?? undefined);
-    onRefresh();
+    refreshSidebar();
   };
 
   const handleTrash = async () => {
     const count = await api.trashFolder(folderId);
     onClose();
-    onRefresh();
+    refreshSidebar();
     showUndoToast(`"${folder.name}" deleted (${count} pages)`, async () => {
       await api.restoreFromTrash(folderId, "folder");
-      onRefresh();
+      refreshSidebar();
     });
   };
 
@@ -157,7 +164,7 @@ export default function FolderSettingsPanel({ folderId, onClose, onRefresh }: Pr
                     setFolder(updated);
                     folderRef.current = updated;
                     await api.updateFolderAppearance(folderId, folder.icon ?? undefined, color);
-                    onRefresh();
+                    refreshSidebar();
                   }}
                 />
               ))}
@@ -203,11 +210,11 @@ export default function FolderSettingsPanel({ folderId, onClose, onRefresh }: Pr
           <div style={{ display: "flex", gap: 8 }}>
             <button className="btn btn-sm" onClick={async () => {
               const count = await api.archiveFolder(folderId);
-              onRefresh();
+              refreshSidebar();
               softClose();
               showUndoToast(`"${name}" archived (${count} pages)`, async () => {
                 await api.unarchiveFolder(folderId);
-                onRefresh();
+                refreshSidebar();
               });
             }}>
               Archive

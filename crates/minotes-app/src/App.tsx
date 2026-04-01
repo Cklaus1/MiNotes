@@ -45,6 +45,7 @@ export default function App() {
   // Git Sync state
   const [syncStatus, setSyncStatus] = useState<api.GitSyncStatus | null>(null);
   const [syncState, setSyncState] = useState<"idle" | "syncing" | "error" | "offline">("idle");
+  const [syncErrorMsg, setSyncErrorMsg] = useState<string | null>(null);
   const syncingRef = useRef(false);
   const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -223,6 +224,7 @@ export default function App() {
       const result = await api.gitSync();
       if (result.success) {
         setSyncState("idle");
+        setSyncErrorMsg(null);
         setSyncStatus(prev => prev ? { ...prev, last_sync: new Date().toISOString() } : prev);
         if (result.conflicts_resolved > 0) {
           showToast(`Sync conflict resolved — previous version available in git history.`);
@@ -232,11 +234,14 @@ export default function App() {
           if (activePage) openPage(activePage.page.id).catch(() => {});
         }
       } else {
+        const errMsg = result.error ?? "Unknown error";
         setSyncState("error");
-        showToast(`Sync failed: ${result.error ?? "Unknown error"}`);
+        setSyncErrorMsg(errMsg);
+        showToast(`Sync failed: ${errMsg}`);
       }
-    } catch {
+    } catch (e) {
       setSyncState("error");
+      setSyncErrorMsg(String(e));
     } finally {
       syncingRef.current = false;
     }
@@ -661,6 +666,8 @@ export default function App() {
       <SettingsPanel
         open={openPanel === "settings"}
         onClose={() => setOpenPanel(null)}
+        syncError={syncState === "error" ? syncErrorMsg : null}
+        onSyncRetry={triggerSync}
       />
       <SyncPanel
         open={openPanel === "sync"}

@@ -6,9 +6,11 @@ import * as api from "../lib/api";
 interface Props {
   open: boolean;
   onClose: () => void;
+  syncError?: string | null;
+  onSyncRetry?: () => void;
 }
 
-export default function SettingsPanel({ open, onClose }: Props) {
+export default function SettingsPanel({ open, onClose, syncError, onSyncRetry }: Props) {
   const [settings, setSettings] = useState<MiNotesSettings>(getSettings);
   const [currentTheme, setCurrentTheme] = useState(getTheme);
   const [stats, setStats] = useState<api.GraphStats | null>(null);
@@ -113,7 +115,22 @@ export default function SettingsPanel({ open, onClose }: Props) {
             </div>
             {syncStatus?.enabled && (
               <>
-                {syncStatus.last_sync && (
+                {syncError && (
+                  <div className="settings-sync-error">
+                    <div className="settings-sync-error-header">
+                      <span>&#x26A0; Sync failed</span>
+                    </div>
+                    <div className="settings-sync-error-reason">
+                      {syncError}
+                    </div>
+                    {onSyncRetry && (
+                      <button className="btn btn-sm" onClick={onSyncRetry} style={{ marginTop: 6 }}>
+                        Retry
+                      </button>
+                    )}
+                  </div>
+                )}
+                {!syncError && syncStatus.last_sync && (
                   <div className="settings-row">
                     <span className="settings-row-label">Last synced</span>
                     <span className="settings-row-value">

@@ -5726,6 +5726,27 @@ body.theme-light { /* matches our light theme */ }
   margin-bottom: 2px;
 }
 
+/* Settings — sync error */
+.settings-sync-error {
+  background: rgba(243, 139, 168, 0.1);
+  border: 1px solid rgba(243, 139, 168, 0.3);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin: 4px 0;
+}
+
+.settings-sync-error-header {
+  color: #f38ba8;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.settings-sync-error-reason {
+  color: var(--text-muted);
+  font-size: 12px;
+  margin-top: 3px;
+}
+
 /* Settings — sync row value (read-only label) */
 .settings-row-value {
   color: var(--text-muted);
