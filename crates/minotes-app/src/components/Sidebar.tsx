@@ -914,7 +914,7 @@ function FolderItem({
             autoFocus
           />
         ) : (
-          <span>{folder.icon ?? "\uD83D\uDCC1"} {folder.name}</span>
+          <span style={folder.color ? { color: folder.color } : undefined}>{folder.icon ?? "\uD83D\uDCC1"} {folder.name}</span>
         )}
         {!isExpanded && totalPages > 0 && (
           <span className="folder-count folder-count-hover">{totalPages}</span>

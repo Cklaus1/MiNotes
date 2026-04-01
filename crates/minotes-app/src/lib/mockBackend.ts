@@ -495,13 +495,13 @@ export const mockHandlers: Record<string, (args: any) => any> = {
     if (f) { f.name = newName; f.updated_at = new Date().toISOString(); return f; }
     return { id, name: newName, position: 0, collapsed: false, created_at: now, updated_at: now };
   },
-  update_folder_appearance: ({ id, icon, color }: { id: string; icon?: string; color?: string }) => {
+  update_folder_appearance: ({ id, icon, color }: { id: string; icon?: string | null; color?: string | null }) => {
     const f = folders.get(id);
     if (f) {
-      if (icon !== undefined && icon !== null) f.icon = icon;
-      if (color !== undefined && color !== null) f.color = color;
+      if (icon != null) f.icon = icon;
+      if (color != null) f.color = color;
       f.updated_at = new Date().toISOString();
-      return f;
+      return { ...f };
     }
     return { id, name: "", icon, color, position: 0, collapsed: false, created_at: now, updated_at: now };
   },

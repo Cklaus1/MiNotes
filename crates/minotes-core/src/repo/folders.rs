@@ -99,8 +99,9 @@ impl Database {
 
     pub fn update_folder_appearance(&self, id: &Uuid, icon: Option<&str>, color: Option<&str>, actor: &str) -> Result<Folder> {
         let now = Utc::now();
+        // Only update fields that are provided (not null)
         let count = self.conn.execute(
-            "UPDATE folders SET icon = ?1, color = ?2, updated_at = ?3 WHERE id = ?4",
+            "UPDATE folders SET icon = COALESCE(?1, icon), color = COALESCE(?2, color), updated_at = ?3 WHERE id = ?4",
             rusqlite::params![icon, color, now.to_rfc3339(), id.to_string()],
         )?;
         if count == 0 {

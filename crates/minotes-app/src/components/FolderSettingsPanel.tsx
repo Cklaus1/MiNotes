@@ -18,11 +18,20 @@ export default function FolderSettingsPanel({ folderId, onClose, onRefresh }: Pr
   const [pageCount, setPageCount] = useState(0);
   const [closing, setClosing] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
+  const nameRef = useRef("");
+  const folderRef = useRef<FolderTree | null>(null);
 
-  const softClose = useCallback(() => {
+  const softClose = useCallback(async () => {
+    // Save any pending name change before closing
+    const trimmed = nameRef.current.trim();
+    const currentFolder = folderRef.current;
+    if (currentFolder && trimmed && trimmed !== currentFolder.name) {
+      await api.renameFolder(folderId, trimmed).catch(() => {});
+      onRefresh();
+    }
     setClosing(true);
-    setTimeout(onClose, 200); // match animation duration
-  }, [onClose]);
+    setTimeout(onClose, 200);
+  }, [onClose, folderId, onRefresh]);
 
   // Close when clicking outside the panel (on canvas/main content)
   useEffect(() => {
@@ -62,20 +71,28 @@ export default function FolderSettingsPanel({ folderId, onClose, onRefresh }: Pr
     }).catch(() => {});
   }, [folderId]);
 
+  // Keep refs in sync for softClose to read
+  nameRef.current = name;
+  folderRef.current = folder;
+
   if (!folder) return null;
 
   const handleRename = async () => {
+    if (closing) return; // softClose handles save
     const trimmed = name.trim();
     if (trimmed && trimmed !== folder.name) {
       await api.renameFolder(folderId, trimmed);
       setFolder({ ...folder, name: trimmed });
+      folderRef.current = { ...folder, name: trimmed };
       onRefresh();
     }
   };
 
-  const handleIconChange = async (icon: string) => {
-    setFolder({ ...folder, icon });
-    await api.updateFolderAppearance(folderId, icon, folder.color ?? undefined);
+  const handleIconChange = async (newIcon: string) => {
+    const updated = { ...folder, icon: newIcon };
+    setFolder(updated);
+    folderRef.current = updated;
+    await api.updateFolderAppearance(folderId, newIcon, folder.color ?? undefined);
     onRefresh();
   };
 
@@ -136,7 +153,9 @@ export default function FolderSettingsPanel({ folderId, onClose, onRefresh }: Pr
                   className={`folder-settings-color-btn ${folder.color === color ? "active" : ""}`}
                   style={{ background: color }}
                   onClick={async () => {
-                    setFolder({ ...folder, color });
+                    const updated = { ...folder, color };
+                    setFolder(updated);
+                    folderRef.current = updated;
                     await api.updateFolderAppearance(folderId, folder.icon ?? undefined, color);
                     onRefresh();
                   }}

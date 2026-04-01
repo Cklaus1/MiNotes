@@ -18,6 +18,7 @@ export default function SettingsPanel({ open, onClose }: Props) {
   const [gitInstalled, setGitInstalled] = useState<boolean | null>(null);
   const [syncStatus, setSyncStatus] = useState<api.GitSyncStatus | null>(null);
   const [syncLoading, setSyncLoading] = useState(false);
+  const [showSyncAdvanced, setShowSyncAdvanced] = useState(false);
 
   useEffect(() => {
     if (open) {
@@ -79,10 +80,10 @@ export default function SettingsPanel({ open, onClose }: Props) {
           </div>
         </div>
 
-        {/* Sync */}
+        {/* Sync & Backup */}
         {gitInstalled && (
           <div className="settings-section">
-            <div className="settings-section-title">Sync</div>
+            <div className="settings-section-title">Sync &amp; Backup</div>
             <div className="settings-row">
               <span className="settings-row-label">Enable Sync</span>
               <label className="settings-toggle">
@@ -112,28 +113,39 @@ export default function SettingsPanel({ open, onClose }: Props) {
             </div>
             {syncStatus?.enabled && (
               <>
-                <div className="settings-row">
-                  <span className="settings-row-label">Directory</span>
-                  <span className="settings-row-value">~/MiNotes_Sync</span>
-                </div>
-                <div className="settings-row">
-                  <span className="settings-row-label">Remote</span>
-                  <span className="settings-row-value">
-                    {syncStatus.remote_url ?? "Not configured"}
-                  </span>
-                </div>
-                <div className="settings-row">
-                  <span className="settings-row-label">Branch</span>
-                  <span className="settings-row-value">
-                    {syncStatus.branch ?? "—"}
-                  </span>
-                </div>
                 {syncStatus.last_sync && (
                   <div className="settings-row">
                     <span className="settings-row-label">Last synced</span>
                     <span className="settings-row-value">
                       {new Date(syncStatus.last_sync).toLocaleString()}
                     </span>
+                  </div>
+                )}
+                <div
+                  className="settings-advanced-toggle"
+                  onClick={() => setShowSyncAdvanced(v => !v)}
+                  style={{ marginTop: 4 }}
+                >
+                  <span>{showSyncAdvanced ? "▼" : "▶"} Show advanced</span>
+                </div>
+                {showSyncAdvanced && (
+                  <div className="settings-advanced-content">
+                    <div className="settings-row">
+                      <span className="settings-row-label">Directory</span>
+                      <span className="settings-row-value">~/MiNotes_Sync</span>
+                    </div>
+                    <div className="settings-row">
+                      <span className="settings-row-label">Remote</span>
+                      <span className="settings-row-value">
+                        {syncStatus.remote_url ?? "Not configured"}
+                      </span>
+                    </div>
+                    <div className="settings-row">
+                      <span className="settings-row-label">Branch</span>
+                      <span className="settings-row-value">
+                        {syncStatus.branch ?? "\u2014"}
+                      </span>
+                    </div>
                   </div>
                 )}
               </>
