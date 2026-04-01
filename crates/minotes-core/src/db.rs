@@ -198,6 +198,26 @@ CREATE TABLE IF NOT EXISTS css_snippets (
     source      TEXT NOT NULL DEFAULT 'custom',
     created_at  TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS trash (
+    page_id     TEXT PRIMARY KEY REFERENCES pages(id) ON DELETE CASCADE,
+    deleted_at  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS folder_trash (
+    folder_id   TEXT PRIMARY KEY REFERENCES folders(id) ON DELETE CASCADE,
+    deleted_at  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS archive (
+    page_id     TEXT PRIMARY KEY REFERENCES pages(id) ON DELETE CASCADE,
+    archived_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS folder_archive (
+    folder_id   TEXT PRIMARY KEY REFERENCES folders(id) ON DELETE CASCADE,
+    archived_at TEXT NOT NULL
+);
 ";
 
 const FTS_SCHEMA: &str = "

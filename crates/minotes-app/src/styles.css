@@ -945,6 +945,14 @@ body {
   color: var(--text-secondary);
 }
 
+.folder-item .page-more-btn {
+  margin-left: auto;
+}
+
+.folder-item:hover .page-more-btn {
+  opacity: 0.6;
+}
+
 /* Phase 2c: [+] button on folder hover */
 .folder-add-btn {
   background: none;
@@ -1074,11 +1082,11 @@ body {
 }
 
 /* Pinned reorder drop indicators */
-.pinned-drop-wrapper.drop-above {
+.page-item.drop-above {
   border-top: 2px solid var(--interactive-accent, #89b4fa);
 }
 
-.pinned-drop-wrapper.drop-below {
+.page-item.drop-below {
   border-bottom: 2px solid var(--interactive-accent, #89b4fa);
 }
 
@@ -5473,6 +5481,249 @@ body.theme-light { /* matches our light theme */ }
 .minotes-toast-visible {
   opacity: 1;
   transform: translateX(-50%) translateY(0);
+}
+
+.minotes-toast-undo {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  pointer-events: auto;
+}
+
+.minotes-toast-undo-btn {
+  background: none;
+  border: 1px solid var(--interactive-accent, #89b4fa);
+  color: var(--interactive-accent, #89b4fa);
+  border-radius: 4px;
+  padding: 3px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.minotes-toast-undo-btn:hover {
+  background: var(--interactive-accent, #89b4fa);
+  color: var(--background-secondary, #1e1e2e);
+}
+
+/* System states (Archived, Trash) — grouped above tools */
+.sidebar-system-states {
+  padding: 2px 0;
+  margin-top: 10px;
+}
+
+.sidebar-system-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 16px;
+  font-size: 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+  user-select: none;
+  transition: color 0.15s;
+}
+
+.sidebar-system-item:hover {
+  color: var(--text-primary);
+}
+
+.sidebar-trash-header {
+  cursor: pointer;
+  user-select: none;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.sidebar-trash-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+  opacity: 0.7;
+}
+
+.sidebar-trash-actions {
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.sidebar-trash-item:hover .sidebar-trash-actions {
+  opacity: 1;
+}
+
+.sidebar-trash-action-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-muted);
+  padding: 0 3px;
+}
+
+.sidebar-trash-action-btn:hover {
+  color: var(--text-primary);
+}
+
+.sidebar-trash-action-btn.danger:hover {
+  color: #f38ba8;
+}
+
+/* Folder Settings Inspector Panel */
+.folder-settings-panel {
+  width: 280px;
+  min-width: 280px;
+  border-left: 1px solid var(--border);
+  background: var(--background-secondary, #1e1e2e);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  animation: slideInRight 0.2s ease;
+}
+
+@keyframes slideInRight {
+  from { transform: translateX(20px); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+
+.folder-settings-closing {
+  animation: slideOutRight 0.2s ease forwards;
+}
+
+@keyframes slideOutRight {
+  from { transform: translateX(0); opacity: 1; }
+  to { transform: translateX(20px); opacity: 0; }
+}
+
+.folder-settings-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.folder-settings-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.folder-settings-body {
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.folder-settings-section {}
+
+.folder-settings-section-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+
+.folder-settings-section-title.danger {
+  color: #f38ba8;
+}
+
+.folder-settings-name-input {
+  background: var(--background-primary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-size: 15px;
+  font-weight: 600;
+  padding: 6px 8px;
+  width: 100%;
+  outline: none;
+}
+
+.folder-settings-name-input:focus {
+  border-color: var(--interactive-accent);
+}
+
+.folder-settings-sep {
+  height: 1px;
+  background: var(--border);
+  margin: 10px 0;
+}
+
+.folder-settings-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.folder-settings-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.folder-settings-value-muted {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.folder-settings-icon-grid,
+.folder-settings-color-grid {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.folder-settings-icon-btn {
+  width: 28px;
+  height: 28px;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.folder-settings-icon-btn:hover {
+  background: var(--bg-surface);
+}
+
+.folder-settings-icon-btn.active {
+  border-color: var(--interactive-accent);
+  background: var(--bg-surface);
+}
+
+.folder-settings-color-btn {
+  width: 22px;
+  height: 22px;
+  border: 2px solid transparent;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.folder-settings-color-btn:hover {
+  transform: scale(1.15);
+}
+
+.folder-settings-color-btn.active {
+  border-color: var(--text-primary);
+}
+
+.folder-settings-info {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 2px;
 }
 
 /* Settings — sync row value (read-only label) */

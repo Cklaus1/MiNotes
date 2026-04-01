@@ -73,7 +73,7 @@ impl Database {
         let parent_str = parent_id.map(|p| p.to_string());
         let mut stmt = self.conn.prepare(
             "SELECT id, name, parent_id, icon, color, position, collapsed, created_at, updated_at
-             FROM folders WHERE parent_id IS ?1 ORDER BY position",
+             FROM folders WHERE parent_id IS ?1 AND id NOT IN (SELECT folder_id FROM folder_trash) AND id NOT IN (SELECT folder_id FROM folder_archive) ORDER BY position",
         )?;
         let rows = stmt.query_map(rusqlite::params![parent_str], |row| row_to_folder_sqlite(row))?;
         let mut folders = Vec::new();
@@ -94,6 +94,20 @@ impl Database {
         }
         let folder = self.get_folder(id)?.ok_or_else(|| Error::NotFound(format!("Folder {id}")))?;
         self.emit_event("folder.renamed", &folder.id, "folder", &folder, actor)?;
+        Ok(folder)
+    }
+
+    pub fn update_folder_appearance(&self, id: &Uuid, icon: Option<&str>, color: Option<&str>, actor: &str) -> Result<Folder> {
+        let now = Utc::now();
+        let count = self.conn.execute(
+            "UPDATE folders SET icon = ?1, color = ?2, updated_at = ?3 WHERE id = ?4",
+            rusqlite::params![icon, color, now.to_rfc3339(), id.to_string()],
+        )?;
+        if count == 0 {
+            return Err(Error::NotFound(format!("Folder {id}")));
+        }
+        let folder = self.get_folder(id)?.ok_or_else(|| Error::NotFound(format!("Folder {id}")))?;
+        self.emit_event("folder.updated", &folder.id, "folder", &folder, actor)?;
         Ok(folder)
     }
 
@@ -158,7 +172,7 @@ impl Database {
         let folder_str = folder_id.map(|f| f.to_string());
         let mut stmt = self.conn.prepare(
             "SELECT id, title, icon, folder_id, position, is_journal, journal_date, created_at, updated_at
-             FROM pages WHERE folder_id IS ?1 ORDER BY position, title",
+             FROM pages WHERE folder_id IS ?1 AND id NOT IN (SELECT page_id FROM trash) AND id NOT IN (SELECT page_id FROM archive) ORDER BY position, title",
         )?;
         let rows = stmt.query_map(rusqlite::params![folder_str], |row| row_to_page_with_folder(row))?;
         let mut pages = Vec::new();

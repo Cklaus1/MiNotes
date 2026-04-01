@@ -1,4 +1,5 @@
 pub mod aliases;
+pub mod archive;
 pub mod blocks;
 pub mod cards;
 pub mod crdt;
@@ -17,3 +18,4 @@ pub mod highlights;
 pub mod plugins;
 pub mod snippets;
 pub mod templates;
+pub mod trash;

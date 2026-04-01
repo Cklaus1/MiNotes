@@ -103,7 +103,7 @@ impl Database {
     pub fn list_pages(&self, limit: Option<i64>) -> Result<Vec<Page>> {
         let limit = limit.unwrap_or(100);
         let mut stmt = self.conn.prepare(
-            "SELECT id, title, icon, folder_id, position, is_journal, journal_date, created_at, updated_at FROM pages ORDER BY position, updated_at DESC LIMIT ?1",
+            "SELECT id, title, icon, folder_id, position, is_journal, journal_date, created_at, updated_at FROM pages WHERE id NOT IN (SELECT page_id FROM trash) AND id NOT IN (SELECT page_id FROM archive) ORDER BY position, updated_at DESC LIMIT ?1",
         )?;
         let rows = stmt.query_map(rusqlite::params![limit], |row| {
             row_to_page_sqlite(row)
@@ -164,7 +164,7 @@ fn row_to_page(row: &rusqlite::Row<'_>) -> Result<Page> {
     Ok(row_to_page_sqlite(row)?)
 }
 
-fn row_to_page_sqlite(row: &rusqlite::Row<'_>) -> rusqlite::Result<Page> {
+pub fn row_to_page_sqlite(row: &rusqlite::Row<'_>) -> rusqlite::Result<Page> {
     // Columns: id, title, icon, folder_id, position, is_journal, journal_date, created_at, updated_at
     let id_str: String = row.get(0)?;
     let folder_str: Option<String> = row.get(3)?;

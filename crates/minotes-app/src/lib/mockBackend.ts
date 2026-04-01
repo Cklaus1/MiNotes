@@ -25,6 +25,8 @@ const blocks: Map<string, Block> = new Map();
 const properties: Map<string, Property[]> = new Map();
 const pendingJournals: Map<string, Page> = new Map();
 const favorites: Map<string, number> = new Map(); // pageId -> position
+const trash: Set<string> = new Set(); // trashed page IDs
+const archived: Set<string> = new Set(); // archived page IDs
 
 // ── Seed test data ──
 
@@ -247,6 +249,7 @@ export const mockHandlers: Record<string, (args: any) => any> = {
   list_pages: ({ limit }: { limit?: number }) => {
     const all = Array.from(pages.values())
       .filter(p => {
+        if (trash.has(p.id) || archived.has(p.id)) return false;
         // Hide journals that have no real content (only empty blocks or no blocks)
         if (p.is_journal) {
           const pageBlocks = getPageBlocks(p.id);
@@ -425,7 +428,7 @@ export const mockHandlers: Record<string, (args: any) => any> = {
 
   get_folder_tree: () => {
     const rootPages = Array.from(pages.values())
-      .filter(p => !p.folder_id && !p.is_journal)
+      .filter(p => !p.folder_id && !p.is_journal && !trash.has(p.id) && !archived.has(p.id))
       .sort((a, b) => a.position - b.position);
     return { folders: [], root_pages: rootPages } as FolderTreeRoot;
   },
@@ -449,6 +452,12 @@ export const mockHandlers: Record<string, (args: any) => any> = {
   },
 
   delete_folder: () => true,
+  rename_folder: ({ id, newName }: { id: string; newName: string }) => {
+    return { id, name: newName, position: 0, collapsed: false, created_at: now, updated_at: now };
+  },
+  update_folder_appearance: ({ id, icon, color }: { id: string; icon?: string; color?: string }) => {
+    return { id, name: "", icon, color, position: 0, collapsed: false, created_at: now, updated_at: now };
+  },
 
   set_property: ({ entityId, entityType, key, value, valueType }: any) => {
     const prop: Property = {
@@ -559,6 +568,85 @@ export const mockHandlers: Record<string, (args: any) => any> = {
     if (favorites.has(pageId)) {
       favorites.set(pageId, newPosition);
     }
+  },
+
+  // Archive
+  archive_page: ({ id }: { id: string }) => { archived.add(id); favorites.delete(id); },
+  unarchive_page: ({ id }: { id: string }) => { archived.delete(id); },
+  archive_folder: ({ id }: { id: string }) => {
+    let count = 0;
+    for (const p of pages.values()) {
+      if (p.folder_id === id && !archived.has(p.id)) { archived.add(p.id); favorites.delete(p.id); count++; }
+    }
+    return count;
+  },
+  unarchive_folder: ({ id }: { id: string }) => {
+    for (const p of pages.values()) {
+      if (p.folder_id === id) archived.delete(p.id);
+    }
+  },
+  list_archived: () => Array.from(archived).map(id => pages.get(id)).filter(Boolean) as Page[],
+  archived_count: () => archived.size,
+
+  // Trash
+  trash_page: ({ id }: { id: string }) => {
+    trash.add(id);
+    favorites.delete(id);
+  },
+  trash_folder: ({ id }: { id: string }) => {
+    // Mock: trash folder pages (simplified)
+    let count = 0;
+    for (const p of pages.values()) {
+      if (p.folder_id === id && !trash.has(p.id)) {
+        trash.add(p.id);
+        favorites.delete(p.id);
+        count++;
+      }
+    }
+    trash.add("folder:" + id); // marker
+    return count;
+  },
+  restore_from_trash: ({ id, itemType }: { id: string; itemType: string }) => {
+    if (itemType === "folder") {
+      trash.delete("folder:" + id);
+      for (const p of pages.values()) {
+        if (p.folder_id === id) trash.delete(p.id);
+      }
+    } else {
+      trash.delete(id);
+    }
+  },
+  permanently_delete: ({ id, itemType }: { id: string; itemType: string }) => {
+    if (itemType === "folder") {
+      trash.delete("folder:" + id);
+      for (const [pid, p] of pages) {
+        if (p.folder_id === id) { trash.delete(pid); pages.delete(pid); }
+      }
+    } else {
+      trash.delete(id);
+      pages.delete(id);
+      for (const [bid, block] of blocks) {
+        if (block.page_id === id) blocks.delete(bid);
+      }
+    }
+  },
+  list_trash: () => {
+    const items: Array<{ id: string; title: string; item_type: string; page_count: number; deleted_at: string }> = [];
+    for (const id of trash) {
+      if (id.startsWith("folder:")) continue; // skip folder markers in page list
+      const p = pages.get(id);
+      if (p) items.push({ id: p.id, title: p.title, item_type: "page", page_count: 0, deleted_at: new Date().toISOString() });
+    }
+    return items;
+  },
+  empty_trash: () => {
+    const count = trash.size;
+    for (const id of trash) {
+      if (id.startsWith("folder:")) continue;
+      pages.delete(id);
+    }
+    trash.clear();
+    return count;
   },
 
   // Git Sync

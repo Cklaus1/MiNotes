@@ -2,9 +2,10 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use minotes_core::db::Database;
-use minotes_core::models::{Block, Card, CssSnippet, GraphInfo, Highlight, Page, PageTree, Plugin, Property, SrsStats, SyncStatus, Template, VersionInfo};
+use minotes_core::models::{Block, Card, CssSnippet, Folder, GraphInfo, Highlight, Page, PageTree, Plugin, Property, SrsStats, SyncStatus, Template, VersionInfo};
 use minotes_core::repo::graph::GraphStats;
 use minotes_core::repo::graphs;
+use minotes_core::repo::trash::TrashItem;
 use minotes_core::sync_manager::{self, GitSyncResult, GitSyncStatus};
 use serde::Serialize;
 use tauri::State;
@@ -347,6 +348,20 @@ fn delete_folder(state: State<'_, AppState>, id: String) -> Result<bool, String>
     let db = state.db.lock().map_err(|e| e.to_string())?;
     let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
     db.delete_folder(&uuid, "user").map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn update_folder_appearance(state: State<'_, AppState>, id: String, icon: Option<String>, color: Option<String>) -> Result<Folder, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+    db.update_folder_appearance(&uuid, icon.as_deref(), color.as_deref(), "user").map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn rename_folder(state: State<'_, AppState>, id: String, new_name: String) -> Result<Folder, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+    db.rename_folder(&uuid, &new_name, "user").map_err(|e| e.to_string())
 }
 
 // ── SRS Card Commands ──
@@ -1010,6 +1025,98 @@ fn get_block(state: State<'_, AppState>, id: String) -> Result<Option<Block>, St
     db.get_block(&uuid).map_err(|e| e.to_string())
 }
 
+// ── Archive ──
+
+#[tauri::command]
+fn archive_page(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+    db.archive_page(&uuid).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn unarchive_page(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+    db.unarchive_page(&uuid).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn archive_folder(state: State<'_, AppState>, id: String) -> Result<u32, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+    db.archive_folder(&uuid).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn unarchive_folder(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+    db.unarchive_folder(&uuid).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_archived(state: State<'_, AppState>) -> Result<Vec<Page>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.list_archived().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn archived_count(state: State<'_, AppState>) -> Result<u32, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.archived_count().map_err(|e| e.to_string())
+}
+
+// ── Trash ──
+
+#[tauri::command]
+fn trash_page(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+    db.trash_page(&uuid).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn trash_folder(state: State<'_, AppState>, id: String) -> Result<u32, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+    db.trash_folder(&uuid).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn restore_from_trash(state: State<'_, AppState>, id: String, item_type: String) -> Result<(), String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+    if item_type == "folder" {
+        db.restore_folder(&uuid).map_err(|e| e.to_string())
+    } else {
+        db.restore_page(&uuid).map_err(|e| e.to_string())
+    }
+}
+
+#[tauri::command]
+fn permanently_delete(state: State<'_, AppState>, id: String, item_type: String) -> Result<(), String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+    if item_type == "folder" {
+        db.permanently_delete_folder(&uuid, "user").map_err(|e| e.to_string())
+    } else {
+        db.permanently_delete_page(&uuid, "user").map_err(|e| e.to_string())
+    }
+}
+
+#[tauri::command]
+fn list_trash(state: State<'_, AppState>) -> Result<Vec<TrashItem>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.list_trash().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn empty_trash(state: State<'_, AppState>) -> Result<u32, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.empty_trash("user").map_err(|e| e.to_string())
+}
+
 // ── Git Sync ──
 
 #[tauri::command]
@@ -1112,6 +1219,8 @@ pub fn run() {
             move_page_to_folder,
             reorder_page,
             delete_folder,
+            rename_folder,
+            update_folder_appearance,
             set_property,
             get_properties,
             get_inherited_properties,
@@ -1169,6 +1278,18 @@ pub fn run() {
             read_file_base64,
             fetch_og_metadata,
             get_block,
+            archive_page,
+            unarchive_page,
+            archive_folder,
+            unarchive_folder,
+            list_archived,
+            archived_count,
+            trash_page,
+            trash_folder,
+            restore_from_trash,
+            permanently_delete,
+            list_trash,
+            empty_trash,
             git_available,
             git_sync_enable,
             git_sync_disable,

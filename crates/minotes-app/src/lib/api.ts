@@ -201,6 +201,12 @@ export const reorderPage = (id: string, newPosition: number) =>
 export const deleteFolder = (id: string) =>
   invoke<boolean>("delete_folder", { id });
 
+export const renameFolder = (id: string, newName: string) =>
+  invoke<Folder>("rename_folder", { id, newName });
+
+export const updateFolderAppearance = (id: string, icon?: string, color?: string) =>
+  invoke<Folder>("update_folder_appearance", { id, icon: icon ?? null, color: color ?? null });
+
 // Properties
 export const setProperty = (
   entityId: string,
@@ -496,6 +502,52 @@ export const fetchOgMetadata = (url: string) =>
 // Feature 9: Block Transclusion — get single block by ID
 export const getBlock = (id: string) =>
   invoke<Block | null>("get_block", { id });
+
+// Archive
+export const archivePage = (id: string) =>
+  invoke<void>("archive_page", { id });
+
+export const unarchivePage = (id: string) =>
+  invoke<void>("unarchive_page", { id });
+
+export const archiveFolder = (id: string) =>
+  invoke<number>("archive_folder", { id });
+
+export const unarchiveFolder = (id: string) =>
+  invoke<void>("unarchive_folder", { id });
+
+export const listArchived = () =>
+  invoke<Page[]>("list_archived");
+
+export const archivedCount = () =>
+  invoke<number>("archived_count");
+
+// Trash
+export interface TrashItem {
+  id: string;
+  title: string;
+  item_type: "page" | "folder";
+  page_count: number;
+  deleted_at: string;
+}
+
+export const trashPage = (id: string) =>
+  invoke<void>("trash_page", { id });
+
+export const trashFolder = (id: string) =>
+  invoke<number>("trash_folder", { id });
+
+export const restoreFromTrash = (id: string, itemType: string) =>
+  invoke<void>("restore_from_trash", { id, itemType });
+
+export const permanentlyDelete = (id: string, itemType: string) =>
+  invoke<void>("permanently_delete", { id, itemType });
+
+export const listTrash = () =>
+  invoke<TrashItem[]>("list_trash");
+
+export const emptyTrash = () =>
+  invoke<number>("empty_trash");
 
 // Git Sync
 export interface GitSyncStatus {

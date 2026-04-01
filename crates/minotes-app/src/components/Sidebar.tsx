@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import type { Page, GraphStats, FolderTree, FolderTreeRoot, Folder } from "../lib/api";
 import * as api from "../lib/api";
 import CalendarWidget from "./CalendarWidget";
+import { showUndoToast } from "../lib/toast";
+import { ContextMenuPortal } from "../lib/ContextMenuPortal";
 function formatJournalDate(dateStr: string): string {
   try {
     const [y, m, d] = dateStr.split("-").map(Number);
@@ -54,6 +56,7 @@ interface Props {
   onKanbanClick: () => void;
   onPagesClick: () => void;
   onSettingsClick: () => void;
+  onFolderSettings: (folderId: string) => void;
   activeMode: "graph" | "mindmap" | "whiteboard" | "kanban" | "pages" | null;
   refreshKey: number;
   syncState?: "idle" | "syncing" | "error" | "offline";
@@ -61,7 +64,7 @@ interface Props {
 
 export default function Sidebar({
   activePage, stats, onPageClick, onCreatePage, onDeletePage,
-  onJournalClick, onSearchClick, onGraphClick, onMindmapClick, onWhiteboardClick, onKanbanClick, onPagesClick, onSettingsClick, activeMode, refreshKey,
+  onJournalClick, onSearchClick, onGraphClick, onMindmapClick, onWhiteboardClick, onKanbanClick, onPagesClick, onSettingsClick, onFolderSettings, activeMode, refreshKey,
   syncState,
 }: Props) {
   const [newTitle, setNewTitle] = useState("");
@@ -73,6 +76,10 @@ export default function Sidebar({
   const [showCalendar, setShowCalendar] = useState(false);
   const [favorites, setFavorites] = useState<Page[]>([]);
   const [showAllPinned, setShowAllPinned] = useState(false);
+  const [trashItems, setTrashItems] = useState<api.TrashItem[]>([]);
+  const [showTrash, setShowTrash] = useState(false);
+  const [archivedPages, setArchivedPages] = useState<api.Page[]>([]);
+  const [showArchived, setShowArchived] = useState(false);
 
   // Phase 3a: Track expanded project IDs (max 2), persisted
   const [expandedProjectIds, setExpandedProjectIds] = useState<string[]>(() => loadExpandedIds());
@@ -129,6 +136,10 @@ export default function Sidebar({
       setJournals(withContent);
       const favs = await api.listFavorites();
       setFavorites(favs);
+      const trashed = await api.listTrash();
+      setTrashItems(trashed);
+      const arch = await api.listArchived();
+      setArchivedPages(arch);
     } catch (e) {
       console.error("Failed to load folder tree:", e);
     }
@@ -281,23 +292,18 @@ export default function Sidebar({
               return (
                 <>
                   {visiblePinned.map(page => (
-                    <PinnedDropTarget
+                    <DraggablePage
                       key={page.id}
                       page={page}
-                      favorites={favorites}
-                      onReorder={loadTree}
-                    >
-                      <DraggablePage
-                        page={page}
-                        activePage={activePage}
-                        depth={0}
-                        onPageClick={onPageClick}
-                        onDeletePage={onDeletePage}
-                        onRefresh={loadTree}
-                        allFolders={allProjects}
-                        isPinned={true}
-                      />
-                    </PinnedDropTarget>
+                      activePage={activePage}
+                      depth={0}
+                      onPageClick={onPageClick}
+                      onDeletePage={onDeletePage}
+                      onRefresh={loadTree}
+                      allFolders={allProjects}
+                      isPinned={true}
+                      pinnedSiblings={favorites}
+                    />
                   ))}
                   {!showAllPinned && hiddenPinnedCount > 0 && (
                     <>
@@ -378,6 +384,7 @@ export default function Sidebar({
                 onRefresh={loadTree}
                 allFolders={allProjects}
                 pinnedIds={pinnedIds}
+                onFolderSettings={onFolderSettings}
               />
             ))}
 
@@ -396,6 +403,8 @@ export default function Sidebar({
                     onDeletePage={onDeletePage}
                     onRefresh={loadTree}
                     allFolders={allProjects}
+                    pinnedIds={pinnedIds}
+                    onFolderSettings={onFolderSettings}
                   />
                 ))}
               </details>
@@ -435,8 +444,100 @@ export default function Sidebar({
         )}
       </div>
 
-      {/* -- Sticky bottom: Mode buttons -- */}
+      {/* -- Sticky bottom: System states + Tools -- */}
       <div className="stats-bar">
+        {/* System states: Archived + Trash */}
+        <div className="sidebar-system-states">
+          <div className="stats-modes-divider" />
+          {archivedPages.length > 0 && (
+            <>
+              <div
+                className="sidebar-system-item"
+                onClick={() => setShowArchived(v => !v)}
+              >
+                <span>&#128230; Archived ({archivedPages.length})</span>
+                <span className="sidebar-section-chevron">{showArchived ? "\u25B4" : "\u25BE"}</span>
+              </div>
+              {showArchived && (
+                <div className="sidebar-trash-list">
+                  {archivedPages.map(page => (
+                    <div key={page.id} className="page-item sidebar-trash-item">
+                      <span>{displayTitle(page)}</span>
+                      <span className="sidebar-trash-actions">
+                        <button
+                          className="sidebar-trash-action-btn"
+                          title="Unarchive"
+                          onClick={async e => {
+                            e.stopPropagation();
+                            await api.unarchivePage(page.id);
+                            loadTree();
+                          }}
+                        >&#8634;</button>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+          <div
+            className="sidebar-system-item"
+            onClick={() => setShowTrash(v => !v)}
+          >
+            <span>&#128465; Trash{trashItems.length > 0 ? ` (${trashItems.length})` : ""}</span>
+            {trashItems.length > 0 && (
+              <span className="sidebar-section-chevron">{showTrash ? "\u25B4" : "\u25BE"}</span>
+            )}
+          </div>
+          {showTrash && trashItems.length > 0 && (
+            <div className="sidebar-trash-list">
+              {trashItems.map(item => (
+                <div key={item.id} className="page-item sidebar-trash-item">
+                  <span>
+                    {item.item_type === "folder" ? "\uD83D\uDCC1" : ""} {displayTitle({ title: item.title })}
+                    {item.item_type === "folder" && item.page_count > 0 && (
+                      <span className="folder-count"> ({item.page_count})</span>
+                    )}
+                  </span>
+                  <span className="sidebar-trash-actions">
+                    <button
+                      className="sidebar-trash-action-btn"
+                      title="Restore"
+                      onClick={async e => {
+                        e.stopPropagation();
+                        await api.restoreFromTrash(item.id, item.item_type);
+                        loadTree();
+                      }}
+                    >&#8634;</button>
+                    <button
+                      className="sidebar-trash-action-btn danger"
+                      title="Delete permanently"
+                      onClick={async e => {
+                        e.stopPropagation();
+                        await api.permanentlyDelete(item.id, item.item_type);
+                        loadTree();
+                      }}
+                    >&#10005;</button>
+                  </span>
+                </div>
+              ))}
+              {trashItems.length > 1 && (
+                <div
+                  className="page-item sidebar-more-pages"
+                  onClick={async () => {
+                    await api.emptyTrash();
+                    loadTree();
+                  }}
+                >
+                  Empty trash
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Tools */}
+        <div className="stats-modes-divider" />
         {syncState === "syncing" && (
           <div className="sync-indicator sync-syncing">Syncing\u2026</div>
         )}
@@ -446,7 +547,6 @@ export default function Sidebar({
         {syncState === "offline" && (
           <div className="sync-indicator sync-offline">Offline</div>
         )}
-        <div className="stats-modes-divider" />
         <div className="stats-modes-grid">
           <button className={`stats-mode-btn ${activeMode === "graph" ? "active" : ""}`} onClick={onGraphClick} title="Graph (Ctrl+G)">
             &#128202;Graph
@@ -471,7 +571,7 @@ export default function Sidebar({
 
 // Draggable page item — drag to move between folders, auto-sorted by last edited
 function DraggablePage({
-  page, activePage, depth, onPageClick, onDeletePage, onRefresh, allFolders, isPinned,
+  page, activePage, depth, onPageClick, onDeletePage, onRefresh, allFolders, isPinned, pinnedSiblings,
 }: {
   page: Page;
   activePage: Page | null;
@@ -481,6 +581,7 @@ function DraggablePage({
   onRefresh: () => void;
   allFolders?: FolderTree[];
   isPinned?: boolean;
+  pinnedSiblings?: Page[];  // pass favorites array for pinned reorder
 }) {
   const mouseStart = useRef<{ x: number; y: number } | null>(null);
   const moreRef = useRef<HTMLButtonElement>(null);
@@ -488,15 +589,7 @@ function DraggablePage({
   const [showMoveSubmenu, setShowMoveSubmenu] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState(page.title);
-  const [confirmDelete, setConfirmDelete] = useState(false);
-
-  // Close context menu on outside click
-  useEffect(() => {
-    if (!ctxMenu) return;
-    const close = () => { setCtxMenu(null); setShowMoveSubmenu(false); };
-    window.addEventListener("click", close);
-    return () => window.removeEventListener("click", close);
-  }, [ctxMenu]);
+  const [dropPos, setDropPos] = useState<"above" | "below" | null>(null);
 
   const openMenu = (x: number, y: number) => {
     setCtxMenu({ x, y });
@@ -548,7 +641,7 @@ function DraggablePage({
 
   return (
     <div
-      className={`page-item ${activePage?.id === page.id ? "active" : ""}`}
+      className={`page-item ${activePage?.id === page.id ? "active" : ""} ${dropPos === "above" ? "drop-above" : ""} ${dropPos === "below" ? "drop-below" : ""}`}
       style={{ paddingLeft: 16 + depth * 16 }}
       draggable={!renaming}
       onDragStart={e => {
@@ -558,7 +651,39 @@ function DraggablePage({
         e.dataTransfer.effectAllowed = "move";
         e.currentTarget.classList.add("dragging");
       }}
-      onDragEnd={e => { e.currentTarget.classList.remove("dragging"); }}
+      onDragEnd={e => { e.currentTarget.classList.remove("dragging"); setDropPos(null); }}
+      onDragOver={isPinned && pinnedSiblings ? (e => {
+        e.preventDefault();
+        e.stopPropagation();
+        const rect = e.currentTarget.getBoundingClientRect();
+        setDropPos(e.clientY < rect.top + rect.height / 2 ? "above" : "below");
+      }) : undefined}
+      onDragLeave={isPinned ? (() => setDropPos(null)) : undefined}
+      onDrop={isPinned && pinnedSiblings ? (async e => {
+        e.preventDefault();
+        e.stopPropagation();
+        setDropPos(null);
+        const draggedId = e.dataTransfer.getData("text/page-id");
+        if (!draggedId || draggedId === page.id) return;
+        const siblings = pinnedSiblings;
+        const idx = siblings.findIndex(p => p.id === page.id);
+        const rect = e.currentTarget.getBoundingClientRect();
+        const above = e.clientY < rect.top + rect.height / 2;
+        let newPos: number;
+        if (above) {
+          const prevPos = idx > 0 ? siblings[idx - 1].position : 0;
+          newPos = (prevPos + page.position) / 2;
+        } else {
+          const nextPos = idx < siblings.length - 1 ? siblings[idx + 1].position : page.position + 1;
+          newPos = (page.position + nextPos) / 2;
+        }
+        const wasPinned = e.dataTransfer.getData("text/page-pinned") === "true";
+        if (!wasPinned) {
+          await api.addFavorite(draggedId);
+        }
+        await api.reorderFavorite(draggedId, newPos);
+        onRefresh();
+      }) : undefined}
       onMouseDown={e => { if (!renaming) mouseStart.current = { x: e.clientX, y: e.clientY }; }}
       onMouseUp={e => {
         if (renaming) return;
@@ -605,13 +730,9 @@ function DraggablePage({
         }}
         title="More actions"
       >&#8942;</button>
-      {/* Context menu */}
+      {/* Context menu — rendered via portal to avoid clipping */}
       {ctxMenu && (
-        <div
-          className="sidebar-context-menu"
-          style={{ top: ctxMenu.y, left: ctxMenu.x }}
-          onClick={e => e.stopPropagation()}
-        >
+        <ContextMenuPortal x={ctxMenu.x} y={ctxMenu.y} onClose={() => { setCtxMenu(null); setShowMoveSubmenu(false); }}>
           {!page.is_journal && (
             <button
               className="sidebar-context-menu-item"
@@ -662,83 +783,27 @@ function DraggablePage({
           <div className="sidebar-context-menu-sep" />
           <button
             className="sidebar-context-menu-item danger"
-            onClick={() => { setCtxMenu(null); setConfirmDelete(true); }}
+            onClick={async () => {
+              setCtxMenu(null);
+              await api.trashPage(page.id);
+              onRefresh();
+              showUndoToast(`"${displayTitle(page)}" deleted`, async () => {
+                await api.restoreFromTrash(page.id, "page");
+                onRefresh();
+              });
+            }}
           >
             &#128465; Delete
           </button>
-        </div>
+        </ContextMenuPortal>
       )}
-      {/* Delete confirmation dialog */}
-      {confirmDelete && (
-        <>
-          <div className="confirm-backdrop" onClick={() => setConfirmDelete(false)} />
-          <div className="confirm-dialog">
-            <div className="confirm-dialog-title">Delete "{displayTitle(page)}"?</div>
-            <p className="confirm-dialog-text">This action cannot be undone.</p>
-            <div className="confirm-dialog-actions">
-              <button className="btn btn-sm" onClick={() => setConfirmDelete(false)}>Cancel</button>
-              <button className="btn btn-sm btn-danger" onClick={() => { setConfirmDelete(false); onDeletePage(page.id); }}>Delete</button>
-            </div>
-          </div>
-        </>
-      )}
-    </div>
-  );
-}
-
-// Drop target wrapper for pinned items — shows above/below indicator on drag
-function PinnedDropTarget({ page, favorites, onReorder, children }: {
-  page: Page;
-  favorites: Page[];
-  onReorder: () => void;
-  children: React.ReactNode;
-}) {
-  const [dropPos, setDropPos] = useState<"above" | "below" | null>(null);
-
-  return (
-    <div
-      className={`pinned-drop-wrapper ${dropPos === "above" ? "drop-above" : ""} ${dropPos === "below" ? "drop-below" : ""}`}
-      onDragOver={e => {
-        e.preventDefault();
-        e.stopPropagation();
-        const rect = e.currentTarget.getBoundingClientRect();
-        setDropPos(e.clientY < rect.top + rect.height / 2 ? "above" : "below");
-      }}
-      onDragLeave={() => setDropPos(null)}
-      onDrop={async e => {
-        e.preventDefault();
-        e.stopPropagation();
-        setDropPos(null);
-        const draggedId = e.dataTransfer.getData("text/page-id");
-        if (!draggedId || draggedId === page.id) return;
-        const idx = favorites.findIndex(p => p.id === page.id);
-        const rect = e.currentTarget.getBoundingClientRect();
-        const above = e.clientY < rect.top + rect.height / 2;
-        // page.position is now the favorites position (not page table position)
-        let newPos: number;
-        if (above) {
-          const prevPos = idx > 0 ? favorites[idx - 1].position : 0;
-          newPos = (prevPos + page.position) / 2;
-        } else {
-          const nextPos = idx < favorites.length - 1 ? favorites[idx + 1].position : page.position + 1;
-          newPos = (page.position + nextPos) / 2;
-        }
-        const wasPinned = e.dataTransfer.getData("text/page-pinned") === "true";
-        if (!wasPinned) {
-          await api.addFavorite(draggedId);
-        }
-        await api.reorderFavorite(draggedId, newPos);
-        onReorder();
-      }}
-    >
-      {children}
     </div>
   );
 }
 
 // Recursive folder component with drop target
 function FolderItem({
-  folder, activePage, depth, isExpanded, onToggleExpanded, onPageClick, onDeletePage, onRefresh, allFolders, pinnedIds,
+  folder, activePage, depth, isExpanded, onToggleExpanded, onPageClick, onDeletePage, onRefresh, allFolders, pinnedIds, onFolderSettings,
 }: {
   folder: FolderTree;
   activePage: Page | null;
@@ -750,13 +815,15 @@ function FolderItem({
   onRefresh: () => void;
   allFolders?: FolderTree[];
   pinnedIds?: Set<string>;
+  onFolderSettings?: (folderId: string) => void;
 }) {
   const [dragOver, setDragOver] = useState(false);
-  // Phase 3b: show all pages or capped at 8
   const [showAllPages, setShowAllPages] = useState(false);
-  // Phase 2c: inline create page inside this project
   const [showInlineCreate, setShowInlineCreate] = useState(false);
   const [inlineTitle, setInlineTitle] = useState("");
+  const [folderMenu, setFolderMenu] = useState<{ x: number; y: number } | null>(null);
+  const [renamingFolder, setRenamingFolder] = useState(false);
+  const [folderRenameValue, setFolderRenameValue] = useState(folder.name);
 
   const PAGE_CAP = 8;
   const sortedPages = [...folder.pages]
@@ -766,11 +833,26 @@ function FolderItem({
   const displayedPages = showAllPages ? sortedPages : sortedPages.slice(0, PAGE_CAP);
   const hiddenCount = totalPages - PAGE_CAP;
 
-  const handleDeleteFolder = async (e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (confirm(`Delete project "${folder.name}"? Pages will be moved to root.`)) {
-      await api.deleteFolder(folder.id);
+  const handleTrashFolder = async () => {
+    setFolderMenu(null);
+    const count = await api.trashFolder(folder.id);
+    onRefresh();
+    showUndoToast(`"${folder.name}" deleted (${count} pages)`, async () => {
+      await api.restoreFromTrash(folder.id, "folder");
+      onRefresh();
+    });
+  };
+
+  const handleRenameFolder = async () => {
+    if (!renamingFolder) return; // guard against double-fire
+    setRenamingFolder(false);
+    const trimmed = folderRenameValue.trim();
+    if (trimmed && trimmed !== folder.name) {
+      try {
+        await api.renameFolder(folder.id, trimmed);
+      } catch (e) {
+        console.error("Rename folder failed:", e);
+      }
       onRefresh();
     }
   };
@@ -799,33 +881,102 @@ function FolderItem({
     }
   };
 
+
   return (
     <>
       <div
         className={`folder-item ${dragOver ? "drop-target" : ""}`}
         style={{ paddingLeft: 16 + depth * 16 }}
-        onClick={(e) => onToggleExpanded(e.shiftKey)}
-        onContextMenu={handleDeleteFolder}
+        onClick={(e) => { if (!renamingFolder) onToggleExpanded(e.shiftKey); }}
+        onContextMenu={e => {
+          e.preventDefault();
+          e.stopPropagation();
+          setFolderMenu({ x: e.clientX, y: e.clientY });
+        }}
         onDragOver={e => { e.preventDefault(); e.stopPropagation(); setDragOver(true); }}
         onDragLeave={() => setDragOver(false)}
         onDrop={handleDrop}
       >
         <span className="folder-toggle">{isExpanded ? "\u25BC" : "\u25B6"}</span>
-        <span>{folder.icon ?? "\uD83D\uDCC1"} {folder.name}</span>
-        {/* Phase 3: page count on hover for collapsed projects */}
+        {renamingFolder ? (
+          <input
+            className="sidebar-rename-input"
+            value={folderRenameValue}
+            onChange={e => setFolderRenameValue(e.target.value)}
+            onKeyDown={e => {
+              e.stopPropagation();
+              if (e.key === "Enter") handleRenameFolder();
+              if (e.key === "Escape") { setRenamingFolder(false); }
+            }}
+            onBlur={handleRenameFolder}
+            onClick={e => e.stopPropagation()}
+            onMouseDown={e => e.stopPropagation()}
+            autoFocus
+          />
+        ) : (
+          <span>{folder.icon ?? "\uD83D\uDCC1"} {folder.name}</span>
+        )}
         {!isExpanded && totalPages > 0 && (
           <span className="folder-count folder-count-hover">{totalPages}</span>
         )}
         {isExpanded && (
           <span className="folder-count">{totalPages}</span>
         )}
-        {/* Phase 2c: [+] button on hover to create page inside project */}
         <button
-          className="folder-add-btn"
-          onClick={(e) => { e.stopPropagation(); setShowInlineCreate(true); }}
-          title="New page in this project"
-        >+</button>
+          className="page-more-btn"
+          onClick={(e) => {
+            e.stopPropagation();
+            const rect = e.currentTarget.getBoundingClientRect();
+            setFolderMenu({ x: rect.left, y: rect.bottom + 2 });
+          }}
+          title="More actions"
+        >&#8942;</button>
       </div>
+      {/* Folder context menu — rendered via portal */}
+      {folderMenu && (
+        <ContextMenuPortal x={folderMenu.x} y={folderMenu.y} onClose={() => setFolderMenu(null)}>
+          <button
+            className="sidebar-context-menu-item"
+            onClick={() => { setFolderMenu(null); setShowInlineCreate(true); }}
+          >
+            &#128196; New Page
+          </button>
+          <button
+            className="sidebar-context-menu-item"
+            onClick={() => { setFolderMenu(null); setFolderRenameValue(folder.name); setRenamingFolder(true); }}
+          >
+            &#9998; Rename
+          </button>
+          <button
+            className="sidebar-context-menu-item"
+            onClick={async () => {
+              setFolderMenu(null);
+              const count = await api.archiveFolder(folder.id);
+              onRefresh();
+              showUndoToast(`"${folder.name}" archived (${count} pages)`, async () => {
+                await api.unarchiveFolder(folder.id);
+                onRefresh();
+              });
+            }}
+          >
+            &#128230; Archive
+          </button>
+          <div className="sidebar-context-menu-sep" />
+          <button
+            className="sidebar-context-menu-item danger"
+            onClick={handleTrashFolder}
+          >
+            &#128465; Delete
+          </button>
+          <div className="sidebar-context-menu-sep" />
+          <button
+            className="sidebar-context-menu-item"
+            onClick={() => { setFolderMenu(null); onFolderSettings?.(folder.id); }}
+          >
+            &#9881; Settings...
+          </button>
+        </ContextMenuPortal>
+      )}
       {/* Phase 2c: inline create input */}
       {showInlineCreate && (
         <div className="sidebar-actions" style={{ padding: "2px 16px 2px " + (32 + depth * 16) + "px" }}>

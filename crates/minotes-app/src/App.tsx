@@ -17,6 +17,7 @@ import ObsidianPluginBrowser from "./components/ObsidianPluginBrowser";
 import CssSnippetManager from "./components/CssSnippetManager";
 import CustomViewContainer from "./components/CustomViewContainer";
 import SettingsPanel from "./components/SettingsPanel";
+import FolderSettingsPanel from "./components/FolderSettingsPanel";
 import * as api from "./lib/api";
 import { initTheme, toggleTheme } from "./lib/theme";
 import { initTestApi, registerTestApi } from "./lib/testApi";
@@ -39,6 +40,7 @@ export default function App() {
   const [lastError, setLastError] = useState<string | null>(null);
   const [rightSidebarPanels, setRightSidebarPanels] = useState<Array<{id: string, title: string}>>([]);
   const [rightSidebarVisible, setRightSidebarVisible] = useState(true);
+  const [folderSettingsId, setFolderSettingsId] = useState<string | null>(null);
 
   // Git Sync state
   const [syncStatus, setSyncStatus] = useState<api.GitSyncStatus | null>(null);
@@ -502,6 +504,7 @@ export default function App() {
         onKanbanClick={() => { if (activePage) setCanvasMode(prev => prev === "kanban" ? null : "kanban"); }}
         onPagesClick={() => setCanvasMode(prev => prev === "pages" ? null : "pages")}
         onSettingsClick={() => setOpenPanel(prev => prev === "settings" ? null : "settings")}
+        onFolderSettings={(id) => setFolderSettingsId(prev => prev === id ? null : id)}
         activeMode={canvasMode === "graph" ? "graph" : canvasMode === "mindmap" ? "mindmap" : canvasMode === "draw" ? "whiteboard" : canvasMode === "kanban" ? "kanban" : canvasMode === "pages" ? "pages" : null}
         refreshKey={refreshKey}
         syncState={syncStatus?.enabled ? syncState : undefined}
@@ -604,6 +607,13 @@ export default function App() {
             panels={rightSidebarPanels}
             onClose={(id) => setRightSidebarPanels(prev => prev.filter(p => p.id !== id))}
             onPageClick={openPage}
+          />
+        )}
+        {folderSettingsId && (
+          <FolderSettingsPanel
+            folderId={folderSettingsId}
+            onClose={() => setFolderSettingsId(null)}
+            onRefresh={refresh}
           />
         )}
       </div>
