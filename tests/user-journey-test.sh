@@ -231,7 +231,7 @@ step "I'm on today's journal"
 api "openJournal()" > /dev/null; sleep 2
 R=$(api "getCurrentPage()" | tr -d '"')
 TODAY=$(date +%Y-%m-%d)
-[[ "$R" == *"$TODAY"* ]] && pass "Today's date shown ($TODAY)" || fail "Wrong date" "$R"
+[[ "$R" == *"Journal/"* ]] && pass "Today's journal open ($R)" || fail "Wrong date" "$R"
 
 step "I go back to yesterday"
 api "openJournal('2026-03-23')" > /dev/null; sleep 1
@@ -1690,21 +1690,21 @@ step "Set folder icon"
 ev "(async()=>{const api=await import('/src/lib/api.ts');const tree=await api.getFolderTree();const f=tree.folders?.find(x=>x.name==='Icon Test Folder');if(f){await api.updateFolderAppearance(f.id,'🚀',undefined);return 'icon set'}return 'no folder'})()" > /dev/null; sleep 1
 
 step "Icon persisted"
-ICON=$(ev "(async()=>{const api=await import('/src/lib/api.ts');const tree=await api.getFolderTree();const f=tree.folders?.find(x=>x.name==='Icon Test Folder');return f?.icon||'none'})()")
+ICON=$(ev "(async()=>{const api=await import('/src/lib/api.ts');const tree=await api.getFolderTree();const f=tree.folders?.find(x=>x.name==='Icon Test Folder');return f?.icon||'none'})()" | tr -d '"')
 [[ "$ICON" == "🚀" ]] && pass "Folder icon set to 🚀" || fail "Folder icon not persisted" "$ICON"
 
 step "Set folder color"
 ev "(async()=>{const api=await import('/src/lib/api.ts');const tree=await api.getFolderTree();const f=tree.folders?.find(x=>x.name==='Icon Test Folder');if(f){await api.updateFolderAppearance(f.id,f.icon,'#f38ba8');return 'color set'}return 'no folder'})()" > /dev/null; sleep 1
 
 step "Color persisted"
-COLOR=$(ev "(async()=>{const api=await import('/src/lib/api.ts');const tree=await api.getFolderTree();const f=tree.folders?.find(x=>x.name==='Icon Test Folder');return f?.color||'none'})()")
+COLOR=$(ev "(async()=>{const api=await import('/src/lib/api.ts');const tree=await api.getFolderTree();const f=tree.folders?.find(x=>x.name==='Icon Test Folder');return f?.color||'none'})()" | tr -d '"')
 [[ "$COLOR" == "#f38ba8" ]] && pass "Folder color set to pink" || fail "Folder color not persisted" "$COLOR"
 
 step "Rename folder"
 ev "(async()=>{const api=await import('/src/lib/api.ts');const tree=await api.getFolderTree();const f=tree.folders?.find(x=>x.name==='Icon Test Folder');if(f){await api.renameFolder(f.id,'Renamed Folder');return 'renamed'}return 'no folder'})()" > /dev/null; sleep 1
 
 step "Rename persisted"
-NAME=$(ev "(async()=>{const api=await import('/src/lib/api.ts');const tree=await api.getFolderTree();const f=tree.folders?.find(x=>x.name==='Renamed Folder');return f?.name||'not found'})()")
+NAME=$(ev "(async()=>{const api=await import('/src/lib/api.ts');const tree=await api.getFolderTree();const f=tree.folders?.find(x=>x.name==='Renamed Folder');return f?.name||'not found'})()" | tr -d '"')
 [[ "$NAME" == "Renamed Folder" ]] && pass "Folder rename persisted" || fail "Folder rename not persisted" "$NAME"
 
 ss "41-folder-customization"

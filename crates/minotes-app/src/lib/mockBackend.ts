@@ -20,13 +20,28 @@ function genId(): string {
   return `mock-${++nextId}-${Date.now().toString(36)}`;
 }
 
+interface MockFolder {
+  id: string;
+  name: string;
+  parent_id?: string;
+  icon?: string;
+  color?: string;
+  position: number;
+  collapsed: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
 const pages: Map<string, Page> = new Map();
 const blocks: Map<string, Block> = new Map();
 const properties: Map<string, Property[]> = new Map();
 const pendingJournals: Map<string, Page> = new Map();
+const folders: Map<string, MockFolder> = new Map();
 const favorites: Map<string, number> = new Map(); // pageId -> position
 const trash: Set<string> = new Set(); // trashed page IDs
+const trashedFolders: Set<string> = new Set();
 const archived: Set<string> = new Set(); // archived page IDs
+const archivedFolders: Set<string> = new Set();
 
 // ── Seed test data ──
 
@@ -430,11 +445,27 @@ export const mockHandlers: Record<string, (args: any) => any> = {
     const rootPages = Array.from(pages.values())
       .filter(p => !p.folder_id && !p.is_journal && !trash.has(p.id) && !archived.has(p.id))
       .sort((a, b) => a.position - b.position);
-    return { folders: [], root_pages: rootPages } as FolderTreeRoot;
+    // Build folder tree
+    const buildTree = (parentId?: string): any[] => {
+      return Array.from(folders.values())
+        .filter(f => (f.parent_id ?? undefined) === parentId && !trashedFolders.has(f.id) && !archivedFolders.has(f.id))
+        .sort((a, b) => a.position - b.position)
+        .map(f => ({
+          ...f,
+          children: buildTree(f.id),
+          pages: Array.from(pages.values())
+            .filter(p => p.folder_id === f.id && !trash.has(p.id) && !archived.has(p.id))
+            .sort((a, b) => a.position - b.position),
+        }));
+    };
+    return { folders: buildTree(undefined), root_pages: rootPages } as FolderTreeRoot;
   },
 
-  create_folder: ({ name }: { name: string }) => {
-    return { id: genId(), name, position: 0, collapsed: false, created_at: now, updated_at: now };
+  create_folder: ({ name, parentId }: { name: string; parentId?: string }) => {
+    const id = genId();
+    const folder: MockFolder = { id, name, parent_id: parentId, position: folders.size, collapsed: false, created_at: new Date().toISOString(), updated_at: new Date().toISOString() };
+    folders.set(id, folder);
+    return folder;
   },
 
   move_page_to_folder: ({ pageId, folderId }: { pageId: string; folderId?: string }) => {
@@ -451,11 +482,27 @@ export const mockHandlers: Record<string, (args: any) => any> = {
     return page;
   },
 
-  delete_folder: () => true,
+  delete_folder: ({ id }: { id: string }) => {
+    // Move pages to root
+    for (const p of pages.values()) {
+      if (p.folder_id === id) p.folder_id = undefined;
+    }
+    folders.delete(id);
+    return true;
+  },
   rename_folder: ({ id, newName }: { id: string; newName: string }) => {
+    const f = folders.get(id);
+    if (f) { f.name = newName; f.updated_at = new Date().toISOString(); return f; }
     return { id, name: newName, position: 0, collapsed: false, created_at: now, updated_at: now };
   },
   update_folder_appearance: ({ id, icon, color }: { id: string; icon?: string; color?: string }) => {
+    const f = folders.get(id);
+    if (f) {
+      if (icon !== undefined && icon !== null) f.icon = icon;
+      if (color !== undefined && color !== null) f.color = color;
+      f.updated_at = new Date().toISOString();
+      return f;
+    }
     return { id, name: "", icon, color, position: 0, collapsed: false, created_at: now, updated_at: now };
   },
 
@@ -578,15 +625,31 @@ export const mockHandlers: Record<string, (args: any) => any> = {
     for (const p of pages.values()) {
       if (p.folder_id === id && !archived.has(p.id)) { archived.add(p.id); favorites.delete(p.id); count++; }
     }
+    archivedFolders.add(id);
     return count;
   },
   unarchive_folder: ({ id }: { id: string }) => {
+    archivedFolders.delete(id);
     for (const p of pages.values()) {
       if (p.folder_id === id) archived.delete(p.id);
     }
   },
-  list_archived: () => Array.from(archived).map(id => pages.get(id)).filter(Boolean) as Page[],
-  archived_count: () => archived.size,
+  list_archived: () => {
+    const items: Page[] = [];
+    // Pages archived directly
+    for (const pid of archived) {
+      const p = pages.get(pid);
+      if (p) items.push(p);
+    }
+    // Pages in archived folders (not already in archived set)
+    for (const fid of archivedFolders) {
+      for (const p of pages.values()) {
+        if (p.folder_id === fid && !archived.has(p.id)) items.push(p);
+      }
+    }
+    return items;
+  },
+  archived_count: () => archived.size + Array.from(pages.values()).filter(p => p.folder_id && archivedFolders.has(p.folder_id) && !archived.has(p.id)).length,
 
   // Trash
   trash_page: ({ id }: { id: string }) => {
@@ -594,7 +657,6 @@ export const mockHandlers: Record<string, (args: any) => any> = {
     favorites.delete(id);
   },
   trash_folder: ({ id }: { id: string }) => {
-    // Mock: trash folder pages (simplified)
     let count = 0;
     for (const p of pages.values()) {
       if (p.folder_id === id && !trash.has(p.id)) {
@@ -603,12 +665,12 @@ export const mockHandlers: Record<string, (args: any) => any> = {
         count++;
       }
     }
-    trash.add("folder:" + id); // marker
+    trashedFolders.add(id);
     return count;
   },
   restore_from_trash: ({ id, itemType }: { id: string; itemType: string }) => {
     if (itemType === "folder") {
-      trash.delete("folder:" + id);
+      trashedFolders.delete(id);
       for (const p of pages.values()) {
         if (p.folder_id === id) trash.delete(p.id);
       }
@@ -618,10 +680,11 @@ export const mockHandlers: Record<string, (args: any) => any> = {
   },
   permanently_delete: ({ id, itemType }: { id: string; itemType: string }) => {
     if (itemType === "folder") {
-      trash.delete("folder:" + id);
+      trashedFolders.delete(id);
       for (const [pid, p] of pages) {
         if (p.folder_id === id) { trash.delete(pid); pages.delete(pid); }
       }
+      folders.delete(id);
     } else {
       trash.delete(id);
       pages.delete(id);
@@ -632,18 +695,35 @@ export const mockHandlers: Record<string, (args: any) => any> = {
   },
   list_trash: () => {
     const items: Array<{ id: string; title: string; item_type: string; page_count: number; deleted_at: string }> = [];
-    for (const id of trash) {
-      if (id.startsWith("folder:")) continue; // skip folder markers in page list
-      const p = pages.get(id);
-      if (p) items.push({ id: p.id, title: p.title, item_type: "page", page_count: 0, deleted_at: new Date().toISOString() });
+    // Trashed folders
+    for (const fid of trashedFolders) {
+      const f = folders.get(fid);
+      if (f) {
+        const pageCount = Array.from(pages.values()).filter(p => p.folder_id === fid).length;
+        items.push({ id: fid, title: f.name, item_type: "folder", page_count: pageCount, deleted_at: new Date().toISOString() });
+      }
+    }
+    // Trashed pages (not in a trashed folder)
+    for (const pid of trash) {
+      const p = pages.get(pid);
+      if (p && (!p.folder_id || !trashedFolders.has(p.folder_id))) {
+        items.push({ id: p.id, title: p.title, item_type: "page", page_count: 0, deleted_at: new Date().toISOString() });
+      }
     }
     return items;
   },
   empty_trash: () => {
-    const count = trash.size;
-    for (const id of trash) {
-      if (id.startsWith("folder:")) continue;
-      pages.delete(id);
+    let count = trashedFolders.size;
+    for (const fid of trashedFolders) {
+      for (const [pid, p] of pages) {
+        if (p.folder_id === fid) { pages.delete(pid); trash.delete(pid); }
+      }
+      folders.delete(fid);
+    }
+    trashedFolders.clear();
+    for (const pid of trash) {
+      pages.delete(pid);
+      count++;
     }
     trash.clear();
     return count;
