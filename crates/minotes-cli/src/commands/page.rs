@@ -14,13 +14,13 @@ pub enum PageCmd {
         #[arg(long)]
         icon: Option<String>,
     },
-    /// Get a page by title or ID
+    /// Get a page by title or ID (includes blocks by default)
     Get {
         /// Page title or UUID
         title_or_id: String,
-        /// Include block tree
+        /// Omit blocks, return page metadata only
         #[arg(long)]
-        tree: bool,
+        no_blocks: bool,
     },
     /// List all pages
     List {
@@ -50,7 +50,7 @@ pub fn run(db: &Database, cmd: PageCmd, actor: &str, fmt: &Format) -> i32 {
                 Err(e) => { print_error(&e.to_string()); 1 }
             }
         }
-        PageCmd::Get { title_or_id, tree } => {
+        PageCmd::Get { title_or_id, no_blocks } => {
             let page = if let Ok(uuid) = Uuid::parse_str(&title_or_id) {
                 db.get_page(&uuid)
             } else {
@@ -58,7 +58,12 @@ pub fn run(db: &Database, cmd: PageCmd, actor: &str, fmt: &Format) -> i32 {
             };
             match page {
                 Ok(Some(p)) => {
-                    if tree {
+                    if no_blocks {
+                        match fmt {
+                            Format::Text | Format::Md => output::print_page_text(&p),
+                            _ => print_json(&p),
+                        }
+                    } else {
                         let blocks = db.get_page_blocks(&p.id).unwrap_or_default();
                         let page_tree = minotes_core::models::PageTree { page: p, blocks };
                         match fmt {
@@ -67,11 +72,6 @@ pub fn run(db: &Database, cmd: PageCmd, actor: &str, fmt: &Format) -> i32 {
                             Format::Csv => output::print_page_tree_csv(&page_tree),
                             Format::Opml => output::print_page_tree_opml(&page_tree),
                             Format::Json => print_json(&page_tree),
-                        }
-                    } else {
-                        match fmt {
-                            Format::Text | Format::Md => output::print_page_text(&p),
-                            _ => print_json(&p),
                         }
                     }
                     0

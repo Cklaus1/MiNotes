@@ -83,6 +83,26 @@ cargo run -p minotes-cli -- --graph ~/.minotes/default.db page list
 
 `--format` / `-f` flag: `json` (default), `text`, `md`, `csv`, `opml`
 
+## CLI gotchas
+
+- **`--graph` requires an absolute path** — `~` is not expanded by the Rust arg parser. Use `$HOME/.minotes/default.db` or the full path.
+- **`page create` has no `--folder` flag** — create the page first, then assign it: `minotes folder add-page <page-id> <folder-id>`. Using `property set folder_id` does nothing (that key is not the DB column).
+- **`page get <title>`** returns page + all blocks by default. Use `--no-blocks` for metadata only.
+- **Block content starting with `-`** trips up Clap's arg parser — quote it or use `--` before the content.
+
+## Running on WSLg
+
+```bash
+cd crates/minotes-app && \
+  LIBGL_ALWAYS_SOFTWARE=1 \
+  WEBKIT_DISABLE_COMPOSITING_MODE=1 \
+  WEBKIT_DISABLE_DMABUF_RENDERER=1 \
+  GDK_BACKEND=x11 \
+  npm run tauri dev
+```
+
+Without these flags, WebKit fails silently (MESA/Zink GPU errors) and no window appears.
+
 ## PRDs
 
 - `docs/PRD-editor-improvements.md` — 10 editor/UX features (tables, templates, kanban, etc.)

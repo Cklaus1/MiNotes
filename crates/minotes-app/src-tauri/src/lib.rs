@@ -1,10 +1,12 @@
 use std::path::PathBuf;
 use std::sync::Mutex;
+use tauri::Emitter;
 
 use minotes_core::db::Database;
 use minotes_core::models::{Block, Card, CssSnippet, Folder, GraphInfo, Highlight, Page, PageTree, Plugin, Property, SrsStats, SyncStatus, Template, VersionInfo};
 use minotes_core::repo::graph::GraphStats;
 use minotes_core::repo::graphs;
+use minotes_core::repo::archive::ArchiveItem;
 use minotes_core::repo::trash::TrashItem;
 use minotes_core::sync_manager::{self, GitSyncResult, GitSyncStatus};
 use serde::Serialize;
@@ -1056,9 +1058,9 @@ fn unarchive_folder(state: State<'_, AppState>, id: String) -> Result<(), String
 }
 
 #[tauri::command]
-fn list_archived(state: State<'_, AppState>) -> Result<Vec<Page>, String> {
+fn list_archived(state: State<'_, AppState>) -> Result<Vec<ArchiveItem>, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
-    db.list_archived().map_err(|e| e.to_string())
+    db.list_archived_items().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1190,6 +1192,31 @@ pub fn run() {
     let db = Database::open(&path).expect("Failed to open database");
 
     tauri::Builder::default()
+        .setup(|app| {
+            let app_handle = app.handle().clone();
+            let watch_dir = base_dir();
+            std::thread::spawn(move || {
+                use notify::{Config, RecursiveMode, Watcher};
+                let (tx, rx) = std::sync::mpsc::channel();
+                let mut watcher = match notify::RecommendedWatcher::new(tx, Config::default()) {
+                    Ok(w) => w,
+                    Err(_) => return,
+                };
+                if watcher.watch(&watch_dir, RecursiveMode::NonRecursive).is_err() {
+                    return;
+                }
+                let wal_name = std::ffi::OsStr::new("default.db-wal");
+                for res in rx {
+                    if let Ok(event) = res {
+                        let touched_wal = event.paths.iter().any(|p| p.file_name() == Some(wal_name));
+                        if touched_wal {
+                            let _ = app_handle.emit("db-changed", ());
+                        }
+                    }
+                }
+            });
+            Ok(())
+        })
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .manage(AppState {

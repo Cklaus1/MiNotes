@@ -19,6 +19,7 @@ import CustomViewContainer from "./components/CustomViewContainer";
 import SettingsPanel from "./components/SettingsPanel";
 import FolderSettingsPanel from "./components/FolderSettingsPanel";
 import * as api from "./lib/api";
+import { isTauri } from "./lib/api";
 import { initTheme, toggleTheme } from "./lib/theme";
 import { initTestApi, registerTestApi } from "./lib/testApi";
 import { loadEnabledSnippets } from "./lib/cssLoader";
@@ -57,6 +58,18 @@ export default function App() {
     } catch (e) {
       console.error("Failed to refresh:", e);
     }
+  }, []);
+
+  // Listen for external DB writes (e.g. CLI) and refresh the sidebar automatically
+  useEffect(() => {
+    if (!isTauri) return;
+    let unlisten: (() => void) | undefined;
+    import("@tauri-apps/api/event").then(({ listen }) => {
+      listen<null>("db-changed", () => {
+        window.dispatchEvent(new Event("minotes-sidebar-refresh"));
+      }).then(fn => { unlisten = fn; });
+    });
+    return () => { unlisten?.(); };
   }, []);
 
   const openPage = useCallback(async (titleOrId: string) => {

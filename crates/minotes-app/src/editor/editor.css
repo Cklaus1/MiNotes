@@ -6,12 +6,17 @@
   line-height: 1.6;
   color: var(--text-primary);
   min-height: 1.4em;
-  white-space: pre-wrap;
   word-break: break-word;
 }
 
 .block-content .ProseMirror p {
   margin: 0;
+}
+
+/* ProseMirror adds a trailing <p><br></p> after block-level elements (lists, headings).
+   Hide it — each block is its own TipTap instance so the trailing cursor target is not needed. */
+.block-content .ProseMirror > p:last-child:not(:only-child):has(> br:only-child) {
+  display: none;
 }
 
 /* Placeholder */
