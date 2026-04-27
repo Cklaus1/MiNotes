@@ -516,8 +516,16 @@ export const archiveFolder = (id: string) =>
 export const unarchiveFolder = (id: string) =>
   invoke<void>("unarchive_folder", { id });
 
+export interface ArchiveItem {
+  id: string;
+  title: string;
+  item_type: "page" | "folder";
+  page_count: number;
+  archived_at: string;
+}
+
 export const listArchived = () =>
-  invoke<Page[]>("list_archived");
+  invoke<ArchiveItem[]>("list_archived");
 
 export const archivedCount = () =>
   invoke<number>("archived_count");

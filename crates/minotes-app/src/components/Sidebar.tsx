@@ -78,7 +78,7 @@ export default function Sidebar({
   const [showAllPinned, setShowAllPinned] = useState(false);
   const [trashItems, setTrashItems] = useState<api.TrashItem[]>([]);
   const [showTrash, setShowTrash] = useState(false);
-  const [archivedPages, setArchivedPages] = useState<api.Page[]>([]);
+  const [archivedItems, setArchivedItems] = useState<api.ArchiveItem[]>([]);
   const [showArchived, setShowArchived] = useState(false);
 
   // Phase 3a: Track expanded project IDs (max 2), persisted
@@ -139,7 +139,7 @@ export default function Sidebar({
       const trashed = await api.listTrash();
       setTrashItems(trashed);
       const arch = await api.listArchived();
-      setArchivedPages(arch);
+      setArchivedItems(arch);
     } catch (e) {
       console.error("Failed to load folder tree:", e);
     }
@@ -456,27 +456,37 @@ export default function Sidebar({
         {/* System states: Archived + Trash */}
         <div className="sidebar-system-states">
           <div className="stats-modes-divider" />
-          {archivedPages.length > 0 && (
+          {archivedItems.length > 0 && (
             <>
               <div
                 className="sidebar-system-item"
                 onClick={() => setShowArchived(v => !v)}
               >
-                <span>&#128230; Archived ({archivedPages.length})</span>
+                <span>&#128230; Archived ({archivedItems.length})</span>
                 <span className="sidebar-section-chevron">{showArchived ? "\u25B4" : "\u25BE"}</span>
               </div>
               {showArchived && (
                 <div className="sidebar-trash-list">
-                  {archivedPages.map(page => (
-                    <div key={page.id} className="page-item sidebar-trash-item">
-                      <span>{displayTitle(page)}</span>
+                  {archivedItems.map(item => (
+                    <div key={item.id} className="page-item sidebar-trash-item">
+                      <span>
+                        {item.item_type === "folder" ? "\uD83D\uDCC1 " : ""}
+                        {displayTitle({ title: item.title })}
+                        {item.item_type === "folder" && item.page_count > 0 && (
+                          <span className="folder-count"> ({item.page_count})</span>
+                        )}
+                      </span>
                       <span className="sidebar-trash-actions">
                         <button
                           className="sidebar-trash-action-btn"
-                          title="Unarchive"
+                          title="Restore"
                           onClick={async e => {
                             e.stopPropagation();
-                            await api.unarchivePage(page.id);
+                            if (item.item_type === "folder") {
+                              await api.unarchiveFolder(item.id);
+                            } else {
+                              await api.unarchivePage(item.id);
+                            }
                             loadTree();
                           }}
                         >&#8634;</button>

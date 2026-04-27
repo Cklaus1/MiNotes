@@ -635,21 +635,25 @@ export const mockHandlers: Record<string, (args: any) => any> = {
     }
   },
   list_archived: () => {
-    const items: Page[] = [];
-    // Pages archived directly
+    const items: Array<{ id: string; title: string; item_type: string; page_count: number; archived_at: string }> = [];
+    // Archived folders
+    for (const fid of archivedFolders) {
+      const f = folders.get(fid);
+      if (f) {
+        const pageCount = Array.from(pages.values()).filter(p => p.folder_id === fid).length;
+        items.push({ id: fid, title: f.name, item_type: "folder", page_count: pageCount, archived_at: new Date().toISOString() });
+      }
+    }
+    // Standalone archived pages (not in archived folder)
     for (const pid of archived) {
       const p = pages.get(pid);
-      if (p) items.push(p);
-    }
-    // Pages in archived folders (not already in archived set)
-    for (const fid of archivedFolders) {
-      for (const p of pages.values()) {
-        if (p.folder_id === fid && !archived.has(p.id)) items.push(p);
+      if (p && (!p.folder_id || !archivedFolders.has(p.folder_id))) {
+        items.push({ id: p.id, title: p.title, item_type: "page", page_count: 0, archived_at: new Date().toISOString() });
       }
     }
     return items;
   },
-  archived_count: () => archived.size + Array.from(pages.values()).filter(p => p.folder_id && archivedFolders.has(p.folder_id) && !archived.has(p.id)).length,
+  archived_count: () => archivedFolders.size + Array.from(archived).filter(pid => { const p = pages.get(pid); return p && (!p.folder_id || !archivedFolders.has(p.folder_id)); }).length,
 
   // Trash
   trash_page: ({ id }: { id: string }) => {
