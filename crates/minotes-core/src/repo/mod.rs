@@ -19,3 +19,4 @@ pub mod plugins;
 pub mod snippets;
 pub mod templates;
 pub mod trash;
+pub mod ai_suggestions;

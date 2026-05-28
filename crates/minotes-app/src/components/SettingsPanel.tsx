@@ -49,6 +49,12 @@ export default function SettingsPanel({ open, onClose, syncError, onSyncRetry }:
     setSettings(updated);
   };
 
+  const toggleAi = (key: keyof NonNullable<MiNotesSettings["ai"]>, value: boolean) => {
+    const current = settings.ai ?? { autoTag: true, linkSuggestions: true, todoExtraction: true };
+    const updated = updateSettings({ ai: { ...current, [key]: value } });
+    setSettings(updated);
+  };
+
   const handleThemeChange = (theme: "dark" | "light") => {
     setTheme(theme);
     setCurrentTheme(theme);
@@ -269,6 +275,41 @@ export default function SettingsPanel({ open, onClose, syncError, onSyncRetry }:
               )}
             </div>
           )}
+
+          {/* AI Assistant */}
+          <div className="settings-section">
+            <h3>AI Assistant</h3>
+            <div className="settings-row">
+              <label className="settings-label">
+                <input
+                  type="checkbox"
+                  checked={settings.ai?.autoTag ?? true}
+                  onChange={e => toggleAi("autoTag", e.target.checked)}
+                />
+                Auto-suggest tags on save
+              </label>
+            </div>
+            <div className="settings-row">
+              <label className="settings-label">
+                <input
+                  type="checkbox"
+                  checked={settings.ai?.linkSuggestions ?? true}
+                  onChange={e => toggleAi("linkSuggestions", e.target.checked)}
+                />
+                Suggest related pages for wikilinking
+              </label>
+            </div>
+            <div className="settings-row">
+              <label className="settings-label">
+                <input
+                  type="checkbox"
+                  checked={settings.ai?.todoExtraction ?? true}
+                  onChange={e => toggleAi("todoExtraction", e.target.checked)}
+                />
+                Extract TODOs from notes
+              </label>
+            </div>
+          </div>
         </div>
 
         {/* Workspace — bottom, light status info */}

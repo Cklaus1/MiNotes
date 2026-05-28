@@ -3,6 +3,15 @@
  * Stored in localStorage. Provides a config area for power-user features.
  */
 
+export interface AiSettings {
+  /** Auto-suggest tags when saving a page (default: on) */
+  autoTag: boolean;
+  /** Suggest related pages for wikilinking (default: on) */
+  linkSuggestions: boolean;
+  /** Extract TODOs from note content (default: on) */
+  todoExtraction: boolean;
+}
+
 export interface MiNotesSettings {
   /** Enable Obsidian-compatible CM6 editor mode (default: off) */
   obsidianEditorEnabled: boolean;
@@ -10,6 +19,8 @@ export interface MiNotesSettings {
   defaultEditorMode: "minotes" | "obsidian";
   /** Enable full tree mode with connector lines (default: off) */
   fullTreeMode: boolean;
+  /** AI assistant settings */
+  ai: AiSettings;
 }
 
 const STORAGE_KEY = "minotes-settings";
@@ -18,6 +29,11 @@ const DEFAULTS: MiNotesSettings = {
   obsidianEditorEnabled: false,
   defaultEditorMode: "minotes",
   fullTreeMode: false,
+  ai: {
+    autoTag: true,
+    linkSuggestions: true,
+    todoExtraction: true,
+  },
 };
 
 export function getSettings(): MiNotesSettings {

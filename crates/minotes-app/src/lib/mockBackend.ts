@@ -755,4 +755,20 @@ export const mockHandlers: Record<string, (args: any) => any> = {
     branch: null,
     last_sync: null,
   }),
+
+  // AI: TODO count
+  get_pending_todo_count: () => {
+    let count = 0;
+    for (const block of blocks.values()) {
+      for (const line of block.content.split('\n')) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith('- [ ]') || trimmed.startsWith('* [ ]') || trimmed.startsWith('+ [ ]')) {
+          count++;
+        } else if (/^(todo|action|follow up|follow-up|next):/i.test(trimmed.split(/\s/)[0])) {
+          count++;
+        }
+      }
+    }
+    return count;
+  },
 };

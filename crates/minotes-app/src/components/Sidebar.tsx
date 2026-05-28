@@ -4,6 +4,7 @@ import * as api from "../lib/api";
 import CalendarWidget from "./CalendarWidget";
 import { showUndoToast } from "../lib/toast";
 import { ContextMenuPortal } from "../lib/ContextMenuPortal";
+import { extractTodos } from "../lib/todoExtractor";
 function formatJournalDate(dateStr: string): string {
   try {
     const [y, m, d] = dateStr.split("-").map(Number);
@@ -80,6 +81,7 @@ export default function Sidebar({
   const [showTrash, setShowTrash] = useState(false);
   const [archivedItems, setArchivedItems] = useState<api.ArchiveItem[]>([]);
   const [showArchived, setShowArchived] = useState(false);
+  const [pendingTodos, setPendingTodos] = useState(0);
 
   // Phase 3a: Track expanded project IDs (max 2), persisted
   const [expandedProjectIds, setExpandedProjectIds] = useState<string[]>(() => loadExpandedIds());
@@ -143,6 +145,11 @@ export default function Sidebar({
     } catch (e) {
       console.error("Failed to load folder tree:", e);
     }
+  }, []);
+
+  // TODO badge: fetch pending count from a simple API call
+  useEffect(() => {
+    api.getPendingTodoCount().then((count) => setPendingTodos(count)).catch(() => {});
   }, []);
 
   useEffect(() => { loadTree(); }, [loadTree, refreshKey]);
@@ -338,6 +345,13 @@ export default function Sidebar({
         )}
         {/* Spacing after Pinned section */}
         {showQuickAccess && <div className="sidebar-section-gap" />}
+
+        {/* TODO badge */}
+        {pendingTodos > 0 && (
+          <div className="sidebar-todo-badge" title={`${pendingTodos} pending TODOs`}>
+            <span className="sidebar-todo-count">{pendingTodos}</span> TODOs
+          </div>
+        )}
 
         {/* -- Projects -- */}
         {(allProjects.length > 0 || treeData) && (

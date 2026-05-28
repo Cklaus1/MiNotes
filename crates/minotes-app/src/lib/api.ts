@@ -588,4 +588,8 @@ export const gitSync = () =>
 export const gitSyncStatus = () =>
   invoke<GitSyncStatus>("git_sync_status");
 
+// AI: TODO count
+export const getPendingTodoCount = () =>
+  invoke<number>("get_pending_todo_count");
+
 export { isTauri };

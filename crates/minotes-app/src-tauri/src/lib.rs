@@ -1186,6 +1186,13 @@ fn git_sync_status() -> Result<GitSyncStatus, String> {
     sync_manager::get_sync_status().map_err(|e| e.to_string())
 }
 
+/// Count pending TODOs across all pages.
+#[tauri::command]
+fn get_pending_todo_count(db: tauri::State<AppState>) -> Result<usize, String> {
+    let conn = db.db.lock().map_err(|e| e.to_string())?;
+    conn.count_pending_todos().map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let path = db_path();
@@ -1322,6 +1329,7 @@ pub fn run() {
             git_sync_disable,
             git_sync,
             git_sync_status,
+            get_pending_todo_count,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

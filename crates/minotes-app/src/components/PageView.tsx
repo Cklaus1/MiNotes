@@ -11,6 +11,7 @@ import { undoStack } from "../lib/undoStack";
 import { registerTestApi } from "../lib/testApi";
 import TableOfContents from "./TableOfContents";
 import { downloadHtml, printPage } from "../lib/exportPage";
+import { extractTags } from "../lib/tagExtractor";
 interface Props {
   pageTree: PageTree;
   onUpdateBlock: (id: string, content: string) => void;
@@ -47,6 +48,43 @@ export default function PageView({
   const [addingAlias, setAddingAlias] = useState(false);
   const [newAlias, setNewAlias] = useState("");
   const [focusBlockIndex, setFocusBlockIndex] = useState<number | null>(null);
+
+  // AI: Tag suggestions
+  const [suggestedTags, setSuggestedTags] = useState<string[]>([]);
+  const [dismissedTags, setDismissedTags] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    const { tags } = extractTags(blocks);
+    setSuggestedTags(tags);
+    setDismissedTags(new Set());
+  }, [blocks]);
+
+  // AI: Link suggestions
+  const [suggestedLinks, setSuggestedLinks] = useState<
+    Array<{ pageId: string; title: string; score: number; reason: string }>
+  >([]);
+  const [dismissedLinks, setDismissedLinks] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    // Simple heuristic: suggest pages whose titles share words with current page content
+    const contentWords = new Set<string>(
+      blocks.map((b) => b.content).join(" ").toLowerCase().split(/\s+/).filter((w: string) => w.length >= 4),
+    );
+    const existingTitles = new Set(dismissedLinks);
+    api.listPages(100).then((allPages: api.Page[]) => {
+      const scored: Array<{ pageId: string; title: string; score: number }> = [];
+      for (const p of allPages) {
+        if (p.id === page.id) continue;
+        if (existingTitles.has(p.title)) continue;
+        const titleWords = p.title.toLowerCase().split(/\s+/);
+        const overlap = titleWords.filter((w: string) => contentWords.has(w)).length;
+        if (overlap > 0) {
+          scored.push({ pageId: p.id, title: p.title, score: overlap * 20 });
+        }
+      }
+      setSuggestedLinks(
+        scored.sort((a, b) => b.score - a.score).slice(0, 3).map((s) => ({ ...s, reason: `${s.score}% match` })),
+      );
+    }).catch(() => {});
+  }, [blocks, page.id]);
   const [activeBlockId, setActiveBlockIdState] = useState<string | null>(null);
   const activeBlockIdRef = useRef<string | null>(null);
   const activeBlockTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -65,6 +103,7 @@ export default function PageView({
   const blockRefs = useRef<Array<BlockItemHandle | null>>([]);
   const creatingBlockRef = useRef(false);
 
+  
   // Load page properties
   useEffect(() => {
     let cancelled = false;
@@ -979,6 +1018,60 @@ export default function PageView({
               </span>
             </span>
           ))}
+        </div>
+      )}
+
+      {/* AI: Suggested Tags */}
+      {suggestedTags.length > 0 && (
+        <div className="ai-panel">
+          <div className="ai-panel-header">
+            <h4>AI Suggested Tags</h4>
+            <button className="ai-close" onClick={() => setSuggestedTags([])} title="Dismiss">x</button>
+          </div>
+          <div className="ai-tag-list">
+            {suggestedTags
+              .filter((t) => !dismissedTags.has(t))
+              .map((tag) => (
+                <span key={tag} className="ai-tag-chip">
+                  #{tag}
+                  <span className="ai-tag-accept" onClick={() => {
+                    // Add as page property
+                    const existing = pageProps.find((p) => p.key === "tags");
+                    const currentTags = existing?.value ? existing.value.split(",").map((s) => s.trim()).filter(Boolean) : [];
+                    const newTags = [...new Set([...currentTags, tag])].join(",");
+                    api.setProperty(page.id, "page", "tags", newTags);
+                    setPageProps((prev) => {
+                      const filtered = prev.filter((p) => p.key !== "tags");
+                      return [...filtered, { id: "", entity_type: "page", key: "tags", value: newTags, entity_id: page.id, value_type: "string", created_at: "", updated_at: "" }];
+                    });
+                    setDismissedTags((prev) => new Set([...prev, tag]));
+                  }}>+</span>
+                  <span className="ai-tag-dismiss" onClick={() => setDismissedTags((prev) => new Set([...prev, tag]))}>x</span>
+                </span>
+              ))}
+          </div>
+        </div>
+      )}
+
+      {/* AI: Suggested Links */}
+      {suggestedLinks.length > 0 && (
+        <div className="ai-panel">
+          <div className="ai-panel-header">
+            <h4>AI Suggested Links</h4>
+            <button className="ai-close" onClick={() => setSuggestedLinks([])} title="Dismiss">x</button>
+          </div>
+          <div className="ai-link-list">
+            {suggestedLinks.map((s) => (
+              <span key={s.pageId} className="ai-link-chip">
+                [[{s.title}]]
+                <span className="ai-link-insert" onClick={() => {
+                  // Navigate to the suggested page
+                  onPageLinkClick(s.pageId);
+                }}>+</span>
+                <span className="ai-link-dismiss" onClick={() => setDismissedLinks((prev) => new Set([...prev, s.title]))}>x</span>
+              </span>
+            ))}
+          </div>
         </div>
       )}
 
