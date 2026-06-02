@@ -65,7 +65,7 @@ body {
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .sidebar-header {
@@ -215,6 +215,7 @@ body {
   min-width: 18px;
   text-align: center;
 }
+
 
 .page-item {
   padding: 6px 16px;
@@ -1540,6 +1541,22 @@ body {
 }
 
 .page-export-btn:hover {
+  color: var(--text-secondary);
+  border-color: var(--text-muted);
+}
+
+.page-copy-btn {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.page-copy-btn:hover {
   color: var(--text-secondary);
   border-color: var(--text-muted);
 }
@@ -5998,4 +6015,15 @@ body.theme-light { /* matches our light theme */ }
 
 .todo-panel-collapsed:hover {
   background: var(--bg-tertiary);
+}
+
+.save-indicator {
+  animation: saveIndicatorFade 1.5s ease-in-out forwards;
+}
+
+@keyframes saveIndicatorFade {
+  0% { opacity: 0; transform: translateY(2px); }
+  10% { opacity: 1; transform: translateY(0); }
+  80% { opacity: 1; transform: translateY(0); }
+  100% { opacity: 0; transform: translateY(-2px); }
 }

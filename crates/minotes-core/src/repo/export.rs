@@ -69,9 +69,11 @@ impl Database {
 
         let mut md = String::new();
 
-        // YAML frontmatter
-        if !properties.is_empty() || page.is_journal || page.folder_id.is_some() {
+        // YAML frontmatter. Always emit a frontmatter block carrying the stable page
+        // UUID (Bug #3) so import reconciles by identity, not by title/filename.
+        {
             md.push_str("---\n");
+            md.push_str(&format!("id: {}\n", page.id));
             md.push_str(&format!("title: \"{}\"\n", page.title));
             if page.is_journal {
                 md.push_str("type: journal\n");
@@ -87,11 +89,39 @@ impl Database {
             md.push_str("---\n\n");
         }
 
-        // Render blocks as bullet list
+        // Bug #12: emit blocks depth-first by walking the parent→children tree, with
+        // children sorted by position WITHIN each parent. The previous code iterated
+        // the globally position-ordered flat list and only computed indent depth, so
+        // a child at position 1.0 could sort ahead of a root sibling at 2.0 and the
+        // outline order scrambled. Build the tree and walk it instead.
+        use std::collections::HashMap;
+        let mut children: HashMap<Option<uuid::Uuid>, Vec<&crate::models::Block>> = HashMap::new();
         for block in &blocks {
-            let depth = if block.parent_id.is_some() { 1 } else { 0 };
-            let indent = "  ".repeat(depth);
-            md.push_str(&format!("{indent}- {}\n", block.content));
+            children.entry(block.parent_id).or_default().push(block);
+        }
+        for kids in children.values_mut() {
+            kids.sort_by(|a, b| a.position.partial_cmp(&b.position).unwrap_or(std::cmp::Ordering::Equal));
+        }
+
+        // Iterative DFS (explicit stack) to avoid recursion-depth limits on deep trees.
+        let mut stack: Vec<(Option<uuid::Uuid>, usize)> = Vec::new();
+        if let Some(roots) = children.get(&None) {
+            for root in roots.iter().rev() {
+                stack.push((Some(root.id), 0));
+            }
+        }
+        let mut emitted = 0usize;
+        while let Some((Some(id), depth)) = stack.pop() {
+            if let Some(block) = blocks.iter().find(|b| b.id == id) {
+                md.push_str(&render_block_lines(&block.content, depth, &block.id));
+                emitted += 1;
+            }
+            if let Some(kids) = children.get(&Some(id)) {
+                for child in kids.iter().rev() {
+                    stack.push((Some(child.id), depth + 1));
+                }
+            }
+            if emitted > 100_000 { break; } // safety cap against cycles
         }
 
         Ok(md)
@@ -147,6 +177,31 @@ impl Database {
         }))
     }
 
+    /// Parse markdown body text into blocks (hierarchy + multi-line continuations)
+    /// and create them under `page_id`. Shared by the directory and single-file
+    /// importers so the export→import round-trip is faithful (Bug #12, #13).
+    fn import_blocks_into_page(&self, page_id: &uuid::Uuid, body: &[&str], actor: &str) -> Result<usize> {
+        let parsed = crate::repo::sync::parse_markdown_blocks(body);
+        // Recreate parent_id from indent depth using an ancestor stack (mirrors
+        // create_blocks_with_hierarchy, but counts created blocks locally).
+        let mut stack: Vec<(usize, uuid::Uuid)> = Vec::new();
+        let mut count = 0usize;
+        for pb in &parsed {
+            while let Some(&(d, _)) = stack.last() {
+                if d >= pb.depth { stack.pop(); } else { break; }
+            }
+            let parent = stack.last().map(|(_, id)| *id);
+            // Bug #1: preserve stable block id if the marker was present.
+            let block = match pb.id {
+                Some(id) => self.create_block_with_id(id, page_id, &pb.content, parent.as_ref(), None, actor)?,
+                None => self.create_block(page_id, &pb.content, parent.as_ref(), None, actor)?,
+            };
+            count += 1;
+            stack.push((pb.depth, block.id));
+        }
+        Ok(count)
+    }
+
     /// Import markdown files from a directory into the graph.
     pub fn import_markdown_dir(&self, input_dir: &Path, actor: &str) -> Result<Vec<String>> {
         let mut imported = Vec::new();
@@ -179,23 +234,9 @@ impl Database {
 
             let page = self.create_page(&title, None, false, None, actor)?;
 
-            // Split content into blocks by line, skip frontmatter
+            // Parse blocks preserving hierarchy + multi-line content (Bug #12, #13).
             let lines = strip_frontmatter(&content);
-            for line in lines {
-                let trimmed = line.trim();
-                if trimmed.is_empty() {
-                    continue;
-                }
-                // Strip leading bullet markers
-                let clean = trimmed
-                    .strip_prefix("- ")
-                    .or_else(|| trimmed.strip_prefix("* "))
-                    .or_else(|| trimmed.strip_prefix("+ "))
-                    .unwrap_or(trimmed);
-                if !clean.is_empty() {
-                    self.create_block(&page.id, clean, None, None, actor)?;
-                }
-            }
+            self.import_blocks_into_page(&page.id, &lines, actor)?;
 
             imported.push(title);
         }
@@ -225,22 +266,7 @@ impl Database {
         };
 
         let lines = strip_frontmatter(&content);
-        let mut count = 0;
-        for line in lines {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            let clean = trimmed
-                .strip_prefix("- ")
-                .or_else(|| trimmed.strip_prefix("* "))
-                .or_else(|| trimmed.strip_prefix("+ "))
-                .unwrap_or(trimmed);
-            if !clean.is_empty() {
-                self.create_block(&page.id, clean, None, None, actor)?;
-                count += 1;
-            }
-        }
+        let count = self.import_blocks_into_page(&page.id, &lines, actor)?;
 
         Ok(format!("Imported {count} blocks into '{title}'"))
     }
@@ -398,6 +424,30 @@ impl Database {
     }
 }
 
+/// Render one block as a bullet at `depth`, encoding multi-line content safely
+/// (Bug #13). The first line follows `- `; any further lines are written as
+/// continuation lines indented two spaces DEEPER than a child bullet and WITHOUT a
+/// bullet marker, so the importer folds them back into a single block instead of
+/// splitting one block into several.
+fn render_block_lines(content: &str, depth: usize, id: &uuid::Uuid) -> String {
+    let bullet_indent = "  ".repeat(depth);
+    // Continuation lines are indented one level deeper than this block's *children*
+    // would be, and carry no bullet, so they're unambiguous on import.
+    let cont_indent = "  ".repeat(depth + 1);
+    let mut out = String::new();
+    let mut lines = content.split('\n');
+    let first = lines.next().unwrap_or("");
+    // Bug #1: append a stable id marker on the first line. Continuation lines come
+    // after, so the marker sits at the end of the block's first line only.
+    out.push_str(&format!("{bullet_indent}- {first} <!-- id:{id} -->\n"));
+    for line in lines {
+        // Mark continuations with a zero-width-safe sentinel: deeper indent + no
+        // bullet. A literal empty line is preserved as an empty continuation.
+        out.push_str(&format!("{cont_indent}\\ {line}\n"));
+    }
+    out
+}
+
 fn xml_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -479,6 +529,43 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let result = db.import_markdown_file(&file, None, "user").unwrap();
         assert!(result.contains("3 blocks"));
+    }
+
+    // Bug #12 + #13: hierarchy and multi-line block content survive an export→import
+    // round-trip (order correct, nesting preserved, one block stays one block).
+    #[test]
+    fn test_roundtrip_preserves_hierarchy_and_multiline() {
+        let db = Database::open_in_memory().unwrap();
+        let page = db.create_page("Tree", None, false, None, "user").unwrap();
+        let a = db.create_block(&page.id, "Parent A", None, None, "user").unwrap();
+        db.create_block(&page.id, "Child A1", Some(&a.id), None, "user").unwrap();
+        db.create_block(&page.id, "Child A2", Some(&a.id), None, "user").unwrap();
+        // A root sibling AFTER the children — the old global position sort scrambled this.
+        db.create_block(&page.id, "Root B", None, None, "user").unwrap();
+        // A multi-line block (e.g. a fenced code block stored as one block).
+        db.create_block(&page.id, "line one\nline two\nline three", None, None, "user").unwrap();
+
+        let dir = temp_dir();
+        db.export_markdown(dir.path()).unwrap();
+
+        let db2 = Database::open_in_memory().unwrap();
+        db2.import_markdown_dir(dir.path(), "user").unwrap();
+        let imported = db2.get_page_by_title("Tree").unwrap().unwrap();
+        let blocks = db2.get_page_blocks(&imported.id).unwrap();
+
+        // 5 blocks, not split: Parent A, Child A1, Child A2, Root B, multi-line.
+        assert_eq!(blocks.len(), 5, "multi-line block must not split: {:?}", blocks.iter().map(|b| &b.content).collect::<Vec<_>>());
+
+        let parent = blocks.iter().find(|b| b.content == "Parent A").unwrap();
+        let c1 = blocks.iter().find(|b| b.content == "Child A1").unwrap();
+        let c2 = blocks.iter().find(|b| b.content == "Child A2").unwrap();
+        assert_eq!(c1.parent_id, Some(parent.id), "Child A1 nested under Parent A");
+        assert_eq!(c2.parent_id, Some(parent.id), "Child A2 nested under Parent A");
+        let root_b = blocks.iter().find(|b| b.content == "Root B").unwrap();
+        assert_eq!(root_b.parent_id, None, "Root B stays a root");
+        let multi = blocks.iter().find(|b| b.content.contains("line two")).unwrap();
+        assert_eq!(multi.content, "line one\nline two\nline three");
+        assert_eq!(multi.parent_id, None);
     }
 
     #[test]

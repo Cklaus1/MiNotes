@@ -1,5 +1,19 @@
+const MAX_TOASTS = 5;
+
+function enforceToastCap(): void {
+  const existing = document.querySelectorAll(".minotes-toast");
+  if (existing.length >= MAX_TOASTS) {
+    // Remove the oldest toasts to keep the cap
+    const toRemove = existing.length - MAX_TOASTS + 1;
+    for (let i = 0; i < toRemove; i++) {
+      existing[i]?.remove();
+    }
+  }
+}
+
 /** Simple imperative toast notification — no React component needed. */
 export function showToast(message: string, duration = 5000): void {
+  enforceToastCap();
   const el = document.createElement("div");
   el.className = "minotes-toast";
   el.textContent = message;
@@ -16,6 +30,7 @@ export function showToast(message: string, duration = 5000): void {
 
 /** Toast with an Undo button. Returns true if undo was clicked (within timeout). */
 export function showUndoToast(message: string, onUndo: () => void, duration = 5000): void {
+  enforceToastCap();
   const el = document.createElement("div");
   el.className = "minotes-toast minotes-toast-undo";
 

@@ -597,6 +597,7 @@ export const mockHandlers: Record<string, (args: any) => any> = {
   toggle_css_snippet: () => ({ id: "", name: "", css: "", enabled: true, source: "custom", created_at: now }),
   delete_css_snippet: () => true,
   get_enabled_css_snippets: () => [],
+  update_css_snippet: ({ name, css }: { name: string; css: string }) => ({ id: genId(), name, css, enabled: true, source: "custom", created_at: now }),
   save_png_to_downloads: ({ filename }: { filename: string }) => `Downloads/${filename}`,
 
   // Feature 8: Link Preview — mock OG metadata
@@ -756,15 +757,18 @@ export const mockHandlers: Record<string, (args: any) => any> = {
     last_sync: null,
   }),
 
-  // AI: TODO count
+  // AI: TODO count — mirrors the canonical detector (Bug #23/#24): unchecked
+  // checkboxes (-/*/+) and action keywords, both requiring non-empty text.
   get_pending_todo_count: () => {
+    const checkboxRegex = /^\s*[-*+]\s+\[ \]\s+\S/;
+    // Test the whole trimmed line (not just the first token) so multi-word
+    // keywords like "Follow up:" match (Bug: mockBackend miscount).
+    const actionRegex = /^(todo|action|follow up|follow-up|next):\s*\S/i;
     let count = 0;
     for (const block of blocks.values()) {
       for (const line of block.content.split('\n')) {
         const trimmed = line.trim();
-        if (trimmed.startsWith('- [ ]') || trimmed.startsWith('* [ ]') || trimmed.startsWith('+ [ ]')) {
-          count++;
-        } else if (/^(todo|action|follow up|follow-up|next):/i.test(trimmed.split(/\s/)[0])) {
+        if (checkboxRegex.test(trimmed) || actionRegex.test(trimmed)) {
           count++;
         }
       }

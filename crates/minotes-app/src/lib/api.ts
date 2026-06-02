@@ -481,6 +481,9 @@ export const deleteCssSnippet = (name: string) =>
 export const getEnabledCssSnippets = () =>
   invoke<CssSnippet[]>("get_enabled_css_snippets");
 
+export const updateCssSnippet = (name: string, css: string) =>
+  invoke<CssSnippet>("update_css_snippet", { name, css });
+
 // Undo
 export const undo = () =>
   invoke<number | null>("undo");
@@ -591,5 +594,12 @@ export const gitSyncStatus = () =>
 // AI: TODO count
 export const getPendingTodoCount = () =>
   invoke<number>("get_pending_todo_count");
+
+// AI: List all pending TODOs with source page titles
+export const listPendingTodos = () =>
+  invoke<Array<{ page_title: string; text: string }>>("list_pending_todos");
+
+export const listPendingTodosWithIds = () =>
+  invoke<Array<{ page_id: string; page_title: string; text: string }>>("list_pending_todos_with_page_ids");
 
 export { isTauri };

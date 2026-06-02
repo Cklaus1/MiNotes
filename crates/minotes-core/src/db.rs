@@ -71,6 +71,7 @@ CREATE TABLE IF NOT EXISTS events (
     payload     TEXT NOT NULL,
     actor       TEXT NOT NULL DEFAULT 'user',
     created_at  TEXT NOT NULL
+    -- v2 migration adds: undone INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_folders_parent ON folders(parent_id);
@@ -264,13 +265,18 @@ impl Database {
     /// Only SELECT statements are allowed.
     pub fn run_query(&self, sql: &str) -> Result<serde_json::Value> {
         let trimmed = sql.trim();
-        if !trimmed.to_uppercase().starts_with("SELECT") {
+        let stmt = self.conn.prepare(trimmed)?;
+        // Bug #27: ask SQLite whether the prepared statement is actually read-only,
+        // instead of a string-prefix check (which both rejects legitimate read-only
+        // `WITH`/`EXPLAIN` queries and is an unsound allowlist). `readonly()` is true
+        // only for statements that cannot modify the database.
+        if !stmt.readonly() {
             return Err(crate::error::Error::InvalidInput(
-                "Only SELECT queries are allowed".to_string(),
+                "Only read-only queries are allowed".to_string(),
             ));
         }
 
-        let mut stmt = self.conn.prepare(trimmed)?;
+        let mut stmt = stmt;
         let col_count = stmt.column_count();
         let col_names: Vec<String> = (0..col_count)
             .map(|i| stmt.column_name(i).unwrap_or("?").to_string())
@@ -311,9 +317,44 @@ impl Database {
 
     fn init(&self) -> Result<()> {
         self.conn.execute_batch("PRAGMA journal_mode=WAL;")?;
+        self.conn.execute_batch("PRAGMA synchronous=FULL;")?;
         self.conn.execute_batch("PRAGMA foreign_keys=ON;")?;
+        self.conn.execute_batch("PRAGMA cache_size=-20000;")?;   // 20 MB
+        self.conn.execute_batch("PRAGMA mmap_size=134217728;")?; // 128 MB
+        self.conn.execute_batch("PRAGMA temp_store=MEMORY;")?;
+        self.conn.execute_batch("PRAGMA busy_timeout=5000;")?;  // 5s
         self.conn.execute_batch(SCHEMA)?;
         self.conn.execute_batch(FTS_SCHEMA)?;
+        self.run_migrations()?;
+        Ok(())
+    }
+
+    /// Sequential schema migrations. Each migration runs once per database,
+    /// in order, gated by `PRAGMA user_version`. Add new migrations to the
+    /// end of this list with the next sequential version number; never
+    /// renumber or remove existing entries.
+    fn run_migrations(&self) -> Result<()> {
+        const MIGRATIONS: &[(i64, &str)] = &[
+            // v1: initial baseline — schema above is canonical, nothing to do.
+            (1, ""),
+            // v2: undone flag on events so undo doesn't destroy history.
+            (2, "ALTER TABLE events ADD COLUMN undone INTEGER NOT NULL DEFAULT 0;"),
+        ];
+
+        let current: i64 = self
+            .conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap_or(0);
+
+        for &(version, sql) in MIGRATIONS {
+            if version > current {
+                if !sql.is_empty() {
+                    self.conn.execute_batch(sql)?;
+                }
+                self.conn
+                    .execute_batch(&format!("PRAGMA user_version = {version};"))?;
+            }
+        }
         Ok(())
     }
 }

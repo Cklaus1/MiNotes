@@ -22,17 +22,16 @@ export default function BacklinksPanel({ pageId, onPageClick }: Props) {
 
     api.getBacklinks(pageId).then(async (links) => {
       if (cancelled) return;
-      // For each backlink, try to get the source block and its page
+      // Look up the source block for each backlink by exact ID
       const enriched: BacklinkEntry[] = [];
       const pages = await api.listPages(500);
       const pageMap = new Map(pages.map(p => [p.id, p]));
 
       for (const link of links) {
         try {
-          const blocks = await api.search(link.from_block.slice(0, 8), 1);
-          const block = blocks.find(b => b.id === link.from_block);
+          const block = await api.getBlock(link.from_block);
           const page = block ? pageMap.get(block.page_id) : undefined;
-          enriched.push({ link, block, page });
+          enriched.push({ link, block: block ?? undefined, page });
         } catch {
           enriched.push({ link });
         }
@@ -59,7 +58,7 @@ export default function BacklinksPanel({ pageId, onPageClick }: Props) {
           onClick={() => entry.block && onPageClick(entry.block.page_id)}
         >
           {entry.page && <strong>{entry.page.title}: </strong>}
-          {entry.block?.content.slice(0, 100) ?? entry.link.from_block.slice(0, 8)}
+          {entry.block?.content.slice(0, 100) ?? "(block not found)"}
         </div>
       ))}
     </div>

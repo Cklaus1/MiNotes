@@ -17,15 +17,23 @@ export default function markdownItWikiLink(md: any) {
     const closePos = src.indexOf("]]", pos + 2);
     if (closePos === -1) return false;
 
-    const pageName = src.slice(pos + 2, closePos);
-    if (!pageName || pageName.includes("[") || pageName.includes("]")) {
+    const raw = src.slice(pos + 2, closePos);
+    if (!raw || raw.includes("[") || raw.includes("]")) {
+      return false;
+    }
+
+    // Support [[title|id]] format — split on first "|" to extract display title and page ID
+    const pipeIdx = raw.indexOf("|");
+    const pageName = pipeIdx >= 0 ? raw.slice(0, pipeIdx) : raw;
+    if (!pageName) {
       return false;
     }
 
     if (!silent) {
       const token = state.push("wiki_link", "", 0);
       token.content = pageName;
-      token.markup = `[[${pageName}]]`;
+      token.attrs = pipeIdx >= 0 ? [{ name: "data-page-id", value: raw.slice(pipeIdx + 1) }] : undefined;
+      token.markup = `[[${raw}]]`;
     }
 
     state.pos = closePos + 2;

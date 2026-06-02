@@ -14,8 +14,21 @@ impl Database {
         journal_date: Option<NaiveDate>,
         actor: &str,
     ) -> Result<Page> {
+        self.create_page_with_id(Uuid::now_v7(), title, icon, is_journal, journal_date, actor)
+    }
+
+    /// Create a page with a caller-supplied id. Used by sync import to preserve the
+    /// stable page UUID from frontmatter so identity survives the round-trip (Bug #3).
+    pub(crate) fn create_page_with_id(
+        &self,
+        id: Uuid,
+        title: &str,
+        icon: Option<&str>,
+        is_journal: bool,
+        journal_date: Option<NaiveDate>,
+        actor: &str,
+    ) -> Result<Page> {
         let now = Utc::now();
-        let id = Uuid::now_v7();
 
         // Check for duplicate title
         if self.get_page_by_title(title)?.is_some() {
@@ -59,6 +72,9 @@ impl Database {
         };
 
         self.emit_event("page.created", &page.id, "page", &page, actor)?;
+        // Bug #32: backfill link rows for existing [[Title]] references that were
+        // skipped while this page didn't exist yet, so backlinks are immediately correct.
+        self.backfill_links_for_page(title, &page.id, actor)?;
         Ok(page)
     }
 
@@ -120,6 +136,14 @@ impl Database {
         if let Some(ref p) = page {
             self.emit_event("page.deleted", &p.id, "page", p, actor)?;
         }
+        // Bug #29: `properties` has no FK to pages/blocks, so deleting the page (and
+        // cascade-deleting its blocks) would orphan their property rows forever.
+        // Clean up the page's own properties and those of all its blocks explicitly.
+        self.conn.execute(
+            "DELETE FROM properties WHERE entity_id = ?1
+                OR entity_id IN (SELECT id FROM blocks WHERE page_id = ?1)",
+            rusqlite::params![id.to_string()],
+        )?;
         let count = self
             .conn
             .execute("DELETE FROM pages WHERE id = ?1", rusqlite::params![id.to_string()])?;
@@ -127,6 +151,16 @@ impl Database {
     }
 
     pub fn rename_page(&self, id: &Uuid, new_title: &str, actor: &str) -> Result<Page> {
+        // Pre-check for conflict so we can return a friendly error rather than
+        // a raw SQLite UNIQUE constraint violation.
+        if let Some(existing) = self.get_page_by_title(new_title)? {
+            if existing.id != *id {
+                return Err(Error::AlreadyExists(format!(
+                    "A page titled '{new_title}' already exists"
+                )));
+            }
+        }
+
         let now = Utc::now();
         let count = self.conn.execute(
             "UPDATE pages SET title = ?1, updated_at = ?2 WHERE id = ?3",

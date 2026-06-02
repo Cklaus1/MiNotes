@@ -25,7 +25,7 @@ export function extractTodosFromBlock(
   const todos: TodoItem[] = [];
   const lines = content.split("\n");
 
-  const checkboxRegex = /^\s*[-*]\s+\[([ xX])\]\s+(.*)/;
+  const checkboxRegex = /^\s*[-*+]\s+\[([ xX])\]\s+(.*)/;
   const actionRegex = /^\s*(TODO|ACTION|FOLLOW UP|NEXT|FOLLOW-UP):\s*(.*)/i;
 
   for (let i = 0; i < lines.length; i++) {

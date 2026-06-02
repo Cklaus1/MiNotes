@@ -119,6 +119,15 @@ export default function ObsidianPluginBrowser({ open, onClose }: Props) {
             Paste the plugin's manifest.json and main.js contents below.
           </div>
 
+          {!PluginLoader.isLoadingEnabled() && (
+            <div className="query-error" style={{ marginBottom: 8 }}>
+              ⚠️ Plugin loading is disabled. Loading a plugin runs untrusted code with full
+              access to your notes and system. It is off by default for safety. To enable for
+              trusted local development only, set <code>minotes-allow-unsafe-plugin-loading</code> to
+              <code>1</code> in localStorage and reload.
+            </div>
+          )}
+
           <textarea
             className="query-input"
             value={manifestJson}
@@ -138,8 +147,8 @@ export default function ObsidianPluginBrowser({ open, onClose }: Props) {
         </div>
 
         <div className="query-actions">
-          <button className="btn btn-primary" onClick={handleLoad} disabled={loading || !manifestJson.trim() || !pluginCode.trim()}>
-            {loading ? 'Loading...' : 'Load & Enable Plugin'}
+          <button className="btn btn-primary" onClick={handleLoad} disabled={loading || !manifestJson.trim() || !pluginCode.trim() || !PluginLoader.isLoadingEnabled()}>
+            {loading ? 'Loading...' : PluginLoader.isLoadingEnabled() ? 'Load & Enable Plugin' : 'Plugin Loading Disabled'}
           </button>
         </div>
 

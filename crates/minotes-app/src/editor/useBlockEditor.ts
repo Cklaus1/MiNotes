@@ -451,16 +451,44 @@ export function useBlockEditor({
   // Sync external content changes (e.g. after backend refresh)
   useEffect(() => {
     if (!editor) return;
-    // Skip sync if we just saved from this editor (avoids setContent corrupting complex nodes)
-    if (skipSyncRef.current) {
+    const incoming = content.trim();
+    const currentMarkdown = ((editor.storage as any).markdown?.getMarkdown() ?? "").trim();
+    if (incoming === currentMarkdown) {
       skipSyncRef.current = false;
       return;
     }
-    const currentMarkdown = ((editor.storage as any).markdown?.getMarkdown() ?? "").trim();
-    if (content.trim() !== currentMarkdown) {
-      editor.commands.setContent(content);
+    // Bug #21: skip echoes of our own save in a VALUE-based way, not via a one-shot
+    // boolean. If `content` changed twice before this effect ran, a single boolean
+    // would be cleared by the first run and the second (possibly stale) change would
+    // call setContent and wipe in-progress complex-node edits. Comparing against the
+    // last-saved value (contentRef) catches the echo regardless of timing.
+    if (skipSyncRef.current || incoming === contentRef.current.trim()) {
+      skipSyncRef.current = false;
+      contentRef.current = incoming;
+      return;
     }
+    editor.commands.setContent(content);
+    contentRef.current = incoming;
   }, [content, editor]);
+
+  // Bug #5: flush unsaved edits on unmount. Navigation swaps the active page and tears
+  // the editor down synchronously, before the 50ms blur-save timer can fire — silently
+  // dropping the user's last keystrokes. Save on cleanup if the content changed.
+  useEffect(() => {
+    return () => {
+      const ed = editorInstanceRef.current;
+      if (!ed) return;
+      try {
+        const markdown = ((ed.storage as any).markdown?.getMarkdown() ?? "").trim();
+        if (markdown !== contentRef.current.trim()) {
+          contentRef.current = markdown;
+          onSaveRef.current(markdown);
+        }
+      } catch {
+        // editor already destroyed — nothing we can do
+      }
+    };
+  }, []);
 
   return editor;
 }

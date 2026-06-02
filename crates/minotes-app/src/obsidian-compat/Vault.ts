@@ -61,17 +61,28 @@ export class Vault extends Events {
   }
 
   async modify(file: TFile, data: string): Promise<void> {
-    // Get existing blocks, update or recreate
+    // Bug #14: reconcile in place instead of delete-all-then-recreate, which
+    // destroyed every block's identity (breaking ((block refs)), per-block data)
+    // on every plugin write. We update existing blocks positionally, create only
+    // the extra new lines, and delete only the surplus old blocks — so unchanged
+    // blocks keep their ids.
     const tree = await api.getPageTree(file._pageId);
+    const existing = tree.blocks;
     const newLines = data.split('\n').filter((l: string) => l.trim());
 
-    // Delete existing blocks
-    for (const block of tree.blocks) {
-      await api.deleteBlock(block.id);
+    const common = Math.min(existing.length, newLines.length);
+    for (let i = 0; i < common; i++) {
+      if (existing[i].content !== newLines[i]) {
+        await api.updateBlock(existing[i].id, newLines[i]);
+      }
     }
-    // Create new blocks
-    for (const line of newLines) {
-      await api.createBlock(file._pageId, line);
+    // Extra new lines → create.
+    for (let i = common; i < newLines.length; i++) {
+      await api.createBlock(file._pageId, newLines[i]);
+    }
+    // Surplus old blocks → delete.
+    for (let i = common; i < existing.length; i++) {
+      await api.deleteBlock(existing[i].id);
     }
     this.trigger('modify', file);
   }

@@ -69,7 +69,7 @@ impl Database {
         )?;
 
         let highlights = stmt
-            .query_map([pdf_path], |row| Ok(Self::row_to_highlight(row)))?
+            .query_map([pdf_path], |row| Self::row_to_highlight(row))?
             .collect::<std::result::Result<Vec<_>, _>>()?;
 
         Ok(highlights)
@@ -80,7 +80,7 @@ impl Database {
             "SELECT id, pdf_path, page_num, x, y, width, height, color, text, note, block_id, created_at, updated_at
              FROM highlights WHERE id = ?1",
             [id.to_string()],
-            |row| Ok(Self::row_to_highlight(row)),
+            |row| Self::row_to_highlight(row),
         );
 
         match result {
@@ -127,7 +127,7 @@ impl Database {
         )?;
 
         let highlights = stmt
-            .query_map([&pattern], |row| Ok(Self::row_to_highlight(row)))?
+            .query_map([&pattern], |row| Self::row_to_highlight(row))?
             .collect::<std::result::Result<Vec<_>, _>>()?;
 
         Ok(highlights)
@@ -168,30 +168,34 @@ impl Database {
         Ok(highlight)
     }
 
-    fn row_to_highlight(row: &rusqlite::Row) -> Highlight {
-        let id_str: String = row.get_unwrap(0);
-        let block_id_str: Option<String> = row.get_unwrap(10);
-        let created_str: String = row.get_unwrap(11);
-        let updated_str: String = row.get_unwrap(12);
+    // Bug #8: return a Result and fall back gracefully instead of panicking on a
+    // malformed row, which would unwind across the Tauri FFI boundary and crash.
+    fn row_to_highlight(row: &rusqlite::Row) -> rusqlite::Result<Highlight> {
+        let id_str: String = row.get(0)?;
+        let block_id_str: Option<String> = row.get(10)?;
+        let created_str: String = row.get(11)?;
+        let updated_str: String = row.get(12)?;
 
-        Highlight {
-            id: Uuid::parse_str(&id_str).unwrap(),
-            pdf_path: row.get_unwrap(1),
-            page_num: row.get_unwrap(2),
-            x: row.get_unwrap(3),
-            y: row.get_unwrap(4),
-            width: row.get_unwrap(5),
-            height: row.get_unwrap(6),
-            color: row.get_unwrap(7),
-            text: row.get_unwrap(8),
-            note: row.get_unwrap(9),
-            block_id: block_id_str.map(|s| Uuid::parse_str(&s).unwrap()),
-            created_at: chrono::DateTime::parse_from_rfc3339(&created_str)
-                .unwrap()
-                .with_timezone(&Utc),
-            updated_at: chrono::DateTime::parse_from_rfc3339(&updated_str)
-                .unwrap()
-                .with_timezone(&Utc),
-        }
+        let parse_ts = |s: &str| {
+            chrono::DateTime::parse_from_rfc3339(s)
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now())
+        };
+
+        Ok(Highlight {
+            id: Uuid::parse_str(&id_str).unwrap_or_default(),
+            pdf_path: row.get(1)?,
+            page_num: row.get(2)?,
+            x: row.get(3)?,
+            y: row.get(4)?,
+            width: row.get(5)?,
+            height: row.get(6)?,
+            color: row.get(7)?,
+            text: row.get(8)?,
+            note: row.get(9)?,
+            block_id: block_id_str.and_then(|s| Uuid::parse_str(&s).ok()),
+            created_at: parse_ts(&created_str),
+            updated_at: parse_ts(&updated_str),
+        })
     }
 }

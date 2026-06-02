@@ -129,10 +129,20 @@ pub fn enable_sync(db: &Database) -> Result<GitSyncStatus> {
 
     // If remote is configured, pull existing content first
     if git_cmd::has_remote(&sync_dir) {
-        // Pull remote content (ignore errors — remote might be empty/unreachable)
-        let _ = git_cmd::pull_rebase(&sync_dir);
-        // Import any pulled files into DB
-        let _ = db.sync_dir(&sync_dir, "git-sync", false, false);
+        match git_cmd::pull_rebase(&sync_dir) {
+            Ok(_) => {
+                // Import any pulled files into DB
+                let _ = db.sync_dir(&sync_dir, "git-sync", false, false);
+            }
+            Err(e) => {
+                // Remote might be empty/unreachable or have conflicts
+                if e.to_string().contains("merge_conflict") {
+                    let _ = git_cmd::auto_resolve_conflicts(&sync_dir);
+                    let _ = db.sync_dir(&sync_dir, "git-sync", false, false);
+                }
+                // Otherwise silently ignore — first push to empty remote is common
+            }
+        }
     }
 
     // Export: DB → filesystem (merges local + remote content)
@@ -191,7 +201,7 @@ pub fn sync_git_ops() -> Result<(bool, u32, Option<String>)> {
 
     // Pull with rebase
     let mut remote_had_changes = match git_cmd::pull_rebase(&sync_dir) {
-        Ok(_) => true,  // Conservative: assume remote had content, import is idempotent
+        Ok(_) => true,  // pull succeeded — import is idempotent, always safe to re-import
         Err(ref e) if e.to_string().contains("merge_conflict") => {
             let resolved = git_cmd::auto_resolve_conflicts(&sync_dir)?;
             conflicts_resolved = resolved.len() as u32;

@@ -76,18 +76,28 @@ export function detectTodoState(content: string): "todo" | "doing" | "done" | nu
 function getDepth(blockId: string, parentMap: Map<string, string | null>): number {
   let depth = 0;
   let current = parentMap.get(blockId);
+  const seen = new Set<string>([blockId]);
   while (current) {
+    if (seen.has(current)) break; // cycle guard
+    seen.add(current);
     depth++;
+    if (depth > 100) break; // hard cap
     current = parentMap.get(current);
   }
   return depth;
 }
 
-function countDescendants(blockId: string, childrenMap: Map<string, string[]>): number {
+function countDescendants(
+  blockId: string,
+  childrenMap: Map<string, string[]>,
+  seen: Set<string> = new Set(),
+): number {
+  if (seen.has(blockId)) return 0; // cycle guard
+  seen.add(blockId);
   const children = childrenMap.get(blockId) ?? [];
   let count = children.length;
   for (const child of children) {
-    count += countDescendants(child, childrenMap);
+    count += countDescendants(child, childrenMap, seen);
   }
   return count;
 }
@@ -160,9 +170,16 @@ export function blocksToFlow(
     return stripped.length === 0;
   };
 
+  // Cycle detection: track visited block IDs to prevent infinite recursion
+  // on malformed data (e.g., block whose parent_id points back to a descendant)
+  const visited = new Set<string>();
+
   // Recursively add blocks — skip empty blocks (collapse empty chains)
   // parentNodeId: the visual parent in the mind map (may skip empty ancestors)
   const addBlock = (block: Block, parentNodeId: string) => {
+    if (visited.has(block.id)) return; // cycle guard
+    visited.add(block.id);
+
     const isEmpty = isBlockEmpty(block.content);
     const isBeingEdited = block.id === editingNodeId;
 

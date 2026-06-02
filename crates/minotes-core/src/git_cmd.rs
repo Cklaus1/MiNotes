@@ -74,11 +74,11 @@ pub fn commit_all(dir: &Path, message: &str) -> Result<bool> {
         return Err(Error::Git(format!("git add failed: {stderr}")));
     }
 
-    // Check if there's anything to commit
-    let (_, _, has_changes) = run_git(dir, &["diff", "--cached", "--quiet"])?;
-    if has_changes {
-        // Exit code 0 means no changes
-        return Ok(false);
+    // Check if there's anything to commit. `git diff --cached --quiet` exits 0 when
+    // the index is CLEAN (no staged changes) and 1 when there ARE staged changes.
+    let (_, _, clean) = run_git(dir, &["diff", "--cached", "--quiet"])?;
+    if clean {
+        return Ok(false); // nothing staged → nothing to commit
     }
 
     // Commit
@@ -122,9 +122,17 @@ pub fn push(dir: &Path) -> Result<bool> {
     Ok(true)
 }
 
-/// Auto-resolve merge conflicts by accepting the remote version (most recent wins).
-/// During rebase, "ours" = the branch we're rebasing onto (remote), "theirs" = our local commit.
-/// So `--ours` gives us the remote version, which is what we want.
+/// Auto-resolve merge conflicts WITHOUT losing data (Bug #2, #26).
+///
+/// The previous implementation ran `git checkout --ours .`, which silently discarded
+/// one entire side of every conflicted file — permanent data loss, and with a
+/// direction that contradicted its own "most recent wins" comment. Instead, for each
+/// conflicted file we keep BOTH versions: the local edit is preserved in place, and
+/// the incoming (remote) version is written to a sibling `<name>.conflict-<host>.md`
+/// copy so the user can review and merge manually. Nothing is destroyed.
+///
+/// During a rebase, `--theirs` is our local commit being replayed and `--ours` is the
+/// upstream (remote) we're rebasing onto.
 pub fn auto_resolve_conflicts(dir: &Path) -> Result<Vec<String>> {
     // List conflicted files
     let (stdout, _, _) = run_git(dir, &["diff", "--name-only", "--diff-filter=U"])?;
@@ -138,11 +146,18 @@ pub fn auto_resolve_conflicts(dir: &Path) -> Result<Vec<String>> {
         return Ok(Vec::new());
     }
 
-    // During rebase: --ours = remote (branch we're rebasing onto), --theirs = local commit
-    // We want remote to win (most recent from other device)
-    let (_, stderr, ok) = run_git(dir, &["checkout", "--ours", "."])?;
-    if !ok {
-        return Err(Error::Git(format!("git checkout --ours failed: {stderr}")));
+    let host = get_hostname();
+    for file in &conflicted {
+        // Save the upstream side (stage :2 = "ours" during rebase = the remote commit
+        // we're rebasing onto) to a conflict copy so it isn't lost.
+        let (other, _, ok) = run_git(dir, &["show", &format!(":2:{file}")])?;
+        if ok && !other.is_empty() {
+            if let Some(conflict_path) = conflict_copy_path(dir, file, &host) {
+                let _ = std::fs::write(&conflict_path, other.as_bytes());
+            }
+        }
+        // Keep our local edit (stage :3 = "theirs" during rebase) in the working tree.
+        let _ = run_git(dir, &["checkout", "--theirs", "--", file]);
     }
 
     // Stage resolved files
@@ -167,6 +182,20 @@ pub fn auto_resolve_conflicts(dir: &Path) -> Result<Vec<String>> {
     }
 
     Ok(conflicted)
+}
+
+/// Build the path for a conflict copy: `Notes.md` → `Notes.conflict-<host>.md`.
+/// Returns None if the path can't be represented.
+fn conflict_copy_path(dir: &Path, rel_file: &str, host: &str) -> Option<std::path::PathBuf> {
+    let full = dir.join(rel_file);
+    let stem = full.file_stem()?.to_string_lossy().to_string();
+    let ext = full.extension().map(|e| e.to_string_lossy().to_string());
+    let safe_host: String = host.chars().map(|c| if c.is_alphanumeric() { c } else { '-' }).collect();
+    let new_name = match ext {
+        Some(e) => format!("{stem}.conflict-{safe_host}.{e}"),
+        None => format!("{stem}.conflict-{safe_host}"),
+    };
+    Some(full.with_file_name(new_name))
 }
 
 /// Get the system hostname for commit messages.

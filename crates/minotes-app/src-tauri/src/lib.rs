@@ -25,7 +25,25 @@ fn base_dir() -> PathBuf {
 }
 
 fn db_path() -> PathBuf {
-    base_dir().join("default.db")
+    base_dir().join(format!("{}.db", active_graph_name()))
+}
+
+// Bug #16: the active graph selection must survive restarts. Persist the name to a
+// small file in the data dir; read it at startup so we reopen the correct DB.
+fn active_graph_file() -> PathBuf {
+    base_dir().join("active_graph")
+}
+
+fn active_graph_name() -> String {
+    std::fs::read_to_string(active_graph_file())
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "default".to_string())
+}
+
+fn set_active_graph_name(name: &str) {
+    let _ = std::fs::write(active_graph_file(), name);
 }
 
 fn dirs_next() -> Option<PathBuf> {
@@ -79,9 +97,12 @@ fn create_page(state: State<'_, AppState>, title: String) -> Result<Page, String
 
 #[tauri::command]
 fn delete_page(state: State<'_, AppState>, id: String) -> Result<bool, String> {
+    // Soft delete: route to trash so the user can recover. Permanent delete is
+    // exposed separately via `permanently_delete`.
     let db = state.db.lock().map_err(|e| e.to_string())?;
     let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
-    db.delete_page(&uuid, "user").map_err(|e| e.to_string())
+    db.trash_page(&uuid).map_err(|e| e.to_string())?;
+    Ok(true)
 }
 
 #[tauri::command]
@@ -638,7 +659,9 @@ fn switch_graph(state: State<'_, AppState>, name: String) -> Result<bool, String
     let mut db = state.db.lock().map_err(|e| e.to_string())?;
     *db = new_db;
     let mut current = state.current_graph.lock().map_err(|e| e.to_string())?;
-    *current = name;
+    *current = name.clone();
+    // Bug #16: persist the selection so it survives a restart.
+    set_active_graph_name(&name);
     Ok(true)
 }
 
@@ -804,6 +827,14 @@ fn delete_css_snippet(state: State<'_, AppState>, name: String) -> Result<bool, 
 fn get_enabled_css_snippets(state: State<'_, AppState>) -> Result<Vec<CssSnippet>, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
     db.get_enabled_snippets().map_err(|e| e.to_string())
+}
+
+// Bug #34: atomic CSS snippet edit. Previously the UI did delete-then-re-add (data
+// loss if interrupted, lost id/created_at). This exposes the existing in-place update.
+#[tauri::command]
+fn update_css_snippet(state: State<'_, AppState>, name: String, css: String) -> Result<CssSnippet, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.update_snippet_css(&name, &css).map_err(|e| e.to_string())
 }
 
 // ── Web Clipper API (F-021) ──
@@ -1193,6 +1224,32 @@ fn get_pending_todo_count(db: tauri::State<AppState>) -> Result<usize, String> {
     conn.count_pending_todos().map_err(|e| e.to_string())
 }
 
+/// List all pending TODOs across all pages with source page titles.
+#[tauri::command]
+fn list_pending_todos(db: tauri::State<AppState>) -> Result<Vec<serde_json::Value>, String> {
+    let conn = db.db.lock().map_err(|e| e.to_string())?;
+    let todos = conn.list_pending_todos().map_err(|e| e.to_string())?;
+    Ok(todos
+        .into_iter()
+        .map(|t| {
+            serde_json::json!({ "page_title": t.page_title, "text": t.text })
+        })
+        .collect())
+}
+
+/// List all pending TODOs with page IDs for navigation.
+#[tauri::command]
+fn list_pending_todos_with_page_ids(db: tauri::State<AppState>) -> Result<Vec<serde_json::Value>, String> {
+    let conn = db.db.lock().map_err(|e| e.to_string())?;
+    let todos = conn.list_pending_todos_with_page_ids().map_err(|e| e.to_string())?;
+    Ok(todos
+        .into_iter()
+        .map(|t| {
+            serde_json::json!({ "page_id": t.page_id, "page_title": t.page_title, "text": t.text })
+        })
+        .collect())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let path = db_path();
@@ -1212,10 +1269,16 @@ pub fn run() {
                 if watcher.watch(&watch_dir, RecursiveMode::NonRecursive).is_err() {
                     return;
                 }
-                let wal_name = std::ffi::OsStr::new("default.db-wal");
+                // Bug #16: watch any graph's WAL, not a hard-coded "default.db-wal",
+                // so live-refresh tracks whichever graph is active.
                 for res in rx {
                     if let Ok(event) = res {
-                        let touched_wal = event.paths.iter().any(|p| p.file_name() == Some(wal_name));
+                        let touched_wal = event.paths.iter().any(|p| {
+                            p.file_name()
+                                .and_then(|n| n.to_str())
+                                .map(|n| n.ends_with(".db-wal"))
+                                .unwrap_or(false)
+                        });
                         if touched_wal {
                             let _ = app_handle.emit("db-changed", ());
                         }
@@ -1228,7 +1291,7 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .manage(AppState {
             db: Mutex::new(db),
-            current_graph: Mutex::new("default".to_string()),
+            current_graph: Mutex::new(active_graph_name()),
         })
         .invoke_handler(tauri::generate_handler![
             list_pages,
@@ -1305,6 +1368,7 @@ pub fn run() {
             toggle_css_snippet,
             delete_css_snippet,
             get_enabled_css_snippets,
+            update_css_snippet,
             undo,
             save_png_to_downloads,
             reorder_block,
@@ -1330,6 +1394,8 @@ pub fn run() {
             git_sync,
             git_sync_status,
             get_pending_todo_count,
+            list_pending_todos,
+            list_pending_todos_with_page_ids,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

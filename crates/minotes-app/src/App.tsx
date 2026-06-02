@@ -76,7 +76,19 @@ export default function App() {
     try {
       setLastError(null);
       console.log("[openPage]", titleOrId);
-      const tree = await api.getPageTree(titleOrId);
+      let tree;
+      try {
+        tree = await api.getPageTree(titleOrId);
+      } catch (notFound) {
+        // Bug #32: pages are no longer auto-created on every save. Instead, create
+        // a [[wiki-link]] target on demand the first time the user navigates to it.
+        // Only do this for title-based navigation (a UUID means a real page that
+        // genuinely doesn't exist — don't fabricate one).
+        const looksLikeUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(titleOrId);
+        if (looksLikeUuid) throw notFound;
+        const created = await api.createPage(titleOrId);
+        tree = await api.getPageTree(created.id);
+      }
       console.log("[openPage] got tree:", tree.page.title, "blocks:", tree.blocks.length);
       setActivePage(tree);
       setRefreshKey(k => k + 1);
@@ -240,7 +252,11 @@ export default function App() {
         setSyncErrorMsg(null);
         setSyncStatus(prev => prev ? { ...prev, last_sync: new Date().toISOString() } : prev);
         if (result.conflicts_resolved > 0) {
-          showToast(`Sync conflict resolved — previous version available in git history.`);
+          showToast(
+            `⚠ Sync conflict: ${result.conflicts_resolved} file(s) — your local changes were overwritten by the remote version. ` +
+              `The previous local version is still in git history (use 'git reflog' in ~/MiNotes_Sync to recover).`,
+            10000,
+          );
         }
         if (result.pages_imported > 0) {
           refresh();
@@ -350,35 +366,43 @@ export default function App() {
   // Keyboard shortcuts
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      // Bug #17: don't fire editor-disruptive chords while typing in an editor/input.
+      // A small whitelist (search, settings, sidebar toggle, theme, undo/redo) stays
+      // active; everything else bails out when focus is inside editable content.
+      const target = e.target as HTMLElement;
+      const inEditor =
+        !!target.closest?.(".ProseMirror") ||
+        target.isContentEditable ||
+        target.tagName === "INPUT" ||
+        target.tagName === "TEXTAREA";
       // Cmd/Ctrl+K — search
       if ((e.metaKey || e.ctrlKey) && e.key === "k") {
         e.preventDefault();
         setOpenPanel(prev => prev === "search" ? null : "search");
       }
       // Cmd/Ctrl+J — today's journal
-      if ((e.metaKey || e.ctrlKey) && e.key === "j") {
+      if ((e.metaKey || e.ctrlKey) && e.key === "j" && !inEditor) {
         e.preventDefault();
         openJournal();
       }
       // Cmd/Ctrl+Q — query panel
-      if ((e.metaKey || e.ctrlKey) && e.key === "q") {
+      if ((e.metaKey || e.ctrlKey) && e.key === "q" && !inEditor) {
         e.preventDefault();
         setOpenPanel(prev => prev === "query" ? null : "query");
       }
       // Cmd/Ctrl+G — graph view
-      if ((e.metaKey || e.ctrlKey) && e.key === "g") {
+      if ((e.metaKey || e.ctrlKey) && e.key === "g" && !inEditor) {
         e.preventDefault();
         setCanvasMode(prev => prev === "graph" ? null : "graph");
       }
       // Cmd/Ctrl+R — review panel
-      if ((e.metaKey || e.ctrlKey) && e.key === "r") {
+      if ((e.metaKey || e.ctrlKey) && e.key === "r" && !inEditor) {
         e.preventDefault();
         setOpenPanel(prev => prev === "review" ? null : "review");
       }
-      // Cmd/Ctrl+Z — undo (only when not inside editor)
+      // Cmd/Ctrl+Z — undo (only when not inside editor; editor has its own undo)
       if ((e.metaKey || e.ctrlKey) && e.key === "z" && !e.shiftKey) {
-        const target = e.target as HTMLElement;
-        if (!target.closest(".ProseMirror")) {
+        if (!inEditor) {
           e.preventDefault();
           executeUndo()
             .then(() => activePage ? openPage(activePage.page.id) : Promise.resolve())
@@ -387,7 +411,7 @@ export default function App() {
         }
       }
       // Cmd/Ctrl+Shift+Z — redo
-      if ((e.metaKey || e.ctrlKey) && e.key === "z" && e.shiftKey) {
+      if ((e.metaKey || e.ctrlKey) && e.key === "z" && e.shiftKey && !inEditor) {
         e.preventDefault();
         executeRedo()
           .then(() => activePage ? openPage(activePage.page.id) : Promise.resolve())
@@ -395,13 +419,13 @@ export default function App() {
           .catch(() => setLastError("Redo failed"));
       }
       // Cmd/Ctrl+N — new page
-      if ((e.metaKey || e.ctrlKey) && e.key === "n") {
+      if ((e.metaKey || e.ctrlKey) && e.key === "n" && !inEditor) {
         e.preventDefault();
         const title = prompt("Page title:");
         if (title?.trim()) createPage(title.trim());
       }
       // Cmd/Ctrl+W — new whiteboard / toggle draw mode
-      if ((e.metaKey || e.ctrlKey) && e.key === "w") {
+      if ((e.metaKey || e.ctrlKey) && e.key === "w" && !inEditor) {
         e.preventDefault();
         if (canvasMode === "draw") {
           setCanvasMode(null);
@@ -416,17 +440,17 @@ export default function App() {
         }
       }
       // Cmd/Ctrl+M — mind map view
-      if ((e.metaKey || e.ctrlKey) && e.key === "m") {
+      if ((e.metaKey || e.ctrlKey) && e.key === "m" && !inEditor) {
         e.preventDefault();
         if (activePage) setCanvasMode(prev => prev === "mindmap" ? null : "mindmap");
       }
       // Cmd/Ctrl+Shift+K — kanban view
-      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === "K") {
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === "K" && !inEditor) {
         e.preventDefault();
         if (activePage) setCanvasMode(prev => prev === "kanban" ? null : "kanban");
       }
       // Cmd/Ctrl+P — open PDF
-      if ((e.metaKey || e.ctrlKey) && e.key === "p") {
+      if ((e.metaKey || e.ctrlKey) && e.key === "p" && !inEditor) {
         e.preventDefault();
         const path = prompt("PDF file path:");
         if (path?.trim()) setPdfViewerPath(path.trim());
@@ -447,7 +471,7 @@ export default function App() {
         setRightSidebarVisible(prev => !prev);
       }
       // Phase 4: Ctrl+1-7 — open pinned pages by position
-      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey) {
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && !inEditor) {
         const num = parseInt(e.key, 10);
         if (num >= 1 && num <= 7) {
           e.preventDefault();
@@ -523,6 +547,28 @@ export default function App() {
         onPagesClick={() => setCanvasMode(prev => prev === "pages" ? null : "pages")}
         onSettingsClick={() => setOpenPanel(prev => prev === "settings" ? null : "settings")}
         onFolderSettings={(id) => setFolderSettingsId(prev => prev === id ? null : id)}
+        onTodoBadgeClick={async () => {
+          try {
+            const allPages = await api.listPages();
+            let todoPage = allPages.find(p => p.title === "All TODOs");
+            if (!todoPage) {
+              todoPage = await api.createPage("All TODOs");
+            }
+            const todos = await api.listPendingTodosWithIds();
+            const tree = await api.getPageTree(todoPage.id);
+            const existingTodoIds = tree.blocks.filter(b => b.content.startsWith("{{todo:")).map(b => b.id);
+            for (const id of existingTodoIds) {
+              await api.deleteBlock(id);
+            }
+            for (const todo of todos) {
+              const blockContent = `{{todo:pending}} [[${todo.page_title}|${todo.page_id}]] ${todo.text}`;
+              await api.createBlock(todoPage.id, blockContent);
+            }
+            openPage(todoPage.id);
+          } catch {
+            // ignore
+          }
+        }}
         activeMode={canvasMode === "graph" ? "graph" : canvasMode === "mindmap" ? "mindmap" : canvasMode === "draw" ? "whiteboard" : canvasMode === "kanban" ? "kanban" : canvasMode === "pages" ? "pages" : null}
         refreshKey={refreshKey}
         syncState={syncStatus?.enabled ? syncState : undefined}

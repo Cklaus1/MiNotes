@@ -60,25 +60,10 @@ export default function CssSnippetManager({ open, onClose }: Props) {
       return;
     }
     try {
-      await api.addCssSnippet(editOriginalName, editCss.trim());
-      // addCssSnippet would fail on duplicate, so we use a workaround:
-      // Actually we need to call a different approach. Let's delete and re-add? No, we have no update command.
-      // But we don't have update_snippet_css exposed. Let's just use the toggle pattern.
-      // Actually, looking at the backend, we have update_snippet_css but it's not exposed as a Tauri command.
-      // We'll work around by deleting and re-adding.
-    } catch {
-      // Expected — let's do delete + re-add
-    }
-    try {
-      // Find the snippet to preserve its source
-      const snippet = snippets.find(s => s.name === editOriginalName);
-      const source = snippet?.source ?? "custom";
-      await api.deleteCssSnippet(editOriginalName);
-      await api.addCssSnippet(editOriginalName, editCss.trim(), source);
-      // If it was enabled before, it stays enabled (default is enabled)
-      if (snippet && !snippet.enabled) {
-        await api.toggleCssSnippet(editOriginalName);
-      }
+      // Bug #34: atomic in-place update — preserves the snippet's id, source,
+      // enabled state, and created_at, and can't lose data mid-operation (the old
+      // delete-then-re-add could leave the snippet gone if the re-add threw).
+      await api.updateCssSnippet(editOriginalName, editCss.trim());
       await reloadSnippets();
       await loadSnippets();
       setMode(null);

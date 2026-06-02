@@ -114,7 +114,7 @@ impl Database {
 
         let cards = stmt
             .query_map(rusqlite::params![now, limit], |row| {
-                Ok(Self::row_to_card(row))
+                Self::row_to_card(row)
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
 
@@ -132,7 +132,7 @@ impl Database {
                 "SELECT id, block_id, card_type, due, stability, difficulty, reps, lapses, state, last_review, created_at, updated_at
                  FROM cards WHERE id = ?1",
                 [card_id.to_string()],
-                |row| Ok(Self::row_to_card(row)),
+                |row| Self::row_to_card(row),
             )
             .map_err(|_| Error::NotFound(format!("Card {card_id}")))?;
 
@@ -243,37 +243,37 @@ impl Database {
         Ok(rows > 0)
     }
 
-    fn row_to_card(row: &rusqlite::Row) -> Card {
-        let id_str: String = row.get_unwrap(0);
-        let block_id_str: String = row.get_unwrap(1);
-        let due_str: String = row.get_unwrap(3);
-        let last_review_str: Option<String> = row.get_unwrap(9);
-        let created_str: String = row.get_unwrap(10);
-        let updated_str: String = row.get_unwrap(11);
+    // Bug #8: must not panic on malformed rows (a bad UUID or non-RFC3339 timestamp
+    // from a CRDT merge, git-sync import, or older build would unwind across the Tauri
+    // FFI boundary and crash the app). Return a Result and fall back gracefully, like
+    // the block/page mappers do.
+    fn row_to_card(row: &rusqlite::Row) -> rusqlite::Result<Card> {
+        let id_str: String = row.get(0)?;
+        let block_id_str: String = row.get(1)?;
+        let due_str: String = row.get(3)?;
+        let last_review_str: Option<String> = row.get(9)?;
+        let created_str: String = row.get(10)?;
+        let updated_str: String = row.get(11)?;
 
-        Card {
-            id: Uuid::parse_str(&id_str).unwrap(),
-            block_id: Uuid::parse_str(&block_id_str).unwrap(),
-            card_type: row.get_unwrap(2),
-            due: chrono::DateTime::parse_from_rfc3339(&due_str)
-                .unwrap()
-                .with_timezone(&Utc),
-            stability: row.get_unwrap(4),
-            difficulty: row.get_unwrap(5),
-            reps: row.get_unwrap(6),
-            lapses: row.get_unwrap(7),
-            state: row.get_unwrap(8),
-            last_review: last_review_str.map(|s| {
-                chrono::DateTime::parse_from_rfc3339(&s)
-                    .unwrap()
-                    .with_timezone(&Utc)
-            }),
-            created_at: chrono::DateTime::parse_from_rfc3339(&created_str)
-                .unwrap()
-                .with_timezone(&Utc),
-            updated_at: chrono::DateTime::parse_from_rfc3339(&updated_str)
-                .unwrap()
-                .with_timezone(&Utc),
-        }
+        let parse_ts = |s: &str| {
+            chrono::DateTime::parse_from_rfc3339(s)
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now())
+        };
+
+        Ok(Card {
+            id: Uuid::parse_str(&id_str).unwrap_or_default(),
+            block_id: Uuid::parse_str(&block_id_str).unwrap_or_default(),
+            card_type: row.get(2)?,
+            due: parse_ts(&due_str),
+            stability: row.get(4)?,
+            difficulty: row.get(5)?,
+            reps: row.get(6)?,
+            lapses: row.get(7)?,
+            state: row.get(8)?,
+            last_review: last_review_str.map(|s| parse_ts(&s)),
+            created_at: parse_ts(&created_str),
+            updated_at: parse_ts(&updated_str),
+        })
     }
 }

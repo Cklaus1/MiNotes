@@ -15,12 +15,29 @@ export interface TagResult {
 export function extractTagsFromBlock(content: string): string[] {
   const tags = new Set<string>();
 
-  // 1. #tag patterns — word chars, hyphens, underscores, slashes
-  const tagRegex = /#([a-zA-Z0-9][a-zA-Z0-9_-]*(?:\/[a-zA-Z0-9][a-zA-Z0-9_-]*)*)/g;
+  // Bug #22: strip code regions before scanning for tags — fenced blocks and inline
+  // code routinely contain `#include`, `#define`, CSS ids, etc. that are not tags.
+  const withoutCode = content
+    .replace(/```[\s\S]*?```/g, " ") // fenced code blocks
+    .replace(/`[^`]*`/g, " "); // inline code spans
+
+  // 1. #tag patterns. A real tag is preceded by start-of-string or whitespace (NOT
+  //    by ':' or '/' as in `color:#fff` or a URL `...#section`), starts with a
+  //    LETTER (so `#123` issue refs and `#2bug` are excluded), and allows
+  //    word chars / hyphens / underscores / nested slashes.
+  const tagRegex = /(^|\s)#([a-zA-Z][a-zA-Z0-9_-]*(?:\/[a-zA-Z0-9][a-zA-Z0-9_-]*)*)/g;
+  // Looks like a CSS hex color? Exclude 6/8-digit pure-hex always (virtually never
+  // a tag), and 3/4-digit only when it contains a digit (e.g. #f0f) — pure-letter
+  // shorts like #fff/#cafe/#beef stay, since those are plausibly real tags.
+  const isHexColor = (t: string) => {
+    if (/^[0-9a-f]{6}$/i.test(t) || /^[0-9a-f]{8}$/i.test(t)) return true;
+    if (/^[0-9a-f]{3,4}$/i.test(t) && /[0-9]/.test(t)) return true;
+    return false;
+  };
   let match;
-  while ((match = tagRegex.exec(content)) !== null) {
-    const tag = match[1].toLowerCase();
-    // Skip common non-tags: #TODO, #FIXME, #NOTE as standalone (but keep #project/subtag)
+  while ((match = tagRegex.exec(withoutCode)) !== null) {
+    const tag = match[2].toLowerCase();
+    if (isHexColor(tag)) continue; // skip hex colors
     tags.add(tag);
   }
 
@@ -51,10 +68,11 @@ export function extractTags(blocks: { content: string }[]): TagResult {
     }
   }
 
-  // Filter: require at least 1 occurrence, exclude very short/noise tags
-  const noise = new Set(["todo", "fixme", "note", "hack", "temp", "wip"]);
+  // Filter: require length ≥ 2. We deliberately do NOT drop common words
+  // like "todo" or "note" — those are legitimate user tags and the previous
+  // noise list silently swallowed them.
   const filtered = Array.from(allTags.entries())
-    .filter(([tag, count]) => tag.length >= 2 && !noise.has(tag))
+    .filter(([tag]) => tag.length >= 2)
     .sort((a, b) => b[1] - a[1])
     .map(([tag]) => tag);
 

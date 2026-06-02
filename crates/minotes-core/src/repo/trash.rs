@@ -61,6 +61,7 @@ impl Database {
     }
 
     /// Restore a folder and all its pages from trash.
+    /// Also restores nested subfolders and their pages using BFS to avoid recursion limits.
     pub fn restore_folder(&self, folder_id: &Uuid) -> Result<()> {
         // Check for name conflict
         let folder_name: String = self.conn.query_row(
@@ -84,16 +85,47 @@ impl Database {
             )?;
         }
 
-        // Restore folder
-        self.conn.execute(
-            "DELETE FROM folder_trash WHERE folder_id = ?1",
-            rusqlite::params![folder_id.to_string()],
-        )?;
-        // Restore all pages in this folder
-        self.conn.execute(
-            "DELETE FROM trash WHERE page_id IN (SELECT id FROM pages WHERE folder_id = ?1)",
-            rusqlite::params![folder_id.to_string()],
-        )?;
+        // BFS queue for nested subfolders
+        let mut queue: Vec<Uuid> = vec![*folder_id];
+        let mut visited = std::collections::HashSet::new();
+        visited.insert(*folder_id);
+
+        while let Some(current_id) = queue.pop() {
+            // Restore this folder
+            self.conn.execute(
+                "DELETE FROM folder_trash WHERE folder_id = ?1",
+                rusqlite::params![current_id.to_string()],
+            )?;
+            // Restore all pages in this folder (any depth)
+            self.conn.execute(
+                "DELETE FROM trash WHERE page_id IN (SELECT id FROM pages WHERE folder_id = ?1)",
+                rusqlite::params![current_id.to_string()],
+            )?;
+            // Enqueue child folders
+            let mut stmt = self.conn.prepare(
+                "SELECT id FROM folders WHERE parent_id = ?1",
+            )?;
+            let rows = stmt.query_map(
+                rusqlite::params![current_id.to_string()],
+                |row| {
+                    let id_str: String = row.get(0)?;
+                    Ok(id_str)
+                },
+            )?;
+            let mut child_folders: Vec<Uuid> = Vec::new();
+            for row in rows {
+                let id_str = row.map_err(Error::Database)?;
+                if let Ok(uuid) = Uuid::parse_str(&id_str) {
+                    child_folders.push(uuid);
+                }
+            }
+            for child in child_folders {
+                if visited.insert(child) {
+                    queue.push(child);
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -109,21 +141,52 @@ impl Database {
 
     /// Permanently delete a folder and its pages.
     pub fn permanently_delete_folder(&self, folder_id: &Uuid, actor: &str) -> Result<()> {
-        // Delete all trashed pages in this folder
-        let pages = self.get_folder_pages_including_trash(folder_id)?;
-        for page in &pages {
-            self.conn.execute(
-                "DELETE FROM trash WHERE page_id = ?1",
-                rusqlite::params![page.id.to_string()],
-            )?;
-            self.delete_page(&page.id, actor)?;
+        // Bug #30: walk the ENTIRE subtree (subfolders too), not just direct children.
+        // `pages.folder_id ON DELETE SET NULL` means subfolder pages would otherwise
+        // survive as orphaned root pages — data the user believed they purged.
+        // Collect all descendant folder ids (including this one) via BFS.
+        let mut all_folders: Vec<Uuid> = Vec::new();
+        let mut queue: Vec<Uuid> = vec![*folder_id];
+        let mut visited = std::collections::HashSet::new();
+        visited.insert(*folder_id);
+        while let Some(current) = queue.pop() {
+            all_folders.push(current);
+            let mut stmt = self.conn.prepare("SELECT id FROM folders WHERE parent_id = ?1")?;
+            let children: Vec<Uuid> = stmt
+                .query_map(rusqlite::params![current.to_string()], |row| row.get::<_, String>(0))?
+                .filter_map(|r| r.ok())
+                .filter_map(|s| Uuid::parse_str(&s).ok())
+                .collect();
+            for child in children {
+                if visited.insert(child) {
+                    queue.push(child);
+                }
+            }
         }
-        // Remove folder from trash and delete it
-        self.conn.execute(
-            "DELETE FROM folder_trash WHERE folder_id = ?1",
-            rusqlite::params![folder_id.to_string()],
-        )?;
-        self.delete_folder(&folder_id, actor)?;
+
+        // Delete every page in every descendant folder (including trashed ones).
+        for fid in &all_folders {
+            let pages = self.get_folder_pages_including_trash(fid)?;
+            for page in &pages {
+                self.conn.execute(
+                    "DELETE FROM trash WHERE page_id = ?1",
+                    rusqlite::params![page.id.to_string()],
+                )?;
+                self.delete_page(&page.id, actor)?;
+            }
+        }
+
+        // Remove folders from trash, then delete them. Delete deepest-first (BFS
+        // discovery order reversed) so child rows go before parents.
+        for fid in all_folders.iter().rev() {
+            self.conn.execute(
+                "DELETE FROM folder_trash WHERE folder_id = ?1",
+                rusqlite::params![fid.to_string()],
+            )?;
+        }
+        // Deleting the root folder cascades to subfolders via FK, but we've already
+        // emptied them; delete explicitly to fire events and be order-independent.
+        self.delete_folder(folder_id, actor)?;
         Ok(())
     }
 
@@ -237,5 +300,33 @@ impl Database {
             pages.push(row.map_err(Error::Database)?);
         }
         Ok(pages)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::db::Database;
+
+    // Bug #30: permanently deleting a folder must purge pages in NESTED subfolders,
+    // not orphan them to root.
+    #[test]
+    fn test_permanently_delete_folder_recurses_subfolders() {
+        let db = Database::open_in_memory().unwrap();
+        let parent = db.create_folder("Parent", None, None, None, "user").unwrap();
+        let child = db.create_folder("Child", Some(&parent.id), None, None, "user").unwrap();
+
+        let p_root = db.create_page("RootPage", None, false, None, "user").unwrap();
+        db.move_page_to_folder(&p_root.id, Some(&parent.id), "user").unwrap();
+        let p_nested = db.create_page("NestedPage", None, false, None, "user").unwrap();
+        db.move_page_to_folder(&p_nested.id, Some(&child.id), "user").unwrap();
+
+        db.trash_folder(&parent.id).unwrap();
+        db.permanently_delete_folder(&parent.id, "user").unwrap();
+
+        // Both pages gone; neither orphaned to root.
+        assert!(db.get_page(&p_root.id).unwrap().is_none());
+        assert!(db.get_page(&p_nested.id).unwrap().is_none(), "nested page must be purged, not orphaned");
+        let roots = db.list_pages(Some(100)).unwrap();
+        assert!(roots.iter().all(|p| p.id != p_nested.id && p.id != p_root.id));
     }
 }

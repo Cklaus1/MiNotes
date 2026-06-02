@@ -91,7 +91,6 @@ export default function FolderSettingsPanel({ folderId, onClose, onRefresh }: Pr
   };
 
   const refreshSidebar = () => {
-    refreshSidebar();
     window.dispatchEvent(new Event("minotes-sidebar-refresh"));
   };
 

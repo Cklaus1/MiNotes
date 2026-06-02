@@ -114,7 +114,12 @@ impl Database {
             if !linked_block_ids.contains(&block.id) {
                 // Extra check: make sure it's not a [[Title]] link (which would already be tracked)
                 let bracket_link = format!("[[{}]]", title);
-                if !block.content.contains(&bracket_link) {
+                if !block.content.contains(&bracket_link)
+                    // Bug #31: the SQL LIKE is only a coarse pre-filter; require the
+                    // title to appear as a whole word so e.g. "AI" doesn't match
+                    // "RAID"/"maintain". This avoids flooding the panel with noise.
+                    && contains_word(&block.content, title)
+                {
                     results.push(block);
                 }
             }
@@ -137,6 +142,35 @@ impl Database {
         }
         Ok(links)
     }
+}
+
+/// Case-insensitive whole-word containment: does `needle` appear in `haystack`
+/// bounded by non-alphanumeric characters (or string edges)? Used to filter
+/// unlinked references so short titles don't match arbitrary substrings (Bug #31).
+fn contains_word(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return false;
+    }
+    let hay = haystack.to_lowercase();
+    let need = needle.to_lowercase();
+    let need_bytes = need.as_bytes();
+    let mut start = 0;
+    while let Some(pos) = hay[start..].find(&need) {
+        let abs = start + pos;
+        let before_ok = abs == 0
+            || !hay.as_bytes()[abs - 1].is_ascii_alphanumeric();
+        let after_idx = abs + need_bytes.len();
+        let after_ok = after_idx >= hay.len()
+            || !hay.as_bytes()[after_idx].is_ascii_alphanumeric();
+        if before_ok && after_ok {
+            return true;
+        }
+        start = abs + 1;
+        if start >= hay.len() {
+            break;
+        }
+    }
+    false
 }
 
 fn row_to_link(row: &rusqlite::Row<'_>) -> rusqlite::Result<Link> {

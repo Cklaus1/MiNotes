@@ -82,17 +82,19 @@ impl Database {
     }
 
     fn compute_hash(data: &[u8]) -> String {
-        // Simple hash: use first 16 hex chars of a basic digest.
-        // We use a djb2-style hash and format as hex.
-        let mut h: u64 = 5381;
-        for &b in data {
-            h = h.wrapping_mul(33).wrapping_add(b as u64);
+        // SHA-256 of the serialized version payload. Used as the immutable
+        // identity of a version for restore and lookup; collision-resistant
+        // so we never restore the wrong snapshot.
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(data);
+        let digest = hasher.finalize();
+        let mut s = String::with_capacity(digest.len() * 2);
+        for b in digest {
+            use std::fmt::Write;
+            let _ = write!(s, "{:02x}", b);
         }
-        let mut h2: u64 = 0x517cc1b727220a95;
-        for &b in data {
-            h2 = h2.wrapping_mul(0x100000001b3) ^ (b as u64);
-        }
-        format!("{:016x}{:016x}", h, h2)
+        s
     }
 
     fn load_version_log(&self, page_id: &Uuid) -> Result<VersionLog> {
@@ -178,51 +180,96 @@ impl Database {
     }
 
     /// Apply a sync document to update/create a page and its blocks.
+    ///
+    /// Merge semantics with a last-writer-wins timestamp guard (Bug #10) and full-state
+    /// deletion convergence (Bug #9). A stale snapshot will not clobber newer local data.
     pub fn apply_automerge(&self, doc_bytes: &[u8], actor: &str) -> Result<Uuid> {
         let snapshot: PageSnapshot =
             serde_json::from_slice(doc_bytes).map_err(|e| Error::InvalidInput(e.to_string()))?;
+        self.apply_snapshot(&snapshot, actor, false)
+    }
 
+    /// Apply a parsed snapshot. `force` bypasses the timestamp guard for an exact
+    /// restore (Bug #9: restore must reproduce the snapshot state faithfully,
+    /// including removing blocks added after the snapshot).
+    fn apply_snapshot(&self, snapshot: &PageSnapshot, actor: &str, force: bool) -> Result<Uuid> {
         let page_id =
             Uuid::parse_str(&snapshot.id).map_err(|e| Error::InvalidInput(e.to_string()))?;
 
-        let now = Utc::now();
+        // Bug #10: last-writer-wins with a timestamp GUARD. Only let the snapshot
+        // overwrite page metadata if it is at least as new as the local row (or we're
+        // forcing a restore); a stale snapshot must not clobber newer local edits.
+        let local_page_updated: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT updated_at FROM pages WHERE id = ?1",
+                rusqlite::params![snapshot.id],
+                |row| row.get(0),
+            )
+            .ok();
+        let page_is_newer = force || match &local_page_updated {
+            Some(local) => snapshot.updated_at >= *local,
+            None => true, // page doesn't exist locally → create it
+        };
 
-        // Upsert the page
-        self.conn.execute(
-            "INSERT INTO pages (id, title, icon, folder_id, position, is_journal, journal_date, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-             ON CONFLICT(id) DO UPDATE SET
-               title = excluded.title,
-               icon = excluded.icon,
-               folder_id = excluded.folder_id,
-               position = excluded.position,
-               is_journal = excluded.is_journal,
-               journal_date = excluded.journal_date,
-               updated_at = excluded.updated_at",
-            rusqlite::params![
-                snapshot.id,
-                snapshot.title,
-                snapshot.icon,
-                snapshot.folder_id,
-                snapshot.position,
-                snapshot.is_journal as i32,
-                snapshot.journal_date,
-                snapshot.created_at,
-                now.to_rfc3339(),
-            ],
-        )?;
+        if page_is_newer {
+            self.conn.execute(
+                "INSERT INTO pages (id, title, icon, folder_id, position, is_journal, journal_date, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                 ON CONFLICT(id) DO UPDATE SET
+                   title = excluded.title,
+                   icon = excluded.icon,
+                   folder_id = excluded.folder_id,
+                   position = excluded.position,
+                   is_journal = excluded.is_journal,
+                   journal_date = excluded.journal_date,
+                   updated_at = excluded.updated_at",
+                rusqlite::params![
+                    snapshot.id,
+                    snapshot.title,
+                    snapshot.icon,
+                    snapshot.folder_id,
+                    snapshot.position,
+                    snapshot.is_journal as i32,
+                    snapshot.journal_date,
+                    snapshot.created_at,
+                    snapshot.updated_at, // Bug #10: preserve causal timestamp
+                ],
+            )?;
+        }
+        // If the page exists but the snapshot is stale, skip the metadata overwrite
+        // entirely (local is newer).
 
-        // Delete existing blocks for this page
-        self.conn.execute(
-            "DELETE FROM blocks WHERE page_id = ?1",
-            rusqlite::params![snapshot.id],
-        )?;
+        // Bug #9: a snapshot is a FULL page state, so a block present locally but
+        // ABSENT from the snapshot has been deleted remotely — delete it locally so
+        // deletions converge (the old code was additive-only and resurrected blocks).
+        // Block content is still last-writer-wins, but only when the page as a whole
+        // is at least as new as ours (don't let a stale snapshot delete fresh blocks).
+        let snapshot_block_ids: std::collections::HashSet<&str> =
+            snapshot.blocks.iter().map(|b| b.id.as_str()).collect();
 
-        // Recreate blocks
+        if page_is_newer {
+            let existing = self.get_page_blocks(&page_id)?;
+            for b in &existing {
+                if !snapshot_block_ids.contains(b.id.to_string().as_str()) {
+                    self.delete_block(&b.id, actor)?;
+                }
+            }
+        }
+
         for block in &snapshot.blocks {
+            // Preserve the snapshot's timestamps instead of stamping local `now`
+            // (Bug #10), so causal ordering survives and re-applying is idempotent.
             self.conn.execute(
                 "INSERT INTO blocks (id, page_id, parent_id, position, content, format, collapsed, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                 ON CONFLICT(id) DO UPDATE SET
+                   parent_id = excluded.parent_id,
+                   position = excluded.position,
+                   content = excluded.content,
+                   format = excluded.format,
+                   collapsed = excluded.collapsed,
+                   updated_at = excluded.updated_at",
                 rusqlite::params![
                     block.id,
                     snapshot.id,
@@ -231,30 +278,34 @@ impl Database {
                     block.content,
                     block.format,
                     block.collapsed as i32,
-                    now.to_rfc3339(),
-                    now.to_rfc3339(),
+                    snapshot.created_at,
+                    snapshot.updated_at,
                 ],
             )?;
         }
 
-        // Record version
-        let hash = Self::compute_hash(doc_bytes);
+        // Record version. Re-serialize the snapshot for stable hashing.
+        let doc_bytes = serde_json::to_vec(snapshot)?;
+        let hash = Self::compute_hash(&doc_bytes);
         let mut log = self.load_version_log(&page_id)?;
-        log.versions.push(VersionEntry {
-            hash,
-            timestamp: now.to_rfc3339(),
-            actor: actor.to_string(),
-            message: Some("applied remote snapshot".to_string()),
-            snapshot: snapshot.clone(),
-        });
-
-        if log.versions.len() > 100 {
-            let start = log.versions.len() - 100;
-            log.versions = log.versions[start..].to_vec();
+        // Bug #10: idempotency — don't append a duplicate version entry when the same
+        // snapshot is applied again (e.g. a re-delivered sync message).
+        if log.versions.last().map(|v| v.hash.as_str()) != Some(hash.as_str()) {
+            log.versions.push(VersionEntry {
+                hash,
+                timestamp: Utc::now().to_rfc3339(),
+                actor: actor.to_string(),
+                message: Some("applied remote snapshot".to_string()),
+                snapshot: snapshot.clone(),
+            });
+            if log.versions.len() > 100 {
+                let start = log.versions.len() - 100;
+                log.versions = log.versions[start..].to_vec();
+            }
         }
 
-        let now_str = now.to_rfc3339();
-        self.save_sync_state(&page_id, doc_bytes, &log, Some(&now_str))?;
+        let now_str = Utc::now().to_rfc3339();
+        self.save_sync_state(&page_id, &doc_bytes, &log, Some(&now_str))?;
 
         Ok(page_id)
     }
@@ -376,8 +427,11 @@ impl Database {
             .find(|v| v.hash == version_hash)
             .ok_or_else(|| Error::NotFound(format!("Version {version_hash}")))?;
 
-        let snapshot_bytes = serde_json::to_vec(&entry.snapshot)?;
-        self.apply_automerge(&snapshot_bytes, actor)?;
+        // Bug #9: restore must reproduce the snapshot EXACTLY — force past the
+        // timestamp guard (the snapshot is older than current) and let apply_snapshot
+        // delete blocks added after the snapshot, rather than unioning with them.
+        let snapshot = entry.snapshot.clone();
+        self.apply_snapshot(&snapshot, actor, true)?;
 
         Ok(())
     }
@@ -450,6 +504,51 @@ mod tests {
 
         let blocks_after = db.get_page_blocks(&page.id).unwrap();
         assert_eq!(blocks_after[0].content, "v1 content");
+    }
+
+    // Bug #9: deletions propagate — a block removed in the snapshot is removed locally.
+    #[test]
+    fn test_apply_propagates_deletion() {
+        let db = Database::open_in_memory().unwrap();
+        let page = db.create_page("Del", None, false, None, "user").unwrap();
+        let b1 = db.create_block(&page.id, "keep", None, None, "user").unwrap();
+        let b2 = db.create_block(&page.id, "remove", None, None, "user").unwrap();
+
+        // Peer has both blocks.
+        let db2 = Database::open_in_memory().unwrap();
+        db2.apply_automerge(&db.page_to_automerge(&page.id).unwrap(), "peer").unwrap();
+        assert_eq!(db2.get_page_blocks(&page.id).unwrap().len(), 2);
+
+        // Delete b2 locally and re-snapshot, then apply to peer.
+        db.delete_block(&b2.id, "user").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        db.update_block(&b1.id, Some("keep"), "user").unwrap(); // bump page updated_at
+        let snap = db.page_to_automerge(&page.id).unwrap();
+        db2.apply_automerge(&snap, "peer").unwrap();
+
+        let blocks = db2.get_page_blocks(&page.id).unwrap();
+        assert_eq!(blocks.len(), 1, "deleted block must not survive on the peer");
+        assert_eq!(blocks[0].content, "keep");
+    }
+
+    // Bug #9: restore is faithful — blocks added after the snapshot are removed.
+    #[test]
+    fn test_restore_is_exact_not_union() {
+        let db = Database::open_in_memory().unwrap();
+        let page = db.create_page("R", None, false, None, "user").unwrap();
+        db.create_block(&page.id, "A", None, None, "user").unwrap();
+        let v1 = db.page_to_automerge(&page.id).unwrap();
+        let _ = v1;
+        let hash_v1 = db.get_version_history(&page.id, None).unwrap().last().unwrap().hash.clone();
+
+        // Add B after the snapshot.
+        db.create_block(&page.id, "B", None, None, "user").unwrap();
+        assert_eq!(db.get_page_blocks(&page.id).unwrap().len(), 2);
+
+        db.restore_version(&page.id, &hash_v1, "user").unwrap();
+        let blocks = db.get_page_blocks(&page.id).unwrap();
+        assert_eq!(blocks.len(), 1, "restore must drop post-snapshot blocks, not union");
+        assert_eq!(blocks[0].content, "A");
     }
 
     #[test]

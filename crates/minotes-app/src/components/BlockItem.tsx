@@ -83,12 +83,12 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
   const handleToggleTodo = () => {
     const content = block.content;
     let newContent: string;
-    if (content.startsWith("DONE ")) {
-      newContent = content.slice(5); // Remove DONE prefix
-    } else if (content.startsWith("DOING ")) {
-      newContent = "DONE " + content.slice(6);
-    } else if (content.startsWith("TODO ")) {
-      newContent = "DOING " + content.slice(5);
+    if (content === "{{todo:done}}" || content.startsWith("DONE ")) {
+      newContent = content === "{{todo:done}}" ? "{{todo:pending}}" : content.slice(5);
+    } else if (content === "{{todo:doing}}" || content.startsWith("DOING ")) {
+      newContent = content === "{{todo:doing}}" ? "{{todo:done}}" : "DONE " + content.slice(6);
+    } else if (content === "{{todo:pending}}" || content.startsWith("TODO ")) {
+      newContent = content === "{{todo:pending}}" ? "{{todo:doing}}" : "DOING " + content.slice(5);
     } else {
       newContent = "TODO " + content;
     }
@@ -353,6 +353,16 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
         <span className="todo-badge todo-badge-doing" onClick={handleToggleTodo} title="Click to cycle: DOING → DONE">DOING</span>
       )}
       {block.content.startsWith("DONE ") && (
+        <span className="todo-badge todo-badge-done" onClick={handleToggleTodo} title="Click to remove DONE state">DONE</span>
+      )}
+      {/* {{todo:pending}} badge */}
+      {block.content === "{{todo:pending}}" && (
+        <span className="todo-badge todo-badge-todo" onClick={handleToggleTodo} title="Click to cycle: TODO → DOING → DONE">TODO</span>
+      )}
+      {block.content === "{{todo:doing}}" && (
+        <span className="todo-badge todo-badge-doing" onClick={handleToggleTodo} title="Click to cycle: DOING → DONE">DOING</span>
+      )}
+      {block.content === "{{todo:done}}" && (
         <span className="todo-badge todo-badge-done" onClick={handleToggleTodo} title="Click to remove DONE state">DONE</span>
       )}
 

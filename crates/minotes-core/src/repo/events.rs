@@ -79,13 +79,17 @@ impl Database {
 
     /// Undo the most recent event by reversing its mutation.
     /// Returns the undone event's ID, or None if nothing to undo.
+    ///
+    /// The original event is marked `undone=1` rather than deleted so the
+    /// audit log stays intact and a future `redo` can find it.
     pub fn undo_last(&self, actor: &str) -> Result<Option<i64>> {
-        // Get the most recent non-undo event
+        // Get the most recent non-undo, not-yet-undone event
         let event = {
             let mut stmt = self.conn.prepare(
                 "SELECT id, event_type, entity_id, entity_type, payload, actor, created_at
                  FROM events
                  WHERE event_type NOT LIKE 'undo.%'
+                   AND undone = 0
                  ORDER BY id DESC LIMIT 1",
             )?;
             let mut rows = stmt.query([])?;
@@ -146,9 +150,9 @@ impl Database {
             actor,
         )?;
 
-        // Delete the original event
+        // Mark the original event as undone (preserves history; enables redo)
         self.conn.execute(
-            "DELETE FROM events WHERE id = ?1",
+            "UPDATE events SET undone = 1 WHERE id = ?1",
             rusqlite::params![event_id],
         )?;
 

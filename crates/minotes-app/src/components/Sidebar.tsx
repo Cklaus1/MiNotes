@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import type { Page, GraphStats, FolderTree, FolderTreeRoot, Folder } from "../lib/api";
 import * as api from "../lib/api";
 import CalendarWidget from "./CalendarWidget";
-import { showUndoToast } from "../lib/toast";
+import { showToast, showUndoToast } from "../lib/toast";
 import { ContextMenuPortal } from "../lib/ContextMenuPortal";
 import { extractTodos } from "../lib/todoExtractor";
 function formatJournalDate(dateStr: string): string {
@@ -58,6 +58,7 @@ interface Props {
   onPagesClick: () => void;
   onSettingsClick: () => void;
   onFolderSettings: (folderId: string) => void;
+  onTodoBadgeClick: () => void;
   activeMode: "graph" | "mindmap" | "whiteboard" | "kanban" | "pages" | null;
   refreshKey: number;
   syncState?: "idle" | "syncing" | "error" | "offline";
@@ -65,7 +66,7 @@ interface Props {
 
 export default function Sidebar({
   activePage, stats, onPageClick, onCreatePage, onDeletePage,
-  onJournalClick, onSearchClick, onGraphClick, onMindmapClick, onWhiteboardClick, onKanbanClick, onPagesClick, onSettingsClick, onFolderSettings, activeMode, refreshKey,
+  onJournalClick, onSearchClick, onGraphClick, onMindmapClick, onWhiteboardClick, onKanbanClick, onPagesClick, onSettingsClick, onFolderSettings, onTodoBadgeClick, activeMode, refreshKey,
   syncState,
 }: Props) {
   const [newTitle, setNewTitle] = useState("");
@@ -147,11 +148,17 @@ export default function Sidebar({
     }
   }, []);
 
-  // TODO badge: fetch pending count from a simple API call
+  // TODO badge: fetch pending count from a simple API call.
+  // Bug #33: re-fetch on refreshKey and on sidebar-refresh events so the badge
+  // updates as TODOs are added/completed, instead of being frozen at mount.
   useEffect(() => {
-    api.getPendingTodoCount().then((count) => setPendingTodos(count)).catch(() => {});
-  }, []);
+    const refetch = () => api.getPendingTodoCount().then((count) => setPendingTodos(count)).catch(() => {});
+    refetch();
+    window.addEventListener("minotes-sidebar-refresh", refetch);
+    return () => window.removeEventListener("minotes-sidebar-refresh", refetch);
+  }, [refreshKey]);
 
+  
   useEffect(() => { loadTree(); }, [loadTree, refreshKey]);
 
   // Listen for direct sidebar refresh events (from FolderSettingsPanel, etc.)
@@ -348,7 +355,11 @@ export default function Sidebar({
 
         {/* TODO badge */}
         {pendingTodos > 0 && (
-          <div className="sidebar-todo-badge" title={`${pendingTodos} pending TODOs`}>
+          <div
+            className="sidebar-todo-badge"
+            onClick={onTodoBadgeClick}
+            title={`${pendingTodos} pending TODOs`}
+          >
             <span className="sidebar-todo-count">{pendingTodos}</span> TODOs
           </div>
         )}
@@ -670,6 +681,19 @@ function DraggablePage({
     }
   };
 
+  const handleCopyPage = async () => {
+    setCtxMenu(null);
+    try {
+      const tree = await api.getPageTree(page.id);
+      const text = tree.blocks.map(b => b.content).join("\n");
+      await navigator.clipboard.writeText(text);
+      showToast("Page content copied to clipboard");
+    } catch (e) {
+      console.error("Copy page failed:", e);
+      showToast("Failed to copy page");
+    }
+  };
+
   return (
     <div
       className={`page-item ${activePage?.id === page.id ? "active" : ""} ${dropPos === "above" ? "drop-above" : ""} ${dropPos === "below" ? "drop-below" : ""}`}
@@ -804,6 +828,12 @@ function DraggablePage({
             onClick={handleDuplicate}
           >
             &#128203; Duplicate
+          </button>
+          <button
+            className="sidebar-context-menu-item"
+            onClick={handleCopyPage}
+          >
+            &#8627; Copy
           </button>
           <button
             className="sidebar-context-menu-item"

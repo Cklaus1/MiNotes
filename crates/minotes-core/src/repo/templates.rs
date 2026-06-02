@@ -98,15 +98,35 @@ impl Database {
             .get_template(template_name)?
             .ok_or_else(|| Error::NotFound(format!("Template '{template_name}'")))?;
 
+        // Walk lines but keep fenced code blocks (```...```) as a single block
+        // so multi-line code in templates is preserved intact.
         let lines: Vec<&str> = template.content.lines().collect();
         let mut blocks = Vec::new();
-
-        for line in lines {
+        let mut i = 0;
+        while i < lines.len() {
+            let line = lines[i];
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("```") {
+                let mut buf = String::from(line);
+                i += 1;
+                while i < lines.len() {
+                    buf.push('\n');
+                    buf.push_str(lines[i]);
+                    let closes = lines[i].trim_start().starts_with("```");
+                    i += 1;
+                    if closes { break; }
+                }
+                let block = self.create_block(page_id, &buf, None, None, actor)?;
+                blocks.push(block);
+                continue;
+            }
             if line.trim().is_empty() {
+                i += 1;
                 continue;
             }
             let block = self.create_block(page_id, line, None, None, actor)?;
             blocks.push(block);
+            i += 1;
         }
 
         self.emit_event(
@@ -187,6 +207,22 @@ mod tests {
         let blocks = db.apply_template(&page.id, "T", "user").unwrap();
         assert_eq!(blocks.len(), 3);
         assert_eq!(blocks[0].content, "Line 1");
+    }
+
+    #[test]
+    fn test_apply_template_preserves_fenced_code_block() {
+        let db = Database::open_in_memory().unwrap();
+        let content = "Header\n```rust\nfn main() {\n    println!(\"hi\");\n}\n```\nFooter";
+        db.create_template("Code", None, content, "user").unwrap();
+        let page = db.create_page("P", None, false, None, "user").unwrap();
+        let blocks = db.apply_template(&page.id, "Code", "user").unwrap();
+        // Expect 3 blocks: Header, the entire fenced block, Footer
+        assert_eq!(blocks.len(), 3, "blocks: {:?}", blocks.iter().map(|b| &b.content).collect::<Vec<_>>());
+        assert_eq!(blocks[0].content, "Header");
+        assert!(blocks[1].content.starts_with("```rust"));
+        assert!(blocks[1].content.contains("fn main()"));
+        assert!(blocks[1].content.ends_with("```"));
+        assert_eq!(blocks[2].content, "Footer");
     }
 
     #[test]

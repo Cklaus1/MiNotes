@@ -25,6 +25,11 @@ export const WikiLinkNode = Node.create<WikiLinkOptions>({
         parseHTML: (el) => el.getAttribute("data-page-name"),
         renderHTML: (attrs) => ({ "data-page-name": attrs.pageName }),
       },
+      pageId: {
+        default: null,
+        parseHTML: (el) => el.getAttribute("data-page-id"),
+        renderHTML: (attrs) => ({ "data-page-id": attrs.pageId }),
+      },
     };
   },
 
@@ -66,7 +71,8 @@ export const WikiLinkNode = Node.create<WikiLinkOptions>({
             const target = event.target as HTMLElement;
             if (target.classList.contains("wiki-link") || target.closest(".wiki-link")) {
               const el = target.classList.contains("wiki-link") ? target : target.closest(".wiki-link") as HTMLElement;
-              const pageName = el?.getAttribute("data-page-name") || el?.textContent;
+              const pageId = el?.getAttribute("data-page-id");
+              const pageName = pageId ? pageId : (el?.getAttribute("data-page-name") || el?.textContent);
               if (pageName) {
                 event.preventDefault();
                 event.stopPropagation();
@@ -85,7 +91,9 @@ export const WikiLinkNode = Node.create<WikiLinkOptions>({
     return {
       markdown: {
         serialize(state: any, node: any) {
-          state.write(`[[${node.attrs.pageName}]]`);
+          const pageName = node.attrs.pageName;
+          const pageId = node.attrs.pageId;
+          state.write(pageId ? `[[${pageName}|${pageId}]]` : `[[${pageName}]]`);
         },
         parse: {
           setup(markdownit: any) {
@@ -93,11 +101,15 @@ export const WikiLinkNode = Node.create<WikiLinkOptions>({
             // Add renderer rule to convert wiki_link tokens to HTML
             markdownit.renderer.rules.wiki_link = (tokens: any, idx: number) => {
               const pageName = tokens[idx].content;
+              const pageId = tokens[idx].attrs?.find((a: any) => a.name === "data-page-id")?.value;
               const escaped = pageName
                 .replace(/&/g, "&amp;")
                 .replace(/</g, "&lt;")
                 .replace(/>/g, "&gt;")
                 .replace(/"/g, "&quot;");
+              if (pageId) {
+                return `<span data-wiki-link data-page-name="${escaped}" data-page-id="${pageId}" class="wiki-link">${escaped}</span>`;
+              }
               return `<span data-wiki-link data-page-name="${escaped}" class="wiki-link">${escaped}</span>`;
             };
           },
