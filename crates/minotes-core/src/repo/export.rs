@@ -141,10 +141,10 @@ impl Database {
 
         for page in &pages {
             let blocks = self.get_page_blocks(&page.id)?;
-            let escaped_title = xml_escape(&page.title);
+            let escaped_title = xml_escape_attr(&page.title);
             opml.push_str(&format!("    <outline text=\"{}\">\n", escaped_title));
             for block in &blocks {
-                let escaped = xml_escape(&block.content);
+                let escaped = xml_escape_attr(&block.content);
                 opml.push_str(&format!("      <outline text=\"{}\"/>\n", escaped));
             }
             opml.push_str("    </outline>\n");
@@ -454,6 +454,17 @@ fn xml_escape(s: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
         .replace('\'', "&apos;")
+}
+
+/// Escape for an XML *attribute* value. Beyond the element-content escapes,
+/// literal newlines/CR/tabs must become character references: XML parsers
+/// normalize raw whitespace in attributes to spaces, so an unescaped newline
+/// in `text="..."` silently mangles the value (or breaks the document).
+fn xml_escape_attr(s: &str) -> String {
+    xml_escape(s)
+        .replace('\n', "&#10;")
+        .replace('\r', "&#13;")
+        .replace('\t', "&#9;")
 }
 
 fn sanitize_filename(name: &str) -> String {

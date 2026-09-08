@@ -256,7 +256,7 @@ fn print_blocks_opml(blocks: &[Block], parent_id: Option<&uuid::Uuid>, depth: us
 
     let indent = "  ".repeat(depth);
     for block in children {
-        let text = xml_escape(block.content.trim());
+        let text = xml_escape_attr(block.content.trim());
         let has_children = blocks.iter().any(|b| b.parent_id.as_ref() == Some(&block.id));
         if has_children {
             println!(r#"{}<outline text="{}">"#, indent, text);
@@ -274,7 +274,7 @@ pub fn print_page_list_opml(pages: &[Page]) {
     println!(r#"  <head><title>MiNotes Pages</title></head>"#);
     println!(r#"  <body>"#);
     for page in pages {
-        println!(r#"    <outline text="{}" />"#, xml_escape(&page.title));
+        println!(r#"    <outline text="{}" />"#, xml_escape_attr(&page.title));
     }
     println!(r#"  </body>"#);
     println!(r#"</opml>"#);
@@ -287,9 +287,42 @@ fn xml_escape(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
+/// Escape for an XML *attribute* value. Beyond the element-content escapes,
+/// literal newlines/CR/tabs must become character references: XML parsers
+/// normalize raw whitespace in attributes to spaces, so an unescaped newline
+/// in `text="..."` silently mangles the value (or breaks the document).
+fn xml_escape_attr(s: &str) -> String {
+    xml_escape(s)
+        .replace('\n', "&#10;")
+        .replace('\r', "&#13;")
+        .replace('\t', "&#9;")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::truncate_chars;
+    use super::{truncate_chars, xml_escape, xml_escape_attr};
+
+    #[test]
+    fn attr_escape_encodes_newlines_tabs_and_cr() {
+        assert_eq!(xml_escape_attr("a\nb"), "a&#10;b");
+        assert_eq!(xml_escape_attr("a\r\nb"), "a&#13;&#10;b");
+        assert_eq!(xml_escape_attr("a\tb"), "a&#9;b");
+    }
+
+    #[test]
+    fn attr_escape_still_covers_markup_chars() {
+        assert_eq!(xml_escape_attr(r#"<a href="x">&"#), "&lt;a href=&quot;x&quot;&gt;&amp;");
+        // multi-line block content: no raw newline survives into the attribute
+        let out = xml_escape_attr("line one\nline <two> & \"three\"");
+        assert!(!out.contains('\n'));
+        assert!(!out.contains('<') && !out.contains('>') && !out.contains('"'));
+    }
+
+    #[test]
+    fn element_escape_leaves_whitespace_alone() {
+        // Element content may legally contain raw newlines; only attributes need them encoded.
+        assert_eq!(xml_escape("a\nb"), "a\nb");
+    }
 
     #[test]
     fn truncate_shorter_than_max_is_unchanged() {
