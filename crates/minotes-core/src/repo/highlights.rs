@@ -111,11 +111,15 @@ impl Database {
     }
 
     pub fn delete_highlight(&self, id: &Uuid, actor: &str) -> Result<bool> {
-        self.emit_event("highlight.deleted", id, "highlight", &serde_json::json!({"id": id.to_string()}), actor)?;
         let rows = self.conn.execute(
             "DELETE FROM highlights WHERE id = ?1",
             [id.to_string()],
         )?;
+        // Emit after the delete succeeds, and only for a row that existed
+        // (same defect as delete_property).
+        if rows > 0 {
+            self.emit_event("highlight.deleted", id, "highlight", &serde_json::json!({"id": id.to_string()}), actor)?;
+        }
         Ok(rows > 0)
     }
 
@@ -197,5 +201,41 @@ impl Database {
             created_at: parse_ts(&created_str),
             updated_at: parse_ts(&updated_str),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::db::Database;
+    use uuid::Uuid;
+
+    // Same defect as delete_property: emit came before the DELETE and fired
+    // even when the row did not exist.
+    #[test]
+    fn test_delete_missing_highlight_emits_no_event() {
+        let db = Database::open_in_memory().unwrap();
+
+        let deleted = db.delete_highlight(&Uuid::now_v7(), "user").unwrap();
+        assert!(!deleted);
+
+        let events = db
+            .get_events(None, Some(&["highlight.deleted"]), None)
+            .unwrap();
+        assert!(events.is_empty(), "no event for a delete that did nothing");
+    }
+
+    #[test]
+    fn test_delete_existing_highlight_emits_one_event() {
+        let db = Database::open_in_memory().unwrap();
+        let h = db
+            .create_highlight("/doc.pdf", 1, 0.0, 0.0, 10.0, 10.0, "yellow", Some("t"), None, "user")
+            .unwrap();
+
+        assert!(db.delete_highlight(&h.id, "user").unwrap());
+
+        let events = db
+            .get_events(None, Some(&["highlight.deleted"]), None)
+            .unwrap();
+        assert_eq!(events.len(), 1);
     }
 }

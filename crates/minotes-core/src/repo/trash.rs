@@ -256,24 +256,34 @@ impl Database {
     }
 
     /// Empty the entire trash.
+    /// Permanently delete everything in the trash. Returns the number of items
+    /// actually purged — NOT the number attempted. Swallowing per-item errors
+    /// and returning the pre-count reported success while zombies remained
+    /// visible after a refresh.
     pub fn empty_trash(&self, actor: &str) -> Result<u32> {
         let items = self.list_trash()?;
-        let count = items.len() as u32;
+        let mut purged = 0u32;
         // Delete folders first (they cascade to pages)
         for item in &items {
             if item.item_type == "folder" {
-                let uuid = Uuid::parse_str(&item.id).unwrap_or_default();
-                let _ = self.permanently_delete_folder(&uuid, actor);
+                // An unparseable id is a real failure, not a nil-UUID delete
+                // that "succeeds" while purging nothing.
+                let Ok(uuid) = Uuid::parse_str(&item.id) else { continue };
+                if self.permanently_delete_folder(&uuid, actor).is_ok() {
+                    purged += 1;
+                }
             }
         }
         // Delete remaining pages
         for item in &items {
             if item.item_type == "page" {
-                let uuid = Uuid::parse_str(&item.id).unwrap_or_default();
-                let _ = self.permanently_delete_page(&uuid, actor);
+                let Ok(uuid) = Uuid::parse_str(&item.id) else { continue };
+                if self.permanently_delete_page(&uuid, actor).is_ok() {
+                    purged += 1;
+                }
             }
         }
-        Ok(count)
+        Ok(purged)
     }
 
     /// Check if a page is in the trash.
@@ -306,6 +316,28 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use crate::db::Database;
+
+    // empty_trash used to `let _ =` every delete and return the PRE-count, so it
+    // reported success even when items survived. It must report what it purged.
+    #[test]
+    fn test_empty_trash_returns_actually_purged_count() {
+        let db = Database::open_in_memory().unwrap();
+        let a = db.create_page("A", None, false, None, "user").unwrap();
+        let b = db.create_page("B", None, false, None, "user").unwrap();
+        let folder = db.create_folder("F", None, None, None, "user").unwrap();
+
+        db.trash_page(&a.id).unwrap();
+        db.trash_page(&b.id).unwrap();
+        db.trash_folder(&folder.id).unwrap();
+        assert_eq!(db.list_trash().unwrap().len(), 3);
+
+        let purged = db.empty_trash("user").unwrap();
+        assert_eq!(purged, 3, "reports the number actually purged");
+        assert!(db.list_trash().unwrap().is_empty(), "trash is really empty");
+
+        // Emptying an already-empty trash purges nothing.
+        assert_eq!(db.empty_trash("user").unwrap(), 0);
+    }
 
     // Bug #30: permanently deleting a folder must purge pages in NESTED subfolders,
     // not orphan them to root.

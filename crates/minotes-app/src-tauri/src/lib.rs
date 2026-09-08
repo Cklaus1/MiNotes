@@ -1271,8 +1271,36 @@ pub fn run() {
                 }
                 // Bug #16: watch any graph's WAL, not a hard-coded "default.db-wal",
                 // so live-refresh tracks whichever graph is active.
-                for res in rx {
-                    if let Ok(event) = res {
+                //
+                // Debounce: a sync or import touches the WAL many times in quick
+                // succession, and emitting per touch produced a storm of full UI
+                // refreshes. Coalesce on the trailing edge — hold a pending flag
+                // and flush once the writes go quiet — so the UI still lands on
+                // the final state, but only refreshes once.
+                const DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(250);
+                let mut pending = false;
+                loop {
+                    // Block for the next event; once one arrives, keep draining
+                    // until the WAL has been quiet for a full debounce window.
+                    let res = if pending {
+                        match rx.recv_timeout(DEBOUNCE) {
+                            Ok(res) => Some(res),
+                            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                                // Quiet period elapsed — flush the coalesced burst.
+                                pending = false;
+                                let _ = app_handle.emit("db-changed", ());
+                                continue;
+                            }
+                            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                        }
+                    } else {
+                        match rx.recv() {
+                            Ok(res) => Some(res),
+                            Err(_) => break,
+                        }
+                    };
+
+                    if let Some(Ok(event)) = res {
                         let touched_wal = event.paths.iter().any(|p| {
                             p.file_name()
                                 .and_then(|n| n.to_str())
@@ -1280,7 +1308,7 @@ pub fn run() {
                                 .unwrap_or(false)
                         });
                         if touched_wal {
-                            let _ = app_handle.emit("db-changed", ());
+                            pending = true;
                         }
                     }
                 }

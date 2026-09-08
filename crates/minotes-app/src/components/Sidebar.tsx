@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import type { Page, GraphStats, FolderTree, FolderTreeRoot, Folder } from "../lib/api";
 import * as api from "../lib/api";
+import { localDateKey } from "../lib/dates";
 import CalendarWidget from "./CalendarWidget";
 import { showToast, showUndoToast } from "../lib/toast";
 import { ContextMenuPortal } from "../lib/ContextMenuPortal";
@@ -222,7 +223,7 @@ export default function Sidebar({
   };
 
   const today = new Date();
-  const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+  const todayStr = localDateKey(today);
   const todayLabel = today.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
 
   // Quick Access: pinned pages only

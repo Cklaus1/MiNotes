@@ -92,7 +92,7 @@ export default function TodoPanel({
               <div
                 key={t.item.id}
                 className="todo-item"
-                onClick={() => onPageClick(t.item.sourceBlockId)}
+                onClick={() => onPageClick(t.item.sourcePageId)}
               >
                 <button
                   className="todo-check"

@@ -5,7 +5,7 @@ import { PluginKey } from "@tiptap/pm/state";
 import tippy, { type Instance as TippyInstance } from "tippy.js";
 import { SlashMenu, type SlashMenuItem } from "./SlashMenu";
 import { generateWhiteboardId } from "../lib/whiteboardUtils";
-import { BUILTIN_TEMPLATES } from "../lib/builtinTemplates";
+import { BUILTIN_TEMPLATES, applyTemplateVars } from "../lib/builtinTemplates";
 
 /*
  * Slash commands use two strategies:
@@ -114,8 +114,12 @@ const COMMANDS: SlashMenuItem[] = [
     title: `Template: ${t.name}`,
     description: `template ${t.description}`,
     command: ({ editor, range }: { editor: any; range: any }) => {
+      // Substitute {{date}}/{{time}} once per insertion so every line in the
+      // template shares a single timestamp.
+      const now = new Date();
+      const lines = t.blocks.map((b) => applyTemplateVars(b, now));
       // Set current block to first template line, pass remaining lines as multiline insert
-      const [first, ...rest] = t.blocks;
+      const [first, ...rest] = lines;
       (editor.storage as any).slashCallbacks?.command(first ?? "");
       // Insert remaining blocks via the onPasteMultiline mechanism
       if (rest.length > 0) {

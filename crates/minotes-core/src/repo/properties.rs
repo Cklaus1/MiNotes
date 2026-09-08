@@ -100,17 +100,22 @@ impl Database {
     }
 
     pub fn delete_property(&self, entity_id: &Uuid, key: &str, actor: &str) -> Result<bool> {
-        self.emit_event(
-            "property.deleted",
-            entity_id,
-            "property",
-            &serde_json::json!({"entity_id": entity_id.to_string(), "key": key}),
-            actor,
-        )?;
         let count = self.conn.execute(
             "DELETE FROM properties WHERE entity_id = ?1 AND key = ?2",
             rusqlite::params![entity_id.to_string(), key],
         )?;
+        // Emit only after the delete succeeds, and only if a row actually went
+        // away — emitting first (or unconditionally) logged deletions that never
+        // happened, corrupting the event/undo log. Mirrors remove_alias.
+        if count > 0 {
+            self.emit_event(
+                "property.deleted",
+                entity_id,
+                "property",
+                &serde_json::json!({"entity_id": entity_id.to_string(), "key": key}),
+                actor,
+            )?;
+        }
         Ok(count > 0)
     }
 }
@@ -135,4 +140,48 @@ fn row_to_property(row: &rusqlite::Row<'_>) -> rusqlite::Result<Property> {
             .map(|dt| dt.with_timezone(&chrono::Utc))
             .unwrap_or_else(|_| chrono::Utc::now()),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::db::Database;
+    use uuid::Uuid;
+
+    // delete_property used to emit "property.deleted" BEFORE the DELETE, and
+    // unconditionally — logging deletions that never happened.
+    #[test]
+    fn test_delete_missing_property_emits_no_event() {
+        let db = Database::open_in_memory().unwrap();
+        let entity = Uuid::now_v7();
+
+        let deleted = db.delete_property(&entity, "nope", "user").unwrap();
+        assert!(!deleted, "deleting a missing key reports false");
+
+        let events = db
+            .get_events(None, Some(&["property.deleted"]), None)
+            .unwrap();
+        assert!(events.is_empty(), "no event for a delete that did nothing");
+    }
+
+    #[test]
+    fn test_delete_existing_property_emits_one_event() {
+        let db = Database::open_in_memory().unwrap();
+        let entity = Uuid::now_v7();
+        db.set_property(&entity, "page", "status", "draft", "text", "user")
+            .unwrap();
+
+        assert!(db.delete_property(&entity, "status", "user").unwrap());
+
+        let events = db
+            .get_events(None, Some(&["property.deleted"]), None)
+            .unwrap();
+        assert_eq!(events.len(), 1);
+
+        // A second delete of the same key must not log another event.
+        assert!(!db.delete_property(&entity, "status", "user").unwrap());
+        let events = db
+            .get_events(None, Some(&["property.deleted"]), None)
+            .unwrap();
+        assert_eq!(events.len(), 1, "no duplicate event for a no-op delete");
+    }
 }

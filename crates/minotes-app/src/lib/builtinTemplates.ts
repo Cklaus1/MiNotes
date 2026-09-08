@@ -1,3 +1,17 @@
+import { localDateKey, localTimeKey } from "./dates";
+
+/**
+ * Substitute template placeholders. Dates use the viewer's local calendar day,
+ * matching the journal/sidebar convention.
+ *
+ * Supported: {{date}} → YYYY-MM-DD, {{time}} → HH:MM.
+ */
+export function applyTemplateVars(line: string, now: Date = new Date()): string {
+  return line
+    .replace(/\{\{date\}\}/g, localDateKey(now))
+    .replace(/\{\{time\}\}/g, localTimeKey(now));
+}
+
 export interface Template {
   name: string;
   description: string;
@@ -9,16 +23,12 @@ export const BUILTIN_TEMPLATES: Template[] = [
     name: "Meeting Notes",
     description: "Structured meeting agenda with sections",
     blocks: [
+      "# Meeting {{date}}",
       "## Attendees",
-      "",
       "## Agenda",
-      "",
       "## Discussion",
-      "",
       "## Action Items",
       "TODO ",
-      "TODO ",
-      "",
       "## Follow-up",
     ],
   },
@@ -27,15 +37,10 @@ export const BUILTIN_TEMPLATES: Template[] = [
     description: "Project overview with goals and milestones",
     blocks: [
       "## Overview",
-      "",
       "## Goals",
       "TODO ",
-      "TODO ",
-      "",
       "## Milestones",
-      "",
       "## Resources",
-      "",
       "## Risks",
     ],
   },
@@ -43,17 +48,11 @@ export const BUILTIN_TEMPLATES: Template[] = [
     name: "Weekly Review",
     description: "Reflect on the past week and plan ahead",
     blocks: [
+      "# Weekly Review — week of {{date}}",
       "## Wins this week",
-      "",
-      "",
       "## Challenges",
-      "",
-      "",
       "## Lessons learned",
-      "",
       "## Next week priorities",
-      "TODO ",
-      "TODO ",
       "TODO ",
     ],
   },
@@ -62,32 +61,25 @@ export const BUILTIN_TEMPLATES: Template[] = [
     description: "Structured bug report template",
     blocks: [
       "## Summary",
-      "",
       "## Steps to Reproduce",
       "1. ",
       "2. ",
       "3. ",
-      "",
       "## Expected Behavior",
-      "",
       "## Actual Behavior",
-      "",
       "## Environment",
-      "",
     ],
   },
   {
     name: "Daily Standup",
     description: "Quick daily update format",
     blocks: [
+      "# Standup {{date}}",
       "## Yesterday",
       "DONE ",
-      "",
       "## Today",
       "TODO ",
-      "",
       "## Blockers",
-      "",
     ],
   },
   {
@@ -95,16 +87,10 @@ export const BUILTIN_TEMPLATES: Template[] = [
     description: "Record important decisions and reasoning",
     blocks: [
       "## Decision",
-      "",
       "## Context",
-      "",
       "## Options Considered",
-      "",
-      "",
       "## Chosen Option",
-      "",
       "## Rationale",
-      "",
     ],
   },
 ];

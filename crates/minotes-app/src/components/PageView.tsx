@@ -2,6 +2,7 @@ import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import type { Block, PageTree, Property } from "../lib/api";
 import * as api from "../lib/api";
 import { getSettings } from "../lib/settings";
+import { localDateKey } from "../lib/dates";
 import BlockItem from "./BlockItem";
 import type { BlockItemHandle } from "./BlockItem";
 import BacklinksPanel from "./BacklinksPanel";
@@ -329,7 +330,9 @@ export default function PageView({
     if (!d || !onJournalNav) return;
     const date = new Date(d + "T00:00:00");
     date.setDate(date.getDate() + days);
-    onJournalNav(date.toISOString().slice(0, 10));
+    // Parsed as local midnight, so it must be formatted as local too —
+    // toISOString() here shifted the day for anyone west of UTC.
+    onJournalNav(localDateKey(date));
   };
 
   // UX-001: Seamless block creation
@@ -981,7 +984,7 @@ export default function PageView({
         {page.is_journal && onJournalNav && (
           <div className="journal-nav">
             <button className="btn btn-sm" onClick={() => shiftDate(-1)}>← Prev</button>
-            <button className="btn btn-sm" onClick={() => onJournalNav(new Date().toISOString().slice(0, 10))}>Today</button>
+            <button className="btn btn-sm" onClick={() => onJournalNav(localDateKey())}>Today</button>
             <button className="btn btn-sm" onClick={() => shiftDate(1)}>Next →</button>
           </div>
         )}

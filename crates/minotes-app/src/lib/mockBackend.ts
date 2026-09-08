@@ -5,6 +5,7 @@
  * Activates automatically when Tauri's invoke() is not available.
  */
 
+import { localDateKey } from "./dates";
 import type {
   Page, Block, PageTree, Link, GraphStats, Property,
   FolderTreeRoot, QueryResult, GraphData,
@@ -13,7 +14,7 @@ import type {
 // ── In-memory store ──
 
 const now = new Date().toISOString();
-const today = new Date().toISOString().slice(0, 10);
+const today = localDateKey();
 
 let nextId = 100;
 function genId(): string {

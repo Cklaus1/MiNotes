@@ -19,6 +19,7 @@ import CustomViewContainer from "./components/CustomViewContainer";
 import SettingsPanel from "./components/SettingsPanel";
 import FolderSettingsPanel from "./components/FolderSettingsPanel";
 import * as api from "./lib/api";
+import { localDateKey } from "./lib/dates";
 import { isTauri } from "./lib/api";
 import { initTheme, toggleTheme } from "./lib/theme";
 import { initTestApi, registerTestApi } from "./lib/testApi";
@@ -117,8 +118,8 @@ export default function App() {
 
   const openJournal = useCallback(async (date?: string) => {
     try {
-      const d = date ?? new Date().toISOString().slice(0, 10);
-      const isToday = !date || d === new Date().toISOString().slice(0, 10);
+      const d = date ?? localDateKey();
+      const isToday = !date || d === localDateKey();
 
       if (isToday) {
         // Today's journal: always force-create (expected UX on launch and Ctrl+J)
