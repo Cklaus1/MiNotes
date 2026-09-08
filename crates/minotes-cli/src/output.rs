@@ -85,11 +85,19 @@ pub fn print_page_list_text(pages: &[Page]) {
     println!("\n{} pages", pages.len());
 }
 
+/// Truncate to at most `max` characters, respecting UTF-8 boundaries.
+fn truncate_chars(s: &str, max: usize) -> &str {
+    match s.char_indices().nth(max) {
+        Some((byte_idx, _)) => &s[..byte_idx],
+        None => s,
+    }
+}
+
 pub fn print_search_text(query: &str, results: &[Block]) {
     println!("Search: \"{}\" — {} results\n", query, results.len());
     for block in results {
         let content = block.content.trim();
-        let preview = if content.len() > 80 { &content[..80] } else { content };
+        let preview = truncate_chars(content, 80);
         println!("  [{}] {}", &block.id.to_string()[..8], preview);
     }
 }
@@ -277,4 +285,39 @@ fn xml_escape(s: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::truncate_chars;
+
+    #[test]
+    fn truncate_shorter_than_max_is_unchanged() {
+        assert_eq!(truncate_chars("hello", 80), "hello");
+        assert_eq!(truncate_chars("", 80), "");
+    }
+
+    #[test]
+    fn truncate_ascii_cuts_at_max() {
+        let s = "a".repeat(100);
+        assert_eq!(truncate_chars(&s, 80).len(), 80);
+    }
+
+    #[test]
+    fn truncate_multibyte_does_not_panic_and_keeps_chars_whole() {
+        // Each 'é' is 2 bytes: a byte-slice at 80 would split the 40th char.
+        let s = "é".repeat(100);
+        let out = truncate_chars(&s, 80);
+        assert_eq!(out.chars().count(), 80);
+        assert_eq!(out, "é".repeat(80));
+
+        // 4-byte chars (emoji) — byte index 80 lands mid-char.
+        let s = "🎉".repeat(100);
+        let out = truncate_chars(&s, 80);
+        assert_eq!(out.chars().count(), 80);
+
+        // Boundary exactly at the cut point.
+        let s = format!("{}é", "a".repeat(79));
+        assert_eq!(truncate_chars(&s, 80), s);
+    }
 }
