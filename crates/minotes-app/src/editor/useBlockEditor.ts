@@ -57,6 +57,11 @@ export function useBlockEditor({
   onTagClick,
 }: UseBlockEditorOptions) {
   const onSaveRef = useRef(onSave);
+  // NOT a mirror of the `content` prop — this tracks the last markdown the editor
+  // itself produced or applied, so the sync effect below can tell an echo of our own
+  // save apart from a genuine external change. Assigning `content` to it on every
+  // render (as the callback refs below do) makes the echo check always true and
+  // permanently disables setContent: external updates then never reach the DOM.
   const contentRef = useRef(content);
   const onPageLinkClickRef = useRef(onPageLinkClick);
   const onBlockRefClickRef = useRef(onBlockRefClick);
@@ -74,7 +79,6 @@ export function useBlockEditor({
   const skipSyncRef = useRef(false);
   const slashActiveRef = useRef(false);
   onSaveRef.current = onSave;
-  contentRef.current = content;
   onPageLinkClickRef.current = onPageLinkClick;
   onBlockRefClickRef.current = onBlockRefClick;
   onEnterRef.current = onEnter;
