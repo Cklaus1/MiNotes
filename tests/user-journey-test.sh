@@ -12,6 +12,11 @@
 AB="agent-browser"
 URL="http://localhost:1420"
 SSDIR="tests/screenshots/journey"
+# Source-grep assertions (journey 50) read Rust files. Anchor them to the repo
+# root so they work no matter where the suite is invoked from.
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+APP_DIR="$REPO_ROOT/crates/minotes-app"
+CORE_DIR="$REPO_ROOT/crates/minotes-core"
 P=0; F=0
 RESULTS=()
 BUGS=()
@@ -594,8 +599,11 @@ COUNT=$(echo "$H" | grep -o "data-checked" | wc -l)
 step "Some are checked, some aren't"
 api "setBlockContent(0, '- [x] Task 1: Review PRD\n- [x] Task 2: Write specs\n- [ ] Task 3: Build MVP\n- [ ] Task 4: Run tests\n- [ ] Task 5: Ship it')" > /dev/null; sleep 2
 H=$(ev "document.querySelectorAll('.ProseMirror')[0]?.innerHTML")
-CHECKED=$(echo "$H" | tr '"' '\n' | grep -c 'true' || echo "0")
-UNCHECKED=$(echo "$H" | tr '"' '\n' | grep -c 'false' || echo "0")
+# grep -c prints "0" AND exits 1 on no match, so `|| echo 0` appended a second
+# zero, producing "0\n0" and a syntax error in the [[ ]] below. Let grep's own
+# zero stand; only substitute when the command produced nothing at all.
+CHECKED=$(echo "$H" | tr '"' '\n' | grep -c 'true'); CHECKED=${CHECKED:-0}
+UNCHECKED=$(echo "$H" | tr '"' '\n' | grep -c 'false'); UNCHECKED=${UNCHECKED:-0}
 [[ "$CHECKED" -ge 2 && "$UNCHECKED" -ge 3 ]] && pass "Mix of done ($CHECKED) and pending ($UNCHECKED)" || fail "Wrong check states" "checked=$CHECKED unchecked=$UNCHECKED"
 
 ss "21-rapid-todos"
@@ -1650,23 +1658,29 @@ journey "Archive: Folder Archive & Restore"
 # ═══════════════════════════════════════════════
 
 step "Create folder for archive test"
-ev "(async()=>{const api=await import('/src/lib/api.ts');const f=await api.createFolder('Archive Test Folder');const p=await api.createPage('AF Page 1');await api.movePageToFolder(p.id,f.id);return 'ok'})()" > /dev/null; sleep 1
+# Capture the folder id now: getFolderTree omits archived folders, so after the
+# archive step below there is no way to look this id up again.
+AF_ID=$(ev "(async()=>{const api=await import('/src/lib/api.ts');const f=await api.createFolder('Archive Test Folder');const p=await api.createPage('AF Page 1');await api.movePageToFolder(p.id,f.id);return f.id})()" | tr -d '"'); sleep 1
 api "refreshSidebar()" > /dev/null; sleep 1
 
 step "Archive the folder"
-ev "(async()=>{const api=await import('/src/lib/api.ts');const tree=await api.getFolderTree();const f=tree.folders?.find(x=>x.name==='Archive Test Folder');if(f){const count=await api.archiveFolder(f.id);return 'archived '+count}return 'no folder'})()" > /dev/null; sleep 1
+ev "(async()=>{const api=await import('/src/lib/api.ts');const count=await api.archiveFolder('$AF_ID');return 'archived '+count})()" > /dev/null; sleep 1
 api "refreshSidebar()" > /dev/null; sleep 1
 
 step "Folder pages hidden from main list"
 PAGES=$(ev "(async()=>{const api=await import('/src/lib/api.ts');const pages=await api.listPages();return pages.some(x=>x.title==='AF Page 1')})()")
 [[ "$PAGES" == "false" ]] && pass "Archived folder pages hidden" || fail "Archived pages still visible" "$PAGES"
 
-step "Pages appear in archived list"
-ARCH=$(ev "(async()=>{const api=await import('/src/lib/api.ts');const items=await api.listArchived();return items.some(x=>x.title==='AF Page 1')})()")
-[[ "$ARCH" == "true" ]] && pass "Page in archived list" || fail "Page not in archived list" "$ARCH"
+step "Archived folder appears in archived list"
+# Both the mock and the Rust backend roll an archived folder's pages up under
+# the folder — ArchiveItem carries {id,title,item_type,page_count,archived_at}
+# and no folder_id, and list_archived only lists pages NOT in an archived
+# folder. So assert the folder, with its page_count.
+ARCH=$(ev "(async()=>{const api=await import('/src/lib/api.ts');const items=await api.listArchived();const f=items.find(x=>x.title==='Archive Test Folder'&&x.item_type==='folder');return f?String(f.page_count):'missing'})()" | tr -d '"')
+[[ "$ARCH" == "1" ]] && pass "Archived folder listed with its 1 page" || fail "Archived folder not in archived list" "$ARCH"
 
 step "Unarchive the folder"
-ev "(async()=>{const api=await import('/src/lib/api.ts');const tree=await api.getFolderTree();const allFolders=(await import('/src/lib/api.ts')).getFolderTree;const archived=await api.listArchived();const p=archived.find(x=>x.title==='AF Page 1');if(p&&p.folder_id){await api.unarchiveFolder(p.folder_id);return 'unarchived'}return 'not found'})()" > /dev/null; sleep 1
+ev "(async()=>{const api=await import('/src/lib/api.ts');await api.unarchiveFolder('$AF_ID');return 'unarchived'})()" > /dev/null; sleep 1
 api "refreshSidebar()" > /dev/null; sleep 1
 
 step "Pages restored after unarchive"
@@ -1810,6 +1824,9 @@ ev "(async()=>{const api=await import('/src/lib/api.ts');const p=await api.creat
 
 step "Page loads with AI tag suggestions"
 ev "(async()=>{const api=await import('/src/lib/api.ts');const pt=await api.getPageTree('AI Tag Test');return pt.blocks.length})()" > /dev/null; sleep 1
+# The chips only render for the page the UI is actually showing, so navigate
+# there first — creating the page over the API does not change the view.
+api "navigateTo('AI Tag Test')" > /dev/null; sleep 2
 # Check that AI tag chips are visible in the DOM
 HAS_AI_TAGS=$(ev "document.querySelectorAll('.ai-tag-chip').length" | tr -d '"')
 [[ "$HAS_AI_TAGS" -ge 1 ]] 2>/dev/null && pass "AI tag chips visible ($HAS_AI_TAGS tags)" || fail "No AI tag chips" "Tags not shown"
@@ -1840,17 +1857,20 @@ ev "(async()=>{const api=await import('/src/lib/api.ts');const p1=await api.crea
 
 step "Open a page and see link suggestions"
 ev "(async()=>{const api=await import('/src/lib/api.ts');const pt=await api.getPageTree('Rust Programming');return pt.page.id})()" > /dev/null; sleep 2
+api "navigateTo('Rust Programming')" > /dev/null; sleep 2
 
 # Check that AI link suggestion chips are visible
 HAS_AI_LINKS=$(ev "document.querySelectorAll('.ai-link-chip').length" | tr -d '"')
 [[ "$HAS_AI_LINKS" -ge 1 ]] 2>/dev/null && pass "AI link suggestions visible ($HAS_AI_LINKS links)" || pass "Link suggestions panel rendered (count=$HAS_AI_LINKS)"
 
-step "Clicking a suggested link navigates to that page"
-# The + button should navigate to the suggested page
-ev "(async()=>{const btn=document.querySelector('.ai-link-insert');if(btn){btn.click();return 'navigated'}return 'no button'})()" > /dev/null; sleep 1
-# Check that the page title changed
-CURRENT_TITLE=$(ev "document.querySelector('.page-title')?.textContent || ''" | tr -d '"')
-[[ -n "$CURRENT_TITLE" ]] && pass "Navigation triggered from link suggestion" || fail "Link suggestion click didn't navigate" ""
+step "Clicking a suggested link inserts it into the current page"
+# Bug #28: the + button INSERTS the wiki-link as a new block rather than
+# navigating away. Assert the insert, and that we stayed put.
+ev "(async()=>{const btn=document.querySelector('.ai-link-insert');if(btn){btn.click();return 'inserted'}return 'no button'})()" > /dev/null; sleep 2
+LINKED=$(ev "(async()=>{const api=await import('/src/lib/api.ts');const pt=await api.getPageTree('Rust Programming');return pt.blocks.some(b=>b.content.includes('[[Systems Design]]'))})()")
+[[ "$LINKED" == "true" ]] && pass "Wiki-link inserted from suggestion" || fail "Link suggestion click didn't insert" "$LINKED"
+CURRENT_TITLE=$(api "getCurrentPage()" | tr -d '"')
+[[ "$CURRENT_TITLE" == "Rust Programming" ]] && pass "Stayed on the page after insert" || fail "Insert navigated away" "$CURRENT_TITLE"
 
 step "I dismiss a link suggestion"
 ev "(async()=>{const btn=document.querySelector('.ai-link-dismiss');if(btn){btn.click();return 'dismissed'}return 'no button'})()" > /dev/null; sleep 1
@@ -1915,13 +1935,13 @@ journey "50. Rust backend — count_pending_todos works"
 
 step "Rust function compiles and is callable"
 # This is tested by cargo test — verify the command is registered
-grep -q "get_pending_todo_count" src-tauri/src/lib.rs && pass "get_pending_todo_count registered in Tauri" || fail "Command not registered" ""
+grep -q "get_pending_todo_count" "$APP_DIR/src-tauri/src/lib.rs" && pass "get_pending_todo_count registered in Tauri" || fail "Command not registered" ""
 
 step "Rust repo module includes ai_suggestions"
-grep -q "ai_suggestions" ../minotes-core/src/repo/mod.rs && pass "ai_suggestions module included" || fail "Module not included" ""
+grep -q "ai_suggestions" "$CORE_DIR/src/repo/mod.rs" && pass "ai_suggestions module included" || fail "Module not included" ""
 
 step "count_pending_todos function exists"
-grep -q "count_pending_todos" ../minotes-core/src/repo/ai_suggestions.rs && pass "count_pending_todos function exists" || fail "Function not found" ""
+grep -q "count_pending_todos" "$CORE_DIR/src/repo/ai_suggestions.rs" && pass "count_pending_todos function exists" || fail "Function not found" ""
 
 ss "46-ai-tagging"
 ss "47-ai-link-suggestions"
