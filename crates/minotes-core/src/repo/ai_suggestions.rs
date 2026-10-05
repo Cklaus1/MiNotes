@@ -1,5 +1,14 @@
 use crate::db::Database;
 use crate::error::Result;
+use crate::repo::archive::ARCHIVED_FOLDER_TREE;
+use crate::repo::trash::TRASHED_FOLDER_TREE;
+
+/// Excludes trashed/archived pages and pages inside a trashed/archived folder
+/// subtree. Requires the `trashed_tree` / `archived_tree` CTEs.
+const VISIBLE_PAGE_FILTER: &str = "p.id NOT IN (SELECT page_id FROM trash)
+               AND p.id NOT IN (SELECT page_id FROM archive)
+               AND (p.folder_id IS NULL OR (p.folder_id NOT IN (SELECT id FROM trashed_tree)
+                    AND p.folder_id NOT IN (SELECT id FROM archived_tree)))";
 
 /// Parse a single line for a *pending* TODO and return its text, or None.
 ///
@@ -9,9 +18,29 @@ use crate::error::Result;
 ///   (unchecked only — `[x]`/`[X]` are done, not pending), 1+ spaces, non-empty text.
 /// - Action keyword: `TODO:`/`ACTION:`/`FOLLOW UP:`/`FOLLOW-UP:`/`NEXT:`
 ///   (case-insensitive), then non-empty text.
+/// - App state markers (written by Ctrl+Enter / the TODO badge): a line starting
+///   with `TODO ` or `DOING ` (UPPERCASE, exactly that keyword + a space) followed
+///   by non-empty text is pending; `DONE ` is done (never pending).
+/// - `{{todo:pending}}` / `{{todo:doing}}` / `{{todo:done}}` macros are NOT
+///   counted: they are the aggregated "All TODOs" page's own mirror entries and
+///   counting them would double-count every TODO.
+/// - A leading UTF-8 BOM (U+FEFF) is ignored.
+///
 /// Empty-text matches are NOT counted (matching the frontend).
 pub fn parse_pending_todo(line: &str) -> Option<String> {
+    let line = line.strip_prefix('\u{feff}').unwrap_or(line);
     let trimmed = line.trim_start();
+
+    // App state markers (case-sensitive, as the editor writes them).
+    for kw in ["TODO ", "DOING "] {
+        if let Some(rest) = trimmed.strip_prefix(kw) {
+            let text = rest.trim();
+            return (!text.is_empty()).then(|| text.to_string());
+        }
+    }
+    if trimmed.starts_with("DONE ") || trimmed.starts_with("{{todo:") {
+        return None;
+    }
 
     // Checkbox form: marker (-/*/+), 1+ spaces, [<state>], 1+ spaces, non-empty text.
     let first = trimmed.chars().next();
@@ -69,10 +98,12 @@ impl Database {
     /// Count pending TODOs across all pages by scanning block content.
     /// Recognizes: - [ ], - [x], TODO:, Action:, Follow up:, Next:
     pub fn count_pending_todos(&self) -> Result<usize> {
-        let mut stmt = self.conn.prepare(
-            "SELECT b.content FROM blocks b
-             JOIN pages p ON b.page_id = p.id",
-        )?;
+        let mut stmt = self.conn.prepare(&format!(
+            "WITH RECURSIVE {TRASHED_FOLDER_TREE}, {ARCHIVED_FOLDER_TREE}
+             SELECT b.content FROM blocks b
+             JOIN pages p ON b.page_id = p.id
+             WHERE {VISIBLE_PAGE_FILTER}"
+        ))?;
 
         let mut rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
         let mut count = 0;
@@ -90,10 +121,12 @@ impl Database {
 
     /// List all pending TODOs across all pages with their source page titles.
     pub fn list_pending_todos(&self) -> Result<Vec<PendingTodo>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT b.content, p.title FROM blocks b
-             JOIN pages p ON b.page_id = p.id",
-        )?;
+        let mut stmt = self.conn.prepare(&format!(
+            "WITH RECURSIVE {TRASHED_FOLDER_TREE}, {ARCHIVED_FOLDER_TREE}
+             SELECT b.content, p.title FROM blocks b
+             JOIN pages p ON b.page_id = p.id
+             WHERE {VISIBLE_PAGE_FILTER}"
+        ))?;
 
         let mut rows = stmt.query_map([], |row| {
             let content: String = row.get(0)?;
@@ -116,10 +149,12 @@ impl Database {
 
     /// List all pending TODOs with page IDs for navigation.
     pub fn list_pending_todos_with_page_ids(&self) -> Result<Vec<PendingTodoWithPageId>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT b.page_id, p.title, b.content FROM blocks b
-             JOIN pages p ON b.page_id = p.id",
-        )?;
+        let mut stmt = self.conn.prepare(&format!(
+            "WITH RECURSIVE {TRASHED_FOLDER_TREE}, {ARCHIVED_FOLDER_TREE}
+             SELECT b.page_id, p.title, b.content FROM blocks b
+             JOIN pages p ON b.page_id = p.id
+             WHERE {VISIBLE_PAGE_FILTER}"
+        ))?;
 
         let mut rows = stmt.query_map([], |row| {
             let page_id: String = row.get(0)?;
@@ -190,14 +225,59 @@ mod tests {
     }
 
     #[test]
-    fn test_count_pending_todos_includes_trashed_pages() {
-        // Pages in trash are still counted because pages table has no trashed_at column.
-        // The trash table is a separate audit log, not a filter on pages.
+    fn test_count_pending_todos_excludes_trashed_and_archived_pages() {
+        // Trash/archive are soft deletes hidden everywhere else; their TODOs must
+        // not inflate the badge or appear in TODO lists.
+        let db = test_db();
+        let live = db.create_page("Live", None, false, None, "test").unwrap();
+        db.create_block(&live.id, "- [ ] Active task", None, None, "test").unwrap();
+        let trashed = db.create_page("Trashed", None, false, None, "test").unwrap();
+        db.create_block(&trashed.id, "- [ ] Trashed task", None, None, "test").unwrap();
+        db.trash_page(&trashed.id).unwrap();
+        let archived = db.create_page("Archived", None, false, None, "test").unwrap();
+        db.create_block(&archived.id, "TODO archived task", None, None, "test").unwrap();
+        db.archive_page(&archived.id).unwrap();
+        let f = db.create_folder("F", None, None, None, "test").unwrap();
+        let s = db.create_folder("S", Some(&f.id), None, None, "test").unwrap();
+        let nested = db.create_page("Nested", None, false, None, "test").unwrap();
+        db.move_page_to_folder(&nested.id, Some(&s.id), "test").unwrap();
+        db.create_block(&nested.id, "TODO nested task", None, None, "test").unwrap();
+        db.trash_folder(&f.id).unwrap();
+
+        assert_eq!(db.count_pending_todos().unwrap(), 1);
+        assert_eq!(db.list_pending_todos().unwrap().len(), 1);
+        assert_eq!(db.list_pending_todos_with_page_ids().unwrap().len(), 1);
+    }
+
+    // The app's own Ctrl+Enter markers are counted; DONE and {{todo:*}} are not.
+    #[test]
+    fn test_app_state_markers() {
+        assert_eq!(parse_pending_todo("TODO buy milk").as_deref(), Some("buy milk"));
+        assert_eq!(parse_pending_todo("DOING write report").as_deref(), Some("write report"));
+        assert_eq!(parse_pending_todo("  TODO indented").as_deref(), Some("indented"));
+        assert_eq!(parse_pending_todo("\u{feff}TODO bom").as_deref(), Some("bom"));
+        assert_eq!(parse_pending_todo("\u{feff}- [ ] bom box").as_deref(), Some("bom box"));
+        assert_eq!(parse_pending_todo("DONE shipped"), None);
+        assert_eq!(parse_pending_todo("TODO "), None);
+        assert_eq!(parse_pending_todo("DOING"), None);
+        assert_eq!(parse_pending_todo("todo lowercase prose"), None);
+        assert_eq!(parse_pending_todo("TODOS are fun"), None);
+        assert_eq!(parse_pending_todo("{{todo:pending}}"), None);
+        assert_eq!(parse_pending_todo("{{todo:pending}} [[P|id]] mirror"), None);
+        assert_eq!(parse_pending_todo("{{todo:doing}}"), None);
+        // Colon form still works via the keyword rule.
+        assert_eq!(parse_pending_todo("TODO: colon form").as_deref(), Some("colon form"));
+    }
+
+    #[test]
+    fn test_count_app_state_markers() {
         let db = test_db();
         let page = db.create_page("Test", None, false, None, "test").unwrap();
-        db.create_block(&page.id, "- [ ] Active task", None, None, "test").unwrap();
-        db.trash_page(&page.id).unwrap();
-        assert_eq!(db.count_pending_todos().unwrap(), 1);
+        db.create_block(&page.id, "TODO one", None, None, "test").unwrap();
+        db.create_block(&page.id, "DOING two", None, None, "test").unwrap();
+        db.create_block(&page.id, "DONE three", None, None, "test").unwrap();
+        db.create_block(&page.id, "{{todo:pending}} [[Test|x]] one", None, None, "test").unwrap();
+        assert_eq!(db.count_pending_todos().unwrap(), 2);
     }
 
     #[test]

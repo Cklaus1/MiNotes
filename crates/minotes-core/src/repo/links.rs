@@ -153,19 +153,23 @@ fn contains_word(haystack: &str, needle: &str) -> bool {
     }
     let hay = haystack.to_lowercase();
     let need = needle.to_lowercase();
-    let need_bytes = need.as_bytes();
+    if need.is_empty() {
+        return false;
+    }
+    // Word boundaries are Unicode-aware; all slicing is on char boundaries
+    // (the old byte-wise `start = abs + 1` panicked on non-ASCII text).
+    let is_word = |c: char| c.is_alphanumeric() || c == '_';
     let mut start = 0;
     while let Some(pos) = hay[start..].find(&need) {
         let abs = start + pos;
-        let before_ok = abs == 0
-            || !hay.as_bytes()[abs - 1].is_ascii_alphanumeric();
-        let after_idx = abs + need_bytes.len();
-        let after_ok = after_idx >= hay.len()
-            || !hay.as_bytes()[after_idx].is_ascii_alphanumeric();
+        let end = abs + need.len();
+        let before_ok = hay[..abs].chars().next_back().is_none_or(|c| !is_word(c));
+        let after_ok = hay[end..].chars().next().is_none_or(|c| !is_word(c));
         if before_ok && after_ok {
             return true;
         }
-        start = abs + 1;
+        // Advance by one whole char past the match start.
+        start = abs + hay[abs..].chars().next().map_or(1, char::len_utf8);
         if start >= hay.len() {
             break;
         }
@@ -190,4 +194,50 @@ fn row_to_link(row: &rusqlite::Row<'_>) -> rusqlite::Result<Link> {
             .map(|dt| dt.with_timezone(&chrono::Utc))
             .unwrap_or_else(|_| chrono::Utc::now()),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::contains_word;
+    use crate::db::Database;
+
+    #[test]
+    fn test_contains_word_non_ascii_does_not_panic() {
+        // Used to panic: "byte index 2 is not a char boundary".
+        assert!(!contains_word("xémile rest", "émile"));
+        assert!(contains_word("ask émile today", "Émile"));
+        assert!(!contains_word("émiles", "émile"));
+    }
+
+    #[test]
+    fn test_contains_word_cjk_and_edges() {
+        assert!(contains_word("東京", "東京"));
+        assert!(contains_word("会議 東京 メモ", "東京"));
+        assert!(!contains_word("東京都", "東京"), "CJK letters are word chars");
+        assert!(contains_word("AI at start", "ai"));
+        assert!(contains_word("ends with AI", "AI"));
+        assert!(contains_word("(AI)", "AI"));
+    }
+
+    #[test]
+    fn test_contains_word_repeated_occurrences() {
+        // First two occurrences are embedded; the third is a whole word.
+        assert!(contains_word("RAID maintain AI", "ai"));
+        assert!(!contains_word("RAID maintain aid", "ai"));
+        assert!(contains_word("ééé é", "é"));
+        assert!(!contains_word("", "x"));
+        assert!(!contains_word("x", ""));
+    }
+
+    #[test]
+    fn test_unlinked_references_non_ascii_title() {
+        let db = Database::open_in_memory().unwrap();
+        let target = db.create_page("émile", None, false, None, "user").unwrap();
+        let other = db.create_page("Other", None, false, None, "user").unwrap();
+        db.create_block(&other.id, "xémile rest", None, None, "user").unwrap();
+        let hit = db.create_block(&other.id, "met émile here", None, None, "user").unwrap();
+        let refs = db.get_unlinked_references(&target.id).unwrap();
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].id, hit.id);
+    }
 }

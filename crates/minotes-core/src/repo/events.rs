@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use crate::db::Database;
 use crate::error::{Error, Result};
-use crate::models::Event;
+use crate::models::{Block, Event};
 
 impl Database {
     /// Emit an event for any mutation. Called internally by repo methods.
@@ -77,86 +77,145 @@ impl Database {
         Ok(events)
     }
 
-    /// Undo the most recent event by reversing its mutation.
+    /// Undo the most recent user-level event by reversing its mutation.
     /// Returns the undone event's ID, or None if nothing to undo.
     ///
-    /// The original event is marked `undone=1` rather than deleted so the
-    /// audit log stays intact and a future `redo` can find it.
+    /// Derived events (`link.*`, emitted as a side effect of block writes) and
+    /// `undo.*` records are skipped. The original event is marked `undone=1`
+    /// rather than deleted so the audit log stays intact and a future `redo` can
+    /// find it. The whole undo is atomic.
     pub fn undo_last(&self, actor: &str) -> Result<Option<i64>> {
-        // Get the most recent non-undo, not-yet-undone event
-        let event = {
-            let mut stmt = self.conn.prepare(
-                "SELECT id, event_type, entity_id, entity_type, payload, actor, created_at
-                 FROM events
-                 WHERE event_type NOT LIKE 'undo.%'
-                   AND undone = 0
-                 ORDER BY id DESC LIMIT 1",
-            )?;
-            let mut rows = stmt.query([])?;
-            match rows.next()? {
-                Some(row) => row_to_event(row).map_err(Error::Database)?,
-                None => return Ok(None),
-            }
-        };
-
-        let event_id = event.id;
-        let entity_id = event.entity_id;
-
-        // Reverse the mutation based on event type
-        match event.event_type.as_str() {
-            "block.created" => {
-                // Undo create = delete
-                self.conn.execute(
-                    "DELETE FROM blocks WHERE id = ?1",
-                    rusqlite::params![entity_id.to_string()],
+        self.tx(|| {
+            let event = {
+                let mut stmt = self.conn.prepare(
+                    "SELECT id, event_type, entity_id, entity_type, payload, actor, created_at
+                     FROM events
+                     WHERE event_type NOT LIKE 'undo.%'
+                       AND event_type NOT LIKE 'link.%'
+                       AND undone = 0
+                     ORDER BY id DESC LIMIT 1",
                 )?;
-            }
-            "block.deleted" => {
-                // Undo delete = recreate from payload
-                if let Some(content) = event.payload.get("content").and_then(|v| v.as_str()) {
-                    let page_id = event.payload.get("page_id").and_then(|v| v.as_str()).unwrap_or("");
-                    let position = event.payload.get("position").and_then(|v| v.as_f64()).unwrap_or(1.0);
-                    let now = chrono::Utc::now();
+                let mut rows = stmt.query([])?;
+                match rows.next()? {
+                    Some(row) => row_to_event(row).map_err(Error::Database)?,
+                    None => return Ok(None),
+                }
+            };
+
+            let event_id = event.id;
+            let entity_id = event.entity_id;
+
+            match event.event_type.as_str() {
+                "block.created" => {
+                    // Undo create = delete (with any children added since).
+                    self.delete_block_subtree_raw(&entity_id)?;
+                }
+                "block.deleted" => {
+                    // Undo delete = recreate the block, then its descendants
+                    // root-first, with original parent/position.
+                    let root: Option<Block> = serde_json::from_value(event.payload.clone()).ok();
+                    let subtree: Vec<Block> = event
+                        .payload
+                        .get("subtree")
+                        .and_then(|v| serde_json::from_value(v.clone()).ok())
+                        .unwrap_or_default();
+                    if let Some(root) = root {
+                        let mut restored = Vec::new();
+                        for b in std::iter::once(&root).chain(subtree.iter()) {
+                            if self.restore_block_row(b)? {
+                                restored.push(b);
+                            }
+                        }
+                        // Re-derive link rows once every block (incl. ref targets) exists.
+                        for b in restored {
+                            self.sync_block_links(&b.id, &b.content, actor)?;
+                        }
+                    }
+                }
+                "block.updated" => {
+                    // Undo update = restore the prior content carried in the payload.
+                    // (Events written before this field existed can't be reversed.)
+                    if let Some(prev) = event.payload.get("previous_content").and_then(|v| v.as_str()) {
+                        let n = self.conn.execute(
+                            "UPDATE blocks SET content = ?1, updated_at = ?2 WHERE id = ?3",
+                            rusqlite::params![prev, Utc::now().to_rfc3339(), entity_id.to_string()],
+                        )?;
+                        if n > 0 {
+                            self.sync_block_links(&entity_id, prev, actor)?;
+                        }
+                    }
+                }
+                "page.created" => {
                     self.conn.execute(
-                        "INSERT OR IGNORE INTO blocks (id, page_id, parent_id, position, content, format, collapsed, created_at, updated_at)
-                         VALUES (?1, ?2, NULL, ?3, ?4, 'markdown', 0, ?5, ?6)",
-                        rusqlite::params![
-                            entity_id.to_string(), page_id, position, content,
-                            now.to_rfc3339(), now.to_rfc3339(),
-                        ],
+                        "DELETE FROM properties WHERE entity_id = ?1
+                            OR entity_id IN (SELECT id FROM blocks WHERE page_id = ?1)",
+                        rusqlite::params![entity_id.to_string()],
+                    )?;
+                    self.conn.execute(
+                        "DELETE FROM pages WHERE id = ?1",
+                        rusqlite::params![entity_id.to_string()],
                     )?;
                 }
+                _ => {}
             }
-            "block.updated" => {
-                // Undo update = restore old content from payload
-                // The payload contains the NEW state; we'd need the previous event to get old state
-                // For simplicity, just mark it as undone
-            }
-            "page.created" => {
-                self.conn.execute(
-                    "DELETE FROM pages WHERE id = ?1",
-                    rusqlite::params![entity_id.to_string()],
-                )?;
-            }
-            _ => {}
+
+            self.emit_event(
+                &format!("undo.{}", event.event_type),
+                &entity_id,
+                &event.entity_type,
+                &event.payload,
+                actor,
+            )?;
+            self.conn.execute(
+                "UPDATE events SET undone = 1 WHERE id = ?1",
+                rusqlite::params![event_id],
+            )?;
+            Ok(Some(event_id))
+        })
+    }
+
+    /// Re-insert a deleted block row. A parent that no longer exists (or is on
+    /// another page) degrades to root level. Returns false if the page is gone
+    /// or the block already exists.
+    fn restore_block_row(&self, b: &Block) -> Result<bool> {
+        let page_exists: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pages WHERE id = ?1)",
+            rusqlite::params![b.page_id.to_string()],
+            |row| row.get(0),
+        )?;
+        if !page_exists {
+            return Err(Error::InvalidInput(format!(
+                "Cannot undo delete: page {} no longer exists",
+                b.page_id
+            )));
         }
-
-        // Record the undo event
-        self.emit_event(
-            &format!("undo.{}", event.event_type),
-            &entity_id,
-            &event.entity_type,
-            &event.payload,
-            actor,
+        let parent = match b.parent_id {
+            Some(p) => {
+                let ok: bool = self.conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM blocks WHERE id = ?1 AND page_id = ?2)",
+                    rusqlite::params![p.to_string(), b.page_id.to_string()],
+                    |row| row.get(0),
+                )?;
+                ok.then(|| p.to_string())
+            }
+            None => None,
+        };
+        let n = self.conn.execute(
+            "INSERT OR IGNORE INTO blocks (id, page_id, parent_id, position, content, format, collapsed, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            rusqlite::params![
+                b.id.to_string(),
+                b.page_id.to_string(),
+                parent,
+                b.position,
+                b.content,
+                b.format,
+                b.collapsed as i32,
+                b.created_at.to_rfc3339(),
+                Utc::now().to_rfc3339(),
+            ],
         )?;
-
-        // Mark the original event as undone (preserves history; enables redo)
-        self.conn.execute(
-            "UPDATE events SET undone = 1 WHERE id = ?1",
-            rusqlite::params![event_id],
-        )?;
-
-        Ok(Some(event_id))
+        Ok(n > 0)
     }
 }
 
@@ -176,4 +235,82 @@ fn row_to_event(row: &rusqlite::Row<'_>) -> rusqlite::Result<Event> {
             .map(|dt| dt.with_timezone(&chrono::Utc))
             .unwrap_or_else(|_| chrono::Utc::now()),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::db::Database;
+
+    // (a) Undo skips derived link.* events and undoes the user's block creation.
+    #[test]
+    fn test_undo_skips_derived_link_events() {
+        let db = Database::open_in_memory().unwrap();
+        let t = db.create_page("T", None, false, None, "user").unwrap();
+        let src = db.create_page("Src", None, false, None, "user").unwrap();
+        let b = db.create_block(&src.id, "see [[T]]", None, None, "user").unwrap();
+        db.undo_last("user").unwrap().unwrap();
+        assert!(db.get_block(&b.id).unwrap().is_none(), "block creation undone");
+        assert!(db.get_backlinks(&t.id).unwrap().is_empty());
+    }
+
+    // (c) Undoing an update restores the previous content (and its links).
+    #[test]
+    fn test_undo_block_update_restores_content() {
+        let db = Database::open_in_memory().unwrap();
+        let t = db.create_page("T", None, false, None, "user").unwrap();
+        let src = db.create_page("Src", None, false, None, "user").unwrap();
+        let b = db.create_block(&src.id, "see [[T]]", None, None, "user").unwrap();
+        db.update_block(&b.id, Some("no link now"), "user").unwrap();
+        assert!(db.get_backlinks(&t.id).unwrap().is_empty());
+        db.undo_last("user").unwrap().unwrap();
+        assert_eq!(db.get_block(&b.id).unwrap().unwrap().content, "see [[T]]");
+        assert_eq!(db.get_backlinks(&t.id).unwrap().len(), 1);
+    }
+
+    // (b) Undoing a cascaded delete restores parent before children with the
+    // original parent_id/position, in a single undo step.
+    #[test]
+    fn test_undo_cascaded_delete_restores_hierarchy() {
+        let db = Database::open_in_memory().unwrap();
+        let page = db.create_page("P", None, false, None, "user").unwrap();
+        let a = db.create_block(&page.id, "A", None, Some(3.0), "user").unwrap();
+        let b = db.create_block(&page.id, "B", Some(&a.id), Some(2.0), "user").unwrap();
+        let c = db.create_block(&page.id, "C", Some(&b.id), Some(7.0), "user").unwrap();
+        let d = db.create_block(&page.id, "D", Some(&a.id), Some(1.0), "user").unwrap();
+        db.delete_block(&a.id, "user").unwrap();
+        assert!(db.get_page_blocks(&page.id).unwrap().is_empty());
+
+        db.undo_last("user").unwrap().unwrap();
+        let get = |id| db.get_block(id).unwrap().unwrap();
+        assert_eq!(get(&a.id).parent_id, None);
+        assert_eq!(get(&a.id).position, 3.0);
+        assert_eq!(get(&b.id).parent_id, Some(a.id));
+        assert_eq!(get(&b.id).position, 2.0);
+        assert_eq!(get(&c.id).parent_id, Some(b.id));
+        assert_eq!(get(&c.id).position, 7.0);
+        assert_eq!(get(&d.id).parent_id, Some(a.id));
+    }
+
+    // (d) Delete events are emitted only after the delete succeeds.
+    #[test]
+    fn test_delete_block_event_after_delete() {
+        let db = Database::open_in_memory().unwrap();
+        let page = db.create_page("P", None, false, None, "user").unwrap();
+        let a = db.create_block(&page.id, "A", None, None, "user").unwrap();
+        db.conn
+            .execute_batch("CREATE TRIGGER boom BEFORE DELETE ON blocks BEGIN SELECT RAISE(ABORT, 'x'); END;")
+            .unwrap();
+        assert!(db.delete_block(&a.id, "user").is_err());
+        let n: i64 = db
+            .conn
+            .query_row("SELECT COUNT(*) FROM events WHERE event_type = 'block.deleted'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn test_undo_nothing() {
+        let db = Database::open_in_memory().unwrap();
+        assert_eq!(db.undo_last("user").unwrap(), None);
+    }
 }

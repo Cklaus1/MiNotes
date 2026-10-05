@@ -22,20 +22,24 @@ impl Database {
             return Ok(Vec::new());
         }
         let fts_query = escape_fts_query(query);
-        let mut stmt = self.conn.prepare(
-            "SELECT b.id, b.page_id, b.parent_id, b.position, b.content, b.format, b.collapsed, b.created_at, b.updated_at
+        // Pages inside a trashed/archived folder's whole subtree are hidden too.
+        let mut stmt = self.conn.prepare(&format!(
+            "WITH RECURSIVE {}, {}
+             SELECT b.id, b.page_id, b.parent_id, b.position, b.content, b.format, b.collapsed, b.created_at, b.updated_at
              FROM blocks_fts f
              JOIN blocks b ON b.rowid = f.rowid
              WHERE blocks_fts MATCH ?1
                AND b.page_id NOT IN (SELECT page_id FROM trash)
                AND b.page_id NOT IN (SELECT page_id FROM archive)
                AND b.page_id NOT IN (
-                   SELECT id FROM pages WHERE folder_id IN (SELECT folder_id FROM folder_trash)
-                      OR folder_id IN (SELECT folder_id FROM folder_archive)
+                   SELECT id FROM pages WHERE folder_id IN (SELECT id FROM trashed_tree)
+                      OR folder_id IN (SELECT id FROM archived_tree)
                )
              ORDER BY rank
              LIMIT ?2",
-        )?;
+            crate::repo::trash::TRASHED_FOLDER_TREE,
+            crate::repo::archive::ARCHIVED_FOLDER_TREE,
+        ))?;
         let rows = stmt.query_map(rusqlite::params![fts_query, limit], |row| {
             row_to_block(row)
         })?;

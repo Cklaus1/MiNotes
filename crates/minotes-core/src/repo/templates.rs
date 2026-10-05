@@ -76,19 +76,32 @@ impl Database {
 
     /// Delete a template by name. Returns true if found and deleted.
     pub fn delete_template(&self, name: &str, actor: &str) -> Result<bool> {
-        let template = self.get_template(name)?;
-        if let Some(ref t) = template {
-            self.emit_event("template.deleted", &t.id, "template", t, actor)?;
-        }
-        let count = self.conn.execute(
-            "DELETE FROM templates WHERE name = ?1",
-            rusqlite::params![name],
-        )?;
-        Ok(count > 0)
+        self.tx(|| {
+            let template = self.get_template(name)?;
+            let count = self.conn.execute(
+                "DELETE FROM templates WHERE name = ?1",
+                rusqlite::params![name],
+            )?;
+            // Emit only after the DELETE succeeded (repo convention).
+            if let (Some(t), true) = (template, count > 0) {
+                self.emit_event("template.deleted", &t.id, "template", &t, actor)?;
+            }
+            Ok(count > 0)
+        })
     }
 
     /// Apply a template to a page: split template content by newlines, each line becomes a block.
     pub fn apply_template(
+        &self,
+        page_id: &Uuid,
+        template_name: &str,
+        actor: &str,
+    ) -> Result<Vec<Block>> {
+        // All-or-nothing: a failure midway must not leave half a template applied.
+        self.tx(|| self.apply_template_inner(page_id, template_name, actor))
+    }
+
+    fn apply_template_inner(
         &self,
         page_id: &Uuid,
         template_name: &str,
@@ -230,5 +243,27 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         db.create_template("Dup", None, "x", "user").unwrap();
         assert!(db.create_template("Dup", None, "y", "user").is_err());
+    }
+
+    // A failure midway through apply_template rolls back every block it created.
+    #[test]
+    fn test_apply_template_is_atomic() {
+        let db = Database::open_in_memory().unwrap();
+        let page = db.create_page("P", None, false, None, "user").unwrap();
+        db.create_template("T", None, "one\ntwo\nBOOM\nfour", "user").unwrap();
+        db.conn
+            .execute_batch(
+                "CREATE TRIGGER boom BEFORE INSERT ON blocks WHEN new.content = 'BOOM'
+                 BEGIN SELECT RAISE(ABORT, 'injected'); END;",
+            )
+            .unwrap();
+        assert!(db.apply_template(&page.id, "T", "user").is_err());
+        assert!(db.get_page_blocks(&page.id).unwrap().is_empty(), "no partial template");
+        let ev: i64 = db
+            .conn
+            .query_row("SELECT COUNT(*) FROM events WHERE event_type = 'block.created'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(ev, 0, "no events for rolled-back work");
+        assert!(db.conn.is_autocommit());
     }
 }

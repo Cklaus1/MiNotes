@@ -5,6 +5,14 @@ use crate::db::Database;
 use crate::error::{Error, Result};
 use crate::models::{Folder, FolderTree, Page};
 
+/// Recursive CTE `sub(id)`: folder `?1` and all its descendants. `UNION`
+/// (not `UNION ALL`) keeps it terminating even on a corrupt parent cycle.
+pub(crate) const FOLDER_SUBTREE: &str = "sub(id) AS (
+    SELECT id FROM folders WHERE id = ?1
+    UNION
+    SELECT f.id FROM folders f JOIN sub ON f.parent_id = sub.id
+)";
+
 impl Database {
     pub fn create_folder(
         &self,
@@ -112,23 +120,47 @@ impl Database {
         Ok(folder)
     }
 
+    /// Ids of `id` and all descendant folders (cycle-safe recursive CTE).
+    pub(crate) fn folder_subtree_ids(&self, id: &Uuid) -> Result<Vec<String>> {
+        let mut stmt = self
+            .conn
+            .prepare(&format!("WITH RECURSIVE {FOLDER_SUBTREE} SELECT id FROM sub"))?;
+        let ids = stmt
+            .query_map(rusqlite::params![id.to_string()], |row| row.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(ids)
+    }
+
     pub fn delete_folder(&self, id: &Uuid, actor: &str) -> Result<bool> {
-        // Unparent pages in this folder (set folder_id = NULL)
-        self.conn.execute(
-            "UPDATE pages SET folder_id = NULL WHERE folder_id = ?1",
-            rusqlite::params![id.to_string()],
-        )?;
-        if let Some(ref f) = self.get_folder(id)? {
-            self.emit_event("folder.deleted", &f.id, "folder", f, actor)?;
-        }
-        let count = self.conn.execute(
-            "DELETE FROM folders WHERE id = ?1",
-            rusqlite::params![id.to_string()],
-        )?;
-        Ok(count > 0)
+        self.tx(|| {
+            let folder = self.get_folder(id)?;
+            // Unparent pages in this folder (set folder_id = NULL)
+            self.conn.execute(
+                "UPDATE pages SET folder_id = NULL WHERE folder_id = ?1",
+                rusqlite::params![id.to_string()],
+            )?;
+            let count = self.conn.execute(
+                "DELETE FROM folders WHERE id = ?1",
+                rusqlite::params![id.to_string()],
+            )?;
+            // Emit only after the DELETE succeeded (repo convention).
+            if let (Some(f), true) = (folder, count > 0) {
+                self.emit_event("folder.deleted", &f.id, "folder", &f, actor)?;
+            }
+            Ok(count > 0)
+        })
     }
 
     pub fn move_folder(&self, id: &Uuid, new_parent: Option<&Uuid>, actor: &str) -> Result<Folder> {
+        // Moving a folder into itself or a descendant would create a cycle that
+        // makes the recursive folder-tree walk loop forever.
+        if let Some(p) = new_parent {
+            if self.folder_subtree_ids(id)?.contains(&p.to_string()) {
+                return Err(Error::InvalidInput(
+                    "Cannot move a folder into itself or one of its subfolders".into(),
+                ));
+            }
+        }
         let now = Utc::now();
         let parent_str = new_parent.map(|p| p.to_string());
 

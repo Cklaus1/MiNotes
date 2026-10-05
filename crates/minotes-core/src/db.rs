@@ -1,5 +1,7 @@
 use std::path::Path;
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use rusqlite::Connection;
 
 use crate::error::Result;
@@ -261,10 +263,80 @@ impl Database {
         Ok(db)
     }
 
+    /// Run `f` atomically inside a SQLite SAVEPOINT.
+    ///
+    /// On `Ok` the savepoint is RELEASEd (committing if it was the outermost
+    /// transaction); on `Err` (or a panic) it is rolled back so no partial state
+    /// is left behind. Savepoints nest correctly, so repo functions that call
+    /// each other (e.g. `trash_folder` → `remove_favorite`) can each use `tx`,
+    /// and it also composes with an outer `BEGIN`/savepoint opened by a caller.
+    pub fn tx<T>(&self, f: impl FnOnce() -> Result<T>) -> Result<T> {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let name = format!("minotes_sp_{}", COUNTER.fetch_add(1, Ordering::Relaxed));
+        self.conn.execute_batch(&format!("SAVEPOINT {name}"))?;
+        let mut guard = SavepointGuard { conn: &self.conn, name: &name, done: false };
+        match f() {
+            Ok(v) => {
+                self.conn.execute_batch(&format!("RELEASE {name}"))?;
+                guard.done = true;
+                Ok(v)
+            }
+            Err(e) => {
+                guard.rollback();
+                Err(e)
+            }
+        }
+    }
+
     /// Execute a read-only SQL query and return results as JSON.
-    /// Only SELECT statements are allowed.
+    /// Only a single read-only SELECT-style statement is allowed.
     pub fn run_query(&self, sql: &str) -> Result<serde_json::Value> {
+        use crate::error::Error;
         let trimmed = sql.trim();
+
+        // All checks below are LEXICAL and happen before any `prepare`: some
+        // PRAGMAs (e.g. `foreign_keys=OFF`) take effect at compile time, so even
+        // preparing a statement to inspect it is unsafe.
+        if first_keyword(trimmed).is_empty() {
+            return Err(Error::InvalidInput("Empty query".to_string()));
+        }
+        if has_multiple_statements(trimmed) {
+            return Err(Error::InvalidInput(
+                "Only a single statement is allowed".to_string(),
+            ));
+        }
+
+        // `sqlite3_stmt_readonly()` is true for transaction-control statements,
+        // ATTACH/DETACH and connection-state PRAGMAs, which can leave the shared
+        // connection in an open transaction or create arbitrary files. Reject them
+        // by leading keyword before trusting `readonly()`.
+        // Look through `EXPLAIN [QUERY PLAN]`: pragmas apply at compile time even
+        // under EXPLAIN.
+        let mut body = trimmed;
+        let mut keyword = first_keyword(body).to_ascii_uppercase();
+        while keyword == "EXPLAIN" || keyword == "QUERY" || keyword == "PLAN" {
+            body = first_keyword_rest(body);
+            keyword = first_keyword(body).to_ascii_uppercase();
+        }
+        let trimmed_body = body;
+        const FORBIDDEN: &[&str] = &[
+            "BEGIN", "COMMIT", "END", "ROLLBACK", "SAVEPOINT", "RELEASE", "ATTACH",
+            "DETACH", "VACUUM", "REINDEX", "ANALYZE",
+        ];
+        if FORBIDDEN.contains(&keyword.as_str()) {
+            return Err(Error::InvalidInput(format!("{keyword} statements are not allowed")));
+        }
+        if keyword == "PRAGMA" && !is_safe_pragma(trimmed_body) {
+            return Err(Error::InvalidInput(
+                "Only read-only introspection PRAGMAs are allowed".to_string(),
+            ));
+        }
+        if !self.conn.is_autocommit() {
+            return Err(Error::InvalidInput(
+                "Cannot run queries while a transaction is open".to_string(),
+            ));
+        }
+
         let stmt = self.conn.prepare(trimmed)?;
         // Bug #27: ask SQLite whether the prepared statement is actually read-only,
         // instead of a string-prefix check (which both rejects legitimate read-only
@@ -308,6 +380,15 @@ impl Database {
         for row in rows {
             results.push(row.map_err(crate::error::Error::Database)?);
         }
+        drop(stmt);
+        // Belt and braces: whatever slipped past the checks above must not leave
+        // the shared connection inside a transaction.
+        if !self.conn.is_autocommit() {
+            let _ = self.conn.execute_batch("ROLLBACK");
+            return Err(crate::error::Error::InvalidInput(
+                "Query left a transaction open; rolled back".to_string(),
+            ));
+        }
 
         Ok(serde_json::json!({
             "columns": col_names,
@@ -339,6 +420,11 @@ impl Database {
             (1, ""),
             // v2: undone flag on events so undo doesn't destroy history.
             (2, "ALTER TABLE events ADD COLUMN undone INTEGER NOT NULL DEFAULT 0;"),
+            // v3: indexes for case-insensitive title/alias link resolution and
+            // highlight→block lookups. Idempotent.
+            (3, "CREATE INDEX IF NOT EXISTS idx_pages_title_nocase ON pages(title COLLATE NOCASE);
+                 CREATE INDEX IF NOT EXISTS idx_aliases_alias_nocase ON page_aliases(alias COLLATE NOCASE);
+                 CREATE INDEX IF NOT EXISTS idx_highlights_block ON highlights(block_id);"),
         ];
 
         let current: i64 = self
@@ -357,6 +443,133 @@ impl Database {
         }
         Ok(())
     }
+}
+
+/// Rolls a savepoint back on drop unless it was released (covers panics too).
+struct SavepointGuard<'a> {
+    conn: &'a Connection,
+    name: &'a str,
+    done: bool,
+}
+
+impl SavepointGuard<'_> {
+    fn rollback(&mut self) {
+        if !self.done {
+            self.done = true;
+            // Errors ignored: SQLite may already have rolled the whole txn back
+            // (e.g. SQLITE_FULL), in which case the savepoint no longer exists.
+            let _ = self
+                .conn
+                .execute_batch(&format!("ROLLBACK TO {0}; RELEASE {0}", self.name));
+        }
+    }
+}
+
+impl Drop for SavepointGuard<'_> {
+    fn drop(&mut self) {
+        self.rollback();
+    }
+}
+
+/// First SQL keyword, skipping leading whitespace and `--` / `/* */` comments.
+fn first_keyword(sql: &str) -> &str {
+    let mut s = sql;
+    loop {
+        s = s.trim_start();
+        if let Some(rest) = s.strip_prefix("--") {
+            s = rest.split_once('\n').map(|(_, r)| r).unwrap_or("");
+        } else if let Some(rest) = s.strip_prefix("/*") {
+            s = rest.split_once("*/").map(|(_, r)| r).unwrap_or("");
+        } else {
+            break;
+        }
+    }
+    let end = s
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .unwrap_or(s.len());
+    &s[..end]
+}
+
+/// True if `sql` contains a top-level `;` followed by anything other than
+/// whitespace, comments or further semicolons. Understands string literals,
+/// quoted identifiers and comments so `SELECT ';'` is a single statement.
+fn has_multiple_statements(sql: &str) -> bool {
+    let b = sql.as_bytes();
+    let mut i = 0;
+    let mut seen_end = false;
+    while i < b.len() {
+        let c = b[i];
+        match c {
+            b'-' if b.get(i + 1) == Some(&b'-') => {
+                while i < b.len() && b[i] != b'\n' {
+                    i += 1;
+                }
+                continue;
+            }
+            b'/' if b.get(i + 1) == Some(&b'*') => {
+                i += 2;
+                while i < b.len() && !(b[i] == b'*' && b.get(i + 1) == Some(&b'/')) {
+                    i += 1;
+                }
+                i += 2;
+                continue;
+            }
+            _ if c.is_ascii_whitespace() => {}
+            b';' => seen_end = true,
+            _ if seen_end => return true,
+            b'\'' | b'"' | b'`' | b'[' => {
+                let close = if c == b'[' { b']' } else { c };
+                i += 1;
+                while i < b.len() {
+                    if b[i] == close {
+                        // Doubled quote is an escape inside the literal.
+                        if close != b']' && b.get(i + 1) == Some(&close) {
+                            i += 2;
+                            continue;
+                        }
+                        break;
+                    }
+                    i += 1;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    false
+}
+
+/// PRAGMAs that only read schema/metadata and never change connection or DB state.
+fn is_safe_pragma(sql: &str) -> bool {
+    if sql.contains('=') {
+        return false;
+    }
+    const SAFE: &[&str] = &[
+        "table_info", "table_xinfo", "table_list", "index_list", "index_info",
+        "index_xinfo", "foreign_key_list", "foreign_key_check", "integrity_check",
+        "quick_check", "user_version", "schema_version", "page_count", "page_size",
+        "freelist_count", "compile_options", "function_list", "pragma_list",
+        "collation_list", "database_list",
+    ];
+    let lower = sql.to_ascii_lowercase();
+    let after = first_keyword_rest(&lower);
+    let name_part = after
+        .split(|c: char| c == '(' || c == ';' || c.is_whitespace())
+        .next()
+        .unwrap_or("");
+    // Allow an optional `schema.` qualifier.
+    let name = name_part.rsplit('.').next().unwrap_or("");
+    // Argument-taking forms are fine for the introspection pragmas above except
+    // user_version/schema_version (setter form uses `=`, already rejected).
+    SAFE.contains(&name)
+}
+
+/// Text after the first keyword (comments skipped), left-trimmed.
+fn first_keyword_rest(sql: &str) -> &str {
+    let kw = first_keyword(sql);
+    // `first_keyword` returns a subslice of `sql`; compute its end offset.
+    let start = kw.as_ptr() as usize - sql.as_ptr() as usize;
+    sql[start + kw.len()..].trim_start()
 }
 
 #[cfg(test)]
@@ -385,5 +598,96 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn test_run_query_allows_select() {
+        let db = Database::open_in_memory().unwrap();
+        let r = db.run_query("SELECT 1 AS one").unwrap();
+        assert_eq!(r["rows"][0]["one"], 1);
+        assert!(db.run_query("WITH x AS (SELECT 2 AS v) SELECT v FROM x;").is_ok());
+        assert!(db.run_query("PRAGMA table_info(pages)").is_ok());
+        assert!(db.run_query("SELECT 1; ").is_ok(), "trailing semicolon is fine");
+    }
+
+    #[test]
+    fn test_run_query_rejects_transaction_control() {
+        let db = Database::open_in_memory().unwrap();
+        for sql in [
+            "BEGIN", "begin transaction", "  -- c\nBEGIN IMMEDIATE", "/* x */ BEGIN",
+            "COMMIT", "END", "ROLLBACK", "SAVEPOINT x", "RELEASE x", "VACUUM",
+        ] {
+            assert!(db.run_query(sql).is_err(), "{sql} must be rejected");
+            assert!(db.conn.is_autocommit(), "{sql} left a transaction open");
+        }
+        // A later edit is durable (not trapped in a dangling transaction).
+        db.create_page("After", None, false, None, "user").unwrap();
+        assert!(db.conn.is_autocommit());
+    }
+
+    #[test]
+    fn test_run_query_rejects_attach_detach() {
+        let dir = std::env::temp_dir().join(format!("minotes_attach_{}.db", std::process::id()));
+        let path = dir.to_string_lossy().to_string();
+        let db = Database::open_in_memory().unwrap();
+        assert!(db.run_query(&format!("ATTACH DATABASE '{path}' AS evil")).is_err());
+        assert!(!dir.exists(), "ATTACH must not create files");
+        assert!(db.run_query("DETACH DATABASE evil").is_err());
+    }
+
+    #[test]
+    fn test_run_query_rejects_state_pragmas_and_writes() {
+        let db = Database::open_in_memory().unwrap();
+        assert!(db.run_query("PRAGMA foreign_keys=OFF").is_err());
+        assert!(db.run_query("PRAGMA foreign_keys(0)").is_err());
+        assert!(db.run_query("PRAGMA journal_mode = DELETE").is_err());
+        assert!(db.run_query("PRAGMA user_version = 99").is_err());
+        assert!(db.run_query("DELETE FROM pages").is_err());
+        assert!(db.run_query("EXPLAIN PRAGMA foreign_keys=OFF").is_err());
+        assert!(db.run_query("EXPLAIN QUERY PLAN BEGIN").is_err());
+        assert!(db.run_query("EXPLAIN QUERY PLAN SELECT * FROM pages").is_ok());
+        let fk: i64 = db.conn.query_row("PRAGMA foreign_keys", [], |r| r.get(0)).unwrap();
+        assert_eq!(fk, 1);
+    }
+
+    #[test]
+    fn test_run_query_rejects_multiple_statements() {
+        let db = Database::open_in_memory().unwrap();
+        assert!(db.run_query("SELECT 1; DELETE FROM pages").is_err());
+        assert!(db.run_query("SELECT 1; BEGIN").is_err());
+        assert!(db.run_query("SELECT 1; PRAGMA foreign_keys=OFF").is_err());
+        let fk: i64 = db.conn.query_row("PRAGMA foreign_keys", [], |r| r.get(0)).unwrap();
+        assert_eq!(fk, 1, "second statement must never be compiled");
+        assert!(db.run_query("").is_err());
+        assert!(db.run_query("-- only a comment").is_err());
+        assert!(db.run_query("SELECT ';' AS s -- trailing ; comment").is_ok());
+        assert!(db.conn.is_autocommit());
+    }
+
+    #[test]
+    fn test_tx_rolls_back_on_error_and_nests() {
+        let db = Database::open_in_memory().unwrap();
+        let r: Result<()> = db.tx(|| {
+            db.create_page("A", None, false, None, "user")?;
+            Err(crate::error::Error::InvalidInput("boom".into()))
+        });
+        assert!(r.is_err());
+        assert!(db.get_page_by_title("A").unwrap().is_none());
+        assert!(db.conn.is_autocommit());
+
+        // Inner failure caught by the outer closure: only the inner work is undone.
+        db.tx(|| {
+            db.create_page("Outer", None, false, None, "user")?;
+            let inner: Result<()> = db.tx(|| {
+                db.create_page("Inner", None, false, None, "user")?;
+                Err(crate::error::Error::InvalidInput("inner".into()))
+            });
+            assert!(inner.is_err());
+            Ok(())
+        })
+        .unwrap();
+        assert!(db.get_page_by_title("Outer").unwrap().is_some());
+        assert!(db.get_page_by_title("Inner").unwrap().is_none());
+        assert!(db.conn.is_autocommit());
     }
 }
