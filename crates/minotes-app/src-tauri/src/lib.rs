@@ -12,6 +12,8 @@ use minotes_core::sync_manager::{self, GitSyncResult, GitSyncStatus};
 use serde::Serialize;
 use tauri::State;
 
+mod security;
+
 struct AppState {
     db: Mutex<Database>,
     current_graph: Mutex<String>,
@@ -38,7 +40,8 @@ fn active_graph_name() -> String {
     std::fs::read_to_string(active_graph_file())
         .ok()
         .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+        // A tampered active_graph file must not steer startup outside the data dir.
+        .filter(|s| security::validate_graph_name(s).is_ok())
         .unwrap_or_else(|| "default".to_string())
 }
 
@@ -527,9 +530,42 @@ fn export_json(state: State<'_, AppState>) -> Result<serde_json::Value, String> 
 
 #[tauri::command]
 fn publish_site(state: State<'_, AppState>, output_dir: String) -> Result<Vec<String>, String> {
+    // SECURITY: output_dir comes from the webview. Only allow (existing or creatable)
+    // folders inside the user's home (or, on WSL, a Windows profile), never a hidden
+    // top-level dir like ~/.ssh / ~/.minotes / ~/.config. Page files inside are named by
+    // minotes-core's sanitize_filename (path separators replaced), so they stay in dir.
+    let dir = security::validate_publish_dir(&output_dir, &publish_roots())?;
     let db = state.db.lock().map_err(|e| e.to_string())?;
-    db.publish_static_site(std::path::Path::new(&output_dir))
-        .map_err(|e| e.to_string())
+    db.publish_static_site(&dir).map_err(|e| e.to_string())
+}
+
+fn publish_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(home) = dirs_next() {
+        roots.push(home);
+    }
+    if let Some(win) = wsl_windows_profile() {
+        roots.push(win);
+    }
+    roots
+}
+
+/// On WSL, the Windows user profile that owns a Downloads folder (same heuristic the
+/// PNG export uses). None elsewhere.
+fn wsl_windows_profile() -> Option<PathBuf> {
+    let version = std::fs::read_to_string("/proc/version").ok()?;
+    if !version.to_lowercase().contains("microsoft") {
+        return None;
+    }
+    for entry in std::fs::read_dir("/mnt/c/Users").ok()?.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name != "Public" && name != "Default" && name != "Default User" && name != "All Users" && name != "desktop.ini" {
+            if entry.path().join("Downloads").exists() {
+                return Some(entry.path());
+            }
+        }
+    }
+    None
 }
 
 // ── Undo Command ──
@@ -650,6 +686,9 @@ fn list_graphs() -> Result<Vec<GraphInfo>, String> {
 
 #[tauri::command]
 fn switch_graph(state: State<'_, AppState>, name: String) -> Result<bool, String> {
+    // SECURITY: same validation as create_graph — `../../x` must not open/migrate an
+    // arbitrary .db outside the data dir.
+    security::validate_graph_name(&name)?;
     let dir = base_dir();
     let new_path = dir.join(format!("{name}.db"));
     if !new_path.exists() {
@@ -673,6 +712,7 @@ fn create_graph_cmd(name: String) -> Result<GraphInfo, String> {
 
 #[tauri::command]
 fn delete_graph_cmd(state: State<'_, AppState>, name: String) -> Result<bool, String> {
+    security::validate_graph_name(&name)?;
     // Prevent deleting the currently active graph
     let current = state.current_graph.lock().map_err(|e| e.to_string())?;
     if *current == name {
@@ -926,6 +966,9 @@ fn find_linux_downloads() -> PathBuf {
 }
 
 fn write_png(dir: PathBuf, filename: &str, data: &[u8]) -> Result<String, String> {
+    // SECURITY: filename is frontend-supplied; reduce to a plain `*.png` basename so an
+    // absolute path or `../` cannot escape the Downloads dir.
+    let filename = security::safe_png_filename(filename)?;
     let path = dir.join(filename);
     std::fs::write(&path, data).map_err(|e| e.to_string())?;
     Ok(path.to_string_lossy().to_string())
@@ -973,7 +1016,13 @@ fn base64_encode(data: &[u8]) -> String {
 
 #[tauri::command]
 fn read_file_base64(path: String) -> Result<String, String> {
-    let bytes = std::fs::read(&path).map_err(|e| format!("Read failed: {e}"))?;
+    // SECURITY: only used for OS drag-and-drop of images onto the whiteboard. Restrict
+    // to regular image files (extension checked after symlink resolution), max 20 MB.
+    let canon = security::validate_image_path(&path)?;
+    let bytes = std::fs::read(&canon).map_err(|e| format!("Read failed: {e}"))?;
+    if bytes.len() as u64 > security::MAX_IMAGE_BYTES {
+        return Err("Image too large".into());
+    }
     Ok(base64_encode(&bytes))
 }
 
@@ -998,12 +1047,52 @@ async fn fetch_og_metadata(url: String) -> Result<OgMetadata, String> {
     }
 }
 
+const OG_MAX_BODY_BYTES: usize = 1024 * 1024;
+const OG_MAX_REDIRECTS: usize = 3;
+
 async fn fetch_og_inner(url: &str) -> std::result::Result<OgMetadata, Box<dyn std::error::Error>> {
+    // SECURITY (SSRF): only http/https to public addresses. `SafeResolver` filters DNS
+    // results so reqwest only ever connects to validated public IPs (no rebinding
+    // window); IP-literal hosts are checked by `check_outbound_url`. Redirects are
+    // followed manually so every hop is re-validated. Body read is capped at 1 MB.
+    // Proxies are disabled so the resolver (not a proxy) decides the destination.
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
+        .redirect(reqwest::redirect::Policy::none())
+        .dns_resolver(std::sync::Arc::new(security::SafeResolver))
+        .no_proxy()
         .build()?;
-    let resp = client.get(url).send().await?;
-    let html = resp.text().await?;
+
+    let mut current = reqwest::Url::parse(url)?;
+    let mut hops = 0;
+    let mut resp = loop {
+        security::check_outbound_url(&current)?;
+        let resp = client.get(current.clone()).send().await?;
+        if resp.status().is_redirection() {
+            hops += 1;
+            if hops > OG_MAX_REDIRECTS {
+                return Err("too many redirects".into());
+            }
+            let loc = resp
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|v| v.to_str().ok())
+                .ok_or("redirect without Location")?;
+            current = current.join(loc)?;
+            continue;
+        }
+        break resp;
+    };
+
+    let mut body: Vec<u8> = Vec::new();
+    while let Some(chunk) = resp.chunk().await? {
+        let room = OG_MAX_BODY_BYTES - body.len();
+        body.extend_from_slice(&chunk[..chunk.len().min(room)]);
+        if body.len() >= OG_MAX_BODY_BYTES {
+            break;
+        }
+    }
+    let html = String::from_utf8_lossy(&body).into_owned();
 
     let og_re = regex::Regex::new(
         r#"<meta\s+(?:[^>]*?\s+)?(?:property|name)\s*=\s*"og:(\w+)"[^>]*?\s+content\s*=\s*"([^"]*)"[^>]*/?\s*>"#,
