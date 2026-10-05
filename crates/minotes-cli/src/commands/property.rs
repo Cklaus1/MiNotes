@@ -13,6 +13,7 @@ pub enum PropertyCmd {
         /// Property key
         key: String,
         /// Property value
+        #[arg(allow_hyphen_values = true)]
         value: String,
         /// Value type (text, number, date, url, email, select, checkbox)
         #[arg(long, default_value = "text")]

@@ -9,6 +9,7 @@ pub enum FolderCmd {
     /// Create a new folder
     Create {
         /// Folder name
+        #[arg(allow_hyphen_values = true)]
         name: String,
         /// Parent folder UUID
         #[arg(long)]
@@ -33,6 +34,7 @@ pub enum FolderCmd {
         /// Folder UUID
         id: String,
         /// New name
+        #[arg(allow_hyphen_values = true)]
         name: String,
     },
     /// Delete a folder (pages inside are moved to root)
@@ -65,14 +67,14 @@ pub enum FolderCmd {
 pub fn run(db: &Database, cmd: FolderCmd, actor: &str) -> i32 {
     match cmd {
         FolderCmd::Create { name, parent, icon, color } => {
-            let parent_uuid = parent.as_ref().and_then(|p| Uuid::parse_str(p).ok());
+            let parent_uuid = match super::parse_opt_uuid(parent.as_deref(), "parent") { Ok(p) => p, Err(code) => return code };
             match db.create_folder(&name, parent_uuid.as_ref(), icon.as_deref(), color.as_deref(), actor) {
                 Ok(f) => { print_json(&f); 0 }
                 Err(e) => { print_error(&e.to_string()); 1 }
             }
         }
         FolderCmd::List { parent } => {
-            let parent_uuid = parent.as_ref().and_then(|p| Uuid::parse_str(p).ok());
+            let parent_uuid = match super::parse_opt_uuid(parent.as_deref(), "parent") { Ok(p) => p, Err(code) => return code };
             match db.list_folders(parent_uuid.as_ref()) {
                 Ok(folders) => { print_json(&folders); 0 }
                 Err(e) => { print_error(&e.to_string()); 1 }
@@ -117,7 +119,7 @@ pub fn run(db: &Database, cmd: FolderCmd, actor: &str) -> i32 {
                 print_error("Invalid UUID");
                 return 1;
             };
-            let parent_uuid = parent.as_ref().and_then(|p| Uuid::parse_str(p).ok());
+            let parent_uuid = match super::parse_opt_uuid(parent.as_deref(), "parent") { Ok(p) => p, Err(code) => return code };
             match db.move_folder(&uuid, parent_uuid.as_ref(), actor) {
                 Ok(f) => { print_json(&f); 0 }
                 Err(e) => { print_error(&e.to_string()); 1 }

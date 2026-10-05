@@ -1,5 +1,5 @@
 use std::io::{self, BufRead};
-use std::path::Path;
+use std::path::PathBuf;
 use std::process;
 
 use clap::{Parser, Subcommand};
@@ -17,9 +17,15 @@ use output::Format;
 #[derive(Parser)]
 #[command(name = "minotes", version, about = "Local-first knowledge management CLI")]
 struct Cli {
-    /// Path to the graph database file
-    #[arg(long, default_value = ".minotes.db")]
-    graph: String,
+    /// Path to the graph database file. Defaults to the desktop app's active
+    /// graph (~/.minotes/<active_graph>.db). A leading ~ is expanded.
+    #[arg(long)]
+    graph: Option<String>,
+
+    /// Create the --graph database if it does not exist (otherwise a missing
+    /// explicit path is an error, to catch typos)
+    #[arg(long)]
+    create: bool,
 
     /// Actor name for event attribution
     #[arg(long, default_value = "user")]
@@ -58,6 +64,7 @@ enum Commands {
     /// Full-text search across blocks
     Search {
         /// Search query
+        #[arg(allow_hyphen_values = true)]
         query: String,
         /// Max results
         #[arg(long)]
@@ -142,7 +149,15 @@ enum Commands {
 fn main() {
     let cli = Cli::parse();
 
-    let db = match Database::open(Path::new(&cli.graph)) {
+    let graph_path = match resolve_graph_path(cli.graph.as_deref(), cli.create) {
+        Ok(p) => p,
+        Err(msg) => {
+            output::print_error(&msg);
+            process::exit(1);
+        }
+    };
+
+    let db = match Database::open(&graph_path) {
         Ok(db) => db,
         Err(e) => {
             output::print_error(&format!("Failed to open database: {e}"));
@@ -188,21 +203,75 @@ fn main() {
     process::exit(exit_code);
 }
 
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME").filter(|h| !h.is_empty()).map(PathBuf::from)
+}
+
+/// Expand a leading `~` / `~/` to the home directory.
+fn expand_tilde(p: &str) -> PathBuf {
+    if p == "~" {
+        if let Some(h) = home_dir() { return h; }
+    } else if let Some(rest) = p.strip_prefix("~/") {
+        if let Some(h) = home_dir() { return h.join(rest); }
+    }
+    PathBuf::from(p)
+}
+
+/// The desktop app's active graph DB: ~/.minotes/<active_graph>.db, where the
+/// name is read from ~/.minotes/active_graph (default "default").
+fn default_graph_path() -> Result<PathBuf, String> {
+    let home = home_dir().ok_or("HOME is not set; pass --graph <path>")?;
+    let base = home.join(".minotes");
+    let name = std::fs::read_to_string(base.join("active_graph"))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "default".to_string());
+    Ok(base.join(format!("{name}.db")))
+}
+
+/// Resolve which DB file to open. The default (app) graph is created on
+/// demand, like the app does; an explicit --graph path must already exist
+/// unless --create is given.
+fn resolve_graph_path(explicit: Option<&str>, create: bool) -> Result<PathBuf, String> {
+    let (path, is_default) = match explicit {
+        Some(p) => (expand_tilde(p), false),
+        None => (default_graph_path()?, true),
+    };
+    if !path.exists() {
+        if !is_default && !create {
+            return Err(format!(
+                "Graph database not found: {} (pass --create to create a new graph)",
+                path.display()
+            ));
+        }
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("Cannot create directory {}: {e}", parent.display()))?;
+        }
+    }
+    Ok(path)
+}
+
 fn run_reindex(db: &Database) -> i32 {
-    let r = || -> minotes_core::error::Result<()> {
-        db.conn.execute_batch("DELETE FROM blocks_fts;")?;
-        db.conn.execute_batch(
-            "INSERT INTO blocks_fts(rowid, content) SELECT rowid, content FROM blocks;",
-        )?;
-        let count: i64 = db.conn.query_row("SELECT COUNT(*) FROM blocks_fts", [], |r| r.get(0))?;
-        output::print_json(&serde_json::json!({
-            "message": "Reindex complete",
-            "blocks_indexed": count,
-        }));
-        Ok(())
+    // blocks_fts is an external-content FTS5 table (content='blocks'), so the
+    // built-in 'rebuild' command regenerates it from the blocks table. It runs
+    // inside a transaction so a failure leaves the old index intact.
+    let r = || -> minotes_core::error::Result<i64> {
+        let tx = db.conn.unchecked_transaction()?;
+        tx.execute_batch("INSERT INTO blocks_fts(blocks_fts) VALUES('rebuild');")?;
+        let count: i64 = tx.query_row("SELECT COUNT(*) FROM blocks", [], |r| r.get(0))?;
+        tx.commit()?;
+        Ok(count)
     };
     match r() {
-        Ok(_) => 0,
+        Ok(count) => {
+            output::print_json(&serde_json::json!({
+                "message": "Reindex complete",
+                "blocks_indexed": count,
+            }));
+            0
+        }
         Err(e) => { output::print_error(&e.to_string()); 1 }
     }
 }
@@ -274,16 +343,38 @@ fn run_batch_create(db: &Database, page: &str, actor: &str) -> i32 {
         Err(e) => { output::print_error(&format!("Invalid JSON array: {e}")); return 1; }
     };
 
+    // All-or-nothing: an invalid item or failed insert rolls back every block
+    // (dropping `tx` without commit rolls back).
+    let tx = match db.conn.unchecked_transaction() {
+        Ok(tx) => tx,
+        Err(e) => { output::print_error(&e.to_string()); return 1; }
+    };
     let mut created = Vec::new();
-    for item in &items {
+    for (i, item) in items.iter().enumerate() {
         let content = item.get("content").and_then(|c| c.as_str()).unwrap_or("");
-        let parent = item.get("parent_id").and_then(|p| p.as_str()).and_then(|s| uuid::Uuid::parse_str(s).ok());
+        let parent = match item.get("parent_id") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(v) => match v.as_str().and_then(|s| uuid::Uuid::parse_str(s).ok()) {
+                Some(u) => Some(u),
+                None => {
+                    output::print_error(&format!("Item {i}: invalid parent_id {v}; no blocks were created"));
+                    return 1;
+                }
+            },
+        };
         let position = item.get("position").and_then(|p| p.as_f64());
 
         match db.create_block(&page_id, content, parent.as_ref(), position, actor) {
             Ok(block) => created.push(serde_json::to_value(&block).unwrap_or_default()),
-            Err(e) => { output::print_error(&format!("Block creation failed: {e}")); return 1; }
+            Err(e) => {
+                output::print_error(&format!("Item {i}: block creation failed: {e}; no blocks were created"));
+                return 1;
+            }
         }
+    }
+    if let Err(e) = tx.commit() {
+        output::print_error(&format!("Commit failed: {e}; no blocks were created"));
+        return 1;
     }
 
     output::print_json(&serde_json::json!({

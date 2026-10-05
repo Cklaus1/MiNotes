@@ -776,4 +776,16 @@ export const mockHandlers: Record<string, (args: any) => any> = {
     }
     return count;
   },
+
+  // ── Whiteboards (mirrors minotes-core repo/whiteboards.rs) ──
+  get_whiteboard: ({ id }: { id: string }) => mockWhiteboards.get(id) ?? null,
+  save_whiteboard: ({ id, data }: { id: string; data: string }) => {
+    if (!/^[A-Za-z0-9_-]{1,200}$/.test(id)) throw new Error(`invalid whiteboard id: ${id}`);
+    JSON.parse(data); // must be valid JSON, like the Rust side
+    mockWhiteboards.set(id, data);
+  },
+  // ── End whiteboards ──
 };
+
+// Whiteboard storage for the mock backend (whiteboard id -> JSON data).
+const mockWhiteboards: Map<string, string> = new Map();

@@ -5,7 +5,7 @@ import { localDateKey } from "../lib/dates";
 import CalendarWidget from "./CalendarWidget";
 import { showToast, showUndoToast } from "../lib/toast";
 import { ContextMenuPortal } from "../lib/ContextMenuPortal";
-import { extractTodos } from "../lib/todoExtractor";
+import { getSettings, type MiNotesSettings } from "../lib/settings";
 function formatJournalDate(dateStr: string): string {
   try {
     const [y, m, d] = dateStr.split("-").map(Number);
@@ -84,6 +84,17 @@ export default function Sidebar({
   const [archivedItems, setArchivedItems] = useState<api.ArchiveItem[]>([]);
   const [showArchived, setShowArchived] = useState(false);
   const [pendingTodos, setPendingTodos] = useState(0);
+  // settings.ai.todoExtraction gates the TODO badge; updates live via the
+  // minotes-settings-changed event (no reload needed).
+  const [todoExtraction, setTodoExtraction] = useState(() => getSettings().ai?.todoExtraction ?? true);
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const s = (e as CustomEvent<MiNotesSettings>).detail ?? getSettings();
+      setTodoExtraction(s.ai?.todoExtraction ?? true);
+    };
+    window.addEventListener("minotes-settings-changed", handler);
+    return () => window.removeEventListener("minotes-settings-changed", handler);
+  }, []);
 
   // Phase 3a: Track expanded project IDs (max 2), persisted
   const [expandedProjectIds, setExpandedProjectIds] = useState<string[]>(() => loadExpandedIds());
@@ -153,11 +164,12 @@ export default function Sidebar({
   // Bug #33: re-fetch on refreshKey and on sidebar-refresh events so the badge
   // updates as TODOs are added/completed, instead of being frozen at mount.
   useEffect(() => {
+    if (!todoExtraction) { setPendingTodos(0); return; } // feature off: skip counting
     const refetch = () => api.getPendingTodoCount().then((count) => setPendingTodos(count)).catch(() => {});
     refetch();
     window.addEventListener("minotes-sidebar-refresh", refetch);
     return () => window.removeEventListener("minotes-sidebar-refresh", refetch);
-  }, [refreshKey]);
+  }, [refreshKey, todoExtraction]);
 
   
   useEffect(() => { loadTree(); }, [loadTree, refreshKey]);
@@ -355,7 +367,7 @@ export default function Sidebar({
         {showQuickAccess && <div className="sidebar-section-gap" />}
 
         {/* TODO badge */}
-        {pendingTodos > 0 && (
+        {todoExtraction && pendingTodos > 0 && (
           <div
             className="sidebar-todo-badge"
             onClick={onTodoBadgeClick}

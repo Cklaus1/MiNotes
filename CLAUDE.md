@@ -28,7 +28,7 @@ crates/
 - **`mockBackend.ts`** — in-memory mock for browser dev/testing. Seeds 6 pages.
 - **`localBlocks` in PageView** — optimistic state for blocks. Prevents full re-render on Enter/edit.
 - **Block tree** — blocks have `parent_id` + `position`. Tree computed in `blockTreeInfo`.
-- **Whiteboard per-block** — content `{{whiteboard:<id>}}`, data in localStorage, utils in `lib/whiteboardUtils.ts`
+- **Whiteboard per-block** — content `{{whiteboard:<id>}}`, data in the SQLite `whiteboards` table (`get_whiteboard`/`save_whiteboard`), utils in `lib/whiteboardUtils.ts`. Legacy `minotes-whiteboard-<id>` localStorage entries are imported into the DB on first open (the localStorage copy is kept as a backup). Not yet included in git sync/export or cleaned up when the block is deleted.
 - **React Fast Refresh** — component .tsx files must ONLY export React components. Utility exports break HMR.
 
 ## Build & test
@@ -85,10 +85,10 @@ cargo run -p minotes-cli -- --graph ~/.minotes/default.db page list
 
 ## CLI gotchas
 
-- **`--graph` requires an absolute path** — `~` is not expanded by the Rust arg parser. Use `$HOME/.minotes/default.db` or the full path.
+- **`--graph` defaults to the app's active graph** (`~/.minotes/<active_graph>.db`); a leading `~` is expanded. An explicit `--graph` path that doesn't exist is an error unless `--create` is passed.
+- **`page delete` moves to trash** (like the app). Hard delete needs `--permanent --yes` (or a TTY confirmation).
 - **`page create` has no `--folder` flag** — create the page first, then assign it: `minotes folder add-page <page-id> <folder-id>`. Using `property set folder_id` does nothing (that key is not the DB column).
 - **`page get <title>`** returns page + all blocks by default. Use `--no-blocks` for metadata only.
-- **Block content starting with `-`** trips up Clap's arg parser — quote it or use `--` before the content.
 
 ## Running on WSLg
 

@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
+import { getCachedWhiteboard, loadWhiteboard, type StoredWhiteboard } from "../lib/whiteboardUtils";
 
-const STORAGE_PREFIX = "minotes-whiteboard-";
 const THUMB_W = 80;
 const THUMB_H = 52;
 
@@ -8,38 +8,28 @@ interface Props {
   whiteboardId: string;
 }
 
-function renderThumbnail(canvas: HTMLCanvasElement, whiteboardId: string) {
+function drawPlaceholder(ctx: CanvasRenderingContext2D) {
+  ctx.fillStyle = "#9ca0b0";
+  ctx.font = "20px sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText("🎨", THUMB_W / 2, THUMB_H / 2);
+}
+
+/** Render a thumbnail from already-parsed whiteboard data (null = never saved). */
+function renderThumbnail(canvas: HTMLCanvasElement, data: StoredWhiteboard | null) {
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
 
-  // Background — read from saved data or default to light
-  let bgColor = "#eff1f5"; // light default
-  try {
-    const raw = localStorage.getItem(STORAGE_PREFIX + whiteboardId);
-    if (raw) {
-      const d = JSON.parse(raw);
-      if (d.canvasBg === "dark") bgColor = "#1e1e2e";
-    }
-  } catch { /* ignore */ }
-  ctx.fillStyle = bgColor;
+  ctx.fillStyle = data?.canvasBg === "dark" ? "#1e1e2e" : "#eff1f5";
   ctx.fillRect(0, 0, THUMB_W, THUMB_H);
 
-  let raw: string | null = null;
-  try {
-    raw = localStorage.getItem(STORAGE_PREFIX + whiteboardId);
-  } catch { /* ignore */ }
-
-  if (!raw) {
-    ctx.fillStyle = "#9ca0b0";
-    ctx.font = "20px sans-serif";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillText("🎨", THUMB_W / 2, THUMB_H / 2);
+  if (!data) {
+    drawPlaceholder(ctx);
     return;
   }
 
   try {
-    const data = JSON.parse(raw);
     const lines = data.lines || [];
     const notes = data.notes || [];
 
@@ -49,11 +39,7 @@ function renderThumbnail(canvas: HTMLCanvasElement, whiteboardId: string) {
     const images = data.images || [];
 
     if (lines.length === 0 && notes.length === 0 && arrows.length === 0 && boxes.length === 0 && texts.length === 0 && images.length === 0) {
-      ctx.fillStyle = "#9ca0b0";
-      ctx.font = "20px sans-serif";
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.fillText("🎨", THUMB_W / 2, THUMB_H / 2);
+      drawPlaceholder(ctx);
       return;
     }
 
@@ -167,30 +153,30 @@ function renderThumbnail(canvas: HTMLCanvasElement, whiteboardId: string) {
       ctx.stroke();
     }
   } catch {
-    ctx.fillStyle = "#9ca0b0";
-    ctx.font = "20px sans-serif";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillText("🎨", THUMB_W / 2, THUMB_H / 2);
+    drawPlaceholder(ctx);
   }
 }
 
 export default function WhiteboardThumbnail({ whiteboardId }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [, setRefreshCount] = useState(0);
 
-  // Render on mount and when whiteboardId changes
+  // Render from the in-memory cache immediately, then from the DB (parsed once,
+  // shared with the editor via whiteboardUtils' cache).
   useEffect(() => {
-    if (canvasRef.current) renderThumbnail(canvasRef.current, whiteboardId);
+    let cancelled = false;
+    const draw = (d: StoredWhiteboard | null) => {
+      if (!cancelled && canvasRef.current) renderThumbnail(canvasRef.current, d);
+    };
+    draw(getCachedWhiteboard(whiteboardId) ?? null);
+    loadWhiteboard(whiteboardId).then(draw).catch(() => { /* keep placeholder */ });
+    return () => { cancelled = true; };
   }, [whiteboardId]);
 
-  // Listen for whiteboard save events to refresh thumbnail
+  // Re-render when the editor saves this board (data is already in the cache).
   useEffect(() => {
     const handler = (e: Event) => {
-      const detail = (e as CustomEvent).detail;
-      if (detail === whiteboardId) {
-        setRefreshCount(c => c + 1);
-        if (canvasRef.current) renderThumbnail(canvasRef.current, whiteboardId);
+      if ((e as CustomEvent).detail === whiteboardId && canvasRef.current) {
+        renderThumbnail(canvasRef.current, getCachedWhiteboard(whiteboardId) ?? null);
       }
     };
     window.addEventListener("whiteboard-saved", handler);

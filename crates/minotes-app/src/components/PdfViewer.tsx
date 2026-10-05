@@ -39,24 +39,29 @@ export default function PdfViewer({ filePath, onClose, onBlockLink }: Props) {
   const overlayRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // Load PDF
+  // Load PDF — destroy the previous document (and its worker resources) on
+  // file change / unmount.
   useEffect(() => {
     let cancelled = false;
-    const loadPdf = async () => {
-      try {
-        const doc = await pdfjs.getDocument(filePath).promise;
-        if (!cancelled) {
-          setPdfDoc(doc);
-          setNumPages(doc.numPages);
-          setPageNum(1);
-          setPageInput("1");
-        }
-      } catch (err) {
-        console.error("Failed to load PDF:", err);
-      }
+    const loadingTask = pdfjs.getDocument(filePath);
+    loadingTask.promise.then(
+      (doc) => {
+        if (cancelled) return;
+        setPdfDoc(doc);
+        setNumPages(doc.numPages);
+        setPageNum(1);
+        setPageInput("1");
+      },
+      (err) => {
+        if (!cancelled) console.error("Failed to load PDF:", err);
+      },
+    );
+    return () => {
+      cancelled = true;
+      setPdfDoc(null);
+      // Destroys the PDFDocumentProxy too, if loading finished.
+      void loadingTask.destroy();
     };
-    loadPdf();
-    return () => { cancelled = true; };
   }, [filePath]);
 
   // Load highlights
@@ -73,32 +78,44 @@ export default function PdfViewer({ filePath, onClose, onBlockLink }: Props) {
     loadHighlights();
   }, [loadHighlights]);
 
-  // Render page
+  // Render page. Highlights live on a separate overlay canvas, so they are
+  // intentionally NOT a dependency here — changing a highlight only redraws
+  // the overlay. In-flight render tasks are cancelled before a new one starts.
+  const drawHighlightsRef = useRef<() => void>(() => {});
   useEffect(() => {
     if (!pdfDoc || !canvasRef.current || !overlayRef.current) return;
     let cancelled = false;
+    let renderTask: ReturnType<pdfjs.PDFPageProxy["render"]> | null = null;
 
     const renderPage = async () => {
       const page = await pdfDoc.getPage(pageNum);
+      if (cancelled) return;
       const viewport = page.getViewport({ scale });
-      const canvas = canvasRef.current!;
-      const overlay = overlayRef.current!;
+      const canvas = canvasRef.current;
+      const overlay = overlayRef.current;
+      if (!canvas || !overlay) return;
 
       canvas.width = viewport.width;
       canvas.height = viewport.height;
       overlay.width = viewport.width;
       overlay.height = viewport.height;
+      // Resizing clears the overlay; repaint highlights right away.
+      drawHighlightsRef.current();
 
-      await page.render({ canvas, viewport }).promise;
-
-      if (!cancelled) {
-        drawHighlights();
-      }
+      renderTask = page.render({ canvas, viewport });
+      await renderTask.promise;
     };
 
-    renderPage();
-    return () => { cancelled = true; };
-  }, [pdfDoc, pageNum, scale, highlights]);
+    renderPage().catch((err) => {
+      if (err?.name !== "RenderingCancelledException" && !cancelled) {
+        console.error("Failed to render PDF page:", err);
+      }
+    });
+    return () => {
+      cancelled = true;
+      renderTask?.cancel();
+    };
+  }, [pdfDoc, pageNum, scale]);
 
   // Draw highlights on overlay canvas
   const drawHighlights = useCallback(() => {
@@ -120,6 +137,7 @@ export default function PdfViewer({ filePath, onClose, onBlockLink }: Props) {
     }
   }, [highlights, pageNum, scale, editingHighlight]);
 
+  drawHighlightsRef.current = drawHighlights;
   useEffect(() => {
     drawHighlights();
   }, [drawHighlights]);

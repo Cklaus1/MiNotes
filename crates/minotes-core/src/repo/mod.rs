@@ -20,3 +20,4 @@ pub mod snippets;
 pub mod templates;
 pub mod trash;
 pub mod ai_suggestions;
+pub mod whiteboards;

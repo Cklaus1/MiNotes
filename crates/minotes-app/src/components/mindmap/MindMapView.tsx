@@ -136,8 +136,9 @@ function MindMapInner({ pageId, pageTitle, isJournal, journalDate, blocks, onClo
     });
 
     // Clear isNew flag after animation completes
+    let isNewTimer: ReturnType<typeof setTimeout> | null = null;
     if (markedNodes.some((n) => (n.data as unknown as MindMapNodeData).isNew)) {
-      setTimeout(() => {
+      isNewTimer = setTimeout(() => {
         setNodes((nds) =>
           nds.map((n) => {
             const d = n.data as unknown as MindMapNodeData;
@@ -151,7 +152,7 @@ function MindMapInner({ pageId, pageTitle, isJournal, journalDate, blocks, onClo
     if (oldPositions.size === 0) {
       setNodes(markedNodes);
       setEdges(layoutEdges);
-      return;
+      return () => { if (isNewTimer) clearTimeout(isNewTimer); };
     }
 
     const duration = 300;
@@ -175,12 +176,18 @@ function MindMapInner({ pageId, pageTitle, isJournal, journalDate, blocks, onClo
         })
       );
 
-      if (t < 1) requestAnimationFrame(tick);
+      if (t < 1) rafId = requestAnimationFrame(tick);
       else setEdges(layoutEdges);
     }
 
-    requestAnimationFrame(tick);
+    // Tracked so a newer layout (or unmount) cancels this loop instead of
+    // letting two animation loops fight over node positions.
+    let rafId = requestAnimationFrame(tick);
     setEdges(layoutEdges);
+    return () => {
+      cancelAnimationFrame(rafId);
+      if (isNewTimer) clearTimeout(isNewTimer);
+    };
   }, [layoutNodes, layoutEdges, setNodes, setEdges]);
 
   // Inject callbacks + autoEdit into node data
@@ -391,6 +398,10 @@ function MindMapInner({ pageId, pageTitle, isJournal, journalDate, blocks, onClo
       const d = draggedNode.data as unknown as MindMapNodeData;
       if (!d.blockId || d.isRoot) return;
 
+      // Parent map built once per drag (was an O(n) find per ancestor step).
+      const parentOf = new Map<string, string | null>();
+      for (const b of blocks) parentOf.set(b.id, b.parent_id ?? null);
+
       // Find the closest other node to the dropped position
       let closestId: string | null = null;
       let closestDist = Infinity;
@@ -403,7 +414,7 @@ function MindMapInner({ pageId, pageTitle, isJournal, journalDate, blocks, onClo
         let cur: string | null = nd.blockId;
         while (cur) {
           if (cur === d.blockId) { isDescendant = true; break; }
-          cur = blocks.find((b) => b.id === cur)?.parent_id ?? null;
+          cur = parentOf.get(cur) ?? null;
         }
         if (isDescendant) continue;
 

@@ -407,6 +407,7 @@ impl Database {
         self.conn.execute_batch(SCHEMA)?;
         self.conn.execute_batch(FTS_SCHEMA)?;
         self.run_migrations()?;
+        self.migrate_whiteboards()?;
         Ok(())
     }
 

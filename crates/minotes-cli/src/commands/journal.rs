@@ -9,6 +9,7 @@ pub enum JournalCmd {
     /// Create a journal entry
     Create {
         /// Entry content
+        #[arg(allow_hyphen_values = true)]
         content: String,
         /// Date (YYYY-MM-DD), defaults to today
         #[arg(long)]

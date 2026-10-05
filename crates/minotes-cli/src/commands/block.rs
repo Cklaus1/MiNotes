@@ -11,6 +11,7 @@ pub enum BlockCmd {
         /// Page title or UUID
         page: String,
         /// Block content (markdown)
+        #[arg(allow_hyphen_values = true)]
         content: String,
         /// Parent block UUID
         #[arg(long)]
@@ -29,7 +30,7 @@ pub enum BlockCmd {
         /// Block UUID
         id: String,
         /// New content
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         content: Option<String>,
     },
     /// Delete a block
@@ -63,7 +64,7 @@ pub fn run(db: &Database, cmd: BlockCmd, actor: &str, fmt: &Format) -> i32 {
                 print_error(&format!("Page not found: {page}"));
                 return 2;
             };
-            let parent_id = parent.as_ref().and_then(|p| Uuid::parse_str(p).ok());
+            let parent_id = match super::parse_opt_uuid(parent.as_deref(), "parent") { Ok(p) => p, Err(code) => return code };
             match db.create_block(&page_id, &content, parent_id.as_ref(), position, actor) {
                 Ok(block) => {
                     match fmt {

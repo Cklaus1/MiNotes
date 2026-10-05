@@ -603,3 +603,12 @@ export const listPendingTodosWithIds = () =>
   invoke<Array<{ page_id: string; page_title: string; text: string }>>("list_pending_todos_with_page_ids");
 
 export { isTauri };
+
+// ── Whiteboards (DB-backed; keyed by the id in `{{whiteboard:<id>}}`) ──
+/** Returns the stored whiteboard JSON, or null if never saved. */
+export const getWhiteboard = (id: string) =>
+  invoke<string | null>("get_whiteboard", { id }).then((d) => d ?? null);
+
+export const saveWhiteboard = (id: string, data: string) =>
+  invoke<void>("save_whiteboard", { id, data });
+// ── End whiteboards ──

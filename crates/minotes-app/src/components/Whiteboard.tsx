@@ -1,5 +1,7 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback, type CSSProperties } from "react";
 import { isTauri, savePngToDownloads } from "../lib/api";
+import { loadWhiteboard, persistWhiteboard } from "../lib/whiteboardUtils";
+import { showToast } from "../lib/toast";
 
 interface StickyNote {
   id: string;
@@ -105,52 +107,57 @@ const NOTE_COLORS = [
   "#cba6f7", // mauve
 ];
 
-const STORAGE_PREFIX = "minotes-whiteboard-";
+const MAX_UNDO = 100;
+const ERROR_BANNER_STYLE: CSSProperties = {
+  position: "absolute", top: 48, left: "50%", transform: "translateX(-50%)", zIndex: 20,
+  background: "#f38ba8", color: "#1e1e2e", padding: "6px 12px", borderRadius: 6,
+  fontSize: 13, fontWeight: 600, boxShadow: "0 2px 8px rgba(0,0,0,0.3)",
+};
+const SAVE_DEBOUNCE_MS = 1000;
 
-function loadWhiteboardData(id: string): WhiteboardData | null {
-  try {
-    const raw = localStorage.getItem(STORAGE_PREFIX + id);
-    if (raw) return JSON.parse(raw);
-  } catch { /* ignore */ }
-  return null;
+type Snapshot = { notes: StickyNote[]; lines: Line[]; images: CanvasImage[]; texts: TextElement[]; arrows: Arrow[]; boxes: Box[] };
+
+/** True if the keyboard event's target is an editable element that does not
+ *  belong to the whiteboard itself (e.g. search box or command palette). */
+function isForeignEditable(target: EventTarget | null, container: HTMLElement | null): boolean {
+  const el = target as HTMLElement | null;
+  if (!el || typeof el.closest !== "function") return false;
+  const editable = el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable;
+  if (!editable) return false;
+  return !(container && container.contains(el));
 }
 
-let saving = false;
-
-/** Returns true if image data was truncated due to size. */
-function saveWhiteboardData(id: string, data: WhiteboardData): boolean {
-  if (saving) return false;
-  saving = true;
-  let truncated = false;
-  try {
-    let json = JSON.stringify(data);
-    // If payload is > 4MB, strip image dataUrls to avoid quota issues
-    if (json.length > 4 * 1024 * 1024 && data.images && data.images.length > 0) {
-      const trimmed: WhiteboardData = { ...data, images: data.images.map(img => ({ ...img, dataUrl: "" })) };
-      json = JSON.stringify(trimmed);
-      truncated = true;
-      console.warn("Whiteboard save: payload exceeded 4 MB — image data was stripped to fit localStorage.");
-    }
-    try {
-      localStorage.setItem(STORAGE_PREFIX + id, json);
-    } catch (e) {
-      console.warn("Whiteboard save failed (QuotaExceededError). Data may not persist.", e);
-      return truncated;
-    }
-    // Notify thumbnails to refresh
-    window.dispatchEvent(new CustomEvent("whiteboard-saved", { detail: id }));
-    return truncated;
-  } finally {
-    saving = false;
-  }
-}
-
+/** Loads whiteboard data from the DB (importing legacy localStorage data once), then mounts the editor. */
 export default function Whiteboard({ whiteboardId, onClose }: Props) {
+  const [state, setState] = useState<{ id: string; data: WhiteboardData | null } | { id: string; error: string } | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    loadWhiteboard(whiteboardId, { fresh: true })
+      .then((d) => { if (!cancelled) setState({ id: whiteboardId, data: (d as WhiteboardData | null) ?? null }); })
+      .catch((e) => { if (!cancelled) setState({ id: whiteboardId, error: String(e) }); });
+    return () => { cancelled = true; };
+  }, [whiteboardId]);
+
+  if (!state || state.id !== whiteboardId) {
+    return <div className="whiteboard"><div className="whiteboard-hint">Loading whiteboard…</div></div>;
+  }
+  if ("error" in state) {
+    return (
+      <div className="whiteboard">
+        <div className="whiteboard-error-banner" role="alert" style={ERROR_BANNER_STYLE}>
+          Could not load whiteboard: {state.error}{" "}
+          <button className="btn btn-sm" onClick={() => onClose(false)}>Close</button>
+        </div>
+      </div>
+    );
+  }
+  return <WhiteboardEditor key={whiteboardId} whiteboardId={whiteboardId} saved={state.data} onClose={onClose} />;
+}
+
+function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: WhiteboardData | null }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-
-  // Load saved data on mount
-  const saved = loadWhiteboardData(whiteboardId);
 
   const [notes, setNotes] = useState<StickyNote[]>(saved?.notes ?? []);
   const [lines, setLines] = useState<Line[]>(saved?.lines ?? []);
@@ -173,7 +180,7 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
   const [canvasBg, setCanvasBg] = useState<"dark" | "light">(saved?.canvasBg ?? "light");
   const [showGrid, setShowGrid] = useState(saved?.showGrid ?? false);
   const [undoSnapshot, setUndoSnapshot] = useState<{ notes: StickyNote[]; lines: Line[]; images: CanvasImage[]; texts: TextElement[]; arrows: Arrow[]; boxes: Box[] } | null>(null);
-  const redoStackRef = useRef<Line[]>([]);
+  const redoStackRef = useRef<Snapshot[]>([]);
   const [showHint, setShowHint] = useState(() => !saved || ((saved.lines?.length ?? 0) === 0 && (saved.notes?.length ?? 0) === 0));
 
   // Camera / pan / zoom state stored in refs for performance
@@ -694,31 +701,179 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
     requestRedraw();
   }, [notes, lines, texts, arrows, boxes, images, selectedElement, requestRedraw]);
 
-  // Mouse handlers
-  // Save current state (called after every interaction)
-  const saveNow = useCallback(() => {
-    const hasContent = notesRef.current.length > 0 || linesRef.current.length > 0 || imagesRef.current.length > 0 || textsRef.current.length > 0 || arrowsRef.current.length > 0 || boxesRef.current.length > 0;
-    if (hasContent) {
-      const truncated = saveWhiteboardData(whiteboardId, {
-        notes: notesRef.current,
-        lines: linesRef.current,
-        images: imagesRef.current,
-        texts: textsRef.current,
-        arrows: arrowsRef.current,
-        boxes: boxesRef.current,
-        camera: { ...cameraRef.current },
-        nextNoteId: nextNoteIdRef.current,
-        canvasBg: canvasBgRef.current,
-        showGrid: showGridRef.current,
-      });
-      if (truncated) {
-        setSaveStatus("Images too large to save — use smaller images");
-        setTimeout(() => setSaveStatus(null), 5000);
-      }
-    } else {
-      localStorage.removeItem(STORAGE_PREFIX + whiteboardId);
+  // ── Persistence: dirty flag + debounced save to the DB ──
+  // Saves only happen when something actually changed (content, canvas
+  // settings, or camera), debounced SAVE_DEBOUNCE_MS after the last change,
+  // and are flushed on close/unmount. Saves are serialized so an older
+  // snapshot can never overwrite a newer one.
+  const dirtyRef = useRef(false);
+  const saveTimerRef = useRef<number | null>(null);
+  const saveChainRef = useRef<Promise<void>>(Promise.resolve());
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  const flushSave = useCallback((): Promise<void> => {
+    if (saveTimerRef.current !== null) {
+      clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = null;
     }
+    if (!dirtyRef.current) return saveChainRef.current;
+    dirtyRef.current = false;
+    const data: WhiteboardData = {
+      notes: notesRef.current,
+      lines: linesRef.current,
+      images: imagesRef.current,
+      texts: textsRef.current,
+      arrows: arrowsRef.current,
+      boxes: boxesRef.current,
+      camera: { ...cameraRef.current },
+      nextNoteId: nextNoteIdRef.current,
+      canvasBg: canvasBgRef.current,
+      showGrid: showGridRef.current,
+    };
+    saveChainRef.current = saveChainRef.current
+      .then(() => persistWhiteboard(whiteboardId, data))
+      .then(
+        () => setSaveError(null),
+        (e) => {
+          // Keep the dirty flag so the next change/close retries the save.
+          dirtyRef.current = true;
+          const msg = `Whiteboard not saved: ${e?.message ?? String(e)}`;
+          console.error(msg, e);
+          setSaveError(msg);
+          showToast(msg, 8000);
+        },
+      );
+    return saveChainRef.current;
   }, [whiteboardId]);
+
+  const markDirty = useCallback(() => {
+    dirtyRef.current = true;
+    if (saveTimerRef.current !== null) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = window.setTimeout(() => { void flushSave(); }, SAVE_DEBOUNCE_MS);
+  }, [flushSave]);
+
+  // Kept for call sites that signal "an interaction finished". Content changes
+  // are detected automatically below; this only covers camera-only changes.
+  const saveNow = markDirty;
+
+  // Flush pending changes on unmount.
+  useEffect(() => () => { void flushSave(); }, [flushSave]);
+
+  // ── Undo / redo: bounded snapshot history covering all element types ──
+  const undoStackRef = useRef<Snapshot[]>([]);
+  const prevSnapRef = useRef<Snapshot>({ notes, lines, images, texts, arrows, boxes });
+  const prevSettingsRef = useRef({ canvasBg, showGrid });
+  const lastChangeAtRef = useRef(0);
+  const applyingHistoryRef = useRef(false);
+
+  // Detect changes → history entry + dirty flag. Rapid successive changes
+  // (e.g. every frame of a drag) coalesce into one undo entry.
+  useEffect(() => {
+    const cur: Snapshot = { notes, lines, images, texts, arrows, boxes };
+    const prev = prevSnapRef.current;
+    const contentChanged = (Object.keys(cur) as (keyof Snapshot)[]).some((k) => cur[k] !== prev[k]);
+    const settingsChanged = prevSettingsRef.current.canvasBg !== canvasBg || prevSettingsRef.current.showGrid !== showGrid;
+    if (contentChanged) {
+      if (applyingHistoryRef.current) {
+        applyingHistoryRef.current = false;
+        lastChangeAtRef.current = 0;
+      } else {
+        const now = Date.now();
+        if (now - lastChangeAtRef.current > 400) {
+          undoStackRef.current.push(prev);
+          if (undoStackRef.current.length > MAX_UNDO) undoStackRef.current.shift();
+        }
+        redoStackRef.current = [];
+        lastChangeAtRef.current = now;
+      }
+      prevSnapRef.current = cur;
+    }
+    prevSettingsRef.current = { canvasBg, showGrid };
+    if (contentChanged || settingsChanged) markDirty();
+  }, [notes, lines, images, texts, arrows, boxes, canvasBg, showGrid, markDirty]);
+
+  const applySnapshot = useCallback((s: Snapshot) => {
+    const cur = prevSnapRef.current;
+    if ((Object.keys(s) as (keyof Snapshot)[]).every((k) => s[k] === cur[k])) return;
+    applyingHistoryRef.current = true;
+    setNotes(s.notes); setLines(s.lines); setImages(s.images);
+    setTexts(s.texts); setArrows(s.arrows); setBoxes(s.boxes);
+    setSelectedElement(null);
+  }, []);
+
+  const undo = useCallback(() => {
+    const snap = undoStackRef.current.pop();
+    if (!snap) return;
+    redoStackRef.current.push(prevSnapRef.current);
+    if (redoStackRef.current.length > MAX_UNDO) redoStackRef.current.shift();
+    applySnapshot(snap);
+  }, [applySnapshot]);
+
+  const redo = useCallback(() => {
+    const snap = redoStackRef.current.pop();
+    if (!snap) return;
+    undoStackRef.current.push(prevSnapRef.current);
+    if (undoStackRef.current.length > MAX_UNDO) undoStackRef.current.shift();
+    applySnapshot(snap);
+  }, [applySnapshot]);
+
+  // ── Drag coalescing: apply at most one position update per animation frame ──
+  const pendingDragRef = useRef<{ nx: number; ny: number } | null>(null);
+  const dragRafRef = useRef<number | null>(null);
+
+  const applyPendingDrag = useCallback(() => {
+    dragRafRef.current = null;
+    const pending = pendingDragRef.current;
+    const drag = draggingElementRef.current;
+    pendingDragRef.current = null;
+    if (!pending || !drag) return;
+    const { nx, ny } = pending;
+    const id = drag.id;
+    if (drag.type === "note") {
+      setNotes((prev) => prev.map((n) => n.id === id ? { ...n, x: nx, y: ny } : n));
+    } else if (drag.type === "text") {
+      setTexts((prev) => prev.map((t) => t.id === id ? { ...t, x: nx, y: ny } : t));
+    } else if (drag.type === "box") {
+      setBoxes((prev) => prev.map((b) => b.id === id ? { ...b, x: nx, y: ny } : b));
+    } else if (drag.type === "image") {
+      setImages((prev) => prev.map((img) => img.id === id ? { ...img, x: nx, y: ny } : img));
+    } else if (drag.type === "arrow") {
+      // Move entire arrow so its top-left corner lands at (nx, ny)
+      setArrows((prev) => prev.map((a) => {
+        if (a.id !== id) return a;
+        const dx = nx - Math.min(a.x1, a.x2);
+        const dy = ny - Math.min(a.y1, a.y2);
+        return { ...a, x1: a.x1 + dx, y1: a.y1 + dy, x2: a.x2 + dx, y2: a.y2 + dy };
+      }));
+    } else if (drag.type === "line") {
+      const idx = parseInt(id);
+      setLines((prev) => prev.map((l, i) => {
+        if (i !== idx) return l;
+        let minX = Infinity, minY = Infinity;
+        for (const pt of l.points) { minX = Math.min(minX, pt.x); minY = Math.min(minY, pt.y); }
+        const dx = nx - minX, dy = ny - minY;
+        return { ...l, points: l.points.map((p) => ({ x: p.x + dx, y: p.y + dy })) };
+      }));
+    }
+    requestRedraw();
+  }, [requestRedraw]);
+
+  const queueDrag = useCallback((world: { x: number; y: number }) => {
+    const drag = draggingElementRef.current;
+    if (!drag) return;
+    pendingDragRef.current = { nx: world.x - drag.offsetX, ny: world.y - drag.offsetY };
+    if (dragRafRef.current === null) dragRafRef.current = requestAnimationFrame(applyPendingDrag);
+  }, [applyPendingDrag]);
+
+  /** Apply any queued drag position immediately (used on drag end). */
+  const flushDrag = useCallback(() => {
+    if (dragRafRef.current !== null) {
+      cancelAnimationFrame(dragRafRef.current);
+      applyPendingDrag();
+    }
+  }, [applyPendingDrag]);
+
+  useEffect(() => () => { if (dragRafRef.current !== null) cancelAnimationFrame(dragRafRef.current); }, []);
 
   const handleMouseDown = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -856,48 +1011,12 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
         return;
       }
 
-      // Dragging any element
+      // Dragging any element — coalesced to one state update per frame
       if (draggingElementRef.current) {
-        const world = screenToWorld(sx, sy);
-        const nx = world.x - draggingElementRef.current.offsetX;
-        const ny = world.y - draggingElementRef.current.offsetY;
-        const id = draggingElementRef.current.id;
-
-        if (draggingElementRef.current.type === "note") {
-          setNotes((prev) => prev.map((n) => n.id === id ? { ...n, x: nx, y: ny } : n));
-        } else if (draggingElementRef.current.type === "text") {
-          setTexts((prev) => prev.map((t) => t.id === id ? { ...t, x: nx, y: ny } : t));
-        } else if (draggingElementRef.current.type === "box") {
-          setBoxes((prev) => prev.map((b) => b.id === id ? { ...b, x: nx, y: ny } : b));
-        } else if (draggingElementRef.current.type === "image") {
-          setImages((prev) => prev.map((img) => img.id === id ? { ...img, x: nx, y: ny } : img));
-        } else if (draggingElementRef.current.type === "arrow") {
-          // Move entire arrow by delta
-          const arrow = arrowsRef.current.find((a) => a.id === id);
-          if (arrow) {
-            const dx = nx - Math.min(arrow.x1, arrow.x2);
-            const dy = ny - Math.min(arrow.y1, arrow.y2);
-            setArrows((prev) => prev.map((a) => a.id === id ? { ...a, x1: a.x1 + dx, y1: a.y1 + dy, x2: a.x2 + dx, y2: a.y2 + dy } : a));
-            // Update offset to prevent drift
-            draggingElementRef.current.offsetX = world.x - nx;
-            draggingElementRef.current.offsetY = world.y - ny;
-          }
-        } else if (draggingElementRef.current.type === "line") {
-          const idx = parseInt(id);
-          const line = linesRef.current[idx];
-          if (line) {
-            let minX = Infinity, minY = Infinity;
-            for (const pt of line.points) { minX = Math.min(minX, pt.x); minY = Math.min(minY, pt.y); }
-            const dx = nx - minX, dy = ny - minY;
-            setLines((prev) => prev.map((l, i) => i === idx ? { ...l, points: l.points.map((p) => ({ x: p.x + dx, y: p.y + dy })) } : l));
-            draggingElementRef.current.offsetX = world.x - nx;
-            draggingElementRef.current.offsetY = world.y - ny;
-          }
-        }
-        requestRedraw();
+        queueDrag(screenToWorld(sx, sy));
       }
     },
-    [screenToWorld, requestRedraw]
+    [screenToWorld, requestRedraw, queueDrag]
   );
 
   const handleMouseUp = useCallback(
@@ -907,6 +1026,7 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
       // End pan
       if (panningRef.current.active) {
         panningRef.current.active = false;
+        if (cameraRef.current.x !== panningRef.current.camStartX || cameraRef.current.y !== panningRef.current.camStartY) changed = true;
       }
 
       // End draw
@@ -914,7 +1034,6 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
         const pts = drawingRef.current.points;
         if (pts.length >= 2) {
           setLines((prev) => [...prev, { id: "line-" + Date.now(), points: [...pts], color: drawColor, width: 2 }]);
-          redoStackRef.current = []; // New stroke clears redo history
           changed = true;
         }
         drawingRef.current = { active: false, points: [] };
@@ -946,6 +1065,7 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
 
       // End drag (any element)
       if (draggingElementRef.current) {
+        flushDrag();
         draggingElementRef.current = null;
         changed = true;
       }
@@ -953,7 +1073,7 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
       // Auto-save after every interaction
       if (changed) setTimeout(saveNow, 50);
     },
-    [drawColor, saveNow]
+    [drawColor, saveNow, flushDrag]
   );
 
   // --- Touch event support ---
@@ -1051,44 +1171,10 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
       }
 
       if (draggingElementRef.current) {
-        const world = screenToWorld(sx, sy);
-        const nx = world.x - draggingElementRef.current.offsetX;
-        const ny = world.y - draggingElementRef.current.offsetY;
-        const id = draggingElementRef.current.id;
-
-        if (draggingElementRef.current.type === "note") {
-          setNotes((prev) => prev.map((n) => n.id === id ? { ...n, x: nx, y: ny } : n));
-        } else if (draggingElementRef.current.type === "text") {
-          setTexts((prev) => prev.map((t) => t.id === id ? { ...t, x: nx, y: ny } : t));
-        } else if (draggingElementRef.current.type === "box") {
-          setBoxes((prev) => prev.map((b) => b.id === id ? { ...b, x: nx, y: ny } : b));
-        } else if (draggingElementRef.current.type === "image") {
-          setImages((prev) => prev.map((img) => img.id === id ? { ...img, x: nx, y: ny } : img));
-        } else if (draggingElementRef.current.type === "arrow") {
-          const arrow = arrowsRef.current.find((a) => a.id === id);
-          if (arrow) {
-            const dx = nx - Math.min(arrow.x1, arrow.x2);
-            const dy = ny - Math.min(arrow.y1, arrow.y2);
-            setArrows((prev) => prev.map((a) => a.id === id ? { ...a, x1: a.x1 + dx, y1: a.y1 + dy, x2: a.x2 + dx, y2: a.y2 + dy } : a));
-            draggingElementRef.current.offsetX = world.x - nx;
-            draggingElementRef.current.offsetY = world.y - ny;
-          }
-        } else if (draggingElementRef.current.type === "line") {
-          const idx = parseInt(id);
-          const line = linesRef.current[idx];
-          if (line) {
-            let minX = Infinity, minY = Infinity;
-            for (const pt of line.points) { minX = Math.min(minX, pt.x); minY = Math.min(minY, pt.y); }
-            const dx = nx - minX, dy = ny - minY;
-            setLines((prev) => prev.map((l, i) => i === idx ? { ...l, points: l.points.map((p) => ({ x: p.x + dx, y: p.y + dy })) } : l));
-            draggingElementRef.current.offsetX = world.x - nx;
-            draggingElementRef.current.offsetY = world.y - ny;
-          }
-        }
-        requestRedraw();
+        queueDrag(screenToWorld(sx, sy));
       }
     },
-    [screenToWorld, requestRedraw, getTouchPos]
+    [screenToWorld, requestRedraw, getTouchPos, queueDrag]
   );
 
   const handleTouchEnd = useCallback(
@@ -1098,13 +1184,13 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
 
       if (panningRef.current.active) {
         panningRef.current.active = false;
+        if (cameraRef.current.x !== panningRef.current.camStartX || cameraRef.current.y !== panningRef.current.camStartY) changed = true;
       }
 
       if (drawingRef.current.active) {
         const pts = drawingRef.current.points;
         if (pts.length >= 2) {
           setLines((prev) => [...prev, { id: "line-" + Date.now(), points: [...pts], color: drawColor, width: 2 }]);
-          redoStackRef.current = [];
           changed = true;
         }
         drawingRef.current = { active: false, points: [] };
@@ -1132,13 +1218,14 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
       }
 
       if (draggingElementRef.current) {
+        flushDrag();
         draggingElementRef.current = null;
         changed = true;
       }
 
       if (changed) setTimeout(saveNow, 50);
     },
-    [drawColor, saveNow]
+    [drawColor, saveNow, flushDrag]
   );
 
   const handleDoubleClick = useCallback(
@@ -1201,8 +1288,9 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
       cam.zoom = newZoom;
 
       requestRedraw();
+      markDirty(); // camera is persisted; debounced
     },
-    [requestRedraw]
+    [requestRedraw, markDirty]
   );
 
   const handleContextMenu = useCallback(
@@ -1258,12 +1346,6 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
       setTimeout(saveNow, 50);
     }
   }, [saveNow]);
-
-  // Auto-save every 2 seconds
-  useEffect(() => {
-    const interval = setInterval(saveNow, 2000);
-    return () => clearInterval(interval);
-  }, [whiteboardId]);
 
   // Save current state (called after every interaction)
   // Close — state is already saved continuously
@@ -1366,15 +1448,18 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
       cameraRef.current.zoom = startZoom + (targetZoom - startZoom) * ease;
       requestRedraw();
       if (t < 1) requestAnimationFrame(tick);
+      else markDirty();
     }
     requestAnimationFrame(tick);
-  }, [requestRedraw]);
+  }, [requestRedraw, markDirty]);
 
   const handleClose = useCallback(() => {
-    saveNow();
+    // Flush any pending edit, then close. The save continues in the
+    // background; on failure a toast is shown (the unmount flush retries).
+    void flushSave();
     const hasContent = notesRef.current.length > 0 || linesRef.current.length > 0 || imagesRef.current.length > 0 || textsRef.current.length > 0 || arrowsRef.current.length > 0 || boxesRef.current.length > 0;
     onClose(hasContent);
-  }, [saveNow, onClose]);
+  }, [flushSave, onClose]);
 
   const exportPng = useCallback(() => {
     const canvas = canvasRef.current;
@@ -1422,11 +1507,10 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
     setTexts([]);
     setArrows([]);
     setBoxes([]);
-    localStorage.removeItem(STORAGE_PREFIX + whiteboardId);
     requestRedraw();
-    // Auto-dismiss undo after 5 seconds
+    // Auto-dismiss undo after 5 seconds (Ctrl+Z also restores via the undo history)
     setTimeout(() => setUndoSnapshot(null), 5000);
-  }, [whiteboardId, requestRedraw]);
+  }, [requestRedraw]);
 
   const undoClear = useCallback(() => {
     if (!undoSnapshot) return;
@@ -1538,6 +1622,7 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
   // Paste image from clipboard (browser paste event + Tauri Ctrl+V)
   useEffect(() => {
     const pasteHandler = (e: ClipboardEvent) => {
+      if (isForeignEditable(e.target, containerRef.current)) return;
       const items = e.clipboardData?.items;
       if (items) {
         for (const item of items) {
@@ -1554,6 +1639,7 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
     };
 
     const keyHandler = (e: KeyboardEvent) => {
+      if (isForeignEditable(e.target, containerRef.current)) return;
       if ((e.ctrlKey || e.metaKey) && e.key === "v" && !editingNote && !editingTextId) {
         if (isTauri) {
           e.preventDefault();
@@ -1574,6 +1660,9 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
   // Keyboard: Escape to close, close editing; S/D to switch modes
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      // Typing into an input outside the whiteboard (search, command palette…)
+      // must not switch tools, delete elements, or close the board.
+      if (isForeignEditable(e.target, containerRef.current)) return;
       if (e.key === "Escape") {
         // If a textarea recently handled Escape (within 500ms), skip
         // WebKitGTK has different event timing than Chrome — need wider window
@@ -1657,29 +1746,20 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
         setSelectedElement(null);
         setTimeout(saveNow, 50);
       }
-      // Ctrl+Z — undo last stroke
-      if ((e.ctrlKey || e.metaKey) && e.key === "z" && !e.shiftKey && !editingNote) {
+      // Ctrl+Z — undo (strokes, notes, texts, arrows, boxes, images: add/delete/move/clear)
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && !e.shiftKey && !editingNote && !editingTextId) {
         e.preventDefault();
-        setLines((prev) => {
-          if (prev.length === 0) return prev;
-          redoStackRef.current.push(prev[prev.length - 1]);
-          return prev.slice(0, -1);
-        });
-        setTimeout(saveNow, 50);
+        undo();
       }
-      // Ctrl+Shift+Z — redo
-      if ((e.ctrlKey || e.metaKey) && e.key === "Z" && !editingNote) {
+      // Ctrl+Shift+Z / Ctrl+Y — redo
+      if ((e.ctrlKey || e.metaKey) && ((e.key.toLowerCase() === "z" && e.shiftKey) || e.key.toLowerCase() === "y") && !editingNote && !editingTextId) {
         e.preventDefault();
-        const stroke = redoStackRef.current.pop();
-        if (stroke) {
-          setLines((prev) => [...prev, stroke]);
-          setTimeout(saveNow, 50);
-        }
+        redo();
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [handleClose, editingNote, editingTextId, finishEdit, contextMenu, saveNow, selectedElement, mode]);
+  }, [handleClose, editingNote, editingTextId, finishEdit, contextMenu, saveNow, selectedElement, mode, undo, redo]);
 
   // Compute editing note screen position
   const editScreenPos = (() => {
@@ -1980,6 +2060,14 @@ export default function Whiteboard({ whiteboardId, onClose }: Props) {
             </button>
           </div>
         </>
+      )}
+
+      {/* Save failure banner — stays visible until a save succeeds */}
+      {saveError && (
+        <div className="whiteboard-error-banner" role="alert" style={ERROR_BANNER_STYLE}>
+          {saveError}{" "}
+          <button className="btn btn-sm" onClick={() => { dirtyRef.current = true; void flushSave(); }}>Retry</button>
+        </div>
       )}
 
       {/* Undo clear toast */}

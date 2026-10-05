@@ -1338,6 +1338,25 @@ fn list_pending_todos_with_page_ids(db: tauri::State<AppState>) -> Result<Vec<se
         .collect())
 }
 
+// ── Whiteboards (DB-backed storage; keyed by the id in `{{whiteboard:<id>}}`) ──
+
+/// Returns the whiteboard's JSON data, or null if it has never been saved.
+#[tauri::command]
+fn get_whiteboard(state: State<'_, AppState>, id: String) -> Result<Option<String>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.get_whiteboard(&id)
+        .map(|wb| wb.map(|w| w.data))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn save_whiteboard(state: State<'_, AppState>, id: String, data: String) -> Result<(), String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.save_whiteboard(&id, &data).map(|_| ()).map_err(|e| e.to_string())
+}
+
+// ── End whiteboards ──
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let path = db_path();
@@ -1527,6 +1546,8 @@ pub fn run() {
             get_pending_todo_count,
             list_pending_todos,
             list_pending_todos_with_page_ids,
+            get_whiteboard,
+            save_whiteboard,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

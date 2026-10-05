@@ -9,6 +9,7 @@ pub enum PageCmd {
     /// Create a new page
     Create {
         /// Page title
+        #[arg(allow_hyphen_values = true)]
         title: String,
         /// Optional icon
         #[arg(long)]
@@ -28,16 +29,23 @@ pub enum PageCmd {
         #[arg(long)]
         limit: Option<i64>,
     },
-    /// Delete a page
+    /// Move a page to the trash (restorable from the app). Use --permanent to hard-delete.
     Delete {
         /// Page title or UUID
         title_or_id: String,
+        /// Permanently delete instead of moving to trash (irreversible)
+        #[arg(long)]
+        permanent: bool,
+        /// Skip the confirmation prompt for --permanent
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
     /// Rename a page
     Rename {
         /// Current title
         old: String,
         /// New title
+        #[arg(allow_hyphen_values = true)]
         new: String,
     },
 }
@@ -95,15 +103,30 @@ pub fn run(db: &Database, cmd: PageCmd, actor: &str, fmt: &Format) -> i32 {
                 Err(e) => { print_error(&e.to_string()); 1 }
             }
         }
-        PageCmd::Delete { title_or_id } => {
-            let id = resolve_page_id(db, &title_or_id);
-            match id {
-                Some(uuid) => match db.delete_page(&uuid, actor) {
-                    Ok(true) => { output::print_message(&format!("Deleted page: {title_or_id}")); 0 }
-                    Ok(false) => { print_error(&format!("Page not found: {title_or_id}")); 2 }
+        PageCmd::Delete { title_or_id, permanent, yes } => {
+            let Some(uuid) = resolve_page_id(db, &title_or_id) else {
+                print_error(&format!("Page not found: {title_or_id}"));
+                return 2;
+            };
+            match db.get_page(&uuid) {
+                Ok(Some(_)) => {}
+                Ok(None) => { print_error(&format!("Page not found: {title_or_id}")); return 2; }
+                Err(e) => { print_error(&e.to_string()); return 1; }
+            }
+            if permanent {
+                if !yes && !confirm(&format!("Permanently delete page '{title_or_id}'? This cannot be undone. [y/N] ")) {
+                    print_error("Refusing to permanently delete without confirmation (pass --yes)");
+                    return 1;
+                }
+                match db.permanently_delete_page(&uuid, actor) {
+                    Ok(()) => { output::print_message(&format!("Permanently deleted page: {title_or_id}")); 0 }
                     Err(e) => { print_error(&e.to_string()); 1 }
-                },
-                None => { print_error(&format!("Page not found: {title_or_id}")); 2 }
+                }
+            } else {
+                match db.trash_page(&uuid) {
+                    Ok(()) => { output::print_message(&format!("Moved page to trash: {title_or_id}")); 0 }
+                    Err(e) => { print_error(&e.to_string()); 1 }
+                }
             }
         }
         PageCmd::Rename { old, new } => {
@@ -127,4 +150,21 @@ fn resolve_page_id(db: &Database, title_or_id: &str) -> Option<Uuid> {
         .ok()
         .flatten()
         .map(|p| p.id)
+}
+
+/// Ask for y/N confirmation on an interactive terminal. Non-interactive stdin
+/// never confirms (callers must pass --yes).
+fn confirm(prompt: &str) -> bool {
+    use std::io::{IsTerminal, Write};
+    let stdin = std::io::stdin();
+    if !stdin.is_terminal() {
+        return false;
+    }
+    eprint!("{prompt}");
+    let _ = std::io::stderr().flush();
+    let mut line = String::new();
+    if stdin.read_line(&mut line).is_err() {
+        return false;
+    }
+    matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes")
 }
