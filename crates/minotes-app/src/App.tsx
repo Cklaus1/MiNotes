@@ -254,8 +254,9 @@ export default function App() {
         setSyncStatus(prev => prev ? { ...prev, last_sync: new Date().toISOString() } : prev);
         if (result.conflicts_resolved > 0) {
           showToast(
-            `⚠ Sync conflict: ${result.conflicts_resolved} file(s) — your local changes were overwritten by the remote version. ` +
-              `The previous local version is still in git history (use 'git reflog' in ~/MiNotes_Sync to recover).`,
+            `⚠ Sync conflict in ${result.conflicts_resolved} page(s) — both versions were kept. ` +
+              `Your local version stays in place; the other device's version was saved as a separate page ` +
+              `titled "… (conflict from <device>)". Compare them and merge or delete the copy.`,
             10000,
           );
         }

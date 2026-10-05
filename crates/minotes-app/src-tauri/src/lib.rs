@@ -1240,70 +1240,69 @@ fn empty_trash(state: State<'_, AppState>) -> Result<u32, String> {
 }
 
 // ── Git Sync ──
+//
+// These commands run on Tauri's async pool (`#[tauri::command(async)]`), not the
+// main thread, so git network I/O never freezes the UI. The DB mutex is taken
+// only around the DB phases (export / import) — never across pull/push — and
+// every lock re-checks that the graph being synced is still the active one, so a
+// graph switch mid-sync can't import graph A's files into graph B.
+
+fn current_graph_name(state: &AppState) -> Result<String, String> {
+    state.current_graph.lock().map(|g| g.clone()).map_err(|e| e.to_string())
+}
+
+fn lock_db_for_graph<'a>(
+    state: &'a AppState,
+    graph: &str,
+) -> minotes_core::error::Result<std::sync::MutexGuard<'a, Database>> {
+    let db = state
+        .db
+        .lock()
+        .map_err(|e| minotes_core::error::Error::Git(format!("DB lock poisoned: {e}")))?;
+    let current = state
+        .current_graph
+        .lock()
+        .map_err(|e| minotes_core::error::Error::Git(format!("Graph lock poisoned: {e}")))?
+        .clone();
+    if current != graph {
+        return Err(minotes_core::error::Error::Git(format!(
+            "Active graph changed from '{graph}' to '{current}' during sync; aborted"
+        )));
+    }
+    Ok(db)
+}
 
 #[tauri::command]
 fn git_available() -> bool {
     sync_manager::git_available()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn git_sync_enable(state: State<'_, AppState>) -> Result<GitSyncStatus, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    sync_manager::enable_sync(&db).map_err(|e| e.to_string())
+    let graph = current_graph_name(&state)?;
+    sync_manager::enable_sync_with(&graph, || lock_db_for_graph(&state, &graph))
+        .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-fn git_sync_disable() -> Result<(), String> {
-    sync_manager::disable_sync().map_err(|e| e.to_string())
+#[tauri::command(async)]
+fn git_sync_disable(state: State<'_, AppState>) -> Result<(), String> {
+    let graph = current_graph_name(&state)?;
+    sync_manager::disable_sync(&graph).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn git_sync(state: State<'_, AppState>) -> Result<GitSyncResult, String> {
-    let config = sync_manager::get_sync_status().map_err(|e| e.to_string())?;
-    if !config.enabled {
-        return Ok(GitSyncResult {
-            success: false, pages_exported: 0, pages_imported: 0,
-            conflicts_resolved: 0, error: Some("Sync is not enabled".to_string()),
-        });
-    }
-
-    // Phase 1: Export (hold DB lock briefly)
-    let pages_exported = {
-        let db = state.db.lock().map_err(|e| e.to_string())?;
-        sync_manager::sync_export(&db).map_err(|e| e.to_string())?
-    }; // DB lock released here
-
-    // Phase 2: Git network ops (no DB lock — other commands can run)
-    let (remote_had_changes, conflicts_resolved, git_error) =
-        sync_manager::sync_git_ops().map_err(|e| e.to_string())?;
-
-    if let Some(err) = git_error {
-        return Ok(GitSyncResult {
-            success: false, pages_exported, pages_imported: 0,
-            conflicts_resolved, error: Some(err),
-        });
-    }
-
-    // Phase 3: Import (hold DB lock briefly, only if remote had changes)
-    let pages_imported = if remote_had_changes {
-        let db = state.db.lock().map_err(|e| e.to_string())?;
-        sync_manager::sync_import(&db).map_err(|e| e.to_string())?
-    } else {
-        0
-    }; // DB lock released here
-
-    // Update last_sync timestamp
-    sync_manager::update_last_sync().ok();
-
-    Ok(GitSyncResult {
-        success: true, pages_exported, pages_imported,
-        conflicts_resolved, error: None,
-    })
+    let graph = current_graph_name(&state)?;
+    // Export (DB lock) → pull/push (no lock) → import only if the pull brought
+    // remote commits (DB lock; pages edited during the network phase are kept).
+    sync_manager::full_sync_with(&graph, || lock_db_for_graph(&state, &graph))
+        .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-fn git_sync_status() -> Result<GitSyncStatus, String> {
-    sync_manager::get_sync_status().map_err(|e| e.to_string())
+#[tauri::command(async)]
+fn git_sync_status(state: State<'_, AppState>) -> Result<GitSyncStatus, String> {
+    let graph = current_graph_name(&state)?;
+    sync_manager::get_sync_status(&graph).map_err(|e| e.to_string())
 }
 
 /// Count pending TODOs across all pages.
@@ -1358,46 +1357,61 @@ pub fn run() {
                 if watcher.watch(&watch_dir, RecursiveMode::NonRecursive).is_err() {
                     return;
                 }
-                // Bug #16: watch any graph's WAL, not a hard-coded "default.db-wal",
-                // so live-refresh tracks whichever graph is active.
+                // Bug #16: track whichever graph is active (read from AppState on
+                // every event), and only react to THAT graph's `<name>.db` /
+                // `<name>.db-wal` — other graphs' files are ignored.
                 //
                 // Debounce: a sync or import touches the WAL many times in quick
                 // succession, and emitting per touch produced a storm of full UI
-                // refreshes. Coalesce on the trailing edge — hold a pending flag
-                // and flush once the writes go quiet — so the UI still lands on
-                // the final state, but only refreshes once.
+                // refreshes. Coalesce on the trailing edge (flush once writes go
+                // quiet for DEBOUNCE), but never hold a burst longer than MAX_WAIT
+                // so continuous activity still refreshes the UI at least ~1/s.
+                use tauri::Manager;
                 const DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(250);
-                let mut pending = false;
+                const MAX_WAIT: std::time::Duration = std::time::Duration::from_millis(1000);
+                let mut pending_since: Option<std::time::Instant> = None;
                 loop {
-                    // Block for the next event; once one arrives, keep draining
-                    // until the WAL has been quiet for a full debounce window.
-                    let res = if pending {
-                        match rx.recv_timeout(DEBOUNCE) {
-                            Ok(res) => Some(res),
-                            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                                // Quiet period elapsed — flush the coalesced burst.
-                                pending = false;
+                    let res = match pending_since {
+                        Some(since) => {
+                            let elapsed = since.elapsed();
+                            if elapsed >= MAX_WAIT {
+                                pending_since = None;
                                 let _ = app_handle.emit("db-changed", ());
                                 continue;
                             }
-                            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                            let wait = DEBOUNCE.min(MAX_WAIT - elapsed);
+                            match rx.recv_timeout(wait) {
+                                Ok(res) => Some(res),
+                                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                                    // Quiet period (or max wait) elapsed — flush.
+                                    pending_since = None;
+                                    let _ = app_handle.emit("db-changed", ());
+                                    continue;
+                                }
+                                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                            }
                         }
-                    } else {
-                        match rx.recv() {
+                        None => match rx.recv() {
                             Ok(res) => Some(res),
                             Err(_) => break,
-                        }
+                        },
                     };
 
                     if let Some(Ok(event)) = res {
-                        let touched_wal = event.paths.iter().any(|p| {
+                        let active = app_handle
+                            .try_state::<AppState>()
+                            .and_then(|s| s.current_graph.lock().ok().map(|g| g.clone()))
+                            .unwrap_or_else(active_graph_name);
+                        let db_name = format!("{active}.db");
+                        let wal_name = format!("{active}.db-wal");
+                        let touched = event.paths.iter().any(|p| {
                             p.file_name()
                                 .and_then(|n| n.to_str())
-                                .map(|n| n.ends_with(".db-wal"))
+                                .map(|n| n == db_name || n == wal_name)
                                 .unwrap_or(false)
                         });
-                        if touched_wal {
-                            pending = true;
+                        if touched && pending_since.is_none() {
+                            pending_since = Some(std::time::Instant::now());
                         }
                     }
                 }

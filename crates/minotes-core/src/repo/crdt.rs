@@ -257,7 +257,10 @@ impl Database {
             }
         }
 
-        for block in &snapshot.blocks {
+        // Respect the page-level timestamp guard for block content too: a stale
+        // snapshot must not upsert (and thereby revert) blocks of a newer local page.
+        let blocks_to_apply: &[_] = if page_is_newer { &snapshot.blocks } else { &[] };
+        for block in blocks_to_apply {
             // Preserve the snapshot's timestamps instead of stamping local `now`
             // (Bug #10), so causal ordering survives and re-applying is idempotent.
             self.conn.execute(
@@ -549,6 +552,26 @@ mod tests {
         let blocks = db.get_page_blocks(&page.id).unwrap();
         assert_eq!(blocks.len(), 1, "restore must drop post-snapshot blocks, not union");
         assert_eq!(blocks[0].content, "A");
+    }
+
+    // A stale snapshot (older than the local page) must not revert block content.
+    #[test]
+    fn test_stale_snapshot_does_not_revert_blocks() {
+        let db = Database::open_in_memory().unwrap();
+        let page = db.create_page("Stale", None, false, None, "user").unwrap();
+        let b = db.create_block(&page.id, "old", None, None, "user").unwrap();
+        let stale = db.page_to_automerge(&page.id).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        db.update_block(&b.id, Some("new"), "user").unwrap();
+        db.conn
+            .execute(
+                "UPDATE pages SET updated_at = ?1 WHERE id = ?2",
+                rusqlite::params![chrono::Utc::now().to_rfc3339(), page.id.to_string()],
+            )
+            .unwrap();
+        db.apply_automerge(&stale, "peer").unwrap();
+        let blocks = db.get_page_blocks(&page.id).unwrap();
+        assert_eq!(blocks[0].content, "new", "stale snapshot must not overwrite newer content");
     }
 
     #[test]

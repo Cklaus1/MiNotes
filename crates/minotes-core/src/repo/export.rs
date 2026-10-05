@@ -1,65 +1,226 @@
+use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+use uuid::Uuid;
 
 use crate::db::Database;
 use crate::error::Result;
+use crate::models::Page;
+
+/// Directory (inside a sync dir) that receives stale/superseded `.md` files instead
+/// of deleting them outright. Dot-prefixed, so the importer never reads it.
+pub const SYNC_TRASH_DIR: &str = ".minotes-trash";
+/// Manifest of page ids written by the last synced export (one per line). Lets the
+/// pruner tell "a page we exported that has since been permanently deleted" apart
+/// from "a page that arrived from a remote but has not been imported yet".
+pub const EXPORT_MANIFEST: &str = ".minotes-exported";
+
+/// Page frontmatter keys owned by the exporter; never treated as properties.
+pub(crate) const RESERVED_FM_KEYS: &[&str] = &["id", "title", "type", "date"];
+
+/// Result of a sync-aware export.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct ExportReport {
+    pub written: Vec<String>,
+    /// Relative paths of stale files moved into `.minotes-trash/`.
+    pub pruned: Vec<String>,
+}
+
+/// Where each page / folder lands on disk, relative to the export root.
+pub(crate) struct ExportPlan {
+    pub(crate) folder_dirs: Vec<PathBuf>,
+    pub(crate) pages: Vec<(Page, PathBuf)>,
+    pub(crate) archived_ids: HashSet<Uuid>,
+}
 
 impl Database {
     /// Export entire graph as markdown files into a directory,
     /// mirroring the folder hierarchy as real filesystem directories.
     pub fn export_markdown(&self, output_dir: &Path) -> Result<Vec<String>> {
+        Ok(self.export_markdown_inner(output_dir, false)?.written)
+    }
+
+    /// Export for sync: like `export_markdown`, but afterwards moves every stale
+    /// `.md` (a renamed/moved page's old file, a trashed or deleted page's file) into
+    /// `.minotes-trash/`, so a stale copy can never be re-imported and revert the DB.
+    pub fn export_markdown_synced(&self, output_dir: &Path) -> Result<ExportReport> {
+        self.export_markdown_inner(output_dir, true)
+    }
+
+    fn export_markdown_inner(&self, output_dir: &Path, prune: bool) -> Result<ExportReport> {
         fs::create_dir_all(output_dir)
             .map_err(|e| crate::error::Error::InvalidInput(format!("Cannot create dir: {e}")))?;
 
-        // Build a map of folder_id -> filesystem path
-        let mut folder_paths: std::collections::HashMap<String, std::path::PathBuf> =
-            std::collections::HashMap::new();
-        self.build_folder_paths(output_dir, None, &mut folder_paths)?;
-
-        let pages = self.list_pages(Some(10000))?;
-        let mut exported = Vec::new();
-
-        for page in &pages {
-            // Determine target directory from folder_id
-            let target_dir = match &page.folder_id {
-                Some(fid) => folder_paths
-                    .get(&fid.to_string())
-                    .cloned()
-                    .unwrap_or_else(|| output_dir.to_path_buf()),
-                None => output_dir.to_path_buf(),
-            };
-            fs::create_dir_all(&target_dir)
+        let plan = self.plan_export_paths()?;
+        for rel in &plan.folder_dirs {
+            let dir = safe_join(output_dir, rel)?;
+            fs::create_dir_all(&dir)
                 .map_err(|e| crate::error::Error::InvalidInput(format!("Cannot create dir: {e}")))?;
-
-            let md = self.render_page_markdown(page)?;
-
-            let filename = sanitize_filename(&page.title);
-            let filepath = target_dir.join(format!("{filename}.md"));
-            fs::write(&filepath, &md)
-                .map_err(|e| crate::error::Error::InvalidInput(format!("Write failed: {e}")))?;
-            exported.push(filepath.display().to_string());
         }
 
-        Ok(exported)
+        let mut report = ExportReport::default();
+        for (page, rel) in &plan.pages {
+            let filepath = safe_join(output_dir, rel)?;
+            if let Some(parent) = filepath.parent() {
+                fs::create_dir_all(parent)
+                    .map_err(|e| crate::error::Error::InvalidInput(format!("Cannot create dir: {e}")))?;
+            }
+            let md = self.render_page_markdown(page)?;
+            // Skip unchanged files so mtimes stay meaningful (used to break ties).
+            let unchanged = fs::read_to_string(&filepath).map(|c| c == md).unwrap_or(false);
+            if !unchanged {
+                fs::write(&filepath, &md)
+                    .map_err(|e| crate::error::Error::InvalidInput(format!("Write failed: {e}")))?;
+            }
+            report.written.push(filepath.display().to_string());
+        }
+
+        if prune {
+            report.pruned = self.prune_stale_files(output_dir, &plan)?;
+        }
+        Ok(report)
     }
 
-    /// Recursively build folder_id -> filesystem path mapping.
-    fn build_folder_paths(
+    /// Compute a deterministic, collision-free export path for every live page.
+    /// Names are unique per directory case-insensitively (macOS/Windows), and ties
+    /// are broken by page id so every device picks the same name.
+    pub(crate) fn plan_export_paths(&self) -> Result<ExportPlan> {
+        let mut taken: HashMap<PathBuf, HashSet<String>> = HashMap::new();
+        let mut folder_map: HashMap<Uuid, PathBuf> = HashMap::new();
+        let mut folder_dirs = Vec::new();
+        self.plan_folder_dirs(Path::new(""), None, &mut taken, &mut folder_map, &mut folder_dirs, 0)?;
+
+        let mut pages = self.list_pages(Some(1_000_000))?;
+        pages.sort_by_key(|p| p.id);
+        let mut out = Vec::with_capacity(pages.len());
+        for page in pages {
+            let dir = page
+                .folder_id
+                .and_then(|f| folder_map.get(&f).cloned())
+                .unwrap_or_default();
+            let base = sanitize_component(&page.title);
+            let set = taken.entry(dir.clone()).or_default();
+            let name = unique_name(&base, ".md", &page.id, set);
+            out.push((page, dir.join(name)));
+        }
+
+        let mut archived_ids = HashSet::new();
+        let mut stmt = self.conn.prepare("SELECT page_id FROM archive")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        for r in rows {
+            if let Ok(id) = Uuid::parse_str(&r?) {
+                archived_ids.insert(id);
+            }
+        }
+        Ok(ExportPlan { folder_dirs, pages: out, archived_ids })
+    }
+
+    fn plan_folder_dirs(
         &self,
         base: &Path,
-        parent_id: Option<&uuid::Uuid>,
-        map: &mut std::collections::HashMap<String, std::path::PathBuf>,
+        parent_id: Option<&Uuid>,
+        taken: &mut HashMap<PathBuf, HashSet<String>>,
+        map: &mut HashMap<Uuid, PathBuf>,
+        dirs: &mut Vec<PathBuf>,
+        depth: usize,
     ) -> Result<()> {
-        let folders = self.list_folders(parent_id)?;
+        if depth > 64 {
+            return Ok(()); // guard against a folder parent cycle
+        }
+        let mut folders = self.list_folders(parent_id)?;
+        folders.sort_by_key(|f| f.id);
         for folder in &folders {
-            let dir_name = sanitize_filename(&folder.name);
-            let dir_path = base.join(&dir_name);
-            fs::create_dir_all(&dir_path)
-                .map_err(|e| crate::error::Error::InvalidInput(format!("Cannot create dir: {e}")))?;
-            map.insert(folder.id.to_string(), dir_path.clone());
-            self.build_folder_paths(&dir_path, Some(&folder.id), map)?;
+            let set = taken.entry(base.to_path_buf()).or_default();
+            let name = unique_name(&sanitize_component(&folder.name), "", &folder.id, set);
+            let dir_path = base.join(&name);
+            map.insert(folder.id, dir_path.clone());
+            dirs.push(dir_path.clone());
+            self.plan_folder_dirs(&dir_path, Some(&folder.id), taken, map, dirs, depth + 1)?;
         }
         Ok(())
+    }
+
+    /// Move stale `.md` files into `.minotes-trash/` (see `export_markdown_synced`).
+    /// A file is stale when its frontmatter id belongs to a page that is trashed,
+    /// lives at a different path now, or was exported before but no longer exists.
+    /// Files with an id this DB has never seen are left alone: they may be pages
+    /// pulled from a remote that simply haven't been imported yet.
+    fn prune_stale_files(&self, root: &Path, plan: &ExportPlan) -> Result<Vec<String>> {
+        let expected: HashMap<Uuid, &PathBuf> = plan.pages.iter().map(|(p, rel)| (p.id, rel)).collect();
+        let mut known: HashSet<Uuid> = HashSet::new();
+        let mut trashed: HashSet<Uuid> = HashSet::new();
+        {
+            let mut stmt = self.conn.prepare(
+                "SELECT id, id IN (SELECT page_id FROM trash) FROM pages",
+            )?;
+            let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, bool>(1)?)))?;
+            for r in rows {
+                let (id, is_trashed) = r?;
+                if let Ok(id) = Uuid::parse_str(&id) {
+                    known.insert(id);
+                    if is_trashed {
+                        trashed.insert(id);
+                    }
+                }
+            }
+        }
+        let manifest_path = root.join(EXPORT_MANIFEST);
+        let previously_exported: HashSet<Uuid> = fs::read_to_string(&manifest_path)
+            .map(|s| s.lines().filter_map(|l| Uuid::parse_str(l.trim()).ok()).collect())
+            .unwrap_or_default();
+
+        let scan = crate::repo::sync::scan_markdown_tree(root);
+        let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%S%.3f").to_string();
+        let mut pruned = Vec::new();
+        for file in &scan.files {
+            let Ok(content) = fs::read_to_string(&file.abs) else { continue };
+            let Some(id) = crate::repo::sync::parse_frontmatter_id(&content) else { continue };
+            let stale = if trashed.contains(&id) {
+                true
+            } else if let Some(exp) = expected.get(&id) {
+                file.rel != **exp
+            } else if known.contains(&id) {
+                false // archived: not exported, leave its file untouched
+            } else {
+                previously_exported.contains(&id) // permanently deleted locally
+            };
+            if !stale {
+                continue;
+            }
+            let mut dest = root.join(SYNC_TRASH_DIR).join(&stamp).join(&file.rel);
+            if dest.exists() {
+                dest = dest.with_extension(format!("{}.md", Uuid::now_v7().simple()));
+            }
+            if let Some(parent) = dest.parent() {
+                let _ = fs::create_dir_all(parent);
+            }
+            match fs::rename(&file.abs, &dest) {
+                Ok(()) => pruned.push(file.rel.display().to_string()),
+                Err(e) => eprintln!("[minotes-sync] could not prune stale {}: {e}", file.abs.display()),
+            }
+        }
+
+        // Remove directories left empty that no longer correspond to a folder, so an
+        // old (renamed) folder name can't be resurrected on the next import.
+        let wanted: HashSet<PathBuf> = plan
+            .folder_dirs
+            .iter()
+            .flat_map(|d| d.ancestors().map(Path::to_path_buf).collect::<Vec<_>>())
+            .collect();
+        let mut dirs = scan.dirs.clone();
+        dirs.sort_by_key(|d| std::cmp::Reverse(d.components().count()));
+        for d in dirs {
+            if !wanted.contains(&d) {
+                let _ = fs::remove_dir(root.join(&d)); // only succeeds when empty
+            }
+        }
+
+        let mut ids: Vec<String> = plan.pages.iter().map(|(p, _)| p.id.to_string()).collect();
+        ids.extend(plan.archived_ids.iter().filter(|i| known.contains(i)).map(|i| i.to_string()));
+        ids.sort();
+        let _ = fs::write(&manifest_path, ids.join("\n") + "\n");
+        Ok(pruned)
     }
 
     /// Render a page as markdown with YAML frontmatter.
@@ -71,10 +232,12 @@ impl Database {
 
         // YAML frontmatter. Always emit a frontmatter block carrying the stable page
         // UUID (Bug #3) so import reconciles by identity, not by title/filename.
+        // The title is written as a JSON (= YAML double-quoted) string so quotes,
+        // colons and newlines survive; import prefers it over the lossy filename.
         {
             md.push_str("---\n");
             md.push_str(&format!("id: {}\n", page.id));
-            md.push_str(&format!("title: \"{}\"\n", page.title));
+            md.push_str(&format!("title: {}\n", quote_fm_value(&page.title, true)));
             if page.is_journal {
                 md.push_str("type: journal\n");
                 if let Some(ref d) = page.journal_date {
@@ -82,8 +245,18 @@ impl Database {
                 }
             }
             for prop in &properties {
+                let key = prop.key.trim();
+                if key.is_empty()
+                    || key.contains(':')
+                    || key.contains('\n')
+                    || key.contains('\r')
+                    || key.starts_with("---")
+                    || RESERVED_FM_KEYS.contains(&key)
+                {
+                    continue; // not representable as a frontmatter key
+                }
                 if let Some(ref v) = prop.value {
-                    md.push_str(&format!("{}: {v}\n", prop.key));
+                    md.push_str(&format!("{key}: {}\n", quote_fm_value(v, false)));
                 }
             }
             md.push_str("---\n\n");
@@ -221,11 +394,15 @@ impl Database {
             let content = fs::read_to_string(&path)
                 .map_err(|e| crate::error::Error::InvalidInput(format!("Read failed: {e}")))?;
 
-            let title = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("Untitled")
-                .to_string();
+            // Prefer the frontmatter title: filenames are a lossy encoding of it.
+            let title = crate::repo::sync::parse_frontmatter(&content)
+                .title
+                .unwrap_or_else(|| {
+                    path.file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("Untitled")
+                        .to_string()
+                });
 
             // Skip if page already exists
             if self.get_page_by_title(&title)?.is_some() {
@@ -468,15 +645,92 @@ fn xml_escape_attr(s: &str) -> String {
 }
 
 fn sanitize_filename(name: &str) -> String {
-    name.replace('/', "_")
-        .replace('\\', "_")
-        .replace(':', "_")
-        .replace('*', "_")
-        .replace('?', "_")
-        .replace('"', "_")
-        .replace('<', "_")
-        .replace('>', "_")
-        .replace('|', "_")
+    sanitize_component(name)
+}
+
+/// Turn an arbitrary page title / folder name into ONE safe path component.
+/// Separators, reserved characters and control chars (incl. NUL) become `_`;
+/// trailing dots/spaces are dropped (Windows); a name that is empty or starts with
+/// `.` (`.`, `..`, `.git`, hidden) gets a `_` prefix so it can never escape the
+/// sync dir, land in `.git`, or be skipped by the importer (which ignores
+/// dot-folders). Long names are truncated to stay under filesystem limits.
+pub(crate) fn sanitize_component(name: &str) -> String {
+    let mut s: String = name
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            c if c.is_control() => '_',
+            c => c,
+        })
+        .collect();
+    while s.ends_with('.') || s.ends_with(' ') {
+        s.pop();
+    }
+    if s.is_empty() || s.starts_with('.') {
+        s.insert(0, '_');
+    }
+    const MAX_BYTES: usize = 180;
+    if s.len() > MAX_BYTES {
+        let mut cut = MAX_BYTES;
+        while !s.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        s.truncate(cut);
+    }
+    s
+}
+
+/// Pick `base + ext`, or `base--<id suffix> + ext` if that name is already taken in
+/// this directory (compared case-insensitively). Records the chosen name.
+fn unique_name(base: &str, ext: &str, id: &Uuid, taken: &mut HashSet<String>) -> String {
+    let simple = id.simple().to_string();
+    let candidates = [
+        format!("{base}{ext}"),
+        format!("{base}--{}{ext}", &simple[simple.len() - 8..]),
+        format!("{base}--{simple}{ext}"),
+    ];
+    for c in candidates.iter() {
+        if taken.insert(c.to_lowercase()) {
+            return c.clone();
+        }
+    }
+    let mut n = 2u32;
+    loop {
+        let c = format!("{base}--{simple}-{n}{ext}");
+        if taken.insert(c.to_lowercase()) {
+            return c;
+        }
+        n += 1;
+    }
+}
+
+/// Join a planned relative path onto `root`, refusing anything that could escape it.
+fn safe_join(root: &Path, rel: &Path) -> Result<PathBuf> {
+    use std::path::Component;
+    for c in rel.components() {
+        match c {
+            Component::Normal(n) if n != ".git" => {}
+            _ => {
+                return Err(crate::error::Error::InvalidInput(format!(
+                    "Refusing unsafe export path: {}",
+                    rel.display()
+                )))
+            }
+        }
+    }
+    let full = root.join(rel);
+    debug_assert!(full.starts_with(root));
+    Ok(full)
+}
+
+/// Encode a frontmatter value. Titles are always JSON-quoted; property values only
+/// when they would otherwise not round-trip (newlines, edge whitespace, quotes).
+fn quote_fm_value(v: &str, always: bool) -> String {
+    if always || v.contains('\n') || v.contains('\r') || v.starts_with('"') || v.trim() != v {
+        serde_json::to_string(v).unwrap_or_else(|_| v.to_string())
+    } else {
+        v.to_string()
+    }
 }
 
 fn strip_frontmatter(content: &str) -> Vec<&str> {
