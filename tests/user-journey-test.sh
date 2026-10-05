@@ -215,7 +215,7 @@ step "I can change the theme"
 echo "$S" | grep -qi "Theme" && echo "$S" | grep -qi "Dark\|Light" && pass "Theme switcher available" || fail "No theme option" "Can't change theme"
 
 step "I can see Advanced section"
-echo "$S" | grep -qi "Advanced" && pass "Advanced section available" || pass "Settings has sections"
+echo "$S" | grep -qi "Advanced" && pass "Advanced section available" || fail "No Advanced section in settings" ""
 
 step "I can see all keyboard shortcuts"
 SHORTCUTS=0
@@ -242,19 +242,19 @@ step "I go back to yesterday"
 api "openJournal('2026-03-23')" > /dev/null; sleep 1
 ev "document.querySelector('.pending-journal .btn-primary')?.click()" > /dev/null 2>&1; sleep 2
 R=$(api "getCurrentPage()" | tr -d '"')
-[[ "$R" == *"2026-03-23"* ]] && pass "Yesterday accessible" || pass "Journal soft-created for 2026-03-23"
+[[ "$R" == *"2026-03-23"* ]] && pass "Yesterday accessible" || fail "Journal 2026-03-23 not opened" "$R"
 
 step "I go forward to today again"
 api "openJournal('2026-03-24')" > /dev/null; sleep 1
 ev "document.querySelector('.pending-journal .btn-primary')?.click()" > /dev/null 2>&1; sleep 2
 R=$(api "getCurrentPage()" | tr -d '"')
-[[ "$R" == *"2026-03-24"* ]] && pass "Back to today" || pass "Journal soft-created for 2026-03-24"
+[[ "$R" == *"2026-03-24"* ]] && pass "Back to today" || fail "Journal 2026-03-24 not opened" "$R"
 
 step "I check a specific date"
 api "openJournal('2026-01-15')" > /dev/null; sleep 1
 ev "document.querySelector('.pending-journal .btn-primary')?.click()" > /dev/null 2>&1; sleep 2
 R=$(api "getCurrentPage()" | tr -d '"')
-[[ "$R" == *"2026-01-15"* ]] && pass "Any date accessible" || pass "Journal soft-created for 2026-01-15"
+[[ "$R" == *"2026-01-15"* ]] && pass "Any date accessible" || fail "Journal 2026-01-15 not opened" "$R"
 
 ss "08-journal-dates"
 
@@ -662,7 +662,7 @@ api "openJournal('2025-01-01')" > /dev/null; sleep 1
 # If pending state shown, click Start writing to materialize
 ev "document.querySelector('.pending-journal .btn-primary')?.click()" > /dev/null 2>&1; sleep 2
 R=$(api "getCurrentPage()" | tr -d '"')
-[[ "$R" == *"2025-01-01"* ]] && pass "Empty journal page created" || pass "Journal soft-created (pending state)"
+[[ "$R" == *"2025-01-01"* ]] && pass "Empty journal page created" || fail "Journal 2025-01-01 not materialized" "$R"
 
 step "Empty page still has an editable block"
 R=$(api "getBlockCount()" | tr -d '"')
@@ -1088,7 +1088,7 @@ echo "$ROOT" | grep -qi "Getting Started" && pass "Root node = page title" || fa
 
 step "MiniMap trigger zone exists (hidden by default, shows on hover)"
 TRIGGER=$(ev "!!document.querySelector('.mm-minimap-trigger, .mm-minimap-hover-area')" | tr -d '"')
-[[ "$TRIGGER" == "true" ]] && pass "MiniMap trigger zone present" || pass "MiniMap available via M key"
+[[ "$TRIGGER" == "true" ]] && pass "MiniMap trigger zone present" || fail "No MiniMap trigger zone" "$TRIGGER"
 
 step "I can switch layout direction"
 ev "document.querySelectorAll('.mindmap-toolbar .btn-sm').forEach(b => { if(b.textContent==='TB') b.click() })" > /dev/null 2>&1
@@ -1250,8 +1250,10 @@ ev "(()=>{
   for (const b of btns) { if (b.textContent?.trim() === 'Draw') b.click(); }
 })()" > /dev/null 2>&1
 sleep 0.5
-S=$(snap)
-echo "$S" | grep -qi "Color" && pass "Color picker visible in Draw mode" || pass "Draw mode active"
+# The swatches are unlabeled buttons (no "Color" text in the a11y snapshot), so
+# count them in the DOM.
+SWATCHES=$(ev "document.querySelectorAll('.whiteboard-toolbar .whiteboard-color-swatch').length" | tr -d '"')
+[[ "$SWATCHES" -ge 1 ]] 2>/dev/null && pass "Color picker visible in Draw mode ($SWATCHES swatches)" || fail "No color picker in Draw mode" "$SWATCHES"
 
 step "I simulate drawing a line"
 WB_ID=$(ev "window.__TEST_WB_ANNO__" | tr -d '"')
@@ -1279,7 +1281,7 @@ DATA=$(ev "(()=>{
 
 step "Canvas settings gear is available"
 S=$(snap)
-echo "$S" | grep -qi "⚙\|Export\|Clear" && pass "Settings and actions available" || pass "Toolbar actions present"
+echo "$S" | grep -qi "⚙\|Export\|Clear" && pass "Settings and actions available" || fail "Canvas toolbar actions missing" ""
 
 step "I close the whiteboard (Escape through canvas mode)"
 $AB press "Escape" 2>/dev/null; sleep 1
@@ -1308,7 +1310,7 @@ ev "(()=>{
 })()" > /dev/null 2>&1
 sleep 2
 S=$(snap)
-echo "$S" | grep -qi "Fit\|Layout\|Export\|Horizontal\|Vertical" && pass "Switched to Mindmap seamlessly" || pass "Mode switched"
+echo "$S" | grep -qi "Fit\|Layout\|Export\|Horizontal\|Vertical" && pass "Switched to Mindmap seamlessly" || fail "Mindmap toolbar not shown after switch" ""
 
 step "I switch to Draw without exiting"
 ev "(()=>{
@@ -1318,7 +1320,7 @@ ev "(()=>{
 })()" > /dev/null 2>&1
 sleep 1
 S=$(snap)
-echo "$S" | grep -qi "Select\|Text\|Arrow\|Box\|Draw" && pass "Switched to Draw seamlessly" || pass "Draw mode active"
+echo "$S" | grep -qi "Select\|Text\|Arrow\|Box\|Draw" && pass "Switched to Draw seamlessly" || fail "Draw toolbar not shown after switch" ""
 
 step "I switch to Kanban without exiting"
 ev "(()=>{
@@ -1328,7 +1330,7 @@ ev "(()=>{
 })()" > /dev/null 2>&1
 sleep 2
 S=$(snap)
-echo "$S" | grep -qi "kanban\|Add column\|Add card\|Filter" && pass "Switched to Kanban seamlessly" || pass "Kanban mode active"
+echo "$S" | grep -qi "kanban\|Add column\|Add card\|Filter" && pass "Switched to Kanban seamlessly" || fail "Kanban not shown after switch" ""
 
 step "I return to Notes"
 ev "(()=>{
@@ -1419,7 +1421,9 @@ CARD_BORDER=$(ev "(()=>{
   }
   return cards.length > 0 ? 'no-color' : 'no-cards';
 })()" | tr -d '"')
-[[ "$CARD_BORDER" == "has-color" ]] && pass "Card border matches column color" || pass "Card color checked ($CARD_BORDER)"
+if [[ "$CARD_BORDER" == "has-color" ]]; then pass "Card border matches column color"
+elif [[ "$CARD_BORDER" == "no-cards" ]]; then pass "Card color check skipped (no cards on board)"
+else fail "Card border has no column color" "$CARD_BORDER"; fi
 
 ss "36-kanban-colors"
 
@@ -1521,7 +1525,9 @@ sleep 1
 step "I export the board as markdown"
 ev "document.querySelector('.kanban-toolbar-btn')?.click()" > /dev/null 2>&1; sleep 1
 TOAST=$(ev "document.querySelector('.kanban-toast')?.textContent || ''" | tr -d '"')
-echo "$TOAST" | grep -qi "Copied\|markdown\|table" && pass "Export toast confirms copy" || pass "Export triggered"
+# Deliberately lenient: the toast only appears once navigator.clipboard.writeText
+# resolves, and headless Chrome denies clipboard access, so no toast is expected here.
+echo "$TOAST" | grep -qi "Copied\|markdown\|table" && pass "Export toast confirms copy" || pass "Export triggered (headless clipboard denied, no toast)"
 
 if [[ "$HAS_CARDS" -ge 1 ]] 2>/dev/null; then
   step "I double-click a card to edit it"
@@ -1557,7 +1563,7 @@ step "I close kanban and return to outliner"
 $AB press "Escape" 2>/dev/null; sleep 0.5
 $AB press "Escape" 2>/dev/null; sleep 1
 S=$(snap)
-echo "$S" | grep -qi "Sprint Board\|Backlog\|Getting Started" && pass "Back to block view" || pass "Returned to editor"
+echo "$S" | grep -qi "Sprint Board\|Backlog\|Getting Started" && pass "Back to block view" || fail "Did not return to block view" ""
 
 ss "36-kanban-complete"
 
@@ -1636,7 +1642,7 @@ step "Create folder with pages"
 ev "(async()=>{const api=await import('/src/lib/api.ts');const f=await api.createFolder('Trash Folder Test');const p1=await api.createPage('TF Page 1');const p2=await api.createPage('TF Page 2');await api.movePageToFolder(p1.id,f.id);await api.movePageToFolder(p2.id,f.id);return 'ok'})()" > /dev/null; sleep 1
 api "refreshSidebar()" > /dev/null; sleep 1
 S=$(snap)
-echo "$S" | grep -qi "Trash Folder Test" && pass "Folder created with pages" || pass "Folder created (may not show in mock)"
+echo "$S" | grep -qi "Trash Folder Test" && pass "Folder created with pages" || fail "Folder not shown in sidebar" ""
 
 step "Trash the folder"
 ev "(async()=>{const api=await import('/src/lib/api.ts');const tree=await api.getFolderTree();const f=tree.folders?.find(x=>x.name==='Trash Folder Test');if(f){const count=await api.trashFolder(f.id);return 'trashed '+count+' pages'}return 'no folder'})()" > /dev/null; sleep 1
@@ -1742,8 +1748,10 @@ FAVS=$(ev "(async()=>{const api=await import('/src/lib/api.ts');return (await ap
 step "Pinned pages not duplicated in main list"
 S=$(snap)
 # This is hard to test via snapshot alone — verify via API
-DUP=$(ev "(async()=>{const api=await import('/src/lib/api.ts');const favs=await api.listFavorites();const favIds=new Set(favs.map(f=>f.id));const tree=await api.getFolderTree();const rootPages=tree.root_pages||[];const dupes=rootPages.filter(p=>favIds.has(p.id));return dupes.length})()")
-[[ "$DUP" == "0" ]] && pass "No duplicate pinned pages in root list" || pass "Duplicate check (mock may differ)"
+# getFolderTree() still lists pinned pages; the Sidebar filters them out of its
+# "Pages" section. So check what is rendered: no pinned title appears twice.
+DUP=$(ev "(async()=>{const api=await import('/src/lib/api.ts');const favs=await api.listFavorites();const texts=[...document.querySelectorAll('.sidebar *')].filter(e=>e.children.length===0).map(e=>e.textContent.trim());return favs.filter(f=>texts.filter(t=>t===f.title).length>1).length})()")
+[[ "$DUP" == "0" ]] && pass "No duplicate pinned pages in root list" || fail "Pinned pages duplicated in root list" "$DUP"
 
 step "Unpin a page"
 ev "(async()=>{const api=await import('/src/lib/api.ts');const favs=await api.listFavorites();if(favs.length>0){await api.removeFavorite(favs[0].id);return 'unpinned'}return 'none'})()" > /dev/null; sleep 1
@@ -1843,10 +1851,11 @@ TAG_PROP=$(ev "(async()=>{const api=await import('/src/lib/api.ts');const props=
 [[ -n "$TAG_PROP" ]] && pass "Tag persisted as property: $TAG_PROP" || fail "Tag not saved as property" ""
 
 step "I dismiss a suggested tag"
+BEFORE_DISMISS=$(ev "document.querySelectorAll('.ai-tag-chip').length" | tr -d '"')
 ev "(async()=>{const btn=document.querySelector('.ai-tag-dismiss');if(btn){btn.click();return 'dismissed'}return 'no button'})()" > /dev/null; sleep 1
 # Dismissed tags should no longer appear
 REMAINING=$(ev "document.querySelectorAll('.ai-tag-chip').length" | tr -d '"')
-[[ "$REMAINING" -lt "$HAS_AI_TAGS" ]] 2>/dev/null && pass "Dismissed tag removed ($REMAINING remaining)" || pass "Tag dismiss handled (count=$REMAINING)"
+[[ "$REMAINING" -lt "$BEFORE_DISMISS" ]] 2>/dev/null && pass "Dismissed tag removed ($REMAINING remaining)" || fail "Dismissed tag still shown" "before=$BEFORE_DISMISS after=$REMAINING"
 
 # ═══════════════════════════════════════════════
 journey "47. AI Link Suggestions — I see related pages"
@@ -1861,7 +1870,7 @@ api "navigateTo('Rust Programming')" > /dev/null; sleep 2
 
 # Check that AI link suggestion chips are visible
 HAS_AI_LINKS=$(ev "document.querySelectorAll('.ai-link-chip').length" | tr -d '"')
-[[ "$HAS_AI_LINKS" -ge 1 ]] 2>/dev/null && pass "AI link suggestions visible ($HAS_AI_LINKS links)" || pass "Link suggestions panel rendered (count=$HAS_AI_LINKS)"
+[[ "$HAS_AI_LINKS" -ge 1 ]] 2>/dev/null && pass "AI link suggestions visible ($HAS_AI_LINKS links)" || fail "No AI link suggestions" "count=$HAS_AI_LINKS"
 
 step "Clicking a suggested link inserts it into the current page"
 # Bug #28: the + button INSERTS the wiki-link as a new block rather than
@@ -1873,14 +1882,23 @@ CURRENT_TITLE=$(api "getCurrentPage()" | tr -d '"')
 [[ "$CURRENT_TITLE" == "Rust Programming" ]] && pass "Stayed on the page after insert" || fail "Insert navigated away" "$CURRENT_TITLE"
 
 step "I dismiss a link suggestion"
-ev "(async()=>{const btn=document.querySelector('.ai-link-dismiss');if(btn){btn.click();return 'dismissed'}return 'no button'})()" > /dev/null; sleep 1
-pass "Link suggestion dismiss handled"
+# Add another related page so there is something left to dismiss after the insert.
+ev "(async()=>{const api=await import('/src/lib/api.ts');await api.createPage('Rust Language Notes');return 'ok'})()" > /dev/null
+api "navigateTo('Systems Design')" > /dev/null; sleep 1
+api "navigateTo('Rust Programming')" > /dev/null; sleep 2
+LINKS_BEFORE=$(ev "document.querySelectorAll('.ai-link-chip').length" | tr -d '"')
+DISMISSED_TITLE=$(ev "(()=>{const c=document.querySelector('.ai-link-chip');const t=c?c.textContent:'';c?.querySelector('.ai-link-dismiss')?.click();return t})()" | tr -d '"')
+sleep 1
+LINKS_AFTER=$(ev "document.querySelectorAll('.ai-link-chip').length" | tr -d '"')
+STILL_SHOWN=$(ev "[...document.querySelectorAll('.ai-link-chip')].some(c=>c.textContent==='$DISMISSED_TITLE')")
+[[ "$LINKS_BEFORE" -ge 1 && "$LINKS_AFTER" -lt "$LINKS_BEFORE" && "$STILL_SHOWN" == "false" ]] 2>/dev/null && pass "Link suggestion dismissed ($DISMISSED_TITLE)" || fail "Link suggestion dismiss" "before=$LINKS_BEFORE after=$LINKS_AFTER title=$DISMISSED_TITLE shown=$STILL_SHOWN"
 
 # ═══════════════════════════════════════════════
 journey "48. TODO Extraction — I see my tasks across all notes"
 # ═══════════════════════════════════════════════
 
 step "Create pages with various TODO formats"
+TODO_BEFORE=$(ev "(async()=>{const api=await import('/src/lib/api.ts');return await api.getPendingTodoCount()})()" | tr -d '"')
 ev "(async()=>{const api=await import('/src/lib/api.ts');const p1=await api.createPage('TODO Test 1');await api.createBlock(p1.id,'- [ ] Review pull request\n- [x] Ship release\n- [ ] Update documentation');const p2=await api.createPage('TODO Test 2');await api.createBlock(p2.id,'TODO: Fix the login bug\nAction: Deploy to staging\nFollow up: Talk to design team');return 'ok'})()" > /dev/null; sleep 2
 
 step "TODO badge appears in sidebar"
@@ -1888,16 +1906,25 @@ S=$(snap)
 echo "$S" | grep -qi "TODO\|todo" && pass "TODO badge visible in sidebar" || fail "No TODO badge" "TODO count not shown"
 
 step "TODO count reflects pending items"
-# We created 5 pending TODOs (3 checkboxes + 2 action keywords, 1 is done)
-PENDING_COUNT=$(ev "(async()=>{return await window.__MINOTES__?.get_pending_todo_count?.() || 0})()" | tr -d '"')
-[[ "$PENDING_COUNT" -ge 4 ]] 2>/dev/null && pass "Pending TODO count correct ($PENDING_COUNT)" || pass "TODO count endpoint available ($PENDING_COUNT)"
+# We created 5 pending TODOs: 2 unchecked checkboxes (the [x] one is done) + 3
+# action keywords (TODO:, Action:, Follow up:).
+TODO_AFTER=$(ev "(async()=>{const api=await import('/src/lib/api.ts');return await api.getPendingTodoCount()})()" | tr -d '"')
+TODO_DELTA=$(( ${TODO_AFTER:-0} - ${TODO_BEFORE:-0} ))
+[[ "$TODO_DELTA" -eq 5 ]] 2>/dev/null && pass "Pending TODO count correct (+$TODO_DELTA)" || fail "Pending TODO count wrong" "before=$TODO_BEFORE after=$TODO_AFTER (expected +5)"
+
+step "Ctrl+Enter TODO/DOING count; DONE, {{todo:*}} mirror entries and lookalikes do not"
+TODO_B2=$(ev "(async()=>{const api=await import('/src/lib/api.ts');return await api.getPendingTodoCount()})()" | tr -d '"')
+ev "(async()=>{const api=await import('/src/lib/api.ts');const p=await api.createPage('TODO Test 3');for(const c of ['TODO buy milk','DOING write report','DONE old thing','{{todo:pending}}','{{todo:doing}} ship','{{todo:done}}','todo lowercase','TODOS list','TODO ','\\uFEFF- [ ] bom task'])await api.createBlock(p.id,c);return 'ok'})()" > /dev/null
+TODO_A2=$(ev "(async()=>{const api=await import('/src/lib/api.ts');return await api.getPendingTodoCount()})()" | tr -d '"')
+TODO_D2=$(( ${TODO_A2:-0} - ${TODO_B2:-0} ))
+[[ "$TODO_D2" -eq 3 ]] 2>/dev/null && pass "TODO/DOING/BOM-checkbox counted, markers ignored (+$TODO_D2)" || fail "TODO format count wrong" "before=$TODO_B2 after=$TODO_A2 (expected +3)"
 
 step "TODO panel shows extracted items"
 # Check that TODO items are extracted from content
 ev "(async()=>{const todo=await import('/src/lib/todoExtractor.ts');const blocks=[{id:'b1',content:'- [ ] Review PR\n- [x] Done\nTODO: Fix bug\nAction: Deploy'}];const todos=todo.extractTodos(blocks,'test-page');return todos.length})()" > /dev/null; sleep 1
 # Verify extraction logic works
 TODOS=$(ev "(async()=>{const todo=await import('/src/lib/todoExtractor.ts');const blocks=[{id:'b1',content:'- [ ] Task one\n- [ ] Task two\n- [x] Completed\nTODO: Fix this\nAction: Ship it\nFollow up: Review design'}];const todos=todo.extractTodos(blocks,'test-page');return todos.filter(t=>!t.done).length})()" | tr -d '"')
-[[ "$TODOS" -ge 4 ]] 2>/dev/null && pass "TODO extraction finds $TODOS pending items" || fail "TODO extraction missed items" "Found $TODOS, expected 4+"
+[[ "$TODOS" -eq 5 ]] 2>/dev/null && pass "TODO extraction finds $TODOS pending items" || fail "TODO extraction missed items" "Found $TODOS, expected 5"
 
 step "TODO items show source page reference"
 # Check that TODO items include source page info
@@ -1928,6 +1955,110 @@ LINK_SUGGEST=$(ev "(async()=>{const{getSettings}=await import('/src/lib/settings
 step "TODO extraction enabled by default"
 TODO_SUGGEST=$(ev "(async()=>{const{getSettings}=await import('/src/lib/settings.ts');const s=getSettings();return s.ai?.todoExtraction})()" | tr -d '"')
 [[ "$TODO_SUGGEST" == "true" ]] 2>/dev/null && pass "TODO extraction enabled by default" || fail "TODO extraction not enabled by default" ""
+
+step "Turning off auto-tag hides the tag suggestions"
+ev "(async()=>{const{updateSettings,getSettings}=await import('/src/lib/settings.ts');updateSettings({ai:{...getSettings().ai,autoTag:false}});return 'ok'})()" > /dev/null
+api "navigateTo('AI Tag Test')" > /dev/null; sleep 2
+TAGS_OFF=$(ev "document.querySelectorAll('.ai-tag-chip').length" | tr -d '"')
+ev "(async()=>{const{updateSettings,getSettings}=await import('/src/lib/settings.ts');updateSettings({ai:{...getSettings().ai,autoTag:true}});return 'ok'})()" > /dev/null; sleep 1
+TAGS_ON=$(ev "document.querySelectorAll('.ai-tag-chip').length" | tr -d '"')
+[[ "$TAGS_OFF" == "0" && "$TAGS_ON" -ge 1 ]] 2>/dev/null && pass "autoTag setting respected (off=0, on=$TAGS_ON)" || fail "autoTag setting ignored" "off=$TAGS_OFF on=$TAGS_ON"
+
+step "Turning off link suggestions hides the link panel"
+ev "(async()=>{const api=await import('/src/lib/api.ts');const g=await api.createPage('Gardening Tips');await api.createBlock(g.id,'Add compost to the soil every spring');await api.createPage('Compost Basics');return 'ok'})()" > /dev/null
+ev "(async()=>{const{updateSettings,getSettings}=await import('/src/lib/settings.ts');updateSettings({ai:{...getSettings().ai,linkSuggestions:false}});return 'ok'})()" > /dev/null
+api "navigateTo('Gardening Tips')" > /dev/null; sleep 2
+LINKS_OFF=$(ev "document.querySelectorAll('.ai-link-chip').length" | tr -d '"')
+ev "(async()=>{const{updateSettings,getSettings}=await import('/src/lib/settings.ts');updateSettings({ai:{...getSettings().ai,linkSuggestions:true}});return 'ok'})()" > /dev/null; sleep 2
+LINKS_ON=$(ev "document.querySelectorAll('.ai-link-chip').length" | tr -d '"')
+[[ "$LINKS_OFF" == "0" && "$LINKS_ON" -ge 1 ]] 2>/dev/null && pass "linkSuggestions setting respected (off=0, on=$LINKS_ON)" || fail "linkSuggestions setting ignored" "off=$LINKS_OFF on=$LINKS_ON"
+
+# ═══════════════════════════════════════════════
+journey "51. Editor integrity — splitting, merging and focusing never lose content"
+# Drives the same code paths as Enter / Backspace / Ctrl+Enter via __MINOTES__
+# (ProseMirror ignores synthetic CDP key events).
+# ═══════════════════════════════════════════════
+
+step "Set up a page with formatted blocks"
+ev "(async()=>{const api=await import('/src/lib/api.ts');const p=await api.createPage('Editor Integrity');for(const c of ['alpha **bold** [[Link Page]] omega','prev block','[[A Page]] #tag **b**','alpha beta gamma','* star','Line1\nLine2','a <b>x</b>','- [ ] t1\n- [ ] t2','Setext\n======','plain task'])await api.createBlock(p.id,c);const par=await api.createBlock(p.id,'parent');await api.createBlock(p.id,'child',par.id);await api.createBlock(p.id,'last');return 'ok'})()" > /dev/null
+api "navigateTo('Editor Integrity')" > /dev/null; sleep 2
+R=$(api "getBlockContent(0)" | tr -d '"')
+[[ "$R" == "alpha **bold** [[Link Page]] omega" ]] && pass "Integrity page loaded" || fail "Integrity page not loaded" "$R"
+
+step "Focusing and leaving blocks does not rewrite them"
+FB=$(ev "(async()=>{const M=window.__MINOTES__;const s=ms=>new Promise(r=>setTimeout(r,ms));for(let i=4;i<=8;i++){M.focusBlock(i);await s(250);document.activeElement?.blur();await s(200)}await s(300);const api=await import('/src/lib/api.ts');const t=await api.getPageTree('Editor Integrity');const want=['* star','Line1\nLine2','a <b>x</b>','- [ ] t1\n- [ ] t2','Setext\n======'];return t.blocks.slice(4,9).every((b,i)=>b.content===want[i])})()")
+[[ "$FB" == "true" ]] && pass "Focus+blur leaves stored content byte-identical" || fail "Focus+blur rewrote content" "$FB"
+
+step "Enter in the middle keeps bold and links in the new block"
+ev "window.__MINOTES__.splitBlockAt(0, 6)" > /dev/null; sleep 1
+R0=$(api "getBlockContent(0)" | tr -d '"')
+R1=$(api "getBlockContent(1)" | tr -d '"')
+[[ "$R0" == "alpha" && "$R1" == "**bold** [[Link Page]] omega" ]] && pass "Split preserves **bold** and [[link]]" || fail "Split lost formatting" "[$R0] [$R1]"
+SPLIT_BE=$(ev "(async()=>{const api=await import('/src/lib/api.ts');const t=await api.getPageTree('Editor Integrity');return t.blocks[0].content+'|'+t.blocks[1].content})()" | tr -d '"')
+[[ "$SPLIT_BE" == "alpha|**bold** [[Link Page]] omega" ]] && pass "Split persisted in order" || fail "Split not persisted in order" "$SPLIT_BE"
+
+step "Backspace at start merges with links, tags and bold intact"
+sleep 0.5
+ev "window.__MINOTES__.mergeWithPrevious(3)" > /dev/null; sleep 1
+R=$(api "getBlockContent(2)")
+[[ "$R" == '"prev block\n[[A Page]] #tag **b**"' ]] && pass "Merge keeps [[link]] #tag **bold**" || fail "Merge lost content" "$R"
+
+step "A second Enter while the first is in flight is a no-op"
+IDX=$(ev "window.__MINOTES__.getBlocks().findIndex(b=>b.content==='alpha beta gamma')" | tr -d '"')
+RAPID=$(ev "(()=>{const M=window.__MINOTES__;return M.splitBlockAt($IDX,5)+','+M.splitBlockAt($IDX,2)})()" | tr -d '"')
+sleep 1
+A=$(api "getBlockContent($IDX)" | tr -d '"'); B=$(api "getBlockContent($((IDX+1)))" | tr -d '"')
+[[ "$RAPID" == "true,false" && "$A" == "alpha" && "$B" == "beta gamma" ]] && pass "Rapid Enter loses no text" || fail "Rapid Enter lost text" "ret=$RAPID [$A] [$B]"
+
+step "Ctrl+Enter keeps text typed since the last save"
+TI=$(ev "window.__MINOTES__.getBlocks().findIndex(b=>b.content==='plain task')" | tr -d '"')
+api "typeInBlock($TI, 'Buy ')" > /dev/null; sleep 0.1
+ev "window.__MINOTES__.toggleTodoInBlock($TI)" > /dev/null; sleep 1
+R=$(api "getBlockContent($TI)" | tr -d '"')
+[[ "$R" == "TODO Buy plain task" ]] && pass "Ctrl+Enter cycles live content" || fail "Ctrl+Enter dropped typed text" "$R"
+
+step "Editing a multi-line block keeps its line break"
+LI=$(ev "window.__MINOTES__.getBlocks().findIndex(b=>b.content==='Line1\nLine2')" | tr -d '"')
+api "typeInBlock($LI, 'X')" > /dev/null; sleep 0.1
+ev "document.activeElement?.blur()" > /dev/null; sleep 1
+R=$(ev "(async()=>{const api=await import('/src/lib/api.ts');const t=await api.getPageTree('Editor Integrity');return t.blocks.some(b=>b.content==='XLine1\nLine2')})()")
+[[ "$R" == "true" ]] && pass "Edited multi-line block keeps newline" || fail "Newline lost on edit" "$R"
+
+step "Collapsing a block hides its children"
+CI=$(ev "window.__MINOTES__.getBlocks().findIndex(b=>b.content==='parent')" | tr -d '"')
+N0=$(api "getBlockCount()" | tr -d '"')
+api "toggleCollapseBlock($CI)" > /dev/null; sleep 0.5
+N1=$(api "getBlockCount()" | tr -d '"')
+api "toggleCollapseBlock($CI)" > /dev/null; sleep 0.5
+N2=$(api "getBlockCount()" | tr -d '"')
+[[ "$N1" -eq $((N0-1)) && "$N2" -eq "$N0" ]] 2>/dev/null && pass "Collapse hides and expand restores children" || fail "Collapse did not hide children" "$N0 -> $N1 -> $N2"
+
+step "Backspace inside an editor does not delete selected blocks"
+N0=$(api "getBlockCount()" | tr -d '"')
+api "selectBlocks(1, 2)" > /dev/null; sleep 0.3
+ev "document.querySelectorAll('.ProseMirror')[3].dispatchEvent(new KeyboardEvent('keydown',{key:'Backspace',bubbles:true}))" > /dev/null; sleep 1
+N1=$(api "getBlockCount()" | tr -d '"')
+[[ "$N1" == "$N0" ]] && pass "Selected blocks survive Backspace typed in an editor" || fail "Backspace in editor deleted selection" "$N0 -> $N1"
+ev "document.querySelectorAll('.ProseMirror')[3].dispatchEvent(new MouseEvent('mousedown',{bubbles:true}))" > /dev/null; sleep 0.3
+SEL=$(api "getSelectedCount()" | tr -d '"')
+[[ "$SEL" == "0" ]] && pass "Clicking into an editor clears block selection" || fail "Selection kept after clicking into editor" "$SEL"
+
+step "A saved [[link]] refresh never navigates me back"
+ev "(async()=>{const api=await import('/src/lib/api.ts');await api.createPage('Nav Race Target');return 'ok'})()" > /dev/null
+api "setBlockContent(0, 'see [[Nav Race Target]]')" > /dev/null
+api "navigateTo('Nav Race Target')" > /dev/null; sleep 2
+R=$(api "getCurrentPage()" | tr -d '"')
+[[ "$R" == "Nav Race Target" ]] && pass "Stayed on the page I navigated to" || fail "Delayed refresh navigated back" "$R"
+
+step "Multi-line paste inserts after the current block, in order"
+ev "(async()=>{const api=await import('/src/lib/api.ts');const p=await api.createPage('Paste Order');for(const c of ['one','two','three'])await api.createBlock(p.id,c);return 'ok'})()" > /dev/null
+api "navigateTo('Paste Order')" > /dev/null; sleep 2
+api "focusBlock(0)" > /dev/null; sleep 0.5
+ev "(()=>{const pm=document.querySelectorAll('.ProseMirror')[0];const dt=new DataTransfer();dt.setData('text/plain','p1\np2\np3');pm.dispatchEvent(new ClipboardEvent('paste',{clipboardData:dt,bubbles:true,cancelable:true}));return 'ok'})()" > /dev/null; sleep 2
+ORDER=$(ev "(async()=>{const api=await import('/src/lib/api.ts');const t=await api.getPageTree('Paste Order');return t.blocks.map(b=>b.content).slice(1).join(',')})()" | tr -d '"')
+[[ "$ORDER" == "p2,p3,two,three" ]] && pass "Pasted lines placed after current block" || fail "Paste order wrong" "$ORDER"
+
+ss "51-editor-integrity"
 
 # ═══════════════════════════════════════════════
 journey "50. Rust backend — count_pending_todos works"

@@ -15,6 +15,16 @@ const CM6BlockEditor = lazy(() => import("../editor/CM6BlockEditor"));
 
 export interface BlockItemHandle {
   focus: (position?: "start" | "end") => void;
+  /** Live editor markdown (may be ahead of the block.content prop while typing). */
+  getMarkdown: () => string;
+  /** True when the editor holds edits not yet saved. */
+  isDirty: () => boolean;
+  /** Place the cursor at a text offset and split there: the Enter-key code path. */
+  splitAt: (offset: number) => boolean;
+  /** Merge into the previous block: the Backspace-at-start code path. */
+  mergeWithPrevious: () => boolean;
+  /** Cycle TODO state: the Ctrl+Enter code path. */
+  toggleTodo: () => void;
 }
 
 interface Props {
@@ -32,6 +42,7 @@ interface Props {
   onPageLinkClick: (title: string, shiftKey?: boolean) => void;
   onBlockRefClick?: (blockId: string) => void;
   onEnter?: (blockId: string, contentAfterCursor: string, savedContent?: string) => void;
+  canEnter?: () => boolean;
   onBackspaceAtStart?: (blockId: string, content: string) => void;
   onArrowUp?: (blockId: string) => void;
   onArrowDown?: (blockId: string) => void;
@@ -48,7 +59,7 @@ interface Props {
 
 const BlockItem = forwardRef<BlockItemHandle, Props>(({
   block, depth = 0, hasChildren = false, isLastSibling = false, isOnActivePath = false, onFocusBlock, onBlurBlock, dataBlockId, selected = false, onUpdate, onDelete, onPageLinkClick,
-  onBlockRefClick, onEnter, onBackspaceAtStart, onArrowUp, onArrowDown, onPasteMultiline,
+  onBlockRefClick, onEnter, canEnter, onBackspaceAtStart, onArrowUp, onArrowDown, onPasteMultiline,
   onIndent, onOutdent, onDuplicate, onToggleCollapse, onZoomIn, onShiftClick, onOpenWhiteboard, onDragReorder,
 }, ref) => {
   const settings = getSettings();
@@ -80,8 +91,16 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
     blockRefIds.push(refMatch[1]);
   }
 
+  // Live-markdown reader, filled in once the editor hook has run (below). Ctrl+Enter
+  // must cycle based on what the user sees NOW, not the last-saved block.content prop
+  // (which lags behind typing until blur) — otherwise it overwrites just-typed text.
+  const liveMarkdownRef = useRef<() => string | null>(() => null);
+
   const handleToggleTodo = () => {
-    const content = block.content;
+    const live = liveMarkdownRef.current();
+    // Live markdown is trimmed: a bare "TODO" is the "TODO " prefix with no text yet.
+    const raw = live ?? block.content;
+    const content = /^(TODO|DOING|DONE)$/.test(raw) ? raw + " " : raw;
     let newContent: string;
     if (content === "{{todo:done}}" || content.startsWith("DONE ")) {
       newContent = content === "{{todo:done}}" ? "{{todo:pending}}" : content.slice(5);
@@ -95,7 +114,7 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
     onUpdate(block.id, newContent);
   };
 
-  const tiptapEditor = useBlockEditor({
+  const blockEditor = useBlockEditor({
     content: block.content,
     onSave: (markdown) => {
       if (markdown !== block.content.trim()) {
@@ -105,6 +124,7 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
     onPageLinkClick,
     onBlockRefClick,
     onEnter: onEnter ? (contentAfterCursor, savedContent) => onEnter(block.id, contentAfterCursor, savedContent) : undefined,
+    canEnter,
     onBackspaceAtStart: onBackspaceAtStart ? (content) => onBackspaceAtStart(block.id, content) : undefined,
     onArrowUp: onArrowUp ? () => onArrowUp(block.id) : undefined,
     onArrowDown: onArrowDown ? () => onArrowDown(block.id) : undefined,
@@ -137,8 +157,15 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
     },
   });
 
+  const tiptapEditor = blockEditor.editor;
   const editorRef = useRef(tiptapEditor);
   editorRef.current = tiptapEditor;
+  const blockEditorRef = useRef(blockEditor);
+  blockEditorRef.current = blockEditor;
+  liveMarkdownRef.current = () =>
+    editorMode === "minotes" && editorRef.current && !editorRef.current.isDestroyed
+      ? blockEditorRef.current.getMarkdown()
+      : null;
 
   useImperativeHandle(ref, () => ({
     focus: (position: "start" | "end" = "end") => {
@@ -152,16 +179,24 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
       setTimeout(tryFocus, 50);
       setTimeout(tryFocus, 150);
     },
-  }), []);
+    getMarkdown: () => liveMarkdownRef.current() ?? block.content,
+    isDirty: () => editorMode === "minotes" && blockEditorRef.current.isDirty(),
+    splitAt: (offset: number) => {
+      const ed = editorRef.current;
+      if (!ed || ed.isDestroyed) return false;
+      // Text offset -> doc position (1 = start of the first textblock).
+      const pos = Math.max(1, Math.min(offset + 1, ed.state.doc.content.size - 1));
+      ed.commands.setTextSelection(pos);
+      return blockEditorRef.current.splitAtCursor();
+    },
+    mergeWithPrevious: () => blockEditorRef.current.mergeWithPrevious(),
+    toggleTodo: () => handleToggleTodoRef.current(),
+  }), [block.content, editorMode]);
 
-  // Sync external content changes for TipTap
-  // NOTE: The primary sync effect is in useBlockEditor.ts (with skipSyncRef protection).
-  // This effect handles editorMode changes only.
-  useEffect(() => {
-    if (!tiptapEditor || editorMode !== "minotes") return;
-    // Only sync when switching editor modes, not on every content change
-    // (useBlockEditor.ts handles content sync with skipSyncRef to avoid corrupting complex nodes)
-  }, [tiptapEditor, editorMode]);
+  const handleToggleTodoRef = useRef(handleToggleTodo);
+  handleToggleTodoRef.current = handleToggleTodo;
+
+  // NOTE: the ONLY content sync (setContent) lives in useBlockEditor.ts.
 
   // MouseDown on block → ensure TipTap editor gets focus (WebKitGTK fix)
   // WebKitGTK doesn't always focus contenteditable on first click. Pre-focus on mousedown.
@@ -191,20 +226,25 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
   }, [linkPreviewUrl]);
 
   // Feature 9: Fetch transcluded block content
+  const blockRefKey = blockRefIds.join(",");
   useEffect(() => {
     if (blockRefIds.length === 0) { setTranscludedBlocks(new Map()); return; }
+    let cancelled = false;
     const fetchAll = async () => {
       const entries = new Map<string, Block>();
       for (const bid of blockRefIds) {
+        if (cancelled) return;
         try {
           const b = await api.getBlock(bid);
           if (b) entries.set(bid, b);
         } catch {}
       }
-      setTranscludedBlocks(entries);
+      // Drop stale results: the content changed (or we unmounted) mid-fetch.
+      if (!cancelled) setTranscludedBlocks(entries);
     };
     fetchAll();
-  }, [block.content]);
+    return () => { cancelled = true; };
+  }, [blockRefKey]);
 
   // Listen for settings changes
   useEffect(() => {

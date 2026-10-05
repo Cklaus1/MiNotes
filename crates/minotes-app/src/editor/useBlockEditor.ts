@@ -1,6 +1,7 @@
 import { useEditor } from "@tiptap/react";
 import { useRef, useCallback, useEffect } from "react";
 import StarterKit from "@tiptap/starter-kit";
+import { HardBreak } from "@tiptap/extension-hard-break";
 import TaskList from "@tiptap/extension-task-list";
 import TaskItem from "@tiptap/extension-task-item";
 import Highlight from "@tiptap/extension-highlight";
@@ -23,12 +24,40 @@ import { BlockRefSuggestion } from "./BlockRefSuggestion";
 
 const lowlight = createLowlight(common);
 
+/**
+ * A line break inside a block is stored as a plain "\n" (blocks are line-oriented:
+ * "Line1\nLine2"). Parsing uses `breaks: true` so that newline becomes a hardBreak
+ * instead of collapsing to a space; this serializer writes it back as "\n"
+ * (tiptap-markdown's default is CommonMark's backslash-newline), so an edited
+ * multi-line block round-trips byte-for-byte.
+ */
+const LineBreak = HardBreak.extend({
+  addStorage() {
+    return {
+      markdown: {
+        serialize(state: any, node: any, parent: any, index: number) {
+          for (let i = index + 1; i < parent.childCount; i++) {
+            if (parent.child(i).type !== node.type) {
+              state.write(state.inTable ? "<br>" : "\n");
+              return;
+            }
+          }
+        },
+        parse: {},
+      },
+    };
+  },
+});
+
 interface UseBlockEditorOptions {
   content: string;
   onSave: (markdown: string) => void;
   onPageLinkClick: (title: string, shiftKey?: boolean) => void;
   onBlockRefClick?: (blockId: string) => void;
   onEnter?: (contentAfterCursor: string, savedContent?: string) => void;
+  /** Checked BEFORE the editor mutates anything on Enter. Returning false makes the
+   *  Enter a no-op (e.g. a previous split is still being persisted). */
+  canEnter?: () => boolean;
   onBackspaceAtStart?: (content: string) => void;
   onArrowUp?: () => void;
   onArrowDown?: () => void;
@@ -46,6 +75,7 @@ export function useBlockEditor({
   onPageLinkClick,
   onBlockRefClick,
   onEnter,
+  canEnter,
   onBackspaceAtStart,
   onArrowUp,
   onArrowDown,
@@ -66,6 +96,7 @@ export function useBlockEditor({
   const onPageLinkClickRef = useRef(onPageLinkClick);
   const onBlockRefClickRef = useRef(onBlockRefClick);
   const onEnterRef = useRef(onEnter);
+  const canEnterRef = useRef(canEnter);
   const onBackspaceAtStartRef = useRef(onBackspaceAtStart);
   const onArrowUpRef = useRef(onArrowUp);
   const onArrowDownRef = useRef(onArrowDown);
@@ -78,10 +109,18 @@ export function useBlockEditor({
   const editorInstanceRef = useRef<any>(null);
   const skipSyncRef = useRef(false);
   const slashActiveRef = useRef(false);
+  // True only after a real user edit since the last save/external sync. Blur and
+  // unmount save ONLY when dirty: merely focusing a block must never rewrite its
+  // stored content with the serializer's normalization (`* x` -> `- x`, setext ->
+  // ATX, loose lists, entity-escaped HTML...).
+  const dirtyRef = useRef(false);
+  // Set while we apply external content ourselves, so it never counts as a user edit.
+  const applyingExternalRef = useRef(false);
   onSaveRef.current = onSave;
   onPageLinkClickRef.current = onPageLinkClick;
   onBlockRefClickRef.current = onBlockRefClick;
   onEnterRef.current = onEnter;
+  canEnterRef.current = canEnter;
   onBackspaceAtStartRef.current = onBackspaceAtStart;
   onArrowUpRef.current = onArrowUp;
   onArrowDownRef.current = onArrowDown;
@@ -94,12 +133,78 @@ export function useBlockEditor({
 
   // Slash callbacks are set per-editor instance after creation (see useEffect below)
 
+  /** The ONE way to read the editor's current content as markdown (trimmed). */
+  const getMarkdown = useCallback((): string => {
+    const ed = editorInstanceRef.current;
+    if (!ed || ed.isDestroyed) return "";
+    return (((ed.storage as any).markdown?.getMarkdown?.() ?? "") as string).trim();
+  }, []);
+
+  /** Serialize an arbitrary doc node (e.g. a `doc.cut(...)` half) to markdown. */
+  const serializeDoc = (node: any): string => {
+    const ed = editorInstanceRef.current;
+    const serializer = (ed?.storage as any)?.markdown?.serializer;
+    if (!serializer) return node.textContent ?? "";
+    // A half with no text and no atoms (links/tags/images) is empty: don't let an
+    // empty heading/paragraph shell serialize to a stray "#".
+    let hasContent = node.textContent.length > 0;
+    if (!hasContent) node.descendants((n: any) => { if (n.isAtom || n.isLeaf && !n.isText) hasContent = true; return !hasContent; });
+    if (!hasContent) return "";
+    return serializer.serialize(node) as string;
+  };
+
+  /** Record a save we performed ourselves: marks it as the last-produced markdown. */
+  const commitSave = (markdown: string) => {
+    contentRef.current = markdown;
+    dirtyRef.current = false;
+    skipSyncRef.current = true;
+    onSaveRef.current(markdown);
+  };
+
+  /**
+   * Split the block at the current cursor. Both halves are serialized to markdown so
+   * marks (bold/italic/code) and atoms (wiki links, tags, block refs) survive.
+   * Shared by the Enter key handler and the test API: one code path.
+   * Returns false if the split was rejected (no handler, or an Enter is in flight).
+   */
+  const splitAtCursor = (view: any): boolean => {
+    if (!onEnterRef.current) return false;
+    // A rejected Enter must be a no-op. Check the guard BEFORE mutating the doc,
+    // otherwise the after-cursor text is deleted and never re-created.
+    if (canEnterRef.current && !canEnterRef.current()) return false;
+    const { state } = view;
+    const from = state.selection.from;
+    const docEnd = state.doc.content.size - 1;
+
+    const afterMarkdown = from < docEnd ? serializeDoc(state.doc.cut(from)).trim() : "";
+    const savedContent = serializeDoc(state.doc.cut(0, from)).trim();
+
+    // Delete text after cursor from the editor (our own edit; saved right below).
+    if (from < docEnd) {
+      view.dispatch(state.tr.delete(from, docEnd));
+    }
+
+    commitSave(savedContent);
+    // Pass both saved content and after-cursor so PageView can update local state
+    onEnterRef.current(afterMarkdown, savedContent);
+    return true;
+  };
+
+  /** Merge this block into the previous one (Backspace at start). */
+  const mergeWithPrevious = (): boolean => {
+    if (!onBackspaceAtStartRef.current) return false;
+    onBackspaceAtStartRef.current(getMarkdown());
+    return true;
+  };
+
   const editor = useEditor({
     extensions: [
       StarterKit.configure({
         heading: { levels: [1, 2, 3, 4] },
         codeBlock: false, // replaced by CodeBlockLowlight
+        hardBreak: false, // replaced by LineBreak (plain-newline markdown)
       }),
+      LineBreak,
       CodeBlockLowlight.configure({ lowlight }),
       Table.configure({ resizable: true }),
       TableRow,
@@ -138,6 +243,7 @@ export function useBlockEditor({
       }),
       Markdown.configure({
         html: false,
+        breaks: true,
         transformPastedText: true,
         transformCopiedText: true,
       }),
@@ -194,35 +300,7 @@ export function useBlockEditor({
           }
 
           event.preventDefault();
-
-          const ed = editorInstanceRef.current;
-          const from = state.selection.from;
-          const docEnd = state.doc.content.size - 1;
-
-          // Get plain text after cursor (for the new block)
-          let textAfterCursor = "";
-          if (from < docEnd) {
-            textAfterCursor = state.doc.textBetween(from, docEnd, "\n", "");
-          }
-
-          // Delete text after cursor from the editor
-          if (from < docEnd) {
-            const tr = state.tr.delete(from, docEnd);
-            view.dispatch(tr);
-          }
-
-          // Get markdown of remaining content (preserves formatting)
-          const markdownBefore = ed?.storage?.markdown?.getMarkdown?.() ?? "";
-
-          // Save current block with before-cursor content
-          const savedContent = markdownBefore.trim();
-          contentRef.current = savedContent;
-          skipSyncRef.current = true;
-          onSaveRef.current(savedContent);
-
-          // Create new block with after-cursor text
-          // Pass both saved content and after-cursor so PageView can update local state
-          onEnterRef.current(textAfterCursor, savedContent);
+          splitAtCursor(view);
           return true;
         }
 
@@ -232,18 +310,9 @@ export function useBlockEditor({
           const { from, empty } = state.selection;
           if (empty && from <= 1) {
             event.preventDefault();
-            // Get current markdown content via the editor instance
-            // We need to access the editor — use a small workaround via the dom
-            const editorEl = view.dom.closest(".tiptap");
-            const editorInstance = (editorEl as any)?.__tiptapEditor;
-            let md = "";
-            if (editorInstance) {
-              md = (editorInstance.storage as any).markdown?.getMarkdown() ?? "";
-            } else {
-              // Fallback: get text content from ProseMirror doc
-              md = state.doc.textContent;
-            }
-            onBackspaceAtStartRef.current(md);
+            // Previously read `__tiptapEditor` off the DOM (never set in TipTap v3) and
+            // fell back to plain textContent, dropping links/tags/formatting.
+            mergeWithPrevious();
             return true;
           }
         }
@@ -328,10 +397,7 @@ export function useBlockEditor({
                 ed.chain().focus().setImage({ src }).run();
                 // Save after inserting image
                 setTimeout(() => {
-                  const md = (ed.storage as any).markdown?.getMarkdown?.() ?? "";
-                  contentRef.current = md.trim();
-                  skipSyncRef.current = true;
-                  onSaveRef.current(md.trim());
+                  commitSave(getMarkdown());
                 }, 50);
               }
             };
@@ -398,19 +464,25 @@ export function useBlockEditor({
         return true;
       },
     },
-    onBlur({ editor }) {
+    onUpdate({ transaction }) {
+      // Only genuine document edits count, never our own external-sync setContent.
+      if (transaction.docChanged && !applyingExternalRef.current && !transaction.getMeta("preventUpdate")) {
+        dirtyRef.current = true;
+      }
+    },
+    onBlur() {
       // Delay blur save to let slash commands set their flag first.
       // Blur fires on mousedown (before click), but slash command fires on click.
       // 50ms delay ensures the slash command's flag is checked after it's set.
       setTimeout(() => {
         if (slashActiveRef.current) return;
-        const markdown = (editor.storage as any).markdown?.getMarkdown() ?? "";
-        const normalized = markdown.trim();
-        const originalNormalized = contentRef.current.trim();
-        if (normalized !== originalNormalized) {
-          contentRef.current = normalized;
-          skipSyncRef.current = true;
-          onSaveRef.current(normalized);
+        // Focus -> blur without an edit must leave stored content byte-identical.
+        if (!dirtyRef.current) return;
+        const normalized = getMarkdown();
+        if (normalized !== contentRef.current.trim()) {
+          commitSave(normalized);
+        } else {
+          dirtyRef.current = false;
         }
       }, 50);
     },
@@ -434,10 +506,7 @@ export function useBlockEditor({
           slashActiveRef.current = true;
           setTimeout(() => {
             if (editor) {
-              const md = (editor.storage as any).markdown?.getMarkdown?.() ?? "";
-              contentRef.current = md.trim();
-              skipSyncRef.current = true;
-              onSaveRef.current(md.trim());
+              commitSave(getMarkdown());
               // Refocus editor after slash command save
               editor.commands.focus();
             }
@@ -471,8 +540,14 @@ export function useBlockEditor({
       contentRef.current = incoming;
       return;
     }
-    editor.commands.setContent(content);
+    applyingExternalRef.current = true;
+    try {
+      editor.commands.setContent(content, { emitUpdate: false });
+    } finally {
+      applyingExternalRef.current = false;
+    }
     contentRef.current = incoming;
+    dirtyRef.current = false;
   }, [content, editor]);
 
   // Bug #5: flush unsaved edits on unmount. Navigation swaps the active page and tears
@@ -481,7 +556,7 @@ export function useBlockEditor({
   useEffect(() => {
     return () => {
       const ed = editorInstanceRef.current;
-      if (!ed) return;
+      if (!ed || !dirtyRef.current) return;
       try {
         const markdown = ((ed.storage as any).markdown?.getMarkdown() ?? "").trim();
         if (markdown !== contentRef.current.trim()) {
@@ -494,5 +569,17 @@ export function useBlockEditor({
     };
   }, []);
 
-  return editor;
+  return {
+    editor,
+    getMarkdown,
+    /** True when the user edited since the last save / external sync. */
+    isDirty: (): boolean => dirtyRef.current,
+    /** Split at the editor's current selection: same path as the Enter key. */
+    splitAtCursor: (): boolean => {
+      const ed = editorInstanceRef.current;
+      return ed && !ed.isDestroyed ? splitAtCursor(ed.view) : false;
+    },
+    /** Merge into the previous block: same path as Backspace at start. */
+    mergeWithPrevious,
+  };
 }

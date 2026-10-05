@@ -27,9 +27,16 @@ import { loadEnabledSnippets } from "./lib/cssLoader";
 import { isOnboardingComplete, markOnboardingComplete, TUTORIAL_BLOCKS } from "./lib/onboarding";
 import { executeUndo, executeRedo } from "./lib/undoManager";
 import { showToast } from "./lib/toast";
+import { getSettings } from "./lib/settings";
 
 export default function App() {
   const [activePage, setActivePage] = useState<api.PageTree | null>(null);
+  // Navigation token: bumped on every navigation. Every async page fetch captures it
+  // and drops its result if the user navigated in the meantime, so a slow or
+  // out-of-order response can never yank the user back to a page they left.
+  const navTokenRef = useRef(0);
+  const activePageIdRef = useRef<string | null>(null);
+  activePageIdRef.current = activePage?.page.id ?? null;
   const [pendingJournalDate, setPendingJournalDate] = useState<string | null>(null);
   const [stats, setStats] = useState<api.GraphStats | null>(null);
   const [openPanel, setOpenPanel] = useState<string | null>(null);
@@ -74,6 +81,14 @@ export default function App() {
   }, []);
 
   const openPage = useCallback(async (titleOrId: string) => {
+    // Re-opening the page already shown is a REFRESH, not a navigation: it must not
+    // invalidate a navigation the user started meanwhile, and must itself be dropped
+    // if the user navigates away before it resolves.
+    const isRefresh = titleOrId === activePageIdRef.current;
+    const token = isRefresh ? navTokenRef.current : ++navTokenRef.current;
+    const refreshedId = activePageIdRef.current;
+    const stale = () => token !== navTokenRef.current ||
+      (isRefresh && activePageIdRef.current !== refreshedId);
     try {
       setLastError(null);
       console.log("[openPage]", titleOrId);
@@ -91,10 +106,12 @@ export default function App() {
         tree = await api.getPageTree(created.id);
       }
       console.log("[openPage] got tree:", tree.page.title, "blocks:", tree.blocks.length);
+      if (stale()) return; // superseded by a later navigation
       setActivePage(tree);
       setRefreshKey(k => k + 1);
       addRecentPage(tree.page.id, tree.page.title);
     } catch (e: any) {
+      if (stale()) return;
       const msg = typeof e === "string" ? e : e?.message ?? JSON.stringify(e);
       console.error("Failed to open page:", msg);
       setLastError(`openPage failed: ${msg}`);
@@ -117,6 +134,7 @@ export default function App() {
   }, [refresh, openPage]);
 
   const openJournal = useCallback(async (date?: string) => {
+    const token = ++navTokenRef.current;
     try {
       const d = date ?? localDateKey();
       const isToday = !date || d === localDateKey();
@@ -124,6 +142,7 @@ export default function App() {
       if (isToday) {
         // Today's journal: always force-create (expected UX on launch and Ctrl+J)
         const tree = await api.getJournal(d);
+        if (token !== navTokenRef.current) return;
         setActivePage(tree);
         setRefreshKey(k => k + 1);
         addRecentPage(tree.page.id, tree.page.title);
@@ -133,9 +152,11 @@ export default function App() {
 
       // Other dates: soft-create (check if exists first)
       const allPages = await api.listPages(200);
+      if (token !== navTokenRef.current) return;
       const existing = allPages.find(p => p.is_journal && p.journal_date === d);
       if (existing) {
         const tree = await api.getPageTree(existing.id);
+        if (token !== navTokenRef.current) return;
         setActivePage(tree);
         setRefreshKey(k => k + 1);
         addRecentPage(tree.page.id, tree.page.title);
@@ -153,12 +174,14 @@ export default function App() {
   // Materialize a pending journal when user clicks "Start writing"
   const materializeJournal = useCallback(async () => {
     if (!pendingJournalDate) return;
+    const token = ++navTokenRef.current;
     try {
       // Create the journal page by title — the backend treats Journal/YYYY-MM-DD as journal pages
       const title = `Journal/${pendingJournalDate}`;
       await api.createPage(title).catch(() => {}); // OK if it already exists
       // Now open it — it should exist in the database
       const tree = await api.getPageTree(title);
+      if (token !== navTokenRef.current) return;
       setActivePage(tree);
       setRefreshKey(k => k + 1);
       addRecentPage(tree.page.id, tree.page.title);
@@ -185,10 +208,15 @@ export default function App() {
       // Don't refresh the full page on every keystroke save — it kills focus.
       // Only refresh if content contains [[ links that might need resolving.
       if (content.includes("[[") && activePage) {
-        // Delay the refresh slightly so it doesn't steal focus
+        // Delay the refresh slightly so it doesn't steal focus. It must never
+        // navigate: drop it if the user moved on (token) or the page changed.
+        const token = navTokenRef.current;
+        const pageId = activePage.page.id;
         setTimeout(async () => {
+          if (token !== navTokenRef.current || activePageIdRef.current !== pageId) return;
           try {
-            const tree = await api.getPageTree(activePage.page.id);
+            const tree = await api.getPageTree(pageId);
+            if (token !== navTokenRef.current || activePageIdRef.current !== pageId) return;
             setActivePage(tree);
           } catch {}
         }, 500);
@@ -550,6 +578,7 @@ export default function App() {
         onSettingsClick={() => setOpenPanel(prev => prev === "settings" ? null : "settings")}
         onFolderSettings={(id) => setFolderSettingsId(prev => prev === id ? null : id)}
         onTodoBadgeClick={async () => {
+          if (getSettings().ai?.todoExtraction === false) return; // Settings → AI → TODO extraction off
           try {
             const allPages = await api.listPages();
             let todoPage = allPages.find(p => p.title === "All TODOs");

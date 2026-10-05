@@ -25,6 +25,19 @@ export interface MiNotesTestApi {
   getBlockCount: () => number;
   isPanelOpen: (name: string) => boolean;
   toggleCheckbox: (blockIndex: number, itemIndex?: number) => boolean;
+  /** Put the cursor at a text offset in block N and split there (Enter-key path). */
+  splitBlockAt: (blockIndex: number, offset: number) => boolean;
+  /** Merge block N into the previous block (Backspace-at-start path). */
+  mergeWithPrevious: (blockIndex: number) => boolean;
+  /** Cycle TODO state of block N (Ctrl+Enter path). */
+  toggleTodoInBlock: (blockIndex: number) => boolean;
+  /** Markdown currently in block N's editor (may be ahead of getBlockContent). */
+  getLiveBlockContent: (blockIndex: number) => string | null;
+  /** Collapse/expand block N (bullet collapse toggle path). */
+  toggleCollapseBlock: (blockIndex: number) => boolean;
+  /** Multi-select visible blocks fromIndex..toIndex (shift-click selection). */
+  selectBlocks: (fromIndex: number, toIndex: number) => number;
+  getSelectedCount: () => number;
   version: string;
 }
 

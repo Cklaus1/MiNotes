@@ -6,6 +6,7 @@
  */
 
 import { localDateKey } from "./dates";
+import { countPendingTodos } from "./todoExtractor";
 import type {
   Page, Block, PageTree, Link, GraphStats, Property,
   FolderTreeRoot, QueryResult, GraphData,
@@ -758,23 +759,24 @@ export const mockHandlers: Record<string, (args: any) => any> = {
     last_sync: null,
   }),
 
-  // AI: TODO count — mirrors the canonical detector (Bug #23/#24): unchecked
-  // checkboxes (-/*/+) and action keywords, both requiring non-empty text.
+  // AI: TODO count. Uses the shared line rules in todoExtractor.ts, which mirror
+  // the Rust parse_pending_todo (+ TODO/DOING prefixes and {{todo:*}} markers).
+  // Pages that are trashed or archived, directly or via any ancestor folder, don't count.
   get_pending_todo_count: () => {
-    const checkboxRegex = /^\s*[-*+]\s+\[ \]\s+\S/;
-    // Test the whole trimmed line (not just the first token) so multi-word
-    // keywords like "Follow up:" match (Bug: mockBackend miscount).
-    const actionRegex = /^(todo|action|follow up|follow-up|next):\s*\S/i;
-    let count = 0;
-    for (const block of blocks.values()) {
-      for (const line of block.content.split('\n')) {
-        const trimmed = line.trim();
-        if (checkboxRegex.test(trimmed) || actionRegex.test(trimmed)) {
-          count++;
-        }
+    const hidden = (pageId: string): boolean => {
+      if (trash.has(pageId) || archived.has(pageId)) return true;
+      let fid = pages.get(pageId)?.folder_id ?? null;
+      const seen = new Set<string>();
+      while (fid && !seen.has(fid)) {
+        seen.add(fid);
+        if (trashedFolders.has(fid) || archivedFolders.has(fid)) return true;
+        fid = folders.get(fid)?.parent_id ?? null;
       }
-    }
-    return count;
+      return false;
+    };
+    return countPendingTodos(
+      Array.from(blocks.values()).filter(b => pages.has(b.page_id) && !hidden(b.page_id)).map(b => b.content),
+    );
   },
 
   // ── Whiteboards (mirrors minotes-core repo/whiteboards.rs) ──

@@ -102,13 +102,16 @@ export const WikiLinkNode = Node.create<WikiLinkOptions>({
             markdownit.renderer.rules.wiki_link = (tokens: any, idx: number) => {
               const pageName = tokens[idx].content;
               const pageId = tokens[idx].attrs?.find((a: any) => a.name === "data-page-id")?.value;
-              const escaped = pageName
+              const esc = (v: string) => String(v)
                 .replace(/&/g, "&amp;")
                 .replace(/</g, "&lt;")
                 .replace(/>/g, "&gt;")
-                .replace(/"/g, "&quot;");
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#39;");
+              const escaped = esc(pageName);
               if (pageId) {
-                return `<span data-wiki-link data-page-name="${escaped}" data-page-id="${pageId}" class="wiki-link">${escaped}</span>`;
+                // pageId comes from user-editable markdown ([[Name|id]]): escape it too.
+                return `<span data-wiki-link data-page-name="${escaped}" data-page-id="${esc(pageId)}" class="wiki-link">${escaped}</span>`;
               }
               return `<span data-wiki-link data-page-name="${escaped}" class="wiki-link">${escaped}</span>`;
             };

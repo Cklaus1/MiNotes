@@ -25,6 +25,7 @@
     "@tauri-apps/plugin-clipboard-manager": "^2.3.2",
     "@tiptap/extension-bubble-menu": "^3.31.3",
     "@tiptap/extension-code-block-lowlight": "^3.31.3",
+    "@tiptap/extension-hard-break": "^3.31.3",
     "@tiptap/extension-highlight": "^3.31.3",
     "@tiptap/extension-image": "^3.31.3",
     "@tiptap/extension-link": "^3.31.3",
