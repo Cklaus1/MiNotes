@@ -4,7 +4,7 @@ use uuid::Uuid;
 use crate::db::Database;
 use crate::error::{Error, Result};
 use crate::links::{extract_links, ParsedLink};
-use crate::models::Block;
+use crate::models::{Block, RestoreBlock};
 
 const BLOCK_COLS: &str =
     "id, page_id, parent_id, position, content, format, collapsed, created_at, updated_at";
@@ -453,6 +453,165 @@ impl Database {
         }
         Ok(blocks)
     }
+
+    /// Recreate blocks with their ORIGINAL id / page / parent / position / content
+    /// (e.g. to reverse a deletion from the frontend), atomically.
+    ///
+    /// - Parents are inserted before children regardless of slice order.
+    /// - Properties are set with the value type of a same-named property schema,
+    ///   or `"text"` when there is none.
+    /// - Link rows are re-derived for every restored block once all of them exist,
+    ///   and for other blocks whose `((ref))` points at a restored block.
+    /// - One `block.created` event is emitted per block, parents first. Undo
+    ///   therefore treats a restore like block creation: each `undo_last` removes
+    ///   the most recently restored block (plus anything still under it), so the
+    ///   restored blocks go away last-restored first, one undo each. The original
+    ///   `block.deleted` event is left untouched.
+    /// - A `{{whiteboard:<id>}}` block simply points at its board again (boards
+    ///   are not deleted with blocks; see `gc_whiteboards`).
+    ///
+    /// Errors (`InvalidInput`, nothing written): an id that already exists or
+    /// repeats in the slice; a page that does not exist; a parent that neither
+    /// exists nor is in the slice, is on another page, or forms a cycle; a
+    /// non-finite position. Returns the restored blocks in slice order.
+    pub fn restore_blocks(&self, blocks: &[RestoreBlock], actor: &str) -> Result<Vec<Block>> {
+        use std::collections::{HashMap, HashSet};
+        self.tx(|| {
+            let mut by_id: HashMap<Uuid, &RestoreBlock> = HashMap::new();
+            for b in blocks {
+                if by_id.insert(b.id, b).is_some() {
+                    return Err(Error::InvalidInput(format!("Block {} appears twice", b.id)));
+                }
+            }
+            let mut pages_ok: HashSet<Uuid> = HashSet::new();
+            for b in blocks {
+                if !b.position.is_finite() {
+                    return Err(Error::InvalidInput(format!("Block {}: position must be finite", b.id)));
+                }
+                if self.get_block(&b.id)?.is_some() {
+                    return Err(Error::InvalidInput(format!("Block {} already exists", b.id)));
+                }
+                if !pages_ok.contains(&b.page_id) {
+                    if self.get_page(&b.page_id)?.is_none() {
+                        return Err(Error::InvalidInput(format!("Page {} does not exist", b.page_id)));
+                    }
+                    pages_ok.insert(b.page_id);
+                }
+                if let Some(p) = b.parent_id {
+                    let parent_page = match by_id.get(&p) {
+                        Some(pb) => Some(pb.page_id),
+                        None => self.block_page_id(&p)?,
+                    };
+                    match parent_page {
+                        None => {
+                            return Err(Error::InvalidInput(format!(
+                                "Parent block {p} of {} does not exist",
+                                b.id
+                            )))
+                        }
+                        Some(pp) if pp != b.page_id => {
+                            return Err(Error::InvalidInput(format!(
+                                "Parent block {p} of {} is on a different page",
+                                b.id
+                            )))
+                        }
+                        Some(_) => {}
+                    }
+                }
+            }
+
+            // Parents first: repeatedly take blocks whose parent is outside the
+            // slice or already placed. No progress ⇒ a cycle inside the slice.
+            let mut order: Vec<&RestoreBlock> = Vec::with_capacity(blocks.len());
+            let mut placed: HashSet<Uuid> = HashSet::new();
+            let mut remaining: Vec<&RestoreBlock> = blocks.iter().collect();
+            while !remaining.is_empty() {
+                let before = remaining.len();
+                remaining.retain(|b| {
+                    let ready = match b.parent_id {
+                        Some(p) => !by_id.contains_key(&p) || placed.contains(&p),
+                        None => true,
+                    };
+                    if ready {
+                        placed.insert(b.id);
+                        order.push(b);
+                    }
+                    !ready
+                });
+                if remaining.len() == before {
+                    return Err(Error::InvalidInput(
+                        "Blocks to restore form a parent cycle".to_string(),
+                    ));
+                }
+            }
+
+            let now = Utc::now();
+            let mut restored: HashMap<Uuid, Block> = HashMap::new();
+            for b in &order {
+                self.conn.execute(
+                    "INSERT INTO blocks (id, page_id, parent_id, position, content, format, collapsed, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, 'markdown', 0, ?6, ?6)",
+                    rusqlite::params![
+                        b.id.to_string(),
+                        b.page_id.to_string(),
+                        b.parent_id.map(|p| p.to_string()),
+                        b.position,
+                        b.content,
+                        now.to_rfc3339(),
+                    ],
+                )?;
+                for (k, v) in &b.properties {
+                    let value_type: String = self
+                        .conn
+                        .query_row(
+                            "SELECT value_type FROM property_schemas WHERE name = ?1",
+                            rusqlite::params![k],
+                            |r| r.get(0),
+                        )
+                        .unwrap_or_else(|_| "text".to_string());
+                    self.set_property(&b.id, "block", k, v, &value_type, actor)?;
+                }
+                let block = Block {
+                    id: b.id,
+                    page_id: b.page_id,
+                    parent_id: b.parent_id,
+                    position: b.position,
+                    content: b.content.clone(),
+                    format: "markdown".to_string(),
+                    collapsed: false,
+                    created_at: now,
+                    updated_at: now,
+                };
+                self.emit_event("block.created", &block.id, "block", &block, actor)?;
+                restored.insert(block.id, block);
+            }
+            // Links only once every restored block exists (refs between them).
+            for b in &order {
+                self.sync_block_links(&b.id, &b.content, actor)?;
+            }
+            // Other blocks' `((id))` refs to a restored block lost their link rows
+            // (FK cascade) when it was deleted: re-derive them.
+            for b in &order {
+                let pattern = format!("%(({}))%", b.id);
+                let referrers: Vec<(String, String)> = {
+                    let mut stmt = self
+                        .conn
+                        .prepare("SELECT id, content FROM blocks WHERE content LIKE ?1")?;
+                    let rows = stmt
+                        .query_map(rusqlite::params![pattern], |r| Ok((r.get(0)?, r.get(1)?)))?
+                        .collect::<std::result::Result<Vec<_>, _>>()?;
+                    rows
+                };
+                for (rid, content) in referrers {
+                    let Ok(rid) = Uuid::parse_str(&rid) else { continue };
+                    if !restored.contains_key(&rid) {
+                        self.sync_block_links(&rid, &content, actor)?;
+                    }
+                }
+            }
+            Ok(blocks.iter().filter_map(|b| restored.remove(&b.id)).collect())
+        })
+    }
 }
 
 fn row_to_block(row: &rusqlite::Row<'_>) -> Result<Block> {
@@ -710,5 +869,147 @@ mod tests {
             let p = db.create_page(t, None, false, None, "user").unwrap();
             assert_eq!(db.get_backlinks(&p.id).unwrap().len(), 1, "{t}");
         }
+    }
+
+    // ── restore_blocks ──
+
+    fn rb(b: &crate::models::Block) -> crate::models::RestoreBlock {
+        crate::models::RestoreBlock {
+            id: b.id,
+            page_id: b.page_id,
+            parent_id: b.parent_id,
+            content: b.content.clone(),
+            position: b.position,
+            properties: vec![],
+        }
+    }
+
+    fn to_block_links(db: &Database, id: &uuid::Uuid) -> i64 {
+        db.conn
+            .query_row("SELECT COUNT(*) FROM links WHERE to_block = ?1", [id.to_string()], |r| r.get(0))
+            .unwrap()
+    }
+
+    // Children listed BEFORE their parents still restore; ids, parents,
+    // positions, properties and links (incl. other blocks' ((refs))) come back.
+    #[test]
+    fn test_restore_blocks_roundtrip_any_order() {
+        let db = Database::open_in_memory().unwrap();
+        let target = db.create_page("Target", None, false, None, "user").unwrap();
+        let page = db.create_page("P", None, false, None, "user").unwrap();
+        let a = db.create_block(&page.id, "A [[Target]]", None, Some(5.0), "user").unwrap();
+        let b = db.create_block(&page.id, "B", Some(&a.id), Some(2.5), "user").unwrap();
+        let c = db
+            .create_block(&page.id, &format!("C refs (({}))", a.id), Some(&b.id), Some(1.0), "user")
+            .unwrap();
+        let other = db
+            .create_block(&page.id, &format!("elsewhere (({}))", a.id), None, Some(9.0), "user")
+            .unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO property_schemas (id, name, value_type, required, created_at)
+                 VALUES ('s1', 'prio', 'number', 0, '2026-01-01T00:00:00Z')",
+                [],
+            )
+            .unwrap();
+        let snapshot = vec![rb(&c), rb(&b), rb(&a)]; // deliberately children-first
+        db.delete_block(&a.id, "user").unwrap();
+        assert!(db.get_block(&c.id).unwrap().is_none());
+        assert_eq!(to_block_links(&db, &a.id), 0);
+
+        let mut input = snapshot.clone();
+        input[2].properties = vec![("prio".into(), "3".into()), ("note".into(), "x".into())];
+        let out = db.restore_blocks(&input, "user").unwrap();
+        assert_eq!(out.iter().map(|b| b.id).collect::<Vec<_>>(), vec![c.id, b.id, a.id], "input order");
+        let get = |id| db.get_block(id).unwrap().unwrap();
+        assert_eq!((get(&a.id).parent_id, get(&a.id).position), (None, 5.0));
+        assert_eq!((get(&b.id).parent_id, get(&b.id).position), (Some(a.id), 2.5));
+        assert_eq!((get(&c.id).parent_id, get(&c.id).position), (Some(b.id), 1.0));
+        assert_eq!(get(&c.id).content, c.content);
+        let props: Vec<(String, String, String)> = db
+            .get_properties(&a.id)
+            .unwrap()
+            .into_iter()
+            .map(|p| (p.key, p.value.unwrap(), p.value_type))
+            .collect();
+        assert_eq!(
+            props,
+            vec![
+                ("note".into(), "x".into(), "text".into()),
+                ("prio".into(), "3".into(), "number".into())
+            ]
+        );
+        assert_eq!(db.get_backlinks(&target.id).unwrap().len(), 1, "page link re-derived");
+        assert_eq!(to_block_links(&db, &a.id), 2, "C's and the other block's ((ref)) re-derived");
+        assert!(db.get_block(&other.id).unwrap().is_some());
+
+        // Undo treats the restore like creation: the last block inserted
+        // (parents first ⇒ C) is removed first, one block per undo.
+        db.undo_last("user").unwrap().unwrap();
+        assert!(db.get_block(&c.id).unwrap().is_none());
+        assert!(db.get_block(&b.id).unwrap().is_some());
+    }
+
+    #[test]
+    fn test_restore_blocks_errors_write_nothing() {
+        let db = Database::open_in_memory().unwrap();
+        let page = db.create_page("P", None, false, None, "user").unwrap();
+        let other = db.create_page("Q", None, false, None, "user").unwrap();
+        let live = db.create_block(&page.id, "live", None, None, "user").unwrap();
+        let on_q = db.create_block(&other.id, "q", None, None, "user").unwrap();
+        let fresh = |parent: Option<uuid::Uuid>, page_id: uuid::Uuid| crate::models::RestoreBlock {
+            id: uuid::Uuid::now_v7(),
+            page_id,
+            parent_id: parent,
+            content: "x".into(),
+            position: 1.0,
+            properties: vec![],
+        };
+        let ok = fresh(None, page.id);
+        let is_invalid =
+            |r: crate::error::Result<Vec<crate::models::Block>>| matches!(r, Err(Error::InvalidInput(_)));
+        // Existing id: never overwritten.
+        assert!(is_invalid(db.restore_blocks(&[ok.clone(), rb(&live)], "user")));
+        assert_eq!(db.get_block(&live.id).unwrap().unwrap().content, "live");
+        // Parent neither existing nor in the slice.
+        assert!(is_invalid(
+            db.restore_blocks(&[ok.clone(), fresh(Some(uuid::Uuid::now_v7()), page.id)], "user")
+        ));
+        // Parent on another page.
+        assert!(is_invalid(db.restore_blocks(&[fresh(Some(on_q.id), page.id)], "user")));
+        // Page missing.
+        assert!(is_invalid(db.restore_blocks(&[ok.clone(), fresh(None, uuid::Uuid::now_v7())], "user")));
+        // Duplicate id in the slice; a parent cycle inside the slice.
+        assert!(is_invalid(db.restore_blocks(&[ok.clone(), ok.clone()], "user")));
+        let (mut x, mut y) = (fresh(None, page.id), fresh(None, page.id));
+        x.parent_id = Some(y.id);
+        y.parent_id = Some(x.id);
+        assert!(is_invalid(db.restore_blocks(&[x, y], "user")));
+        // Atomic: the valid block of each failed call was not written.
+        assert!(db.get_block(&ok.id).unwrap().is_none());
+        assert_eq!(db.get_page_blocks(&page.id).unwrap().len(), 1);
+        // A parent that already exists is fine.
+        let child = fresh(Some(live.id), page.id);
+        assert_eq!(db.restore_blocks(&[child], "user").unwrap()[0].parent_id, Some(live.id));
+    }
+
+    // The exact JSON shape the frontend sends (snake_case; properties optional).
+    #[test]
+    fn test_restore_block_json_contract() {
+        let id = uuid::Uuid::now_v7();
+        let page = uuid::Uuid::now_v7();
+        let v: crate::models::RestoreBlock = serde_json::from_value(serde_json::json!({
+            "id": id, "page_id": page, "parent_id": null, "content": "c", "position": 2.0,
+            "properties": [["k", "v"]]
+        }))
+        .unwrap();
+        assert_eq!((v.id, v.page_id, v.parent_id, v.position), (id, page, None, 2.0));
+        assert_eq!(v.properties, vec![("k".to_string(), "v".to_string())]);
+        let v: crate::models::RestoreBlock = serde_json::from_value(serde_json::json!({
+            "id": id, "page_id": page, "parent_id": id, "content": "c", "position": 1
+        }))
+        .unwrap();
+        assert!(v.properties.is_empty());
+        assert_eq!(v.parent_id, Some(id));
     }
 }

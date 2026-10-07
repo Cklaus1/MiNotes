@@ -73,6 +73,20 @@ pub struct Block {
     pub updated_at: DateTime<Utc>,
 }
 
+/// A block to recreate with its ORIGINAL identity (see `Database::restore_blocks`).
+/// JSON shape (snake_case): `{ id, page_id, parent_id, content, position,
+/// properties: [["key", "value"], ...] }` — `properties` may be omitted.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RestoreBlock {
+    pub id: Uuid,
+    pub page_id: Uuid,
+    pub parent_id: Option<Uuid>,
+    pub content: String,
+    pub position: f64,
+    #[serde(default)]
+    pub properties: Vec<(String, String)>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Link {
     pub id: Uuid,

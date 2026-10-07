@@ -24,6 +24,12 @@ pub struct SyncResult {
     pub pages_skipped_local_edits: Vec<String>,
     /// Files ignored because another file carries the same page id.
     pub duplicates_ignored: Vec<String>,
+    /// Folders renamed to match their `.minotes-folder.json` marker ("old -> new").
+    pub folders_renamed: Vec<String>,
+    /// Folders moved to trash because the pull removed their directory.
+    pub folders_deleted: Vec<String>,
+    /// Whiteboards written to the DB from a newer `.minotes-whiteboards/` sidecar.
+    pub whiteboards_imported: Vec<String>,
     /// Per-file / per-step problems. The import of other pages still went through.
     pub errors: Vec<String>,
 }
@@ -41,6 +47,9 @@ pub struct SyncOptions {
     pub protect_modified_after: Option<DateTime<Utc>>,
     /// Pages whose file was removed upstream (e.g. by a `git pull`); moved to trash.
     pub trash_page_ids: Vec<Uuid>,
+    /// Folders whose `.minotes-folder.json` was removed upstream; moved to trash
+    /// (recursively) unless the folder is still present / in use / edited locally.
+    pub trash_folder_ids: Vec<Uuid>,
 }
 
 /// One `.md` file found under a sync dir.
@@ -176,7 +185,13 @@ impl Database {
 
         self.conn.execute_batch("SAVEPOINT minotes_sync_dir")?;
         match self.import_dir(dir, actor, opts, &mut result) {
-            Ok(()) => self.conn.execute_batch("RELEASE minotes_sync_dir")?,
+            Ok(imported_ids) => {
+                self.conn.execute_batch("RELEASE minotes_sync_dir")?;
+                // Committed: remember what this DB has had from the dir, so a
+                // page deleted locally before its first export is still pruned
+                // (see `add_to_manifest`).
+                crate::repo::export::add_to_manifest(dir, imported_ids);
+            }
             Err(e) => {
                 let _ = self
                     .conn
@@ -193,7 +208,9 @@ impl Database {
         Ok(result)
     }
 
-    fn import_dir(&self, dir: &Path, actor: &str, opts: &SyncOptions, result: &mut SyncResult) -> Result<()> {
+    /// Returns the page and folder ids that exist in the DB because of (or in
+    /// agreement with) files in `dir`.
+    fn import_dir(&self, dir: &Path, actor: &str, opts: &SyncOptions, result: &mut SyncResult) -> Result<HashSet<Uuid>> {
         let scan = scan_markdown_tree(dir);
         let mut complete = scan.complete;
         result.errors.extend(scan.errors.iter().cloned());
@@ -297,8 +314,21 @@ impl Database {
         }
         order.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| files[a.1].rel.cmp(&files[b.1].rel)));
 
+        let protected_folders = match opts.protect_modified_after {
+            Some(t) => self.folders_modified_since(t, actor)?,
+            None => HashSet::new(),
+        };
         let mut seen: HashSet<Uuid> = HashSet::new();
         let mut folder_cache: HashMap<Vec<String>, Uuid> = HashMap::new();
+        let present_folders = self.import_folder_markers(
+            dir,
+            &scan.dirs,
+            actor,
+            &protected_folders,
+            result,
+            &mut folder_cache,
+            &mut complete,
+        )?;
         for (_, i) in order {
             let f = &files[i];
             if let Some(id) = f.fm.id {
@@ -331,6 +361,18 @@ impl Database {
 
         // Pages whose file was removed upstream → trash (recoverable), never hard-delete.
         self.trash_removed_pages(&opts.trash_page_ids, &seen, &protected, opts.force_delete, result)?;
+        // Folders whose marker was removed upstream → trash (recursive).
+        let in_use: HashSet<Uuid> = folder_cache.values().copied().chain(present_folders.iter().copied()).collect();
+        self.trash_removed_folders(
+            &opts.trash_folder_ids,
+            &in_use,
+            &protected_folders,
+            &protected,
+            opts.force_delete,
+            result,
+        )?;
+        // Whiteboard sidecars: newer `updated_at` wins.
+        self.import_whiteboards(dir, result);
 
         if opts.delete_missing {
             if complete {
@@ -341,7 +383,7 @@ impl Database {
                     .push("Directory scan was incomplete; skipped deleting missing pages".to_string());
             }
         }
-        Ok(())
+        Ok(seen.into_iter().chain(present_folders).collect())
     }
 
     fn ensure_folder_path(
@@ -386,6 +428,268 @@ impl Database {
         let folder = self.create_folder(name, parent_id, None, None, actor)?;
         result.folders_created.push(name.to_string());
         Ok(folder.id)
+    }
+
+    /// Apply the folder identity markers (`.minotes-folder.json`) found under `dir`,
+    /// shallowest first:
+    /// - known id ⇒ rename / re-parent the local folder to match the marker
+    ///   (skipped if the folder was changed locally after the export, or trashed);
+    /// - unknown id ⇒ adopt a same-named local folder under the same parent that
+    ///   no other marker claims (it is re-keyed to the marker id, so two devices
+    ///   that each created "Work" converge on one folder), else create the folder
+    ///   with that id — so empty folders round-trip too.
+    ///
+    /// Each marker is applied in its own SAVEPOINT; a failure is reported and the
+    /// rest continue. Fills `cache` (dir components → folder id) so pages land in
+    /// the marker's folder even when the directory name is a de-duplicated
+    /// `Name--abcd1234`. Returns the folder ids present on disk.
+    #[allow(clippy::too_many_arguments)]
+    fn import_folder_markers(
+        &self,
+        dir: &Path,
+        scan_dirs: &[PathBuf],
+        actor: &str,
+        protected: &HashSet<Uuid>,
+        result: &mut SyncResult,
+        cache: &mut HashMap<Vec<String>, Uuid>,
+        complete: &mut bool,
+    ) -> Result<HashSet<Uuid>> {
+        use crate::repo::export::{read_folder_marker, FolderMarker};
+        let mut markers: Vec<(Vec<String>, FolderMarker)> = Vec::new();
+        let mut claimed: HashSet<Uuid> = HashSet::new();
+        let mut dirs: Vec<&PathBuf> = scan_dirs.iter().collect();
+        dirs.sort_by(|a, b| a.components().count().cmp(&b.components().count()).then_with(|| a.cmp(b)));
+        for d in dirs {
+            let Some(m) = read_folder_marker(dir, d) else { continue };
+            if !claimed.insert(m.id) {
+                // The same marker in two dirs (a copied directory): the first wins;
+                // the copy is treated like a plain (name-matched) directory.
+                eprintln!("[minotes-sync] ignoring duplicate folder marker in {}", d.display());
+                continue;
+            }
+            let comps: Vec<String> =
+                d.components().map(|c| c.as_os_str().to_string_lossy().to_string()).collect();
+            markers.push((comps, m));
+        }
+
+        let mut present = HashSet::new();
+        for (comps, m) in markers {
+            let parent_comps = &comps[..comps.len().saturating_sub(1)];
+            let cache_snapshot = cache.clone();
+            let applied = self.tx(|| {
+                let parent_id = self.ensure_folder_path(parent_comps, actor, result, cache)?;
+                match self.get_folder(&m.id)? {
+                    Some(f) => {
+                        result.folders_existing += 1;
+                        if !protected.contains(&f.id) && !self.is_folder_trashed(&f.id)? {
+                            if f.name != m.name {
+                                self.rename_folder(&f.id, &m.name, actor)?;
+                                result.folders_renamed.push(format!("{} -> {}", f.name, m.name));
+                            }
+                            if f.parent_id != parent_id {
+                                self.move_folder(&f.id, parent_id.as_ref(), actor)?;
+                            }
+                        }
+                    }
+                    None => {
+                        let adopt = self
+                            .list_folders(parent_id.as_ref())?
+                            .into_iter()
+                            .find(|f| f.name == m.name && !claimed.contains(&f.id));
+                        match adopt {
+                            Some(f) => self.rekey_folder(&f.id, &m.id)?,
+                            None => {
+                                self.create_folder_with_id(m.id, &m.name, parent_id.as_ref(), None, None, actor)?;
+                                result.folders_created.push(m.name.clone());
+                            }
+                        }
+                    }
+                }
+                Ok(())
+            });
+            match applied {
+                Ok(()) => {
+                    cache.insert(comps.clone(), m.id);
+                    present.insert(m.id);
+                }
+                Err(e) => {
+                    *cache = cache_snapshot; // may name folders that were rolled back
+                    *complete = false;
+                    result.errors.push(format!("{}: {e}", comps.join("/")));
+                }
+            }
+        }
+        Ok(present)
+    }
+
+    /// Give folder `old` the id `new` (which must not exist yet): pages, child
+    /// folders and trash/archive rows follow it.
+    fn rekey_folder(&self, old: &Uuid, new: &Uuid) -> Result<()> {
+        self.tx(|| {
+            let (o, n) = (old.to_string(), new.to_string());
+            self.conn.execute(
+                "INSERT INTO folders (id, name, parent_id, icon, color, position, collapsed, created_at, updated_at)
+                 SELECT ?2, name, parent_id, icon, color, position, collapsed, created_at, ?3
+                 FROM folders WHERE id = ?1",
+                rusqlite::params![o, n, Utc::now().to_rfc3339()],
+            )?;
+            for sql in [
+                "UPDATE folders SET parent_id = ?2 WHERE parent_id = ?1",
+                "UPDATE pages SET folder_id = ?2 WHERE folder_id = ?1",
+                "UPDATE folder_trash SET folder_id = ?2 WHERE folder_id = ?1",
+                "UPDATE folder_archive SET folder_id = ?2 WHERE folder_id = ?1",
+                "UPDATE properties SET entity_id = ?2 WHERE entity_id = ?1",
+            ] {
+                self.conn.execute(sql, rusqlite::params![o, n])?;
+            }
+            self.conn.execute("DELETE FROM folders WHERE id = ?1", rusqlite::params![o])?;
+            Ok(())
+        })
+    }
+
+    /// Is this folder trashed, directly or through an ancestor?
+    fn is_folder_trashed(&self, id: &Uuid) -> Result<bool> {
+        Ok(self.conn.query_row(
+            &format!(
+                "WITH RECURSIVE {} SELECT EXISTS(SELECT 1 FROM trashed_tree WHERE id = ?1)",
+                crate::repo::trash::TRASHED_FOLDER_TREE
+            ),
+            rusqlite::params![id.to_string()],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// Ids of folders changed locally (by anyone but `import_actor`) after `since`.
+    fn folders_modified_since(&self, since: DateTime<Utc>, import_actor: &str) -> Result<HashSet<Uuid>> {
+        let t = since.to_rfc3339();
+        let mut stmt = self.conn.prepare(
+            "SELECT entity_id FROM events
+              WHERE created_at > ?1 AND actor != ?2 AND entity_type = 'folder'
+             UNION SELECT folder_id FROM folder_trash WHERE deleted_at > ?1
+             UNION SELECT folder_id FROM folder_archive WHERE archived_at > ?1",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![t, import_actor], |r| r.get::<_, String>(0))?;
+        let mut out = HashSet::new();
+        for r in rows {
+            if let Ok(id) = Uuid::parse_str(&r?) {
+                out.insert(id);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Trash folders whose marker the pull removed (a delete — or a trash — on
+    /// another device). Skipped when the folder (or a subfolder) is still present
+    /// on disk or still holds imported pages, was changed locally after the
+    /// export, or holds a page edited locally after the export; guarded against
+    /// mass deletion like pages.
+    fn trash_removed_folders(
+        &self,
+        ids: &[Uuid],
+        in_use: &HashSet<Uuid>,
+        protected_folders: &HashSet<Uuid>,
+        protected_pages: &HashSet<Uuid>,
+        force: bool,
+        result: &mut SyncResult,
+    ) -> Result<()> {
+        for id in ids {
+            let Some(folder) = self.get_folder(id)? else { continue };
+            if self.is_folder_trashed(id)? {
+                continue;
+            }
+            let subtree: Vec<Uuid> = self
+                .folder_subtree_ids(id)?
+                .iter()
+                .filter_map(|s| Uuid::parse_str(s).ok())
+                .collect();
+            if subtree.iter().any(|f| in_use.contains(f) || protected_folders.contains(f)) {
+                continue;
+            }
+            let json = serde_json::to_string(&subtree.iter().map(|u| u.to_string()).collect::<Vec<_>>())?;
+            let live_pages: Vec<Uuid> = {
+                let mut stmt = self.conn.prepare(
+                    "SELECT id FROM pages WHERE folder_id IN (SELECT value FROM json_each(?1))
+                       AND id NOT IN (SELECT page_id FROM trash)",
+                )?;
+                let rows = stmt
+                    .query_map([json], |r| r.get::<_, String>(0))?
+                    .collect::<std::result::Result<Vec<_>, _>>()?;
+                rows.iter().filter_map(|s| Uuid::parse_str(s).ok()).collect()
+            };
+            if live_pages.iter().any(|p| protected_pages.contains(p)) {
+                continue;
+            }
+            let total: usize = self.conn.query_row(
+                "SELECT COUNT(*) FROM pages WHERE id NOT IN (SELECT page_id FROM trash)",
+                [],
+                |r| r.get::<_, i64>(0),
+            )? as usize;
+            if !live_pages.is_empty() && !deletion_allowed(live_pages.len(), total, force) {
+                result.errors.push(format!(
+                    "Refusing to trash folder '{}' with {} of {total} pages removed upstream in one sync (safety guard)",
+                    folder.name,
+                    live_pages.len()
+                ));
+                continue;
+            }
+            self.trash_folder(id)?;
+            result.folders_deleted.push(folder.name);
+        }
+        Ok(())
+    }
+
+    /// Import `.minotes-whiteboards/*.json` sidecars (incl. git conflict copies):
+    /// per board the newest `updated_at` among the files wins, and it is written
+    /// only if it is strictly newer than the DB copy (or the DB has none) — a
+    /// stale file never overwrites a newer local board. The file's `updated_at`
+    /// is kept so every device agrees on the version. A removed sidecar never
+    /// deletes a board (orphans are collected locally by `gc_whiteboards`).
+    pub(crate) fn import_whiteboards(&self, dir: &Path, result: &mut SyncResult) {
+        use crate::repo::export::{read_whiteboard_files, ts_newer, WhiteboardFile};
+        let (files, errors) = read_whiteboard_files(dir);
+        result.errors.extend(errors);
+        let mut best: HashMap<String, WhiteboardFile> = HashMap::new();
+        for (_, f) in files {
+            match best.get(&f.id) {
+                Some(cur) if !ts_newer(&f.updated_at, &cur.updated_at) => {}
+                _ => {
+                    best.insert(f.id.clone(), f);
+                }
+            }
+        }
+        let mut ids: Vec<&String> = best.keys().collect();
+        ids.sort();
+        for id in ids {
+            let f = &best[id];
+            match self.get_whiteboard(id) {
+                Ok(Some(w)) if !ts_newer(&f.updated_at, &w.updated_at) => continue,
+                Ok(_) => {}
+                Err(e) => {
+                    eprintln!("[minotes-sync] skipping whiteboard {id}: {e}");
+                    continue;
+                }
+            }
+            match self.put_whiteboard_raw(id, &f.data, &f.updated_at) {
+                Ok(()) => result.whiteboards_imported.push(id.clone()),
+                Err(e) => eprintln!("[minotes-sync] skipping whiteboard {id}: {e}"),
+            }
+        }
+    }
+
+    /// Delete page properties that our exporter would have written but the file
+    /// no longer has (removed on another device). Returns true if any went away.
+    fn remove_dropped_fm_properties(&self, page_id: &Uuid, props: &[(String, String)], actor: &str) -> Result<bool> {
+        let keep: HashSet<&str> = props.iter().map(|(k, _)| k.as_str()).collect();
+        let mut changed = false;
+        for p in self.get_properties(page_id)? {
+            if p.value.is_some()
+                && crate::repo::export::fm_key_exportable(&p.key)
+                && !keep.contains(p.key.as_str())
+            {
+                changed |= self.delete_property(page_id, &p.key, actor)?;
+            }
+        }
+        Ok(changed)
     }
 
     /// Ids of pages changed locally (by anyone but `import_actor`) after `since`:
@@ -509,6 +813,11 @@ impl Database {
                 meta_changed = true;
             }
             meta_changed |= self.apply_fm_properties(&existing.id, &fm.props, actor)?;
+            if fm.id.is_some() {
+                // Written by our exporter, so the frontmatter is the page's full
+                // (representable) property set: drop what the file no longer has.
+                meta_changed |= self.remove_dropped_fm_properties(&existing.id, &fm.props, actor)?;
+            }
 
             let blocks_changed = self.reconcile_page_blocks(&existing.id, &new_blocks, actor, result)?;
             if blocks_changed {
@@ -1432,5 +1741,204 @@ mod tests {
         let blocks = parse_markdown_blocks(&body);
         assert_eq!(blocks[0].content, "hello");
         assert!(blocks[0].id.is_some());
+    }
+
+    fn props(db: &Database, id: &Uuid) -> Vec<(String, String)> {
+        db.get_properties(id)
+            .unwrap()
+            .into_iter()
+            .map(|p| (p.key, p.value.unwrap_or_default()))
+            .collect()
+    }
+
+    // A property removed from the file is removed from the DB — only for pages the
+    // import actually applies (not for pages edited locally after the export), and
+    // never for keys the frontmatter can't carry or for id-less (hand-written) files.
+    #[test]
+    fn test_import_deletes_properties_dropped_from_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::open_in_memory().unwrap();
+        let p = db.create_page("P", None, false, None, "user").unwrap();
+        db.set_property(&p.id, "page", "keep", "1", "text", "user").unwrap();
+        db.set_property(&p.id, "page", "drop", "2", "text", "user").unwrap();
+        db.set_property(&p.id, "page", "odd:key", "3", "text", "user").unwrap();
+        db.export_markdown_synced(dir.path()).unwrap();
+        let f = dir.path().join("P.md");
+        let without_drop = fs::read_to_string(&f).unwrap().replace("drop: 2\n", "");
+        assert!(!without_drop.contains("drop:"));
+
+        // Protected (edited locally after the export) → left alone.
+        let export_time = Utc::now();
+        db.create_block(&p.id, "local edit", None, None, "user").unwrap();
+        fs::write(&f, &without_drop).unwrap();
+        let opts = SyncOptions { protect_modified_after: Some(export_time), ..Default::default() };
+        let r = db.sync_dir_with(dir.path(), "git-sync", &opts).unwrap();
+        assert_eq!(r.pages_skipped_local_edits, vec!["P".to_string()]);
+        assert!(props(&db, &p.id).iter().any(|(k, _)| k == "drop"));
+
+        // Applied → "drop" goes, "keep" and the unrepresentable key stay.
+        let r = db.sync_dir(dir.path(), "git-sync", false, false).unwrap();
+        assert!(r.pages_updated.contains(&"P".to_string()), "{r:?}");
+        assert_eq!(
+            props(&db, &p.id),
+            vec![("keep".to_string(), "1".to_string()), ("odd:key".to_string(), "3".to_string())]
+        );
+
+        // A hand-written file without an id never deletes properties.
+        let q = db.create_page("Q", None, false, None, "user").unwrap();
+        db.set_property(&q.id, "page", "mine", "x", "text", "user").unwrap();
+        fs::write(dir.path().join("Q.md"), "- hello\n").unwrap();
+        db.sync_dir(dir.path(), "git-sync", false, false).unwrap();
+        assert_eq!(props(&db, &q.id), vec![("mine".to_string(), "x".to_string())]);
+    }
+
+    // #6: a page imported from the dir and permanently deleted BEFORE any export
+    // listed it is pruned (the import records it in the manifest); a file whose id
+    // this DB has never had stays (pulled, not imported yet).
+    #[test]
+    fn test_page_deleted_before_first_export_is_pruned() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::open_in_memory().unwrap();
+        db.export_markdown_synced(dir.path()).unwrap(); // manifest exists (empty)
+        let (imported, foreign) = (Uuid::now_v7(), Uuid::now_v7());
+        fs::write(dir.path().join("Imported.md"), md(imported, "Imported", "- x\n")).unwrap();
+        db.sync_dir(dir.path(), "git-sync", false, false).unwrap();
+        assert!(db.get_page(&imported).unwrap().is_some());
+        db.permanently_delete_page(&imported, "user").unwrap();
+
+        fs::write(dir.path().join("Foreign.md"), md(foreign, "Foreign", "- y\n")).unwrap();
+        let rep = db.export_markdown_synced(dir.path()).unwrap();
+        assert_eq!(rep.pruned, vec!["Imported.md".to_string()]);
+        assert!(!dir.path().join("Imported.md").exists());
+        assert!(dir.path().join("Foreign.md").exists(), "never-imported file must stay");
+        // And the deleted page doesn't come back on the next import.
+        db.sync_dir(dir.path(), "git-sync", false, false).unwrap();
+        assert!(db.get_page(&imported).unwrap().is_none());
+
+        // A plain (non-sync) dir does not gain a manifest from importing.
+        let plain = tempfile::tempdir().unwrap();
+        fs::write(plain.path().join("A.md"), md(Uuid::now_v7(), "A", "- a\n")).unwrap();
+        db.sync_dir(plain.path(), "u", false, false).unwrap();
+        assert!(!plain.path().join(crate::repo::export::EXPORT_MANIFEST).exists());
+    }
+
+    // #4 (no git): folder identity markers carry renames, empty folders and
+    // de-duplicated directory names; a removed marker trashes the folder only
+    // when the caller says the pull removed it.
+    #[test]
+    fn test_folder_markers_rename_empty_and_delete() {
+        use crate::repo::export::FOLDER_MARKER;
+        let dir = tempfile::tempdir().unwrap();
+        let a = Database::open_in_memory().unwrap();
+        let empty = a.create_folder("Empty", None, None, None, "user").unwrap();
+        let proj = a.create_folder("Proj", None, None, None, "user").unwrap();
+        let sub = a.create_folder("Sub", Some(&proj.id), None, None, "user").unwrap();
+        let pg = a.create_page("Plan", None, false, None, "user").unwrap();
+        a.move_page_to_folder(&pg.id, Some(&sub.id), "user").unwrap();
+        a.export_markdown_synced(dir.path()).unwrap();
+        assert!(dir.path().join("Empty").join(FOLDER_MARKER).exists());
+        assert!(scan_markdown_tree(dir.path()).files.iter().all(|f| !f.rel.ends_with(FOLDER_MARKER)));
+
+        let b = Database::open_in_memory().unwrap();
+        b.sync_dir(dir.path(), "git-sync", false, false).unwrap();
+        assert_eq!(b.get_folder(&empty.id).unwrap().unwrap().name, "Empty", "empty folder round-trips");
+        assert_eq!(b.get_folder(&sub.id).unwrap().unwrap().parent_id, Some(proj.id));
+        assert_eq!(b.get_page(&pg.id).unwrap().unwrap().folder_id, Some(sub.id));
+
+        // Rename on A → same folder renamed on B; no lingering old folder.
+        a.rename_folder(&proj.id, "Projects", "user").unwrap();
+        let rep = a.export_markdown_synced(dir.path()).unwrap();
+        assert!(rep.pruned.contains(&format!("Proj/{FOLDER_MARKER}")), "{rep:?}");
+        assert!(!dir.path().join("Proj").exists());
+        let r = b.sync_dir(dir.path(), "git-sync", false, false).unwrap();
+        assert_eq!(r.folders_renamed, vec!["Proj -> Projects".to_string()]);
+        assert!(r.folders_created.is_empty(), "{r:?}");
+        assert_eq!(b.get_folder(&proj.id).unwrap().unwrap().name, "Projects");
+        assert_eq!(b.get_page(&pg.id).unwrap().unwrap().folder_id, Some(sub.id));
+        let names: Vec<String> = b.list_folders(None).unwrap().into_iter().map(|f| f.name).collect();
+        assert_eq!(names.len(), 2, "{names:?}");
+
+        // Trash "Empty" on A: its marker and dir go away on export.
+        a.trash_folder(&empty.id).unwrap();
+        a.export_markdown_synced(dir.path()).unwrap();
+        assert!(!dir.path().join("Empty").exists());
+        // Merely missing ≠ deleted upstream: nothing happens without the pull diff.
+        b.sync_dir(dir.path(), "git-sync", false, false).unwrap();
+        assert!(b.list_folders(None).unwrap().iter().any(|f| f.id == empty.id));
+        let opts = SyncOptions { trash_folder_ids: vec![empty.id, sub.id], ..Default::default() };
+        let r = b.sync_dir_with(dir.path(), "git-sync", &opts).unwrap();
+        assert_eq!(r.folders_deleted, vec!["Empty".to_string()], "Sub is still on disk: kept");
+        assert!(b.list_folders(None).unwrap().iter().all(|f| f.id != empty.id));
+    }
+
+    // Two devices independently create a same-named folder: the importer adopts
+    // the marker's id instead of creating a duplicate "Work".
+    #[test]
+    fn test_same_named_folder_adopts_marker_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = Database::open_in_memory().unwrap();
+        let wa = a.create_folder("Work", None, None, None, "user").unwrap();
+        a.export_markdown_synced(dir.path()).unwrap();
+        let b = Database::open_in_memory().unwrap();
+        let wb = b.create_folder("Work", None, None, None, "user").unwrap();
+        let pb = b.create_page("B page", None, false, None, "user").unwrap();
+        b.move_page_to_folder(&pb.id, Some(&wb.id), "user").unwrap();
+        let r = b.sync_dir(dir.path(), "git-sync", false, false).unwrap();
+        assert!(r.errors.is_empty(), "{:?}", r.errors);
+        let folders = b.list_folders(None).unwrap();
+        assert_eq!(folders.len(), 1);
+        assert_eq!(folders[0].id, wa.id);
+        assert_eq!(b.get_page(&pb.id).unwrap().unwrap().folder_id, Some(wa.id));
+        assert!(b.get_folder(&wb.id).unwrap().is_none());
+    }
+
+    // #1/#2 (no git): sidecars are written for referenced boards, imported when
+    // newer, and an older DB never overwrites a newer sidecar.
+    #[test]
+    fn test_whiteboard_sidecar_newer_wins() {
+        use crate::repo::export::{WhiteboardFile, WHITEBOARD_DIR};
+        let dir = tempfile::tempdir().unwrap();
+        let a = Database::open_in_memory().unwrap();
+        let p = a.create_page("Board", None, false, None, "user").unwrap();
+        a.create_block(&p.id, "{{whiteboard:wb1}}", None, None, "user").unwrap();
+        a.save_whiteboard("wb1", r#"{"v":1}"#).unwrap();
+        a.save_whiteboard("unreferenced", "{}").unwrap();
+        a.export_markdown_synced(dir.path()).unwrap();
+        let side = dir.path().join(WHITEBOARD_DIR).join("wb1.json");
+        assert!(side.exists());
+        assert!(!dir.path().join(WHITEBOARD_DIR).join("unreferenced.json").exists());
+
+        let b = Database::open_in_memory().unwrap();
+        let r = b.sync_dir(dir.path(), "git-sync", false, false).unwrap();
+        assert_eq!(r.whiteboards_imported, vec!["wb1".to_string()]);
+        let wb_b = b.get_whiteboard("wb1").unwrap().unwrap();
+        assert_eq!(wb_b.data, r#"{"v":1}"#);
+        assert_eq!(wb_b.updated_at, a.get_whiteboard("wb1").unwrap().unwrap().updated_at, "timestamp kept");
+
+        // B draws (newer) and exports; A's older copy must not overwrite it.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        b.save_whiteboard("wb1", r#"{"v":2}"#).unwrap();
+        b.export_markdown_synced(dir.path()).unwrap();
+        a.export_markdown_synced(dir.path()).unwrap();
+        let f: WhiteboardFile = serde_json::from_str(&fs::read_to_string(&side).unwrap()).unwrap();
+        assert_eq!(f.data, r#"{"v":2}"#, "older DB must not overwrite a newer sidecar");
+        let r = a.sync_dir(dir.path(), "git-sync", false, false).unwrap();
+        assert_eq!(r.whiteboards_imported, vec!["wb1".to_string()]);
+        assert_eq!(a.get_whiteboard("wb1").unwrap().unwrap().data, r#"{"v":2}"#);
+        // …and an older file never overwrites the newer DB board.
+        let mut old = f.clone();
+        old.data = r#"{"v":0}"#.into();
+        old.updated_at = "2000-01-01T00:00:00+00:00".into();
+        fs::write(dir.path().join(WHITEBOARD_DIR).join("wb1.conflict-x.json"), serde_json::to_string(&old).unwrap())
+            .unwrap();
+        let r = a.sync_dir(dir.path(), "git-sync", false, true).unwrap();
+        assert!(r.whiteboards_imported.is_empty());
+        assert_eq!(a.get_whiteboard("wb1").unwrap().unwrap().data, r#"{"v":2}"#);
+        assert!(!dir.path().join(WHITEBOARD_DIR).join("wb1.conflict-x.json").exists(), "absorbed copy pruned");
+
+        // Once no page references the board, its sidecar is pruned.
+        a.trash_page(&p.id).unwrap();
+        a.export_markdown_synced(dir.path()).unwrap();
+        assert!(!side.exists());
     }
 }

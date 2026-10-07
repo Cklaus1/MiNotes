@@ -19,6 +19,37 @@ pub const EXPORT_MANIFEST: &str = ".minotes-exported";
 /// Page frontmatter keys owned by the exporter; never treated as properties.
 pub(crate) const RESERVED_FM_KEYS: &[&str] = &["id", "title", "type", "date"];
 
+/// Directory (at the export root) holding one `<board id>.json` sidecar per
+/// whiteboard referenced by an exported page (see [`WhiteboardFile`]). It is
+/// dot-prefixed on purpose: the `.md` scanner and the "removed by pull" page diff
+/// both skip dot paths, so pages never see it; the whiteboard importer/pruner
+/// handle it explicitly. Unlike `.minotes-trash`, it IS committed by git sync.
+pub const WHITEBOARD_DIR: &str = ".minotes-whiteboards";
+/// Folder identity marker written into every exported folder directory
+/// (see [`FolderMarker`]). Not a `.md`, so it is never imported as a page.
+pub const FOLDER_MARKER: &str = ".minotes-folder.json";
+
+/// On-disk whiteboard sidecar. `data` is the board's opaque JSON kept as a
+/// STRING so it round-trips byte-for-byte; `updated_at` decides which copy wins
+/// when two devices both changed a board (newer wins, never older-over-newer).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct WhiteboardFile {
+    pub id: String,
+    pub updated_at: String,
+    pub data: String,
+}
+
+/// On-disk folder identity: directory names carry no ids, so renames and
+/// deletes are recognised through this marker's stable `id`. `name` is the
+/// lossless folder name (the directory name is sanitized / de-duplicated).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct FolderMarker {
+    pub id: Uuid,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<Uuid>,
+}
+
 /// Result of a sync-aware export.
 #[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct ExportReport {
@@ -30,13 +61,123 @@ pub struct ExportReport {
 /// Where each page / folder lands on disk, relative to the export root.
 pub(crate) struct ExportPlan {
     pub(crate) folder_dirs: Vec<PathBuf>,
+    pub(crate) folders: Vec<(crate::models::Folder, PathBuf)>,
     pub(crate) pages: Vec<(Page, PathBuf)>,
     pub(crate) archived_ids: HashSet<Uuid>,
+}
+
+fn parse_ts(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    chrono::DateTime::parse_from_rfc3339(s).ok().map(|d| d.with_timezone(&chrono::Utc))
+}
+
+/// Is `a` strictly newer than `b`? Unparseable timestamps never win.
+pub(crate) fn ts_newer(a: &str, b: &str) -> bool {
+    match (parse_ts(a), parse_ts(b)) {
+        (Some(x), Some(y)) => x > y,
+        (Some(_), None) => true,
+        _ => false,
+    }
+}
+
+/// Read every whiteboard sidecar under `<root>/.minotes-whiteboards/` (including
+/// git conflict copies such as `<id>.conflict-<host>.json` — the id comes from the
+/// content, not the name). Returns (relative path, parsed file) pairs, plus
+/// errors for unreadable entries.
+pub(crate) fn read_whiteboard_files(root: &Path) -> (Vec<(PathBuf, WhiteboardFile)>, Vec<String>) {
+    let mut out = Vec::new();
+    let mut errors = Vec::new();
+    let dir = root.join(WHITEBOARD_DIR);
+    let Ok(rd) = fs::read_dir(&dir) else { return (out, errors) };
+    let mut entries: Vec<_> = rd.filter_map(|e| e.ok()).collect();
+    entries.sort_by_key(|e| e.file_name());
+    for e in entries {
+        let path = e.path();
+        if path.extension().and_then(|x| x.to_str()) != Some("json") || !path.is_file() {
+            continue;
+        }
+        let rel = Path::new(WHITEBOARD_DIR).join(e.file_name());
+        match fs::read_to_string(&path) {
+            Ok(text) => match serde_json::from_str::<WhiteboardFile>(&text) {
+                Ok(wb) => out.push((rel, wb)),
+                // A malformed file won't fix itself on retry: log, don't block.
+                Err(err) => eprintln!("[minotes-sync] ignoring malformed {}: {err}", rel.display()),
+            },
+            Err(err) => errors.push(format!("Read failed for {}: {err}", rel.display())),
+        }
+    }
+    (out, errors)
+}
+
+/// Read the folder marker in `<root>/<rel>/`, if any.
+pub(crate) fn read_folder_marker(root: &Path, rel: &Path) -> Option<FolderMarker> {
+    let text = fs::read_to_string(root.join(rel).join(FOLDER_MARKER)).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+/// Can this page property be represented as a frontmatter key? The exporter
+/// writes exactly these; import deletes exactly these when a file drops them.
+pub(crate) fn fm_key_exportable(key: &str) -> bool {
+    !(key.is_empty()
+        || key.trim() != key
+        || key.contains(':')
+        || key.contains('\n')
+        || key.contains('\r')
+        || key.starts_with("---")
+        || key.starts_with('#')
+        || key.starts_with('-')
+        || RESERVED_FM_KEYS.contains(&key))
+}
+
+/// Add ids to the sync manifest — only if it already exists (i.e. this dir is
+/// managed by a synced export), so plain directories don't gain a dotfile.
+/// Called by import so that a page/folder imported from the dir and later
+/// permanently deleted locally (before any export listed it) is still recognised
+/// as "ours" and pruned, instead of being re-imported forever.
+pub(crate) fn add_to_manifest(root: &Path, ids: impl IntoIterator<Item = Uuid>) {
+    let path = root.join(EXPORT_MANIFEST);
+    let Ok(existing) = fs::read_to_string(&path) else { return };
+    let mut set: std::collections::BTreeSet<String> =
+        existing.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect();
+    let before = set.len();
+    set.extend(ids.into_iter().map(|i| i.to_string()));
+    if set.len() != before {
+        let body: Vec<String> = set.into_iter().collect();
+        let _ = fs::write(&path, body.join("\n") + "\n");
+    }
+}
+
+/// Move `rel` (relative to `root`) into `.minotes-trash/<stamp>/rel`.
+fn move_to_sync_trash(root: &Path, rel: &Path, stamp: &str) -> std::io::Result<()> {
+    let mut dest = root.join(SYNC_TRASH_DIR).join(stamp).join(rel);
+    if dest.exists() {
+        let ext = rel.extension().and_then(|e| e.to_str()).unwrap_or("bak").to_string();
+        dest = dest.with_extension(format!("{}.{ext}", Uuid::now_v7().simple()));
+    }
+    if let Some(parent) = dest.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    fs::rename(root.join(rel), &dest)
+}
+
+/// Write `content` to `path` unless it already holds exactly that.
+fn write_if_changed(path: &Path, content: &str) -> Result<()> {
+    if fs::read_to_string(path).map(|c| c == content).unwrap_or(false) {
+        return Ok(());
+    }
+    fs::write(path, content)
+        .map_err(|e| crate::error::Error::InvalidInput(format!("Write failed: {e}")))
 }
 
 impl Database {
     /// Export entire graph as markdown files into a directory,
     /// mirroring the folder hierarchy as real filesystem directories.
+    ///
+    /// Besides the `.md` files this writes, exactly like the sync export:
+    /// - `<dir>/.minotes-folder.json` in every folder directory ([`FolderMarker`]);
+    /// - `.minotes-whiteboards/<id>.json` at the root for every whiteboard a page
+    ///   references ([`WhiteboardFile`]; the block itself stays
+    ///   `{{whiteboard:<id>}}` in the markdown). `import_markdown_dir` and sync
+    ///   import read these back.
     pub fn export_markdown(&self, output_dir: &Path) -> Result<Vec<String>> {
         Ok(self.export_markdown_inner(output_dir, false)?.written)
     }
@@ -53,10 +194,15 @@ impl Database {
             .map_err(|e| crate::error::Error::InvalidInput(format!("Cannot create dir: {e}")))?;
 
         let plan = self.plan_export_paths()?;
-        for rel in &plan.folder_dirs {
+        for (folder, rel) in &plan.folders {
             let dir = safe_join(output_dir, rel)?;
             fs::create_dir_all(&dir)
                 .map_err(|e| crate::error::Error::InvalidInput(format!("Cannot create dir: {e}")))?;
+            // Stable folder identity (renames/deletes propagate; empty folders
+            // round-trip because git now has a file to track).
+            let marker = FolderMarker { id: folder.id, name: folder.name.clone(), parent: folder.parent_id };
+            let json = serde_json::to_string_pretty(&marker)? + "\n";
+            write_if_changed(&dir.join(FOLDER_MARKER), &json)?;
         }
 
         let mut report = ExportReport::default();
@@ -76,6 +222,8 @@ impl Database {
             report.written.push(filepath.display().to_string());
         }
 
+        self.export_whiteboards(output_dir, &plan)?;
+
         if prune {
             report.pruned = self.prune_stale_files(output_dir, &plan)?;
         }
@@ -88,8 +236,9 @@ impl Database {
     pub(crate) fn plan_export_paths(&self) -> Result<ExportPlan> {
         let mut taken: HashMap<PathBuf, HashSet<String>> = HashMap::new();
         let mut folder_map: HashMap<Uuid, PathBuf> = HashMap::new();
-        let mut folder_dirs = Vec::new();
-        self.plan_folder_dirs(Path::new(""), None, &mut taken, &mut folder_map, &mut folder_dirs, 0)?;
+        let mut folders = Vec::new();
+        self.plan_folder_dirs(Path::new(""), None, &mut taken, &mut folder_map, &mut folders, 0)?;
+        let folder_dirs = folders.iter().map(|(_, d): &(crate::models::Folder, PathBuf)| d.clone()).collect();
 
         let mut pages = self.list_pages(Some(1_000_000))?;
         pages.sort_by_key(|p| p.id);
@@ -113,7 +262,7 @@ impl Database {
                 archived_ids.insert(id);
             }
         }
-        Ok(ExportPlan { folder_dirs, pages: out, archived_ids })
+        Ok(ExportPlan { folder_dirs, folders, pages: out, archived_ids })
     }
 
     fn plan_folder_dirs(
@@ -122,7 +271,7 @@ impl Database {
         parent_id: Option<&Uuid>,
         taken: &mut HashMap<PathBuf, HashSet<String>>,
         map: &mut HashMap<Uuid, PathBuf>,
-        dirs: &mut Vec<PathBuf>,
+        dirs: &mut Vec<(crate::models::Folder, PathBuf)>,
         depth: usize,
     ) -> Result<()> {
         if depth > 64 {
@@ -135,17 +284,54 @@ impl Database {
             let name = unique_name(&sanitize_component(&folder.name), "", &folder.id, set);
             let dir_path = base.join(&name);
             map.insert(folder.id, dir_path.clone());
-            dirs.push(dir_path.clone());
+            dirs.push((folder.clone(), dir_path.clone()));
             self.plan_folder_dirs(&dir_path, Some(&folder.id), taken, map, dirs, depth + 1)?;
         }
         Ok(())
     }
 
-    /// Move stale `.md` files into `.minotes-trash/` (see `export_markdown_synced`).
-    /// A file is stale when its frontmatter id belongs to a page that is trashed,
-    /// lives at a different path now, or was exported before but no longer exists.
-    /// Files with an id this DB has never seen are left alone: they may be pages
-    /// pulled from a remote that simply haven't been imported yet.
+    /// Write a sidecar for every whiteboard referenced by an exported page.
+    /// A sidecar that is NEWER than the DB copy (pulled, not imported yet) is left
+    /// alone — an older board must never overwrite a newer one.
+    fn export_whiteboards(&self, root: &Path, plan: &ExportPlan) -> Result<()> {
+        let ids: Vec<Uuid> = plan.pages.iter().map(|(p, _)| p.id).collect();
+        let mut refs: Vec<String> = self.whiteboards_on_pages(&ids)?.into_iter().collect();
+        refs.sort();
+        let dir = root.join(WHITEBOARD_DIR);
+        for id in refs {
+            let Ok(Some(wb)) = self.get_whiteboard(&id) else { continue }; // never saved
+            let path = dir.join(format!("{id}.json"));
+            if let Ok(text) = fs::read_to_string(&path) {
+                if let Ok(f) = serde_json::from_str::<WhiteboardFile>(&text) {
+                    if ts_newer(&f.updated_at, &wb.updated_at) {
+                        continue;
+                    }
+                }
+            }
+            fs::create_dir_all(&dir)
+                .map_err(|e| crate::error::Error::InvalidInput(format!("Cannot create dir: {e}")))?;
+            let file = WhiteboardFile { id: wb.id, updated_at: wb.updated_at, data: wb.data };
+            write_if_changed(&path, &(serde_json::to_string_pretty(&file)? + "\n"))?;
+        }
+        Ok(())
+    }
+
+    /// Move stale files into `.minotes-trash/` (see `export_markdown_synced`).
+    ///
+    /// Pages: a `.md` is stale when its frontmatter id belongs to a page that is
+    /// trashed, lives at a different path now, or is gone locally although this
+    /// dir's manifest lists it (exported or imported here before — so it was
+    /// deleted locally, possibly before its first export). Files with an id this
+    /// DB has never seen are left alone: they may be pages pulled from a remote
+    /// that simply haven't been imported yet.
+    ///
+    /// Folder markers: same rules by folder id (planned elsewhere, trashed, or
+    /// gone-but-listed ⇒ stale); then directories that are no longer a folder are
+    /// removed once empty.
+    ///
+    /// Whiteboard sidecars: stale when no surviving `.md` and no live/archived page
+    /// references the board — unless the file is newer than the DB copy (not
+    /// imported yet). Conflict copies are dropped once the DB is at least as new.
     fn prune_stale_files(&self, root: &Path, plan: &ExportPlan) -> Result<Vec<String>> {
         let expected: HashMap<Uuid, &PathBuf> = plan.pages.iter().map(|(p, rel)| (p.id, rel)).collect();
         let mut known: HashSet<Uuid> = HashSet::new();
@@ -165,6 +351,26 @@ impl Database {
                 }
             }
         }
+        let mut known_folders: HashSet<Uuid> = HashSet::new();
+        let mut trashed_folders: HashSet<Uuid> = HashSet::new();
+        {
+            let mut stmt = self.conn.prepare(&format!(
+                "WITH RECURSIVE {} SELECT id, id IN (SELECT id FROM trashed_tree) FROM folders",
+                crate::repo::trash::TRASHED_FOLDER_TREE
+            ))?;
+            let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, bool>(1)?)))?;
+            for r in rows {
+                let (id, is_trashed) = r?;
+                if let Ok(id) = Uuid::parse_str(&id) {
+                    known_folders.insert(id);
+                    if is_trashed {
+                        trashed_folders.insert(id);
+                    }
+                }
+            }
+        }
+        let planned_folders: HashMap<Uuid, &PathBuf> =
+            plan.folders.iter().map(|(f, rel)| (f.id, rel)).collect();
         let manifest_path = root.join(EXPORT_MANIFEST);
         let previously_exported: HashSet<Uuid> = fs::read_to_string(&manifest_path)
             .map(|s| s.lines().filter_map(|l| Uuid::parse_str(l.trim()).ok()).collect())
@@ -173,31 +379,66 @@ impl Database {
         let scan = crate::repo::sync::scan_markdown_tree(root);
         let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%S%.3f").to_string();
         let mut pruned = Vec::new();
+        // Whiteboards referenced by .md files that stay in the dir.
+        let mut wb_keep: HashSet<String> = HashSet::new();
         for file in &scan.files {
             let Ok(content) = fs::read_to_string(&file.abs) else { continue };
-            let Some(id) = crate::repo::sync::parse_frontmatter_id(&content) else { continue };
-            let stale = if trashed.contains(&id) {
-                true
-            } else if let Some(exp) = expected.get(&id) {
-                file.rel != **exp
-            } else if known.contains(&id) {
-                false // archived: not exported, leave its file untouched
-            } else {
-                previously_exported.contains(&id) // permanently deleted locally
+            let stale = match crate::repo::sync::parse_frontmatter_id(&content) {
+                None => false,
+                Some(id) => {
+                    if trashed.contains(&id) {
+                        true
+                    } else if let Some(exp) = expected.get(&id) {
+                        file.rel != **exp
+                    } else if known.contains(&id) {
+                        false // archived: not exported, leave its file untouched
+                    } else {
+                        previously_exported.contains(&id) // deleted locally
+                    }
+                }
             };
             if !stale {
+                wb_keep.extend(crate::repo::whiteboards::whiteboard_refs(&content));
                 continue;
             }
-            let mut dest = root.join(SYNC_TRASH_DIR).join(&stamp).join(&file.rel);
-            if dest.exists() {
-                dest = dest.with_extension(format!("{}.md", Uuid::now_v7().simple()));
-            }
-            if let Some(parent) = dest.parent() {
-                let _ = fs::create_dir_all(parent);
-            }
-            match fs::rename(&file.abs, &dest) {
+            match move_to_sync_trash(root, &file.rel, &stamp) {
                 Ok(()) => pruned.push(file.rel.display().to_string()),
                 Err(e) => eprintln!("[minotes-sync] could not prune stale {}: {e}", file.abs.display()),
+            }
+        }
+
+        // Folder markers.
+        for d in &scan.dirs {
+            // Git conflict copies of a marker (two devices wrote the same folder
+            // dir, e.g. right after upgrading): the in-place marker wins and the
+            // other id is adopted by name on import, so the copies are just noise.
+            if let Ok(rd) = fs::read_dir(root.join(d)) {
+                for e in rd.flatten() {
+                    let name = e.file_name().to_string_lossy().to_string();
+                    if name.starts_with(".minotes-folder.conflict-") && name.ends_with(".json") {
+                        let rel = d.join(&name);
+                        if move_to_sync_trash(root, &rel, &stamp).is_ok() {
+                            pruned.push(rel.display().to_string());
+                        }
+                    }
+                }
+            }
+            let Some(m) = read_folder_marker(root, d) else { continue };
+            let stale = if trashed_folders.contains(&m.id) {
+                true
+            } else if let Some(exp) = planned_folders.get(&m.id) {
+                d != *exp
+            } else if known_folders.contains(&m.id) {
+                false // archived folder: leave untouched
+            } else {
+                previously_exported.contains(&m.id)
+            };
+            if stale {
+                let rel = d.join(FOLDER_MARKER);
+                match move_to_sync_trash(root, &rel, &stamp) {
+                    Ok(()) => pruned.push(rel.display().to_string()),
+                    Err(e) => eprintln!("[minotes-sync] could not prune stale {}: {e}", rel.display()),
+                }
             }
         }
 
@@ -216,8 +457,36 @@ impl Database {
             }
         }
 
+        // Whiteboard sidecars.
+        let mut live_and_archived: Vec<Uuid> = plan.pages.iter().map(|(p, _)| p.id).collect();
+        live_and_archived.extend(plan.archived_ids.iter().copied());
+        wb_keep.extend(self.whiteboards_on_pages(&live_and_archived)?);
+        let (wb_files, _) = read_whiteboard_files(root);
+        for (rel, f) in &wb_files {
+            let canonical = rel.file_name().and_then(|n| n.to_str()) == Some(format!("{}.json", f.id).as_str());
+            let newer_than_db = match self.get_whiteboard(&f.id).ok().flatten() {
+                Some(w) => ts_newer(&f.updated_at, &w.updated_at),
+                None => true,
+            };
+            let stale = if newer_than_db {
+                false // not imported yet: never drop newer data
+            } else if !canonical {
+                true // conflict copy already absorbed
+            } else {
+                !wb_keep.contains(&f.id)
+            };
+            if stale {
+                match move_to_sync_trash(root, rel, &stamp) {
+                    Ok(()) => pruned.push(rel.display().to_string()),
+                    Err(e) => eprintln!("[minotes-sync] could not prune stale {}: {e}", rel.display()),
+                }
+            }
+        }
+        let _ = fs::remove_dir(root.join(WHITEBOARD_DIR)); // only when empty
+
         let mut ids: Vec<String> = plan.pages.iter().map(|(p, _)| p.id.to_string()).collect();
         ids.extend(plan.archived_ids.iter().filter(|i| known.contains(i)).map(|i| i.to_string()));
+        ids.extend(known_folders.iter().filter(|i| !trashed_folders.contains(i)).map(|i| i.to_string()));
         ids.sort();
         let _ = fs::write(&manifest_path, ids.join("\n") + "\n");
         Ok(pruned)
@@ -343,10 +612,21 @@ impl Database {
             }));
         }
 
+        // Boards referenced by the exported pages (data kept as the stored string).
+        let ids: Vec<Uuid> = pages.iter().map(|p| p.id).collect();
+        let mut wb_ids: Vec<String> = self.whiteboards_on_pages(&ids)?.into_iter().collect();
+        wb_ids.sort();
+        let whiteboards: Vec<WhiteboardFile> = wb_ids
+            .iter()
+            .filter_map(|id| self.get_whiteboard(id).ok().flatten())
+            .map(|w| WhiteboardFile { id: w.id, updated_at: w.updated_at, data: w.data })
+            .collect();
+
         Ok(serde_json::json!({
             "version": "1.0",
             "exported_at": chrono::Utc::now().to_rfc3339(),
             "pages": pages_with_blocks,
+            "whiteboards": whiteboards,
         }))
     }
 
@@ -417,6 +697,10 @@ impl Database {
 
             imported.push(title);
         }
+
+        // Whiteboard sidecars written by `export_markdown` (newer wins).
+        let mut r = crate::repo::sync::SyncResult::default();
+        self.import_whiteboards(input_dir, &mut r);
 
         Ok(imported)
     }
@@ -575,6 +859,32 @@ impl Database {
             html.push_str(&format!("<h1>{}</h1>\n", xml_escape(&page.title)));
 
             for block in &blocks {
+                // A whiteboard block: its drawing is published as a JSON file
+                // next to the page (`whiteboards/<id>.json`) and linked here.
+                let wb_refs = crate::repo::whiteboards::whiteboard_refs(&block.content);
+                if wb_refs.len() == 1 && block.content.trim() == format!("{{{{whiteboard:{}}}}}", wb_refs[0]) {
+                    let id = &wb_refs[0];
+                    match self.get_whiteboard(id).ok().flatten() {
+                        Some(wb) => {
+                            let wb_dir = output_dir.join("whiteboards");
+                            fs::create_dir_all(&wb_dir).map_err(|e| {
+                                crate::error::Error::InvalidInput(format!("Cannot create dir: {e}"))
+                            })?;
+                            fs::write(wb_dir.join(format!("{id}.json")), &wb.data).map_err(|e| {
+                                crate::error::Error::InvalidInput(format!("Write failed: {e}"))
+                            })?;
+                            let rel = format!("whiteboards/{id}.json");
+                            if !published.contains(&rel) {
+                                published.push(rel.clone());
+                            }
+                            html.push_str(&format!(
+                                "<p class=\"minotes-whiteboard\">Whiteboard: <a href=\"{rel}\">{id}.json</a></p>\n"
+                            ));
+                        }
+                        None => html.push_str("<p class=\"minotes-whiteboard\">Whiteboard (empty)</p>\n"),
+                    }
+                    continue;
+                }
                 let escaped = xml_escape(&block.content);
                 // Simple markdown-to-HTML conversion for publishing
                 if escaped.starts_with("# ") {
@@ -863,5 +1173,49 @@ mod tests {
         assert!(dir.path().join("Work/Q1 Goals.md").exists(), "Q1 Goals should be in Work/");
         assert!(dir.path().join("Work/Projects").is_dir(), "Projects subfolder should exist");
         assert!(dir.path().join("Work/Projects/Alpha.md").exists(), "Alpha should be in Work/Projects/");
+    }
+
+    // #2: whiteboards in exports. Markdown keeps the `{{whiteboard:<id>}}` block
+    // and writes `.minotes-whiteboards/<id>.json`, which import reads back; HTML
+    // publishing links a `whiteboards/<id>.json`; JSON export embeds the boards.
+    #[test]
+    fn test_whiteboard_in_markdown_html_and_json_export() {
+        let db = Database::open_in_memory().unwrap();
+        let page = db.create_page("Sketch", None, false, None, "user").unwrap();
+        db.create_block(&page.id, "{{whiteboard:wb-1}}", None, None, "user").unwrap();
+        db.create_block(&page.id, "{{whiteboard:never-saved}}", None, None, "user").unwrap();
+        db.save_whiteboard("wb-1", r#"{"strokes":[[1,2]]}"#).unwrap();
+
+        let dir = temp_dir();
+        db.export_markdown(dir.path()).unwrap();
+        let md = fs::read_to_string(dir.path().join("Sketch.md")).unwrap();
+        assert!(md.contains("{{whiteboard:wb-1}}"));
+        let side: WhiteboardFile = serde_json::from_str(
+            &fs::read_to_string(dir.path().join(WHITEBOARD_DIR).join("wb-1.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(side.data, r#"{"strokes":[[1,2]]}"#);
+        assert!(!dir.path().join(WHITEBOARD_DIR).join("never-saved.json").exists());
+
+        let db2 = Database::open_in_memory().unwrap();
+        db2.import_markdown_dir(dir.path(), "user").unwrap();
+        assert_eq!(db2.get_whiteboard("wb-1").unwrap().unwrap().data, r#"{"strokes":[[1,2]]}"#);
+
+        let site = temp_dir();
+        let published = db.publish_static_site(site.path()).unwrap();
+        assert!(published.contains(&"whiteboards/wb-1.json".to_string()), "{published:?}");
+        let html = fs::read_to_string(site.path().join("Sketch.html")).unwrap();
+        assert!(html.contains("href=\"whiteboards/wb-1.json\""), "{html}");
+        assert!(html.contains("Whiteboard (empty)"));
+        assert_eq!(
+            fs::read_to_string(site.path().join("whiteboards/wb-1.json")).unwrap(),
+            r#"{"strokes":[[1,2]]}"#
+        );
+
+        let json = db.export_json().unwrap();
+        let boards = json["whiteboards"].as_array().unwrap();
+        assert_eq!(boards.len(), 1);
+        assert_eq!(boards[0]["id"], "wb-1");
+        assert_eq!(boards[0]["data"], r#"{"strokes":[[1,2]]}"#);
     }
 }

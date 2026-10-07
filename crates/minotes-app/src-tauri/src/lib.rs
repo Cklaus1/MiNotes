@@ -3,7 +3,7 @@ use std::sync::Mutex;
 use tauri::Emitter;
 
 use minotes_core::db::Database;
-use minotes_core::models::{Block, Card, CssSnippet, Folder, GraphInfo, Highlight, Page, PageTree, Plugin, Property, SrsStats, SyncStatus, Template, VersionInfo};
+use minotes_core::models::{Block, Card, CssSnippet, Folder, GraphInfo, Highlight, Page, PageTree, Plugin, Property, RestoreBlock, SrsStats, SyncStatus, Template, VersionInfo};
 use minotes_core::repo::graph::GraphStats;
 use minotes_core::repo::graphs;
 use minotes_core::repo::archive::ArchiveItem;
@@ -1355,7 +1355,29 @@ fn save_whiteboard(state: State<'_, AppState>, id: String, data: String) -> Resu
     db.save_whiteboard(&id, &data).map(|_| ()).map_err(|e| e.to_string())
 }
 
+/// Delete whiteboards no block, template or undo-able event references any
+/// more. Returns the deleted board ids. (Also runs after empty-trash and
+/// permanent deletes.)
+#[tauri::command]
+fn gc_whiteboards(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.gc_whiteboards().map_err(|e| e.to_string())
+}
+
 // ── End whiteboards ──
+
+// ── Restore blocks (original ids) ──
+
+/// Recreate deleted blocks with their original id/page/parent/position/content
+/// and properties, in one transaction. Payload (snake_case):
+/// `{ blocks: [{ id, page_id, parent_id, content, position, properties: [["k","v"]] }] }`.
+/// Errors if an id already exists, a page is missing, or a parent is neither
+/// existing nor in the list. Returns the restored blocks in input order.
+#[tauri::command]
+fn restore_blocks(state: State<'_, AppState>, blocks: Vec<RestoreBlock>) -> Result<Vec<Block>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.restore_blocks(&blocks, "user").map_err(|e| e.to_string())
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -1548,6 +1570,8 @@ pub fn run() {
             list_pending_todos_with_page_ids,
             get_whiteboard,
             save_whiteboard,
+            gc_whiteboards,
+            restore_blocks,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

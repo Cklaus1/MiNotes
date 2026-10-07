@@ -84,7 +84,43 @@ impl Database {
     /// `undo.*` records are skipped. The original event is marked `undone=1`
     /// rather than deleted so the audit log stays intact and a future `redo` can
     /// find it. The whole undo is atomic.
+    ///
+    /// An event that can no longer be reversed (a block deletion whose page has
+    /// since been deleted) must not wedge the undo stack: it is marked `undone`
+    /// with an `undo.skipped` record carrying the reason, and an
+    /// `InvalidInput("Cannot undo ...")` error is returned for the caller to
+    /// surface. The NEXT `undo_last` call proceeds with the previous event.
     pub fn undo_last(&self, actor: &str) -> Result<Option<i64>> {
+        let mut skipped: Option<(Event, String)> = None;
+        let out = self.undo_last_inner(actor, &mut skipped)?;
+        if let Some((event, reason)) = skipped {
+            self.tx(|| {
+                self.emit_event(
+                    "undo.skipped",
+                    &event.entity_id,
+                    &event.entity_type,
+                    &serde_json::json!({
+                        "event_id": event.id,
+                        "event_type": event.event_type,
+                        "reason": reason,
+                    }),
+                    actor,
+                )?;
+                self.conn.execute(
+                    "UPDATE events SET undone = 1 WHERE id = ?1",
+                    rusqlite::params![event.id],
+                )?;
+                Ok(())
+            })?;
+            return Err(Error::InvalidInput(format!(
+                "Cannot undo {}: {reason}. It was skipped; undo again to continue with the previous action",
+                event.event_type
+            )));
+        }
+        Ok(out)
+    }
+
+    fn undo_last_inner(&self, actor: &str, skipped: &mut Option<(Event, String)>) -> Result<Option<i64>> {
         self.tx(|| {
             let event = {
                 let mut stmt = self.conn.prepare(
@@ -120,6 +156,18 @@ impl Database {
                         .and_then(|v| serde_json::from_value(v.clone()).ok())
                         .unwrap_or_default();
                     if let Some(root) = root {
+                        let page_exists: bool = self.conn.query_row(
+                            "SELECT EXISTS(SELECT 1 FROM pages WHERE id = ?1)",
+                            rusqlite::params![root.page_id.to_string()],
+                            |row| row.get(0),
+                        )?;
+                        if !page_exists {
+                            *skipped = Some((
+                                event.clone(),
+                                format!("page {} no longer exists", root.page_id),
+                            ));
+                            return Ok(None);
+                        }
                         let mut restored = Vec::new();
                         for b in std::iter::once(&root).chain(subtree.iter()) {
                             if self.restore_block_row(b)? {
@@ -312,5 +360,47 @@ mod tests {
     fn test_undo_nothing() {
         let db = Database::open_in_memory().unwrap();
         assert_eq!(db.undo_last("user").unwrap(), None);
+    }
+
+    // An undo that can't be applied (its page was permanently deleted) is
+    // reported once, marked undone with a reason, and does NOT block the stack:
+    // the next undo proceeds with the previous action.
+    #[test]
+    fn test_undo_skips_unrestorable_block_delete() {
+        let db = Database::open_in_memory().unwrap();
+        let keep = db.create_page("Keep", None, false, None, "user").unwrap();
+        let kb = db.create_block(&keep.id, "keep me", None, None, "user").unwrap();
+        db.update_block(&kb.id, Some("edited"), "user").unwrap();
+        let gone = db.create_page("Gone", None, false, None, "user").unwrap();
+        let gb = db.create_block(&gone.id, "x", None, None, "user").unwrap();
+        db.delete_block(&gb.id, "user").unwrap();
+        db.permanently_delete_page(&gone.id, "user").unwrap();
+        // Newest undoable event is page.deleted (a no-op undo); then block.deleted.
+        db.undo_last("user").unwrap().unwrap();
+
+        let err = db.undo_last("user").unwrap_err().to_string();
+        assert!(err.contains("no longer exists"), "{err}");
+        let (undone, skipped): (i64, i64) = db
+            .conn
+            .query_row(
+                "SELECT (SELECT undone FROM events WHERE event_type = 'block.deleted'),
+                        (SELECT COUNT(*) FROM events WHERE event_type = 'undo.skipped')",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((undone, skipped), (1, 1));
+
+        // Not stuck: the next undos walk on (block.created of the gone page's
+        // block is harmless, then page.created of Gone, then Keep's edit).
+        let mut restored = false;
+        for _ in 0..4 {
+            db.undo_last("user").unwrap();
+            if db.get_block(&kb.id).unwrap().map(|b| b.content == "keep me").unwrap_or(false) {
+                restored = true;
+                break;
+            }
+        }
+        assert!(restored, "earlier edit was undone after the skipped event");
     }
 }

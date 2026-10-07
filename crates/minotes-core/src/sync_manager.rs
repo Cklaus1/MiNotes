@@ -7,7 +7,9 @@
 //! 2. (no lock)  pull --rebase (auto-resolving conflicts), push.
 //! 3. (DB lock) import files → DB, but ONLY if HEAD moved past the last imported
 //!    commit, and never overwrite a page edited locally after phase 1's export.
-//!    Pages whose file was deleted by the pull are moved to trash.
+//!    Pages whose file was deleted by the pull are moved to trash, and so are
+//!    folders whose `.minotes-folder.json` it deleted. Whiteboard sidecars
+//!    (`.minotes-whiteboards/`) are imported when newer than the local board.
 //!
 //! The last imported commit is persisted in `.git/minotes-sync-state.json`, so an
 //! import that failed or was interrupted is retried on the next cycle.
@@ -183,6 +185,8 @@ pub struct PendingImport {
     pub head: String,
     /// Pages whose file was deleted between the last imported commit and `head`.
     pub removed_page_ids: Vec<Uuid>,
+    /// Folders whose `.minotes-folder.json` was deleted in that range.
+    pub removed_folder_ids: Vec<Uuid>,
 }
 
 // ── Public API ──
@@ -378,10 +382,26 @@ pub fn pending_import(sync_dir: &Path) -> Result<Option<PendingImport>> {
         return Ok(None);
     }
     let mut removed_page_ids = Vec::new();
+    let mut removed_folder_ids = Vec::new();
     if let Some(old) = st.imported_head.as_deref() {
         if git_cmd::commit_exists(sync_dir, old) {
             for path in git_cmd::deleted_files_between(sync_dir, old, &head)? {
-                let hidden = Path::new(&path)
+                let p = Path::new(&path);
+                let hidden_dir = p
+                    .parent()
+                    .map(|d| d.components().any(|c| c.as_os_str().to_string_lossy().starts_with('.')))
+                    .unwrap_or(false);
+                if !hidden_dir
+                    && p.file_name().and_then(|n| n.to_str()) == Some(crate::repo::export::FOLDER_MARKER)
+                {
+                    if let Some(content) = git_cmd::show_file_at(sync_dir, old, &path)? {
+                        if let Ok(m) = serde_json::from_str::<crate::repo::export::FolderMarker>(&content) {
+                            removed_folder_ids.push(m.id);
+                        }
+                    }
+                    continue;
+                }
+                let hidden = p
                     .components()
                     .any(|c| c.as_os_str().to_string_lossy().starts_with('.'));
                 if hidden || !path.ends_with(".md") {
@@ -395,7 +415,7 @@ pub fn pending_import(sync_dir: &Path) -> Result<Option<PendingImport>> {
             }
         }
     }
-    Ok(Some(PendingImport { head, removed_page_ids }))
+    Ok(Some(PendingImport { head, removed_page_ids, removed_folder_ids }))
 }
 
 /// Phase 3b (DB): import files → DB. Pages edited locally after `protect_after`
@@ -410,6 +430,7 @@ pub fn apply_import(
     let opts = SyncOptions {
         protect_modified_after: protect_after,
         trash_page_ids: pending.removed_page_ids.clone(),
+        trash_folder_ids: pending.removed_folder_ids.clone(),
         ..Default::default()
     };
     let r = db.sync_dir_with(sync_dir, IMPORT_ACTOR, &opts)?;
@@ -745,6 +766,193 @@ mod tests {
             let pa_t = db.get_page(&pa.id).unwrap().unwrap().title;
             let pb_t = db.get_page(&pb.id).unwrap().unwrap().title;
             assert_ne!(pa_t, pb_t);
+        }
+    }
+
+    fn board(db: &Database, id: &str) -> Option<String> {
+        db.get_whiteboard(id).unwrap().map(|w| w.data)
+    }
+
+    // Whiteboards travel as `.minotes-whiteboards/<id>.json` sidecars: A draws, B
+    // sees it; B edits, A sees B's edit; nothing reverts in steady state.
+    #[test]
+    fn test_two_devices_whiteboard_sync() {
+        if !git_cmd::git_available() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let (_remote, a, b) = setup_remote_and_devices(tmp.path());
+        let db_a = Database::open_in_memory().unwrap();
+        let db_b = Database::open_in_memory().unwrap();
+
+        let p = db_a.create_page("Sketches", None, false, None, "user").unwrap();
+        db_a.create_block(&p.id, "{{whiteboard:wb-1}}", None, None, "user").unwrap();
+        db_a.save_whiteboard("wb-1", r#"{"strokes":["A1"]}"#).unwrap();
+        cycle(&a, &db_a);
+        cycle(&b, &db_b);
+        assert_eq!(board(&db_b, "wb-1").as_deref(), Some(r#"{"strokes":["A1"]}"#));
+
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        db_b.save_whiteboard("wb-1", r#"{"strokes":["A1","B2"]}"#).unwrap();
+        cycle(&b, &db_b);
+        cycle(&a, &db_a);
+        assert_eq!(board(&db_a, "wb-1").as_deref(), Some(r#"{"strokes":["A1","B2"]}"#));
+
+        for _ in 0..2 {
+            cycle(&a, &db_a);
+            cycle(&b, &db_b);
+        }
+        for db in [&db_a, &db_b] {
+            assert_eq!(board(db, "wb-1").as_deref(), Some(r#"{"strokes":["A1","B2"]}"#), "no revert");
+        }
+
+        // Concurrent edits: both devices change the board before syncing. The
+        // sidecar conflicts in git; the newer drawing wins on both devices.
+        db_a.save_whiteboard("wb-1", r#"{"strokes":["A-late"]}"#).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        db_b.save_whiteboard("wb-1", r#"{"strokes":["B-later"]}"#).unwrap();
+        cycle(&a, &db_a);
+        cycle(&b, &db_b);
+        cycle(&a, &db_a);
+        cycle(&b, &db_b);
+        for db in [&db_a, &db_b] {
+            assert_eq!(board(db, "wb-1").as_deref(), Some(r#"{"strokes":["B-later"]}"#));
+        }
+    }
+
+    // #4: folder identity on disk — a rename on A renames (not duplicates) the
+    // folder on B; trashing a folder on either side trashes it on the other;
+    // empty folders round-trip.
+    #[test]
+    fn test_two_devices_folder_rename_and_delete() {
+        if !git_cmd::git_available() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let (_remote, a, b) = setup_remote_and_devices(tmp.path());
+        let db_a = Database::open_in_memory().unwrap();
+        let db_b = Database::open_in_memory().unwrap();
+
+        let inbox = db_a.create_folder("Inbox", None, None, None, "user").unwrap();
+        let old = db_a.create_folder("Old", None, None, None, "user").unwrap();
+        let empty = db_a.create_folder("Empty", None, None, None, "user").unwrap();
+        let pi = db_a.create_page("In inbox", None, false, None, "user").unwrap();
+        db_a.move_page_to_folder(&pi.id, Some(&inbox.id), "user").unwrap();
+        let po = db_a.create_page("In old", None, false, None, "user").unwrap();
+        db_a.move_page_to_folder(&po.id, Some(&old.id), "user").unwrap();
+        cycle(&a, &db_a);
+        cycle(&b, &db_b);
+        for f in [&inbox, &old, &empty] {
+            assert_eq!(db_b.get_folder(&f.id).unwrap().unwrap().name, f.name, "same folder id on B");
+        }
+
+        // Rename on A.
+        db_a.rename_folder(&inbox.id, "Outbox", "user").unwrap();
+        cycle(&a, &db_a);
+        cycle(&b, &db_b);
+        assert_eq!(db_b.get_folder(&inbox.id).unwrap().unwrap().name, "Outbox");
+        assert_eq!(db_b.get_page(&pi.id).unwrap().unwrap().folder_id, Some(inbox.id));
+        let names = |db: &Database| {
+            let mut v: Vec<String> = db.list_folders(None).unwrap().into_iter().map(|f| f.name).collect();
+            v.sort();
+            v
+        };
+        assert_eq!(names(&db_b), vec!["Empty", "Old", "Outbox"], "old name must not linger");
+        assert!(!b.join("Inbox").exists());
+
+        // Trash on A → trashed on B (with its page).
+        db_a.trash_folder(&old.id).unwrap();
+        cycle(&a, &db_a);
+        cycle(&b, &db_b);
+        assert!(db_b.list_trash().unwrap().iter().any(|t| t.id == old.id.to_string() && t.item_type == "folder"));
+        assert!(db_b.is_trashed(&po.id).unwrap());
+
+        // Trash an (empty) folder on B → trashed on A.
+        db_b.trash_folder(&empty.id).unwrap();
+        cycle(&b, &db_b);
+        cycle(&a, &db_a);
+        assert!(db_a.list_trash().unwrap().iter().any(|t| t.id == empty.id.to_string()));
+
+        for _ in 0..2 {
+            cycle(&a, &db_a);
+            cycle(&b, &db_b);
+        }
+        for (db, dir) in [(&db_a, &a), (&db_b, &b)] {
+            assert_eq!(names(db), vec!["Outbox"]);
+            assert!(dir.join("Outbox").join(crate::repo::export::FOLDER_MARKER).exists());
+            assert!(!dir.join("Old").exists() && !dir.join("Empty").exists());
+        }
+    }
+
+    // #6: B imports a page and permanently deletes it before B ever exported it.
+    // The file is still pruned (the delete propagates to A as trash) and the page
+    // does not come back on B.
+    #[test]
+    fn test_page_purged_before_first_export_propagates() {
+        if !git_cmd::git_available() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let (_remote, a, b) = setup_remote_and_devices(tmp.path());
+        let db_a = Database::open_in_memory().unwrap();
+        let db_b = Database::open_in_memory().unwrap();
+        let keep = db_a.create_page("Keep", None, false, None, "user").unwrap();
+        let p = db_a.create_page("Doomed", None, false, None, "user").unwrap();
+        db_a.create_block(&p.id, "x", None, None, "user").unwrap();
+        cycle(&a, &db_a);
+        cycle(&b, &db_b); // B imports; B's own export (phase 1) ran BEFORE the import
+        assert!(db_b.get_page(&p.id).unwrap().is_some());
+        db_b.permanently_delete_page(&p.id, "user").unwrap();
+
+        cycle(&b, &db_b);
+        assert!(!b.join("Doomed.md").exists(), "purged page's file pruned");
+        assert!(db_b.get_page(&p.id).unwrap().is_none(), "not re-imported");
+        cycle(&a, &db_a);
+        assert!(db_a.is_trashed(&p.id).unwrap(), "deletion reaches A as trash");
+        assert!(!db_a.is_trashed(&keep.id).unwrap());
+        cycle(&b, &db_b);
+        assert!(db_b.get_page(&p.id).unwrap().is_none());
+    }
+
+    // Both devices created a "Work" folder independently (e.g. folders created
+    // before folder ids were synced): the marker add/add conflict resolves, both
+    // devices converge on ONE folder id, and no conflict-copy marker lingers.
+    #[test]
+    fn test_two_devices_same_named_folder_converges() {
+        if !git_cmd::git_available() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let (_remote, a, b) = setup_remote_and_devices(tmp.path());
+        let db_a = Database::open_in_memory().unwrap();
+        let db_b = Database::open_in_memory().unwrap();
+        let wa = db_a.create_folder("Work", None, None, None, "user").unwrap();
+        let pa = db_a.create_page("From A", None, false, None, "user").unwrap();
+        db_a.move_page_to_folder(&pa.id, Some(&wa.id), "user").unwrap();
+        let wb = db_b.create_folder("Work", None, None, None, "user").unwrap();
+        let pb = db_b.create_page("From B", None, false, None, "user").unwrap();
+        db_b.move_page_to_folder(&pb.id, Some(&wb.id), "user").unwrap();
+
+        for _ in 0..3 {
+            cycle(&a, &db_a);
+            cycle(&b, &db_b);
+        }
+        let fa = db_a.list_folders(None).unwrap();
+        let fb = db_b.list_folders(None).unwrap();
+        assert_eq!((fa.len(), fb.len()), (1, 1), "{fa:?} {fb:?}");
+        assert_eq!(fa[0].id, fb[0].id, "converged on one folder id");
+        for db in [&db_a, &db_b] {
+            assert_eq!(db.get_page(&pa.id).unwrap().unwrap().folder_id, Some(fa[0].id));
+            assert_eq!(db.get_page(&pb.id).unwrap().unwrap().folder_id, Some(fa[0].id));
+        }
+        for dir in [&a, &b] {
+            let leftovers: Vec<_> = std::fs::read_dir(dir.join("Work"))
+                .unwrap()
+                .flatten()
+                .map(|e| e.file_name().to_string_lossy().to_string())
+                .filter(|n| n.contains("conflict"))
+                .collect();
+            assert!(leftovers.is_empty(), "{leftovers:?}");
         }
     }
 }

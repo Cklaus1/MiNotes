@@ -127,8 +127,15 @@ impl Database {
         })
     }
 
-    /// Permanently delete a page (from trash).
+    /// Permanently delete a page (from trash), then collect whiteboards nothing
+    /// references any more (see `gc_whiteboards`).
     pub fn permanently_delete_page(&self, page_id: &Uuid, actor: &str) -> Result<()> {
+        self.purge_page(page_id, actor)?;
+        self.gc_whiteboards_quietly();
+        Ok(())
+    }
+
+    fn purge_page(&self, page_id: &Uuid, actor: &str) -> Result<()> {
         self.tx(|| {
             self.conn.execute(
                 "DELETE FROM trash WHERE page_id = ?1",
@@ -139,8 +146,15 @@ impl Database {
         })
     }
 
-    /// Permanently delete a folder and its pages.
+    /// Permanently delete a folder and its pages, then collect whiteboards
+    /// nothing references any more (see `gc_whiteboards`).
     pub fn permanently_delete_folder(&self, folder_id: &Uuid, actor: &str) -> Result<()> {
+        self.purge_folder(folder_id, actor)?;
+        self.gc_whiteboards_quietly();
+        Ok(())
+    }
+
+    fn purge_folder(&self, folder_id: &Uuid, actor: &str) -> Result<()> {
         self.tx(|| {
             // Bug #30: walk the ENTIRE subtree (subfolders too), not just direct children.
             // `pages.folder_id ON DELETE SET NULL` means subfolder pages would otherwise
@@ -260,7 +274,7 @@ impl Database {
                 // An unparseable id is a real failure, not a nil-UUID delete
                 // that "succeeds" while purging nothing.
                 let Ok(uuid) = Uuid::parse_str(&item.id) else { continue };
-                if self.permanently_delete_folder(&uuid, actor).is_ok() {
+                if self.purge_folder(&uuid, actor).is_ok() {
                     purged += 1;
                 }
             }
@@ -269,11 +283,13 @@ impl Database {
         for item in &items {
             if item.item_type == "page" {
                 let Ok(uuid) = Uuid::parse_str(&item.id) else { continue };
-                if self.permanently_delete_page(&uuid, actor).is_ok() {
+                if self.purge_page(&uuid, actor).is_ok() {
                     purged += 1;
                 }
             }
         }
+        // One GC pass for the whole batch (boards of purged pages).
+        self.gc_whiteboards_quietly();
         Ok(purged)
     }
 

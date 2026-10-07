@@ -22,8 +22,21 @@ impl Database {
         color: Option<&str>,
         actor: &str,
     ) -> Result<Folder> {
+        self.create_folder_with_id(Uuid::now_v7(), name, parent_id, icon, color, actor)
+    }
+
+    /// Create a folder with a caller-supplied id (sync import keeps folder
+    /// identity stable across devices via `.minotes-folder.json`).
+    pub(crate) fn create_folder_with_id(
+        &self,
+        id: Uuid,
+        name: &str,
+        parent_id: Option<&Uuid>,
+        icon: Option<&str>,
+        color: Option<&str>,
+        actor: &str,
+    ) -> Result<Folder> {
         let now = Utc::now();
-        let id = Uuid::now_v7();
 
         // Auto-position at end of siblings
         let parent_str = parent_id.map(|p| p.to_string());
