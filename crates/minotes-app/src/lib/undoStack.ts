@@ -1,14 +1,19 @@
+import type { RestoreBlock } from './api';
+
 interface UndoAction {
-  type: 'create' | 'delete' | 'update' | 'merge' | 'split' | 'reparent';
+  type: 'create' | 'delete' | 'update' | 'merge' | 'reparent';
   blockId: string;
   pageId: string;
   oldContent?: string;
   newContent?: string;
   oldParentId?: string | null;
   newParentId?: string | null;
-  deletedBlock?: { content: string; parentId?: string; position: number };
-  mergedFromId?: string;
-  mergedContent?: string;
+  /**
+   * 'delete' / 'merge': every deleted block (each deleted root plus its whole
+   * subtree, parents-first, with properties). Undo recreates them in one call
+   * with their ORIGINAL ids, parents and positions; redo deletes the roots.
+   */
+  restore?: RestoreBlock[];
   timestamp: number;
 }
 

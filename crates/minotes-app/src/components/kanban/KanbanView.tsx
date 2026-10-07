@@ -171,51 +171,20 @@ export default function KanbanView({ pageId, pageTitle, blocks, onRefreshPage }:
   }, [cardsByColumn, columns, onRefreshPage]);
 
   // Delete with undo toast
-  // Undo restores the whole card subtree (sub-blocks in order, their
-  // properties, and the card's original position). The API has no way to
-  // recreate blocks with their original ids, so restored blocks get new ids.
+  // Undo recreates the whole card subtree with its ORIGINAL ids, parents,
+  // positions and properties (api.restoreBlocks), so backlinks and
+  // ((block refs)) to the card keep resolving.
   const handleDeleteCard = useCallback(async (block: Block) => {
-    type Node = { block: Block; props: api.Property[]; children: Node[] };
-    const byParent = new Map<string, Block[]>();
-    for (const b of blocks) {
-      if (!b.parent_id) continue;
-      const list = byParent.get(b.parent_id) ?? [];
-      list.push(b);
-      byParent.set(b.parent_id, list);
-    }
-    const snapshot = async (b: Block): Promise<Node> => {
-      const props = await api.getProperties(b.id).catch(() => [] as api.Property[]);
-      const kids = (byParent.get(b.id) ?? []).slice().sort((x, y) => x.position - y.position);
-      return { block: b, props: props ?? [], children: await Promise.all(kids.map(snapshot)) };
-    };
-    const restore = async (node: Node, parentId: string | undefined): Promise<Block> => {
-      const created = await api.createBlock(pageId, node.block.content, parentId);
-      for (const p of node.props) {
-        await api.setProperty(created.id, p.entity_type || "block", p.key, p.value ?? "", p.value_type);
-      }
-      // Children are created in their original order, so relative order is preserved.
-      for (const child of node.children) await restore(child, created.id);
-      return created;
-    };
-
-    let tree: Node;
-    try {
-      tree = await snapshot(block);
-    } catch {
-      tree = { block, props: [], children: [] };
-    }
+    const snapshot = await api.snapshotSubtrees([block.id], blocks).catch(() => null);
     const content = block.content;
-    const parentId = block.parent_id ?? undefined;
-    const position = block.position;
     api.deleteBlock(block.id).then(() => {
       onRefreshPage();
-      showToast(`Deleted "${extractLabel(content)}"`, async () => {
-        const root = await restore(tree, parentId);
-        // Put the card back where it was in its column.
-        await api.reorderBlock(root.id, parentId, position).catch(() => {});
-      });
+      showToast(
+        `Deleted "${extractLabel(content)}"`,
+        snapshot ? () => api.restoreBlocks(snapshot) : undefined,
+      );
     }).catch(() => {});
-  }, [blocks, pageId, onRefreshPage, showToast]);
+  }, [blocks, onRefreshPage, showToast]);
 
   const handleDeleteColumn = useCallback((column: Block, cardCount: number) => {
     const title = extractLabel(column.content);

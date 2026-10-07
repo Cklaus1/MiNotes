@@ -15,7 +15,6 @@ import PdfViewer from "./components/PdfViewer";
 import MobileNav from "./components/MobileNav";
 import ObsidianPluginBrowser from "./components/ObsidianPluginBrowser";
 import CssSnippetManager from "./components/CssSnippetManager";
-import CustomViewContainer from "./components/CustomViewContainer";
 import SettingsPanel from "./components/SettingsPanel";
 import FolderSettingsPanel from "./components/FolderSettingsPanel";
 import * as api from "./lib/api";
@@ -26,6 +25,7 @@ import { initTestApi, registerTestApi } from "./lib/testApi";
 import { loadEnabledSnippets } from "./lib/cssLoader";
 import { isOnboardingComplete, markOnboardingComplete, TUTORIAL_BLOCKS } from "./lib/onboarding";
 import { executeUndo, executeRedo } from "./lib/undoManager";
+import { undoStack } from "./lib/undoStack";
 import { showToast } from "./lib/toast";
 import { getSettings } from "./lib/settings";
 
@@ -45,7 +45,6 @@ export default function App() {
   const [pdfViewerPath, setPdfViewerPath] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [mobileTab, setMobileTab] = useState("pages");
-  const [customViews, setCustomViews] = useState<Array<{ type: string; displayText: string; containerEl: HTMLElement }>>([]);
   const [lastError, setLastError] = useState<string | null>(null);
   const [rightSidebarPanels, setRightSidebarPanels] = useState<Array<{id: string, title: string}>>([]);
   const [rightSidebarVisible, setRightSidebarVisible] = useState(true);
@@ -230,7 +229,18 @@ export default function App() {
 
   const deleteBlock = useCallback(async (id: string) => {
     try {
+      // Snapshot the block's subtree (deleteBlock cascades) so Ctrl+Z restores
+      // it with its original ids. Uses a fresh tree: activePage.blocks lags
+      // PageView's optimistic creates.
+      const restore = activePage
+        ? await api.getPageTree(activePage.page.id)
+            .then(tree => api.snapshotSubtrees([id], tree.blocks))
+            .catch(() => [] as api.RestoreBlock[])
+        : [];
       await api.deleteBlock(id);
+      if (activePage && restore.length > 0) {
+        undoStack.push({ type: 'delete', blockId: id, pageId: activePage.page.id, restore, timestamp: Date.now() });
+      }
       if (activePage) await openPage(activePage.page.id);
     } catch (e) {
       console.error("Failed to delete block:", e);
@@ -651,14 +661,6 @@ export default function App() {
                   });
                 }
               } : undefined}
-            />
-          )}
-          {customViews.length > 0 && (
-            <CustomViewContainer
-              views={customViews}
-              onClose={(type) => {
-                setCustomViews(prev => prev.filter(v => v.type !== type));
-              }}
             />
           )}
           {activePage ? (

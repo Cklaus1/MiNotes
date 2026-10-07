@@ -56,6 +56,20 @@ export default function PageView({
     pendingEditsRef.current.set(id, { content, at: Date.now() });
   };
   const reconciledPageIdRef = useRef(pageTree.page.id);
+  // Undo/redo rewrote these blocks on the backend: drop their optimistic
+  // bookkeeping so the refreshed tree (e.g. a restored, recently merged-away
+  // block) isn't masked for PENDING_TTL_MS.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      for (const id of (e as CustomEvent<{ ids: string[] }>).detail?.ids ?? []) {
+        pendingEditsRef.current.delete(id);
+        pendingDeletesRef.current.delete(id);
+        pendingCreatesRef.current.delete(id);
+      }
+    };
+    window.addEventListener("minotes-undo-applied", handler);
+    return () => window.removeEventListener("minotes-undo-applied", handler);
+  }, []);
 
   // Sync from props when page changes or blocks update from parent.
   // Same page: reconcile by id instead of wholesale replacement.
@@ -160,8 +174,10 @@ export default function PageView({
   // Only the page's text matters here — keyed on a content string (not the blocks
   // array identity, which changes on every optimistic edit) and debounced.
   const pageText = useMemo(() => blocks.map((b) => b.content).join(" "), [blocks]);
-  // Clear stale suggestions immediately on navigation / when disabled.
+  // Clear stale suggestions immediately on navigation / when disabled, and forget
+  // the previous page's dismissals so they don't hide this page's suggestions.
   useEffect(() => { setSuggestedLinks([]); }, [page.id, linkSuggestionsEnabled]);
+  useEffect(() => { setDismissedLinks(prev => (prev.size ? new Set() : prev)); }, [page.id]);
   useEffect(() => {
     if (!linkSuggestionsEnabled) return;
     // Simple heuristic: suggest pages whose titles share meaningful words with the
@@ -179,6 +195,7 @@ export default function PageView({
       for (const p of allPages) {
         if (p.id === page.id) continue;
         if (existingTitles.has(p.title)) continue;
+        if (pageText.includes(`[[${p.title}]]`)) continue; // already linked here
         const titleWords = p.title.toLowerCase().split(/\s+/).filter(isMeaningful);
         if (titleWords.length === 0) continue;
         const overlap = titleWords.filter((w: string) => contentWords.has(w)).length;
@@ -516,10 +533,11 @@ export default function PageView({
     const current = localBlocksRef.current;
     const idx = current.findIndex(b => b.id === blockId);
     if (idx <= 0) return; // Can't merge first block
-    const block = current[idx];
     const prevBlock = current[idx - 1];
     const mergedContent = prevBlock.content + (content ? "\n" + content : "");
-    undoStack.push({ type: 'delete', blockId, pageId: page.id, deletedBlock: { content: block.content, parentId: block.parent_id, position: block.position }, timestamp: Date.now() });
+    // Snapshot the merged block's subtree (deleteBlock cascades) before it goes,
+    // so undo can bring it back with its original ids.
+    const snapshotP = api.snapshotSubtrees([blockId], current);
     // Optimistically merge + remove locally so a full page refresh isn't needed
     // (the refresh would discard other in-progress optimistic edits).
     markEdited(prevBlock.id, mergedContent);
@@ -529,8 +547,11 @@ export default function PageView({
       .filter(b => b.id !== blockId));
     setFocusBlockId(prevBlock.id);
     try {
+      // The editor text (`content`) may be newer than the last saved block content.
+      const restore = (await snapshotP).map(r => (r.id === blockId ? { ...r, content } : r));
       await api.updateBlock(prevBlock.id, mergedContent);
       await api.deleteBlock(blockId);
+      undoStack.push({ type: 'merge', blockId: prevBlock.id, pageId: page.id, oldContent: prevBlock.content, newContent: mergedContent, restore, timestamp: Date.now() });
     } catch (e) {
       console.error("Backspace merge failed:", e);
       showToast("Could not merge blocks — check connection.");
@@ -1014,14 +1035,38 @@ export default function PageView({
     const toDelete = current.filter(b => selectedBlockIds.has(b.id));
     setSelectedBlockIds(new Set());
     setSelectionAnchor(null);
+    if (toDelete.length === 0) return;
+    // One undo entry for the whole group: every selected block plus its whole
+    // subtree (deleteBlock cascades), parents-first, with properties. Undo
+    // restores them all in one call with their original ids and positions.
+    let snapshot: api.RestoreBlock[] = [];
+    try {
+      snapshot = await api.snapshotSubtrees(toDelete.map(b => b.id), current);
+    } catch (e) {
+      console.error("deleteSelected snapshot failed:", e);
+    }
+    const gone = new Set<string>();
     for (const b of toDelete) {
+      // Already removed as part of an earlier selected ancestor's subtree.
+      if (gone.has(b.id)) continue;
       try {
         await api.deleteBlock(b.id);
-        // Undoable: one 'delete' entry per block (Ctrl+Z restores them one at a time).
-        undoStack.push({ type: 'delete', blockId: b.id, pageId: page.id, deletedBlock: { content: b.content, parentId: b.parent_id, position: b.position }, timestamp: Date.now() });
+        // Mark this block's whole subtree as deleted.
+        let grew = true;
+        gone.add(b.id);
+        while (grew) {
+          grew = false;
+          for (const s of snapshot) {
+            if (s.parent_id && gone.has(s.parent_id) && !gone.has(s.id)) { gone.add(s.id); grew = true; }
+          }
+        }
       } catch (e) {
         console.error("deleteSelected failed:", e);
       }
+    }
+    const restore = snapshot.filter(s => gone.has(s.id));
+    if (restore.length > 0) {
+      undoStack.push({ type: 'delete', blockId: restore[0].id, pageId: page.id, restore, timestamp: Date.now() });
     }
     onRefreshPage();
   }, [selectedBlockIds, onRefreshPage, page.id]);

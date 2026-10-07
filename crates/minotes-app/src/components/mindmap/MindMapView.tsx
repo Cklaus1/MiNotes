@@ -177,15 +177,23 @@ function MindMapInner({ pageId, pageTitle, isJournal, journalDate, blocks, onClo
       );
 
       if (t < 1) rafId = requestAnimationFrame(tick);
-      else setEdges(layoutEdges);
+      else { clearTimeout(settleTimer); setEdges(layoutEdges); }
     }
 
     // Tracked so a newer layout (or unmount) cancels this loop instead of
     // letting two animation loops fight over node positions.
     let rafId = requestAnimationFrame(tick);
+    // rAF doesn't fire in a hidden tab or a frameless (headless/GPU-less)
+    // renderer; make sure the new layout still lands once the animation is due.
+    const settleTimer = setTimeout(() => {
+      cancelAnimationFrame(rafId);
+      setNodes(layoutNodes);
+      setEdges(layoutEdges);
+    }, duration + 150);
     setEdges(layoutEdges);
     return () => {
       cancelAnimationFrame(rafId);
+      clearTimeout(settleTimer);
       if (isNewTimer) clearTimeout(isNewTimer);
     };
   }, [layoutNodes, layoutEdges, setNodes, setEdges]);

@@ -108,6 +108,76 @@ export const updateBlock = (id: string, content: string) =>
 export const deleteBlock = (id: string) =>
   invoke<boolean>("delete_block", { id });
 
+/** A deleted block as snapshotted for undo: recreated with its ORIGINAL id. */
+export interface RestoreBlock {
+  id: string;
+  page_id: string;
+  parent_id?: string | null;
+  content: string;
+  position: number;
+  /** [key, value] pairs re-applied to the restored block. */
+  properties: Array<[string, string]>;
+}
+
+/**
+ * Recreate previously deleted blocks with their original ids, parents,
+ * positions, content and properties, in one transaction. `blocks` must be
+ * ordered parents-first. Rejects if an id already exists, a parent is neither
+ * existing nor in the batch, or a page is missing.
+ */
+export const restoreBlocks = (blocks: RestoreBlock[]) =>
+  invoke<Block[]>("restore_blocks", { blocks });
+
+/**
+ * Snapshot `rootIds` and all their descendants (from `pageBlocks`, the page's
+ * current blocks) parents-first, with properties, ready for `restoreBlocks`.
+ * Roots nested inside another root's subtree are captured once.
+ */
+export async function snapshotSubtrees(rootIds: string[], pageBlocks: Block[]): Promise<RestoreBlock[]> {
+  const children = new Map<string, Block[]>();
+  for (const b of pageBlocks) {
+    if (!b.parent_id) continue;
+    const list = children.get(b.parent_id) ?? [];
+    list.push(b);
+    children.set(b.parent_id, list);
+  }
+  const kidsOf = (id: string) => (children.get(id) ?? []).slice().sort((x, y) => x.position - y.position);
+  // Collect every block in the roots' subtrees (cycle-safe).
+  const inSet = new Set<string>();
+  const stack = pageBlocks.filter(b => rootIds.includes(b.id));
+  while (stack.length > 0) {
+    const b = stack.pop()!;
+    if (inSet.has(b.id)) continue;
+    inSet.add(b.id);
+    stack.push(...kidsOf(b.id));
+  }
+  // BFS from the top-most blocks (parent outside the set), so every parent is
+  // emitted before its children even when one root sits under another.
+  const queue = pageBlocks
+    .filter(b => inSet.has(b.id) && !(b.parent_id && inSet.has(b.parent_id)))
+    .sort((x, y) => x.position - y.position);
+  const result: Block[] = [];
+  const emitted = new Set<string>();
+  while (queue.length > 0) {
+    const b = queue.shift()!;
+    if (emitted.has(b.id)) continue;
+    emitted.add(b.id);
+    result.push(b);
+    queue.push(...kidsOf(b.id));
+  }
+  return Promise.all(result.map(async b => {
+    const props = await getProperties(b.id).catch(() => [] as Property[]);
+    return {
+      id: b.id,
+      page_id: b.page_id,
+      parent_id: b.parent_id ?? null,
+      content: b.content,
+      position: b.position,
+      properties: props.map(p => [p.key, p.value ?? ""] as [string, string]),
+    };
+  }));
+}
+
 // Search
 export const search = (query: string, limit?: number) =>
   invoke<Block[]>("search_blocks", { query, limit: limit ?? 20 });

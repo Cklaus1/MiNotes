@@ -389,7 +389,6 @@ BEFORE=$(api "getBlockCount()" | tr -d '"')
 [[ "$BEFORE" -ge 3 ]] 2>/dev/null && pass "Page has $BEFORE blocks" || fail "Too few blocks" "$BEFORE"
 
 step "I delete the last block"
-ev "(async()=>{const api=await import('/src/lib/api.ts');const b=window.__MINOTES__?.getBlocks();if(b&&b.length>0){const last=b[b.length-1];await api.deleteBlock(last.content?'':'skip');return 'attempted';}return 'no blocks'})()" > /dev/null 2>&1
 # Actually use the test API's known block to delete
 LAST_IDX=$((BEFORE - 1))
 LAST_CONTENT=$(api "getBlockContent($LAST_IDX)" | tr -d '"')
@@ -1091,9 +1090,17 @@ TRIGGER=$(ev "!!document.querySelector('.mm-minimap-trigger, .mm-minimap-hover-a
 [[ "$TRIGGER" == "true" ]] && pass "MiniMap trigger zone present" || fail "No MiniMap trigger zone" "$TRIGGER"
 
 step "I can switch layout direction"
-ev "document.querySelectorAll('.mindmap-toolbar .btn-sm').forEach(b => { if(b.textContent==='TB') b.click() })" > /dev/null 2>&1
-sleep 1
-pass "Layout switched to vertical"
+# Layout signature: distinct node x / y coordinates. Horizontal (LR) puts all
+# siblings in one column (few x, many y); vertical (TB) in one row (many x, few y).
+MM_SIG="(()=>{const ps=[...document.querySelectorAll('.react-flow__node')].map(n=>/translate\\(([-\\d.]+)px, *([-\\d.]+)px\\)/.exec(n.style.transform)).filter(Boolean);return new Set(ps.map(m=>Math.round(+m[1]))).size+':'+new Set(ps.map(m=>Math.round(+m[2]))).size})()"
+SIG_BEFORE=$(ev "$MM_SIG" | tr -d '"')
+ev "(()=>{for(const b of document.querySelectorAll('.mindmap-toolbar .btn-sm')){if(b.textContent.includes('Layout')){b.click();return 'menu'}}return 'none'})()" > /dev/null 2>&1
+sleep 0.5
+ev "(()=>{for(const b of document.querySelectorAll('.mindmap-dropdown button')){if(b.textContent.includes('Vertical')){b.click();return 'tb'}}return 'none'})()" > /dev/null 2>&1
+sleep 1.5
+SIG_AFTER=$(ev "$MM_SIG" | tr -d '"')
+BX=${SIG_BEFORE%%:*}; BY=${SIG_BEFORE##*:}; AX=${SIG_AFTER%%:*}; AY=${SIG_AFTER##*:}
+[[ "$BX" -lt "$BY" && "$AX" -gt "$AY" ]] 2>/dev/null && pass "Layout switched to vertical (distinct x:y $SIG_BEFORE → $SIG_AFTER)" || fail "Layout didn't switch" "$SIG_BEFORE → $SIG_AFTER"
 
 step "I close the mind map with Escape"
 $AB press "Escape" 2>/dev/null; sleep 1
@@ -1376,8 +1383,11 @@ TITLES=$(ev "(()=>{
 [[ -n "$TITLES" ]] && pass "Column titles: $TITLES" || fail "Column titles empty" ""
 
 step "I see cards in columns (child blocks)"
+# Getting Started is flat, so every card count must match the page's actual
+# column-children (0 here); the nested-card tests use a dedicated board below.
 CARD_COUNT=$(ev "document.querySelectorAll('.kanban-card').length" | tr -d '"')
-[[ "$CARD_COUNT" -ge 1 ]] 2>/dev/null && pass "Cards rendered ($CARD_COUNT)" || pass "Page may have no child blocks (columns only)"
+EXPECTED_CARDS=$(ev "(async()=>{const api=await import('/src/lib/api.ts');const t=await api.getPageTree('Getting Started');const cols=new Set(t.blocks.filter(b=>!b.parent_id&&b.content.trim()!=='---').map(b=>b.id));return t.blocks.filter(b=>b.parent_id&&cols.has(b.parent_id)&&b.content.trim()!=='---').length})()" | tr -d '"')
+[[ -n "$CARD_COUNT" && "$CARD_COUNT" == "$EXPECTED_CARDS" ]] && pass "Cards rendered match child blocks ($CARD_COUNT)" || fail "Card count wrong" "rendered=$CARD_COUNT expected=$EXPECTED_CARDS"
 
 ss "36-kanban-board"
 
@@ -1413,122 +1423,121 @@ sleep 1
 COLOR_BAR=$(ev "!!document.querySelector('.kanban-color-bar')" | tr -d '"')
 [[ "$COLOR_BAR" == "true" ]] && pass "Column color bar applied" || fail "Color not applied" "$COLOR_BAR"
 
-step "Cards in colored column have matching border"
-CARD_BORDER=$(ev "(()=>{
-  const cards = document.querySelectorAll('.kanban-card');
-  for (const c of cards) {
-    if (c.style.borderLeftColor || c.style.borderLeftWidth) return 'has-color';
-  }
-  return cards.length > 0 ? 'no-color' : 'no-cards';
-})()" | tr -d '"')
-if [[ "$CARD_BORDER" == "has-color" ]]; then pass "Card border matches column color"
-elif [[ "$CARD_BORDER" == "no-cards" ]]; then pass "Card color check skipped (no cards on board)"
-else fail "Card border has no column color" "$CARD_BORDER"; fi
-
 ss "36-kanban-colors"
 
-step "I use a page with nested blocks for card tests"
-# Close kanban, go to Project Alpha (has child blocks), reopen kanban
-$AB press "Escape" 2>/dev/null; sleep 0.5
-$AB press "Escape" 2>/dev/null; sleep 1
-api "navigateTo('Project Alpha')" > /dev/null; sleep 2
+step "I build a real project board: columns with nested cards (and card sub-items)"
+ev "document.querySelector('.canvas-back-btn')?.click()" > /dev/null 2>&1; sleep 1
+KB_SEED=$(ev "(async()=>{
+  const api = await import('/src/lib/api.ts');
+  const p = await api.createPage('Kanban Journey');
+  const todo = await api.createBlock(p.id, 'Todo');
+  const doing = await api.createBlock(p.id, 'Doing');
+  const done = await api.createBlock(p.id, 'Done');
+  await api.createBlock(p.id, 'Write spec', todo.id);
+  const bug = await api.createBlock(p.id, 'Fix login bug', todo.id);
+  const s1 = await api.createBlock(p.id, 'Repro steps', bug.id);
+  const s2 = await api.createBlock(p.id, 'Patch auth', bug.id);
+  await api.setProperty(bug.id, 'block', 'priority', 'high');
+  await api.createBlock(p.id, 'Review PR', doing.id);
+  await api.createBlock(p.id, 'Ship v1', done.id);
+  window.__KB = { page: p.id, todo: todo.id, bug: bug.id, bugPos: bug.position, subs: [s1.id, s2.id] };
+  return 'seeded';
+})()" | tr -d '"')
+api "navigateTo('Kanban Journey')" > /dev/null; sleep 2
 ev "(()=>{
   const btns = document.querySelectorAll('.stats-mode-btn');
   for (const b of btns) { if (b.textContent?.includes('Kanban')) { b.click(); return 'clicked'; } }
 })()" > /dev/null 2>&1
 sleep 3
 CARD_COUNT=$(ev "document.querySelectorAll('.kanban-card').length" | tr -d '"')
-[[ "$CARD_COUNT" -ge 1 ]] 2>/dev/null && pass "Cards found on Project Alpha ($CARD_COUNT)" || {
-  # If no cards, create some nested blocks for testing
-  $AB press "Escape" 2>/dev/null; sleep 0.5
-  $AB press "Escape" 2>/dev/null; sleep 1
-  # Add child blocks to the first block using test API
-  ev "(()=>{
-    const blocks = window.__MINOTES__?.getBlocks?.() || [];
-    if (blocks.length > 0) {
-      // We'll test with whatever the page has
-      return 'using existing ' + blocks.length;
-    }
-    return 'no blocks';
-  })()" > /dev/null 2>&1
-  pass "Using available blocks for card tests"
-  ev "(()=>{
-    const btns = document.querySelectorAll('.stats-mode-btn');
-    for (const b of btns) { if (b.textContent?.includes('Kanban')) { b.click(); return 'clicked'; } }
-  })()" > /dev/null 2>&1
-  sleep 3
-}
+COL_COUNT=$(ev "document.querySelectorAll('.kanban-column').length" | tr -d '"')
+[[ "$KB_SEED" == "seeded" && "$COL_COUNT" == "3" && "$CARD_COUNT" == "4" ]] && pass "Board shows 3 columns and 4 cards (sub-items are not cards)" || fail "Kanban board seed wrong" "seed=$KB_SEED cols=$COL_COUNT cards=$CARD_COUNT"
+SUBCOUNT=$(ev "(()=>{const t=[...document.querySelectorAll('.kanban-card-text')].find(e=>e.textContent==='Fix login bug');return t?.closest('.kanban-card')?.querySelector('.kanban-sub-count')?.textContent||'none'})()" | tr -d '"')
+[[ "$SUBCOUNT" == "2 sub-blocks" ]] && pass "Card shows its 2 sub-items" || fail "Card sub-item count wrong" "$SUBCOUNT"
+
+step "Cards in a colored column get a matching border"
+ev "(()=>{for(const b of document.querySelectorAll('.kanban-column-header .kanban-col-btn')){if(b.textContent.trim()==='●'){b.click();return 'clicked'}}return 'none'})()" > /dev/null 2>&1; sleep 0.5
+ev "document.querySelector('.kanban-color-swatch')?.click()" > /dev/null 2>&1; sleep 1
+CARD_BORDER=$(ev "(()=>{const c=document.querySelector('.kanban-column .kanban-card');return c?(c.style.borderLeftColor||'no-color'):'no-cards'})()" | tr -d '"')
+[[ "$CARD_BORDER" != "no-color" && "$CARD_BORDER" != "no-cards" && -n "$CARD_BORDER" ]] && pass "Card border matches column color ($CARD_BORDER)" || fail "Card border has no column color" "$CARD_BORDER"
 
 step "I right-click a card to see context menu"
-HAS_CARDS=$(ev "document.querySelectorAll('.kanban-card').length" | tr -d '"')
-if [[ "$HAS_CARDS" -ge 1 ]] 2>/dev/null; then
-  ev "(()=>{
-    const card = document.querySelector('.kanban-card');
-    card.dispatchEvent(new MouseEvent('contextmenu', {bubbles:true, clientX:200, clientY:300}));
-    return 'right-clicked';
-  })()" > /dev/null 2>&1
-  sleep 0.5
-  CTX=$(ev "!!document.querySelector('.kanban-ctx-menu')" | tr -d '"')
-  [[ "$CTX" == "true" ]] && pass "Context menu opens" || fail "No context menu" ""
+ev "(()=>{
+  const t = [...document.querySelectorAll('.kanban-card-text')].find(e => e.textContent === 'Fix login bug');
+  t.closest('.kanban-card').dispatchEvent(new MouseEvent('contextmenu', {bubbles:true, clientX:200, clientY:300}));
+  return 'right-clicked';
+})()" > /dev/null 2>&1
+sleep 0.5
+CTX=$(ev "!!document.querySelector('.kanban-ctx-menu')" | tr -d '"')
+[[ "$CTX" == "true" ]] && pass "Context menu opens" || fail "No context menu" ""
 
-  step "Context menu has expected actions"
-  CTX_TEXT=$(ev "document.querySelector('.kanban-ctx-menu')?.textContent || ''" | tr -d '"')
-  echo "$CTX_TEXT" | grep -qi "Delete" && pass "Context menu has Delete" || fail "Missing Delete in context menu" "$CTX_TEXT"
-  echo "$CTX_TEXT" | grep -qi "Edit" && pass "Context menu has Edit" || fail "Missing Edit" "$CTX_TEXT"
+step "Context menu has expected actions"
+CTX_TEXT=$(ev "document.querySelector('.kanban-ctx-menu')?.textContent || ''" | tr -d '"')
+echo "$CTX_TEXT" | grep -qi "Delete" && pass "Context menu has Delete" || fail "Missing Delete in context menu" "$CTX_TEXT"
+echo "$CTX_TEXT" | grep -qi "Edit" && pass "Context menu has Edit" || fail "Missing Edit" "$CTX_TEXT"
 
-  step "I delete a card and see undo toast"
-  ev "(()=>{
-    const btns = document.querySelectorAll('.kanban-ctx-menu button');
-    for (const b of btns) { if (b.textContent?.includes('Delete')) { b.click(); return 'deleted'; } }
-    return 'no delete';
-  })()" > /dev/null 2>&1
-  sleep 1
-  TOAST=$(ev "document.querySelector('.kanban-toast')?.textContent || ''" | tr -d '"')
-  echo "$TOAST" | grep -qi "Deleted\|Undo" && pass "Undo toast appeared" || fail "No undo toast" "$TOAST"
+step "I delete a card (with sub-items) and see undo toast"
+ev "(()=>{
+  const btns = document.querySelectorAll('.kanban-ctx-menu button');
+  for (const b of btns) { if (b.textContent?.includes('Delete')) { b.click(); return 'deleted'; } }
+  return 'no delete';
+})()" > /dev/null 2>&1
+sleep 1
+DEL_STATE=$(ev "(async()=>{const api=await import('/src/lib/api.ts');const t=await api.getPageTree(window.__KB.page);const ids=new Set(t.blocks.map(b=>b.id));return document.querySelectorAll('.kanban-card').length+':'+[window.__KB.bug,...window.__KB.subs].filter(i=>ids.has(i)).length})()" | tr -d '"')
+[[ "$DEL_STATE" == "3:0" ]] && pass "Card and its sub-items deleted (3 cards left)" || fail "Card delete wrong" "cards:remaining-ids=$DEL_STATE"
+TOAST=$(ev "document.querySelector('.kanban-toast')?.textContent || ''" | tr -d '"')
+echo "$TOAST" | grep -q "Deleted.*Fix login bug" && pass "Undo toast appeared ($TOAST)" || fail "No undo toast" "$TOAST"
 
-  step "Undo button is present in toast"
-  UNDO_BTN=$(ev "!!document.querySelector('.kanban-toast-undo')" | tr -d '"')
-  [[ "$UNDO_BTN" == "true" ]] && pass "Undo button visible in toast" || fail "No undo button" ""
+step "Undo button is present in toast"
+UNDO_BTN=$(ev "!!document.querySelector('.kanban-toast-undo')" | tr -d '"')
+[[ "$UNDO_BTN" == "true" ]] && pass "Undo button visible in toast" || fail "No undo button" ""
 
-  step "I click Undo to restore the card"
-  CARDS_BEFORE=$(ev "document.querySelectorAll('.kanban-card').length" | tr -d '"')
-  ev "document.querySelector('.kanban-toast-undo')?.click()" > /dev/null 2>&1; sleep 2
-  CARDS_AFTER=$(ev "document.querySelectorAll('.kanban-card').length" | tr -d '"')
-  [[ "$CARDS_AFTER" -gt "$CARDS_BEFORE" ]] 2>/dev/null && pass "Undo restored card ($CARDS_BEFORE → $CARDS_AFTER)" || fail "Undo didn't restore" "$CARDS_BEFORE → $CARDS_AFTER"
-else
-  pass "No cards on this page — card context menu tests skipped"
-  pass "Card tests require nested blocks (skipped)"
-  pass "Undo toast test skipped (no cards)"
-  pass "Undo button test skipped (no cards)"
-  pass "Undo restore test skipped (no cards)"
-fi
+step "I click Undo to restore the card"
+CARDS_BEFORE=$(ev "document.querySelectorAll('.kanban-card').length" | tr -d '"')
+ev "document.querySelector('.kanban-toast-undo')?.click()" > /dev/null 2>&1; sleep 2
+CARDS_AFTER=$(ev "document.querySelectorAll('.kanban-card').length" | tr -d '"')
+[[ "$CARDS_BEFORE" == "3" && "$CARDS_AFTER" == "4" ]] 2>/dev/null && pass "Undo restored card ($CARDS_BEFORE → $CARDS_AFTER)" || fail "Undo didn't restore" "$CARDS_BEFORE → $CARDS_AFTER"
+
+step "The restored card keeps its original block id, column, position, sub-items and properties"
+RESTORED=$(ev "(async()=>{
+  const api = await import('/src/lib/api.ts');
+  const t = await api.getPageTree(window.__KB.page);
+  const bug = t.blocks.find(b => b.id === window.__KB.bug);
+  if (!bug) return 'card id gone';
+  if (bug.parent_id !== window.__KB.todo) return 'wrong column';
+  if (bug.position !== window.__KB.bugPos) return 'wrong position ' + bug.position;
+  const kids = t.blocks.filter(b => b.parent_id === bug.id).sort((a, b) => a.position - b.position).map(b => b.id);
+  if (kids.join() !== window.__KB.subs.join()) return 'sub-items ' + kids.join();
+  const props = await api.getProperties(bug.id);
+  if (!props.some(p => p.key === 'priority' && p.value === 'high')) return 'property lost';
+  return 'same-id';
+})()" | tr -d '"')
+[[ "$RESTORED" == "same-id" ]] && pass "Undo restored card with SAME id + sub-items + property" || fail "Undo restore not faithful" "$RESTORED"
 
 step "I use the search filter"
-ev "(()=>{
-  const input = document.querySelector('.kanban-search-input');
-  if (!input) return 'no input';
-  input.value = 'Search';
-  input.dispatchEvent(new Event('input', {bubbles:true}));
-  return 'filtered';
-})()" > /dev/null 2>&1
+# React controlled input: set the value through the native setter so onChange fires.
+KB_FILTER="(q)=>{const i=document.querySelector('.kanban-search-input');if(!i)return 'no input';Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(i,q);i.dispatchEvent(new Event('input',{bubbles:true}));return 'ok'}"
+ev "($KB_FILTER)('login')" > /dev/null 2>&1
 sleep 1
-VISIBLE=$(ev "document.querySelectorAll('.kanban-card').length" | tr -d '"')
-pass "Search filter applied ($VISIBLE cards visible)"
+VISIBLE=$(ev "[...document.querySelectorAll('.kanban-card-text')].map(e=>e.textContent).join('|')" | tr -d '"')
+[[ "$VISIBLE" == "Fix login bug" ]] && pass "Search filter narrows 4 cards to 1 ($VISIBLE)" || fail "Search filter not applied" "visible=$VISIBLE"
 
 step "I clear the search"
-ev "(()=>{
-  const input = document.querySelector('.kanban-search-input');
-  if (input) { input.value = ''; input.dispatchEvent(new Event('input',{bubbles:true})); }
-})()" > /dev/null 2>&1
+ev "($KB_FILTER)('')" > /dev/null 2>&1
 sleep 1
+VISIBLE=$(ev "document.querySelectorAll('.kanban-card').length" | tr -d '"')
+[[ "$VISIBLE" == "4" ]] && pass "Clearing search shows all 4 cards again" || fail "Clearing search didn't restore cards" "$VISIBLE"
 
 step "I export the board as markdown"
+# Headless Chrome denies clipboard access: stub writeText to capture the text.
+ev "(()=>{window.__copiedMd=null;Object.defineProperty(navigator.clipboard,'writeText',{configurable:true,value:(t)=>{window.__copiedMd=t;return Promise.resolve()}});return 'stubbed'})()" > /dev/null 2>&1
 ev "document.querySelector('.kanban-toolbar-btn')?.click()" > /dev/null 2>&1; sleep 1
 TOAST=$(ev "document.querySelector('.kanban-toast')?.textContent || ''" | tr -d '"')
-# Deliberately lenient: the toast only appears once navigator.clipboard.writeText
-# resolves, and headless Chrome denies clipboard access, so no toast is expected here.
-echo "$TOAST" | grep -qi "Copied\|markdown\|table" && pass "Export toast confirms copy" || pass "Export triggered (headless clipboard denied, no toast)"
+echo "$TOAST" | grep -q "Copied board as markdown table" && pass "Export toast confirms copy" || fail "No export toast" "$TOAST"
+COPIED=$(ev "(()=>{const m=window.__copiedMd||'';return [m.startsWith('# Kanban Journey'),m.includes('| Todo | Doing | Done |'),m.includes('| Write spec | Review PR | Ship v1 |'),m.includes('| Fix login bug |  |  |')].join(',')})()" | tr -d '"')
+[[ "$COPIED" == "true,true,true,true" ]] && pass "Copied markdown table has the board's columns and cards" || fail "Copied markdown wrong" "$COPIED"
 
+HAS_CARDS=$(ev "document.querySelectorAll('.kanban-card').length" | tr -d '"')
 if [[ "$HAS_CARDS" -ge 1 ]] 2>/dev/null; then
   step "I double-click a card to edit it"
   ev "(()=>{
@@ -1548,22 +1557,21 @@ if [[ "$HAS_CARDS" -ge 1 ]] 2>/dev/null; then
     return 'no editor';
   })()" > /dev/null 2>&1
   sleep 0.5
-  pass "Card editor handled"
+  EDITOR=$(ev "!!document.querySelector('.kanban-card-editor')" | tr -d '"')
+  [[ "$EDITOR" == "false" ]] && pass "Escape closed the card editor" || fail "Card editor still open after Escape" "$EDITOR"
 
   step "I see pencil edit icon on hover"
   PENCIL=$(ev "!!document.querySelector('.kanban-card-edit-btn')" | tr -d '"')
   [[ "$PENCIL" == "true" ]] && pass "Edit pencil button exists" || fail "No edit button" ""
 else
-  pass "Double-click edit test skipped (no cards)"
-  pass "Card editor test skipped (no cards)"
-  pass "Pencil button test skipped (no cards)"
+  fail "Card edit tests" "no cards on the seeded board ($HAS_CARDS)"
 fi
 
 step "I close kanban and return to outliner"
-$AB press "Escape" 2>/dev/null; sleep 0.5
-$AB press "Escape" 2>/dev/null; sleep 1
-S=$(snap)
-echo "$S" | grep -qi "Sprint Board\|Backlog\|Getting Started" && pass "Back to block view" || fail "Did not return to block view" ""
+# Escape does not close the canvas layer; the back button does.
+ev "document.querySelector('.canvas-back-btn')?.click()" > /dev/null 2>&1; sleep 1
+BACK=$(ev "(()=>!document.querySelector('.kanban-container')&&document.querySelectorAll('[data-block-id]').length>0)()" | tr -d '"')
+[[ "$BACK" == "true" ]] && pass "Back to block view" || fail "Did not return to block view" "$BACK"
 
 ss "36-kanban-complete"
 
@@ -1760,8 +1768,10 @@ FAVS2=$(ev "(async()=>{const api=await import('/src/lib/api.ts');return (await a
 [[ "$FAVS2" -lt "$FAVS" ]] && pass "Page unpinned successfully" || fail "Unpin didn't reduce count" "$FAVS2"
 
 step "Reorder pinned pages"
-ev "(async()=>{const api=await import('/src/lib/api.ts');const favs=await api.listFavorites();if(favs.length>0){await api.reorderFavorite(favs[0].id,999);return 'reordered'}return 'none'})()" > /dev/null; sleep 1
-pass "Reorder favorite API call succeeded"
+# Make sure there are 2+ pins, move the first to the end, check the new order.
+REORDER=$(ev "(async()=>{const api=await import('/src/lib/api.ts');let favs=await api.listFavorites();if(favs.length<2){const pages=await api.listPages();const extra=pages.find(p=>!p.is_journal&&!favs.some(f=>f.id===p.id));if(extra)await api.addFavorite(extra.id);favs=await api.listFavorites()}if(favs.length<2)return 'too few pins';const first=favs[0].id;await api.reorderFavorite(first,999);const after=await api.listFavorites();return after[after.length-1].id===first&&after[0].id!==first?'moved':'order '+after.map(f=>f.title).join(',')})()" | tr -d '"')
+sleep 1
+[[ "$REORDER" == "moved" ]] && pass "Reordering moves the first pinned page to the end" || fail "Reorder favorite didn't change order" "$REORDER"
 
 ss "42-pinned-tests"
 
@@ -1771,7 +1781,8 @@ journey "Sync Settings"
 
 step "Check git availability"
 GIT=$(ev "(async()=>{const api=await import('/src/lib/api.ts');return await api.gitAvailable()})()")
-[[ "$GIT" == "true" ]] && pass "Git available" || pass "Git not available (expected in some envs)"
+# Either answer is valid (git may be absent); what must hold is that the command answers.
+[[ "$GIT" == "true" || "$GIT" == "false" ]] && pass "Git availability reported ($GIT)" || fail "gitAvailable() gave no boolean" "$GIT"
 
 step "Sync toggle in settings panel"
 api "openSettings()" > /dev/null; sleep 1
@@ -1892,6 +1903,19 @@ sleep 1
 LINKS_AFTER=$(ev "document.querySelectorAll('.ai-link-chip').length" | tr -d '"')
 STILL_SHOWN=$(ev "[...document.querySelectorAll('.ai-link-chip')].some(c=>c.textContent==='$DISMISSED_TITLE')")
 [[ "$LINKS_BEFORE" -ge 1 && "$LINKS_AFTER" -lt "$LINKS_BEFORE" && "$STILL_SHOWN" == "false" ]] 2>/dev/null && pass "Link suggestion dismissed ($DISMISSED_TITLE)" || fail "Link suggestion dismiss" "before=$LINKS_BEFORE after=$LINKS_AFTER title=$DISMISSED_TITLE shown=$STILL_SHOWN"
+
+step "A dismissal on one page doesn't hide that suggestion on another page"
+# DISMISSED_TITLE is the chip text, e.g. "[[Rust Language Notes]]+x".
+DISMISSED_PAGE=$(echo "$DISMISSED_TITLE" | sed -n 's/^\[\[\(.*\)\]\].*/\1/p')
+ev "(async()=>{const api=await import('/src/lib/api.ts');const p=await api.createPage('Dismissal Carryover');await api.createBlock(p.id,'Notes about ${DISMISSED_PAGE,,}');return 'ok'})()" > /dev/null
+api "navigateTo('Dismissal Carryover')" > /dev/null; sleep 2
+CARRY=$(ev "[...document.querySelectorAll('.ai-link-chip')].some(c=>c.textContent.startsWith('[[${DISMISSED_PAGE}]]'))")
+[[ -n "$DISMISSED_PAGE" && "$CARRY" == "true" ]] && pass "Suggestion '$DISMISSED_PAGE' shown on the new page (dismissals reset per page)" || fail "Old page's dismissal hid a suggestion" "page=$DISMISSED_PAGE shown=$CARRY"
+
+step "Pages already linked on the page are not suggested again"
+api "navigateTo('Rust Programming')" > /dev/null; sleep 2
+RELINK=$(ev "[...document.querySelectorAll('.ai-link-chip')].some(c=>c.textContent.startsWith('[[Systems Design]]'))")
+[[ "$RELINK" == "false" ]] && pass "Already-linked [[Systems Design]] not re-suggested" || fail "Already-linked page suggested again" "$RELINK"
 
 # ═══════════════════════════════════════════════
 journey "48. TODO Extraction — I see my tasks across all notes"
@@ -2059,6 +2083,56 @@ ORDER=$(ev "(async()=>{const api=await import('/src/lib/api.ts');const t=await a
 [[ "$ORDER" == "p2,p3,two,three" ]] && pass "Pasted lines placed after current block" || fail "Paste order wrong" "$ORDER"
 
 ss "51-editor-integrity"
+
+# ═══════════════════════════════════════════════
+journey "52. I delete a group of blocks by mistake — one undo brings them all back"
+# Shift-select → Delete is ONE undo entry; Ctrl+Z restores every block (and
+# nested children + properties) with its original id, parent and position.
+# ═══════════════════════════════════════════════
+
+step "I make a page with nested blocks and a block property"
+ev "(async()=>{const api=await import('/src/lib/api.ts');const p=await api.createPage('Group Delete');const a=await api.createBlock(p.id,'Alpha one');const b=await api.createBlock(p.id,'Bravo two');const b1=await api.createBlock(p.id,'Bravo child',b.id);await api.setProperty(b1.id,'block','status','urgent');const c=await api.createBlock(p.id,'Charlie three');const d=await api.createBlock(p.id,'Delta four');window.__GD={page:p.id};return 'ok'})()" > /dev/null
+api "navigateTo('Group Delete')" > /dev/null; sleep 2
+GD_SIG="(async()=>{const api=await import('/src/lib/api.ts');const t=await api.getPageTree(window.__GD.page);const ps=await Promise.all(t.blocks.map(b=>api.getProperties(b.id)));return t.blocks.map((b,i)=>b.id+'/'+(b.parent_id||'')+'/'+b.position+'/'+b.content+'/'+ps[i].map(p=>p.key+'='+p.value).join('&')).join(';')})()"
+GD_BEFORE=$(ev "$GD_SIG" | tr -d '"')
+N0=$(api "getBlockCount()" | tr -d '"')
+[[ "$N0" == "5" ]] && pass "Group Delete page shows 5 blocks" || fail "Group Delete page wrong" "$N0"
+
+step "I shift-select Bravo..Charlie (incl. Bravo's child) and press Delete"
+ev "document.activeElement?.blur()" > /dev/null
+SEL=$(api "selectBlocks(1, 3)" | tr -d '"')
+ev "document.body.dispatchEvent(new KeyboardEvent('keydown',{key:'Delete',bubbles:true}))" > /dev/null; sleep 1
+LEFT=$(ev "(async()=>{const api=await import('/src/lib/api.ts');const t=await api.getPageTree(window.__GD.page);return t.blocks.map(b=>b.content).join(',')})()" | tr -d '"')
+[[ "$SEL" == "3" && "$LEFT" == "Alpha one,Delta four" ]] && pass "Selected group deleted (left: $LEFT)" || fail "Group delete wrong" "selected=$SEL left=$LEFT"
+
+step "One Ctrl+Z restores the whole group with original ids, order, nesting and properties"
+ev "document.body.dispatchEvent(new KeyboardEvent('keydown',{key:'z',ctrlKey:true,bubbles:true}))" > /dev/null; sleep 2
+GD_AFTER=$(ev "$GD_SIG" | tr -d '"')
+[[ -n "$GD_BEFORE" && "$GD_AFTER" == "$GD_BEFORE" ]] && pass "One undo restored all 3 blocks exactly (ids, parents, positions, properties)" || fail "Group undo not faithful" "before=$GD_BEFORE after=$GD_AFTER"
+N1=$(api "getBlockCount()" | tr -d '"')
+DOM_ORDER=$(ev "window.__MINOTES__.getBlocks().map(b=>b.content).join(',')" | tr -d '"')
+[[ "$N1" == "5" && "$DOM_ORDER" == "Alpha one,Bravo two,Bravo child,Charlie three,Delta four" ]] && pass "Restored blocks render in original order" || fail "Restored blocks not rendered in order" "$N1: $DOM_ORDER"
+
+step "Deleting a parent alone also brings its child back on undo"
+ev "document.activeElement?.blur()" > /dev/null
+api "selectBlocks(1, 1)" > /dev/null
+ev "document.body.dispatchEvent(new KeyboardEvent('keydown',{key:'Delete',bubbles:true}))" > /dev/null; sleep 1
+MID=$(ev "(async()=>{const api=await import('/src/lib/api.ts');const t=await api.getPageTree(window.__GD.page);return t.blocks.length})()" | tr -d '"')
+ev "document.body.dispatchEvent(new KeyboardEvent('keydown',{key:'z',ctrlKey:true,bubbles:true}))" > /dev/null; sleep 2
+GD_AFTER=$(ev "$GD_SIG" | tr -d '"')
+[[ "$MID" == "3" && "$GD_AFTER" == "$GD_BEFORE" ]] && pass "Parent + cascaded child restored with original ids" || fail "Parent undo lost its child" "mid=$MID after=$GD_AFTER"
+
+step "Backspace-merge then undo un-merges and restores the merged block's id"
+DI=$(ev "window.__MINOTES__.getBlocks().findIndex(b=>b.content==='Delta four')" | tr -d '"')
+api "mergeWithPrevious($DI)" > /dev/null; sleep 1
+MERGED=$(ev "(async()=>{const api=await import('/src/lib/api.ts');const t=await api.getPageTree(window.__GD.page);return t.blocks.length})()" | tr -d '"')
+ev "document.activeElement?.blur()" > /dev/null; sleep 0.3
+ev "document.body.dispatchEvent(new KeyboardEvent('keydown',{key:'z',ctrlKey:true,bubbles:true}))" > /dev/null; sleep 2
+GD_AFTER=$(ev "$GD_SIG" | tr -d '"')
+DOM_ORDER=$(ev "window.__MINOTES__.getBlocks().map(b=>b.content).join(',')" | tr -d '"')
+[[ "$MERGED" == "4" && "$GD_AFTER" == "$GD_BEFORE" && "$DOM_ORDER" == "Alpha one,Bravo two,Bravo child,Charlie three,Delta four" ]] && pass "Merge undo restores both blocks exactly" || fail "Merge undo not faithful" "merged=$MERGED after=$GD_AFTER dom=$DOM_ORDER"
+
+ss "52-group-delete-undo"
 
 # ═══════════════════════════════════════════════
 journey "50. Rust backend — count_pending_todos works"

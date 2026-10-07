@@ -9,7 +9,7 @@ import { localDateKey } from "./dates";
 import { countPendingTodos } from "./todoExtractor";
 import type {
   Page, Block, PageTree, Link, GraphStats, Property,
-  FolderTreeRoot, QueryResult, GraphData,
+  FolderTreeRoot, QueryResult, GraphData, RestoreBlock,
 } from "./api";
 
 // ── In-memory store ──
@@ -357,9 +357,49 @@ export const mockHandlers: Record<string, (args: any) => any> = {
     return block;
   },
 
+  // Mirrors core `delete_block`: removes the block, its whole subtree and the
+  // subtree's properties.
   delete_block: ({ id }: { id: string }) => {
-    blocks.delete(id);
+    if (!blocks.has(id)) return false;
+    const doomed = new Set<string>([id]);
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const b of blocks.values()) {
+        if (b.parent_id && doomed.has(b.parent_id) && !doomed.has(b.id)) { doomed.add(b.id); grew = true; }
+      }
+    }
+    for (const bid of doomed) { blocks.delete(bid); properties.delete(bid); }
     return true;
+  },
+
+  // Mirrors core `restore_blocks`: all-or-nothing recreation of deleted blocks
+  // with their original ids/parents/positions/content, then their properties.
+  // Input is parents-first; a parent must already exist or come earlier in it.
+  restore_blocks: ({ blocks: input }: { blocks: RestoreBlock[] }) => {
+    const batch = new Map<string, RestoreBlock>();
+    for (const rb of input) {
+      if (blocks.has(rb.id) || batch.has(rb.id)) throw new Error(`Block already exists: ${rb.id}`);
+      if (!pages.has(rb.page_id)) throw new Error(`Page not found: ${rb.page_id}`);
+      if (rb.parent_id && !blocks.has(rb.parent_id) && !batch.has(rb.parent_id)) {
+        throw new Error(`Parent block not found: ${rb.parent_id}`);
+      }
+      batch.set(rb.id, rb);
+    }
+    const ts = new Date().toISOString();
+    return input.map(rb => {
+      const block: Block = {
+        id: rb.id, page_id: rb.page_id, parent_id: rb.parent_id ?? undefined,
+        position: rb.position, content: rb.content,
+        format: "markdown", collapsed: false, created_at: ts, updated_at: ts,
+      };
+      blocks.set(rb.id, block);
+      properties.set(rb.id, (rb.properties ?? []).map(([key, value]) => ({
+        id: genId(), entity_id: rb.id, entity_type: "block",
+        key, value, value_type: "text", created_at: ts, updated_at: ts,
+      })));
+      return block;
+    });
   },
 
   move_block: ({ id, newParent, position }: { id: string; newParent: string; position: number }) => {
