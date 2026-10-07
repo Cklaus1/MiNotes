@@ -5,3 +5,10 @@
 .minotes.db
 node_modules
 dist
+
+# Local caches and tool state
+cache/
+.vite/
+.claude/worktrees/
+.claude/settings.local.json
+tests/.*.sh
