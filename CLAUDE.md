@@ -28,7 +28,7 @@ crates/
 - **`mockBackend.ts`** — in-memory mock for browser dev/testing. Seeds 6 pages.
 - **`localBlocks` in PageView** — optimistic state for blocks. Prevents full re-render on Enter/edit.
 - **Block tree** — blocks have `parent_id` + `position`. Tree computed in `blockTreeInfo`.
-- **Whiteboard per-block** — content `{{whiteboard:<id>}}`, data in the SQLite `whiteboards` table (`get_whiteboard`/`save_whiteboard`), utils in `lib/whiteboardUtils.ts`. Legacy `minotes-whiteboard-<id>` localStorage entries are imported into the DB on first open (the localStorage copy is kept as a backup). Not yet included in git sync/export or cleaned up when the block is deleted.
+- **Whiteboard per-block** — content `{{whiteboard:<id>}}`, data in the SQLite `whiteboards` table (`get_whiteboard`/`save_whiteboard`), utils in `lib/whiteboardUtils.ts`. Legacy `minotes-whiteboard-<id>` localStorage entries are imported into the DB on first open (the localStorage copy is kept as a backup). Git sync exports each referenced board to `<syncdir>/.minotes-whiteboards/<id>.json` (newer `updated_at` wins); markdown/site export writes the same sidecars. Boards are never deleted with their block (undo must be able to restore it) — `gc_whiteboards()` removes unreferenced ones after empty-trash / permanent deletes.
 - **React Fast Refresh** — component .tsx files must ONLY export React components. Utility exports break HMR.
 
 ## Build & test

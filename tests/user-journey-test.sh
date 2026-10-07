@@ -2132,6 +2132,21 @@ GD_AFTER=$(ev "$GD_SIG" | tr -d '"')
 DOM_ORDER=$(ev "window.__MINOTES__.getBlocks().map(b=>b.content).join(',')" | tr -d '"')
 [[ "$MERGED" == "4" && "$GD_AFTER" == "$GD_BEFORE" && "$DOM_ORDER" == "Alpha one,Bravo two,Bravo child,Charlie three,Delta four" ]] && pass "Merge undo restores both blocks exactly" || fail "Merge undo not faithful" "merged=$MERGED after=$GD_AFTER dom=$DOM_ORDER"
 
+step "Backspace-merging a block that has children keeps the children (re-homed), and undo puts them back"
+# Regression: deleteBlock cascades, so the merge used to delete the merged block's children.
+CHILD_ID=$(ev "(async()=>{const api=await import('/src/lib/api.ts');const t=await api.getPageTree(window.__GD.page);return t.blocks.find(b=>b.content==='Bravo child').id})()" | tr -d '"')
+ALPHA_ID=$(ev "(async()=>{const api=await import('/src/lib/api.ts');const t=await api.getPageTree(window.__GD.page);return t.blocks.find(b=>b.content==='Alpha one').id})()" | tr -d '"')
+BI=$(ev "window.__MINOTES__.getBlocks().findIndex(b=>b.content==='Bravo two')" | tr -d '"')
+api "mergeWithPrevious($BI)" > /dev/null; sleep 1
+AFTER_MERGE=$(ev "(async()=>{const api=await import('/src/lib/api.ts');const t=await api.getPageTree(window.__GD.page);const c=t.blocks.find(b=>b.id==='$CHILD_ID');return t.blocks.length+'|'+(c?c.parent_id:'GONE')+'|'+(t.blocks.some(b=>b.content==='Bravo two')?'bravo-still-there':'bravo-merged')})()" | tr -d '"')
+[[ "$AFTER_MERGE" == "4|$ALPHA_ID|bravo-merged" ]] && pass "Merged block's child survives under the absorbing block (same id)" || fail "Merge lost or misplaced the child" "$AFTER_MERGE (expected 4|$ALPHA_ID|bravo-merged)"
+CHILD_VISIBLE=$(ev "window.__MINOTES__.getBlocks().some(b=>b.content==='Bravo child')" | tr -d '"')
+[[ "$CHILD_VISIBLE" == "true" ]] && pass "Re-homed child is still rendered" || fail "Re-homed child not rendered" "$CHILD_VISIBLE"
+ev "document.activeElement?.blur()" > /dev/null; sleep 0.3
+ev "document.body.dispatchEvent(new KeyboardEvent('keydown',{key:'z',ctrlKey:true,bubbles:true}))" > /dev/null; sleep 2
+GD_AFTER=$(ev "$GD_SIG" | tr -d '"')
+[[ "$GD_AFTER" == "$GD_BEFORE" ]] && pass "Undo restores the merged block and moves its child back (exact)" || fail "Merge-with-children undo not faithful" "before=$GD_BEFORE after=$GD_AFTER"
+
 ss "52-group-delete-undo"
 
 # ═══════════════════════════════════════════════

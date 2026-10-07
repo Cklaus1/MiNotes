@@ -14,6 +14,12 @@ interface UndoAction {
    * with their ORIGINAL ids, parents and positions; redo deletes the roots.
    */
   restore?: RestoreBlock[];
+  /**
+   * 'merge': children of the merged block, re-homed onto the block that absorbed
+   * it (so the merge doesn't cascade-delete them). Undo moves them back under the
+   * restored block; redo re-homes them again before deleting it.
+   */
+  movedChildren?: { id: string; fromParentId: string; fromPosition: number; toParentId: string; toPosition: number }[];
   timestamp: number;
 }
 

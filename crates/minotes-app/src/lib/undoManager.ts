@@ -36,6 +36,7 @@ export async function executeUndo(): Promise<boolean> {
       // then bring the merged block (and its subtree) back.
       if (action.oldContent !== undefined) await api.updateBlock(action.blockId, action.oldContent);
       if (action.restore?.length) await api.restoreBlocks(action.restore);
+      for (const c of action.movedChildren ?? []) await api.moveBlock(c.id, c.fromParentId, c.fromPosition);
       break;
     case 'update':
       if (action.oldContent !== undefined) {
@@ -63,6 +64,8 @@ export async function executeRedo(): Promise<boolean> {
       break;
     case 'merge':
       if (action.newContent !== undefined) await api.updateBlock(action.blockId, action.newContent);
+      // Re-home the children first: deleting the merged block cascades.
+      for (const c of action.movedChildren ?? []) await api.moveBlock(c.id, c.toParentId, c.toPosition);
       for (const id of restoreRoots(action.restore ?? [])) await api.deleteBlock(id);
       break;
     case 'update':

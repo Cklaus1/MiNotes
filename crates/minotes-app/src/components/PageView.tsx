@@ -534,24 +534,61 @@ export default function PageView({
     const idx = current.findIndex(b => b.id === blockId);
     if (idx <= 0) return; // Can't merge first block
     const prevBlock = current[idx - 1];
-    const mergedContent = prevBlock.content + (content ? "\n" + content : "");
-    // Snapshot the merged block's subtree (deleteBlock cascades) before it goes,
-    // so undo can bring it back with its original ids.
-    const snapshotP = api.snapshotSubtrees([blockId], current);
+    const merged = current[idx];
+    // Capture now: block objects can be shared with the backend layer (the mock
+    // returns its stored objects) and get mutated by the updateBlock below.
+    const prevOldContent = prevBlock.content;
+    const mergedContent = prevOldContent + (content ? "\n" + content : "");
+    // deleteBlock cascades, so the merged block's children must be re-homed onto
+    // the absorbing block first or they'd be deleted with it. Keep their visual
+    // order: if prevBlock is the merged block's parent, slot them where the merged
+    // block was (before its later siblings); otherwise append them after
+    // prevBlock's existing (possibly collapsed) children.
+    const children = current.filter(b => b.parent_id === blockId).sort((a, b) => a.position - b.position);
+    let movedChildren: { id: string; fromParentId: string; fromPosition: number; toParentId: string; toPosition: number }[] = [];
+    if (children.length) {
+      const n = children.length;
+      let target: (i: number) => number;
+      if (merged.parent_id === prevBlock.id) {
+        const later = current
+          .filter(b => b.parent_id === prevBlock.id && b.id !== blockId && b.position > merged.position)
+          .map(b => b.position);
+        const lo = merged.position;
+        const hi = later.length ? Math.min(...later) : undefined;
+        target = i => hi === undefined ? lo + i + 1 : lo + ((hi - lo) * (i + 1)) / (n + 1);
+      } else {
+        const existing = current.filter(b => b.parent_id === prevBlock.id).map(b => b.position);
+        const lo = existing.length ? Math.max(...existing) : 0;
+        target = i => lo + i + 1;
+      }
+      movedChildren = children.map((c, i) => ({
+        id: c.id, fromParentId: blockId, fromPosition: c.position, toParentId: prevBlock.id, toPosition: target(i),
+      }));
+    }
+    // Snapshot ONLY the merged block (its children survive, re-homed) before it
+    // goes, so undo can bring it back with its original id.
+    const snapshotP = api.snapshotSubtrees([blockId], current)
+      .then(rs => rs.filter(r => r.id === blockId));
     // Optimistically merge + remove locally so a full page refresh isn't needed
     // (the refresh would discard other in-progress optimistic edits).
     markEdited(prevBlock.id, mergedContent);
     pendingDeletesRef.current.set(blockId, Date.now());
+    const moves = new Map(movedChildren.map(m => [m.id, m]));
     setLocalBlocks(prev => prev
-      .map(b => b.id === prevBlock.id ? { ...b, content: mergedContent } : b)
+      .map(b => {
+        if (b.id === prevBlock.id) return { ...b, content: mergedContent };
+        const m = moves.get(b.id);
+        return m ? { ...b, parent_id: m.toParentId, position: m.toPosition } : b;
+      })
       .filter(b => b.id !== blockId));
     setFocusBlockId(prevBlock.id);
     try {
       // The editor text (`content`) may be newer than the last saved block content.
       const restore = (await snapshotP).map(r => (r.id === blockId ? { ...r, content } : r));
       await api.updateBlock(prevBlock.id, mergedContent);
+      for (const m of movedChildren) await api.moveBlock(m.id, m.toParentId, m.toPosition);
       await api.deleteBlock(blockId);
-      undoStack.push({ type: 'merge', blockId: prevBlock.id, pageId: page.id, oldContent: prevBlock.content, newContent: mergedContent, restore, timestamp: Date.now() });
+      undoStack.push({ type: 'merge', blockId: prevBlock.id, pageId: page.id, oldContent: prevOldContent, newContent: mergedContent, restore, movedChildren, timestamp: Date.now() });
     } catch (e) {
       console.error("Backspace merge failed:", e);
       showToast("Could not merge blocks — check connection.");
