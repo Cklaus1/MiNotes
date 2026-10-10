@@ -11,6 +11,10 @@
 
 AB="agent-browser"
 URL="http://localhost:1420"
+# JOURNEY_BACKEND=browser (default): headless Chrome + Vite dev server + mock backend.
+# JOURNEY_BACKEND=desktop: the REAL desktop app (Tauri/WebKitGTK + Rust backend,
+#   production CSP) through .claude/skills/desktop-check — same journeys, real data layer.
+BACKEND="${JOURNEY_BACKEND:-browser}"
 SSDIR="tests/screenshots/journey"
 # Source-grep assertions (journey 50) read Rust files. Anchor them to the repo
 # root so they work no matter where the suite is invoked from.
@@ -27,18 +31,35 @@ pass() { echo -e "    \033[32m✓\033[0m $1"; P=$((P+1)); RESULTS+=("✓ $1"); }
 fail() { echo -e "    \033[31m✗\033[0m $1: $2"; F=$((F+1)); RESULTS+=("✗ $1: $2"); BUGS+=("$1: $2"); }
 step() { echo -e "  \033[90m→ $1\033[0m"; }
 journey() { echo -e "\n\033[1;33m🧭 JOURNEY: $1\033[0m"; }
-ev() { $AB eval "$1" 2>/dev/null; }
+if [[ "$BACKEND" == "desktop" ]]; then
+  DC="$REPO_ROOT/.claude/skills/desktop-check/desktop.sh"
+  DC_STATE="${DESKTOP_CHECK_DIR:-${TMPDIR:-/tmp}/minotes-desktop-check-$(id -u)}"
+  SSDIR="$DC_STATE/journey-shots"; mkdir -p "$SSDIR"
+  # Retry once if the WebDriver call itself failed (exit 3); never on a JS error.
+  ev() { "$DC" eval "$1" 2>/dev/null; [[ $? -eq 3 ]] && { sleep 1; "$DC" eval "$1" 2>/dev/null; }; return 0; }
+  snap() { "$DC" snapshot 2>/dev/null; }
+  snapi() { "$DC" snapshot -i 2>/dev/null; }
+  ss() { python3 "$REPO_ROOT/.claude/skills/desktop-check/wd.py" "http://127.0.0.1:${DESKTOP_CHECK_WD_PORT:-4455}" "$DC_STATE/wd.sid" shot "$SSDIR/$1.png" >/dev/null 2>&1; }
+  press() { "$DC" press "$1" 2>/dev/null; }
+  open_app() { "$DC" up --webdriver ${DESKTOP_NO_BUILD:+--no-build} && "$DC" seed-demo >/dev/null && sleep 2; }
+  close_app() { "$DC" report || true; "$DC" down; }
+else
+  ev() { $AB eval "$1" 2>/dev/null; }
+  snap() { $AB snapshot 2>/dev/null; }
+  snapi() { $AB snapshot -i 2>/dev/null; }
+  ss() { $AB screenshot "$SSDIR/$1.png" 2>/dev/null; }
+  press() { $AB press "$1" 2>/dev/null; }
+  open_app() { $AB open "$URL" --wait-until networkidle 2>/dev/null && sleep 3; }
+  close_app() { $AB close 2>/dev/null; }
+fi
 api() { ev "window.__MINOTES__?.$1"; }
-snap() { $AB snapshot 2>/dev/null; }
-snapi() { $AB snapshot -i 2>/dev/null; }
-ss() { $AB screenshot "$SSDIR/$1.png" 2>/dev/null; }
 
 echo "═══════════════════════════════════════════════"
 echo "  MiNotes User Journey Tests v2"
 echo "  Simulating: A real day using MiNotes"
 echo "═══════════════════════════════════════════════"
 
-$AB open "$URL" --wait-until networkidle 2>/dev/null && sleep 3
+open_app
 
 # ═══════════════════════════════════════════════
 journey "1. I open the app — what do I see?"
@@ -160,7 +181,7 @@ journey "5. I want to find something I wrote earlier"
 # ═══════════════════════════════════════════════
 
 step "I open search with Ctrl+K"
-$AB press "Control+k" 2>/dev/null; sleep 1
+press "Control+k"; sleep 1
 S=$(snap)
 echo "$S" | grep -qi "Search pages" && pass "Search panel opens" || fail "Ctrl+K broken" "No search"
 
@@ -172,7 +193,7 @@ done
 [[ "$FOUND" -ge 3 ]] && pass "All my pages listed ($FOUND)" || fail "Missing pages in search" "Only $FOUND"
 
 step "I close search and navigate via sidebar"
-$AB press "Escape" 2>/dev/null; sleep 0.5
+press "Escape"; sleep 0.5
 api "navigateTo('Project Alpha')" > /dev/null; sleep 2
 R=$(api "getCurrentPage()" | tr -d '"')
 [[ "$R" == *"Project Alpha"* ]] && pass "Navigate to search result" || fail "Can't navigate" "$R"
@@ -291,27 +312,27 @@ journey "10. I want to use keyboard shortcuts efficiently"
 # ═══════════════════════════════════════════════
 
 step "Ctrl+K opens search"
-$AB press "Control+k" 2>/dev/null; sleep 1
+press "Control+k"; sleep 1
 S=$(snap)
 echo "$S" | grep -qi "Search" && pass "Ctrl+K → search" || fail "Ctrl+K" "No search"
-$AB press "Escape" 2>/dev/null; sleep 0.5
+press "Escape"; sleep 0.5
 
 step "Ctrl+, opens settings"
-$AB press "Control+," 2>/dev/null; sleep 1
+press "Control+,"; sleep 1
 S=$(snap)
 echo "$S" | grep -qi "Settings\|Theme" && pass "Ctrl+, → settings" || fail "Ctrl+," "No settings"
-$AB press "Escape" 2>/dev/null; sleep 0.5
+press "Escape"; sleep 0.5
 
 step "Ctrl+J opens journal"
-$AB press "Control+j" 2>/dev/null; sleep 2
+press "Control+j"; sleep 2
 R=$(api "getCurrentPage()" | tr -d '"')
 [[ "$R" == *"Journal"* ]] && pass "Ctrl+J → journal" || fail "Ctrl+J" "$R"
 
 step "Ctrl+G opens graph"
-$AB press "Control+g" 2>/dev/null; sleep 2
+press "Control+g"; sleep 2
 S=$(snap)
 echo "$S" | grep -qi "graph\|canvas\|close\|node" && pass "Ctrl+G → graph" || fail "Ctrl+G" "No graph"
-$AB press "Escape" 2>/dev/null; sleep 0.5
+press "Escape"; sleep 0.5
 
 ss "10-keyboard-flow"
 
@@ -321,12 +342,12 @@ journey "11. I want to see my knowledge graph"
 # ═══════════════════════════════════════════════
 
 step "Graph view opens"
-$AB press "Control+g" 2>/dev/null; sleep 2
+press "Control+g"; sleep 2
 S=$(snap)
 echo "$S" | grep -qi "graph\|canvas" && pass "Graph renders" || fail "No graph" "Graph didn't load"
 
 step "I can close the graph"
-$AB press "Escape" 2>/dev/null; sleep 1
+press "Escape"; sleep 1
 S=$(snap)
 echo "$S" | grep -qi "Journal\|Getting Started" && pass "Graph closes, page returns" || fail "Stuck in graph" "Can't get back"
 
@@ -475,7 +496,7 @@ S=$(snap)
 echo "$S" | grep -qi "Copy\|Duplicate\|Delete\|TODO" && pass "Context menu appears" || fail "No context menu" "Right-click didn't show menu"
 
 step "I close the context menu"
-$AB press "Escape" 2>/dev/null; sleep 0.5
+press "Escape"; sleep 0.5
 
 ss "17-context-menu"
 
@@ -774,7 +795,7 @@ journey "28. I want to use the command palette for actions"
 # ═══════════════════════════════════════════════
 
 step "I open command palette with Ctrl+K"
-$AB press "Control+k" 2>/dev/null; sleep 1
+press "Control+k"; sleep 1
 S=$(snap)
 echo "$S" | grep -qi "Search\|command" && pass "Command palette opens" || fail "No palette" ""
 
@@ -782,7 +803,7 @@ step "I see the hint about > for commands"
 echo "$S" | grep -qi ">" && pass "I see the > hint for commands" || fail "No > hint" "Users won't discover commands"
 
 step "Close palette"
-$AB press "Escape" 2>/dev/null; sleep 0.5
+press "Escape"; sleep 0.5
 
 ss "28-command-palette"
 
@@ -1067,7 +1088,7 @@ BLOCK_COUNT=$(api "getBlockCount()" | tr -d '"')
 
 step "I open mind map with Ctrl+M"
 ev "document.activeElement?.blur()" > /dev/null 2>&1; sleep 0.5
-$AB press "Control+m" 2>/dev/null; sleep 5
+press "Control+m"; sleep 5
 S=$(snap)
 echo "$S" | grep -qi "Notes.*Mindmap\|Graph.*Mindmap\|Mindmap.*Draw\|Fit\|Layout" && pass "Mind map overlay opens" || fail "Mind map didn't open" ""
 
@@ -1103,13 +1124,13 @@ BX=${SIG_BEFORE%%:*}; BY=${SIG_BEFORE##*:}; AX=${SIG_AFTER%%:*}; AY=${SIG_AFTER#
 [[ "$BX" -lt "$BY" && "$AX" -gt "$AY" ]] 2>/dev/null && pass "Layout switched to vertical (distinct x:y $SIG_BEFORE → $SIG_AFTER)" || fail "Layout didn't switch" "$SIG_BEFORE → $SIG_AFTER"
 
 step "I close the mind map with Escape"
-$AB press "Escape" 2>/dev/null; sleep 1
+press "Escape"; sleep 1
 S=$(snap)
 echo "$S" | grep -qi "Getting Started" && pass "Back to page after close" || fail "Not back to page" ""
 
 step "I reopen and verify nodes are interactive"
 ev "document.activeElement?.blur()" > /dev/null 2>&1; sleep 0.3
-$AB press "Control+m" 2>/dev/null; sleep 3
+press "Control+m"; sleep 3
 # Verify nodes rendered and are clickable
 NODE_CHECK=$(ev "(()=>{
   const nodes = document.querySelectorAll('.mm-node:not(.mm-root)');
@@ -1123,8 +1144,8 @@ NODE_CHECK=$(ev "(()=>{
 echo "$NODE_CHECK" | grep -qi "clicked" && pass "Nodes are interactive ($NODE_CHECK)" || fail "Nodes not interactive" "$NODE_CHECK"
 
 step "Close mind map"
-$AB press "Escape" 2>/dev/null; sleep 0.5
-$AB press "Escape" 2>/dev/null; sleep 1
+press "Escape"; sleep 0.5
+press "Escape"; sleep 1
 
 ss "33-mindmap"
 
@@ -1291,8 +1312,8 @@ S=$(snap)
 echo "$S" | grep -qi "⚙\|Export\|Clear" && pass "Settings and actions available" || fail "Canvas toolbar actions missing" ""
 
 step "I close the whiteboard (Escape through canvas mode)"
-$AB press "Escape" 2>/dev/null; sleep 1
-$AB press "Escape" 2>/dev/null; sleep 1
+press "Escape"; sleep 1
+press "Escape"; sleep 1
 
 ss "34-annotations"
 
@@ -1303,7 +1324,7 @@ journey "35. Canvas mode switching works seamlessly"
 
 step "I open Graph mode"
 ev "document.activeElement?.blur()" > /dev/null 2>&1; sleep 0.3
-$AB press "Control+g" 2>/dev/null; sleep 2
+press "Control+g"; sleep 2
 S=$(snap)
 echo "$S" | grep -qi "Notes.*Graph.*Mindmap\|Graph.*Mindmap.*Draw" && pass "Canvas layer opens with mode switcher" || {
   echo "$S" | grep -qi "nodes\|edges\|Close" && pass "Graph view opens" || fail "Canvas didn't open" ""
@@ -2170,7 +2191,7 @@ ss "49-ai-settings"
 ss "50-ai-rust-backend"
 
 # ═══════════════════════════════════════════════
-$AB close 2>/dev/null
+close_app
 
 # ═══════════════════════════════════════════════
 # Report

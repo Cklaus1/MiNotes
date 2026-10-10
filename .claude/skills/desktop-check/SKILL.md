@@ -1,109 +1,149 @@
 ---
 name: desktop-check
-description: Run the REAL MiNotes desktop app (Tauri/WebKitGTK, production CSP, real Rust backend) on a private virtual display, drive it with clicks and keys, and review screenshots. Use to verify anything browser mode can't — CSP, IPC commands, file access, PDF viewer, link previews, whiteboard persistence — or when asked to "check the desktop app", "smoke test Tauri", or see how a change looks in the real app.
+description: Run the REAL MiNotes desktop app (Tauri/WebKitGTK, production CSP, real Rust backend) on a private virtual display — run the user journeys against it, drive it with real input or DOM-level WebDriver, review screenshots, and audit UX. Use to verify anything browser mode can't (CSP, IPC, file access, persistence, sync, CLI interop), when asked to "check the desktop app" or "smoke test Tauri", or to review how the app looks and feels and find UI/UX improvements.
 ---
 
 # Desktop check
 
-Browser mode (`vite` + `tests/user-journey-test.sh`) uses a mock backend and does
-not enforce the CSP. This skill runs the actual binary instead. It uses a
-throwaway `HOME`, so the user's `~/.minotes` is never touched.
+Browser mode (`vite` + mock backend) can't see the real data layer and doesn't
+enforce the CSP. This skill runs the actual binary instead, against throwaway
+HOMEs — the user's `~/.minotes` is never touched.
 
-Playwright cannot attach to WebKitGTK. Two ways to drive the window, usable together:
+Pick the mode that matches the request:
 
-- **Input + screenshots** (always available): `xdotool` clicks/keys, then **read the
-  screenshots**.
-- **WebDriver** (`up --webdriver`, via `tauri-driver` + `WebKitWebDriver`): run JS
-  inside the real app, read the DOM, call Tauri commands directly.
-
-Backend state can always be checked with `sqlite3` or the CLI.
-
-## Driver
+| You want to… | Run |
+|---|---|
+| Know whether the app works end to end | `bash tests/desktop-journey-test.sh` and `JOURNEY_BACKEND=desktop bash tests/user-journey-test.sh` |
+| Check one feature or a fix | the driver (`desktop.sh`) by hand, with `expect` assertions |
+| Review look & feel / find UX improvements | `ux-tour.sh`, then the **UX review** below |
+| Confirm security rules hold in the shipped app | the **security probes** below |
 
 `D=.claude/skills/desktop-check/desktop.sh` (run from the repo root). Set
-`DESKTOP_CHECK_DIR` to a directory in your scratchpad so state and screenshots
-land there.
+`DESKTOP_CHECK_DIR` to a directory in your scratchpad; state, screenshots and
+reports land there. `$D` with no arguments prints the full command list.
+
+## 1. Journeys (automatic pass/fail)
+
+- **`tests/desktop-journey-test.sh`** — journeys that only exist in the real app:
+  D1 restart persistence (content, ids, nesting, properties, whiteboard, settings,
+  pins, collapsed state), D2 real keyboard typing (type, Enter split, Backspace
+  merge, Ctrl+Enter, search), D3 CLI ↔ app on one database, D4 two devices syncing
+  through a local bare git remote (pull, rename, delete→trash, repeat-sync
+  stability, conflicting edits kept as a conflict page).
+- **`JOURNEY_BACKEND=desktop bash tests/user-journey-test.sh`** — the 52 browser
+  journeys, unchanged, against the real backend. The adapter maps `ev`/`snap`/
+  `press`/`ss` onto WebDriver, resolves `import('/src/lib/…')` from
+  `window.__MINOTES__.modules`, and `seed-demo` replays the mock's demo pages
+  into the real database so the journeys' assumptions hold.
+
+Both build first; set `DESKTOP_NO_BUILD=1` to reuse `target/debug/minotes-app`.
+~20 min for the 52 journeys, ~4 min for the desktop ones. To run two at once give
+each its own `DESKTOP_CHECK_DIR`, `DESKTOP_CHECK_DISPLAY` and `DESKTOP_CHECK_WD_PORT`.
+
+**A journey that passes in browser mode but fails here is a mock/real divergence**
+— the most valuable kind of finding. Reproduce it by hand with the driver, decide
+whether the backend, the mock, or the test's assumption is wrong, and fix that.
+(Example found this way: nested blocks rendered under the wrong parent because
+the real backend returned blocks in flat position order.)
+
+## 2. Driver
 
 | Command | What it does |
 |---|---|
-| `$D up` | Start Xvfb, build (`tauri build --debug --no-bundle` + CLI), launch, wait for the window. `--no-build` reuses the last binary; `--webdriver` enables the DOM commands. Re-running restarts the app with a fresh HOME. |
-| `$D shot <name>` | Screenshot the display → prints the PNG path. **Read it.** |
-| `$D click <x> <y>` / `$D key <keys>` / `$D type <text>` | Input. The window sits at 0,0 (1200x800), so screenshot pixels == click coordinates. |
-| `$D cli <args>` | `minotes` CLI against the scratch DB (seed pages/blocks; the app refreshes live). |
-| `$D fixture-pdf` | Write a 1-page test PDF, print its path. |
-| `$D js '<body>'` | *(webdriver)* Run an async function body in the app; prints the JSON result. `invoke(cmd, args)` calls a Tauri command. |
-| `$D text <css>` / `$D wclick <css>` | *(webdriver)* innerText of / click the first match. |
-| `$D wshot <name>` | *(webdriver)* Screenshot of the webview only (no native dialogs). |
-| `$D paste-image` | *(webdriver)* Paste a generated red 96x96 PNG into the current view. |
-| `$D status` / `$D log` / `$D down` | Health, app stderr, teardown. **Always `down` when finished.** |
+| `$D up [--no-build] [--webdriver] [--keep] [--profile NAME]` | Start Xvfb, build, launch, wait. `--webdriver` enables the DOM commands. `--profile` picks the scratch HOME (two profiles = two devices); `--keep` keeps its data. |
+| `$D restart` | Quit and relaunch on the same data (persistence checks). |
+| `$D shot <name>` | Screenshot of the display (includes native dialogs) → path. **Read it.** |
+| `$D click x y` / `key …` / `type …` | Real X input (xdotool). Window is at 0,0, so screenshot px == click px. Use for typing into the editor. |
+| `$D cli <args>` | `minotes` CLI on the current profile's database. |
+| `$D js '<body>'` / `eval '<expr>'` | Run JS in the app. `invoke(cmd, args)` calls a Tauri command. |
+| `$D press <Combo>` | Real key event through WebDriver (`Control+k`, `Escape`). |
+| `$D text <css>` / `wclick <css>` / `wshot <name>` / `snapshot [-i]` | Read / click / screenshot the webview / text snapshot. |
+| `$D wait '<expr>' [s]` | Poll until truthy — use instead of `sleep`. |
+| `$D expect <label> '<expr>'` / `expect-db <label> '<sql>' <want>` | Assertions; failures save a screenshot. |
+| `$D errors` / `$D report` | Uncaught errors + CSP violations seen; pass/fail summary (exit 1 on failure). |
+| `$D seed-demo` / `paste-image` / `fixture-pdf` | Demo pages; paste a PNG; make a test PDF. |
+| `$D audit` | UX/accessibility signals for the current screen (JSON). |
+| `$D status` / `log` / `down` | Health, app stderr, teardown. **Always `down` when finished.** |
 
-Build takes ~1–2 min. After any action that loads data or opens a view, `sleep`
-2–6 s before `shot`.
+Prefer selectors and `wait`/`expect` over pixel clicks and sleeps. Pixel clicks
+are for things only real input reaches (typing in ProseMirror, canvas drawing,
+native dialogs); take a screenshot first and read positions off it.
 
-## Standard checklist
+## 3. UX review
 
-Run all of these unless asked for something narrower; take a screenshot per step
-and look at each one.
+`ux-tour.sh [--no-build]` visits ~17 views (journal, rich/long/empty pages, editing,
+search with/without results, settings, graph, mindmap, kanban, whiteboard, all
+pages, trash) on a deliberately messy graph, and for each writes a screenshot, an
+audit JSON and a timing into `$DESKTOP_CHECK_DIR/ux/`, summarised in `tour.md`.
 
-1. **Startup** — `up`, `shot 01-startup`. Expect the dark UI, sidebar with
-   "Getting Started", styled blocks. A blank/unstyled window ⇒ CSP or bundle problem; check `$D log`.
-2. **Seed + live refresh** — `cli page create "Desktop Check"`, then
-   `cli block create "Desktop Check" "{{link-preview:https://example.com}}"` and a
-   block with `**bold** and [[Getting Started]]`. The page must appear in the
-   sidebar without a restart (db watcher).
-3. **Navigation + link preview** — `click 60 190` (first row under PAGES; rows are
-   27 px apart), wait ~7 s. Expect an "Example Domain" card (needs network), bold
-   text and a coloured wiki link.
-4. **PDF viewer** — `click 700 500; key Escape` (leave any editor), `key ctrl+p`,
-   `type "$($D fixture-pdf)"`, `key Return`, wait 6 s. Expect "1 / 1" and a white
-   page with a blue square and "Desktop check". Close with `click 1154 20`.
-5. **PDF error path** — same with `/nonexistent/missing.pdf`. Expect a
-   "Couldn't open this PDF" card, not a blank page.
-6. **Settings** — `key ctrl+comma`, shot, `key Escape`.
-7. **Whiteboard persistence** — `click 125 780` (Draw), `click 229 62` (Draw tool),
-   drag with `xdotool mousemove … mousedown 1 … mouseup 1` (export
-   `DISPLAY=localhost:97` for raw xdotool), wait 3 s, `click 50 22` (← Notes). Then
-   `sqlite3 "$DESKTOP_CHECK_DIR/home/.minotes/default.db" "select id,length(data) from whiteboards"`
-   must return a row.
-8. **Whiteboard image** *(webdriver)* — with a whiteboard open, `paste-image`, wait
-   4 s, `wshot`. Expect a red square on the canvas, and
-   `select data like '%data:image/png%' from whiteboards` → 1.
-9. **Security rules** *(webdriver)* — each must hold in the real app:
-   - `js 'try { eval("1"); return "NOT blocked" } catch { return "blocked" }'` → blocked (CSP)
-   - `js 'return typeof window.__TAURI__'` → `"undefined"`
-   - `invoke("read_file_base64", {path: "/etc/passwd"})` and
-     `invoke("read_pdf_file", {path: "/etc/passwd"})` → rejected
-   - `invoke("switch_graph", {name: "../../evil"})` → rejected
-   - `invoke("run_query", {sql: "BEGIN"})` → rejected
-   - SSRF: serve a page with a distinctive `<title>` on `127.0.0.1:<port>`
-     (`python3 -m http.server`), call `invoke("fetch_og_metadata", {url})` for
-     `127.0.0.1`, `localhost`, `[::1]`, `0.0.0.0` — the title must NOT come back and
-     the server log must show no request from the app. (The command returns empty
-     metadata on any failure, so an empty result alone proves nothing.)
-   - **Never call `save_png_to_downloads` here** — on WSL it writes into the real
-     Windows Downloads folder regardless of the scratch HOME.
-10. `down`, then report pass/fail per step with what you saw.
+Then do the part a script can't: **look at every screenshot** and judge it. Report
+findings as *improvement opportunities*, separate from bugs, each with the
+screenshot, what a user would experience, and a concrete suggestion. Rubric:
 
-Steps 1–7 work without `--webdriver`; start with `up --webdriver` to run everything
-in one session.
+- **First glance** — is it obvious what this screen is and what to do next? Is the
+  primary action the most prominent thing?
+- **Empty and edge states** — empty page, no search results, empty trash, first run:
+  do they explain themselves and offer a next step, or just look blank/broken?
+- **Hierarchy and density** — headings vs body, spacing rhythm, alignment; anything
+  cramped, floating, or competing for attention?
+- **Stress** — long titles, deep nesting, unbreakable strings, 30+ pages: truncation
+  with no tooltip, overflow, wrapping that breaks the layout?
+- **Consistency** — same thing styled the same way across views (buttons, panels,
+  close affordances, icons vs text labels, terminology: "Project" vs "Folder")?
+- **Feedback** — after an action, can the user tell it worked (toast, selection,
+  focus)? Are destructive actions undoable or confirmed?
+- **Discoverability** — is a feature only reachable by a shortcut nobody is told
+  about? Are icon-only buttons understandable?
+- **Polish** — misaligned icons, clipped text, inconsistent radii/borders, leftover
+  debug-looking UI, emoji used as icons rendering differently per platform.
 
-Coordinates are for the default 1200x800 window; if the layout changed, take a
-screenshot first and read positions off it.
+Use the audit numbers to back the visual judgement, not replace it: low contrast
+(WCAG ratio per element), controls with no accessible name, click targets under
+24 px, clipped text, missing focus rings, number of distinct font sizes, and view
+timings. Treat timings as relative (software rendering under Xvfb is slow).
+
+Other signals worth mining when asked how to make the app better:
+
+- **Journey friction** — count the steps/keystrokes each journey needs; long ones
+  are candidates for shortcuts or defaults.
+- **Mock/real divergences** — every one is a place the product behaves differently
+  from what its own tests believe.
+- **Errors nobody sees** — `$D errors` after a tour: console errors and swallowed
+  rejections are bugs users hit silently.
+- **Dead ends** — views with no way back except a shortcut; panels Escape doesn't close.
+- **Data-shape stress** — rerun the tour after `cli` bulk-creating 5,000 blocks and
+  compare timings.
+- **Docs vs behaviour** — shortcuts listed in Settings/Getting Started that don't
+  do what they say (press each one, check the result).
+
+## 4. Security probes (webdriver)
+
+Each must hold in the shipped app:
+
+- `js 'try { eval("1"); return "NOT blocked" } catch { return "blocked" }'` → blocked (CSP)
+- `js 'return typeof window.__TAURI__'` → `"undefined"`
+- `invoke("read_file_base64", {path: "/etc/passwd"})`, `invoke("read_pdf_file", {path: "/etc/passwd"})` → rejected
+- `invoke("switch_graph", {name: "../../evil"})`, `invoke("run_query", {sql: "BEGIN"})` → rejected
+- SSRF: serve a page with a distinctive `<title>` on `127.0.0.1:<port>`, call
+  `invoke("fetch_og_metadata", {url})` for `127.0.0.1`, `localhost`, `[::1]`,
+  `0.0.0.0` — the title must NOT come back and the server log must show no request.
+  (The command returns empty metadata on any failure, so an empty result alone
+  proves nothing.)
+- **Never call `save_png_to_downloads`** — on WSL it writes into the real Windows
+  Downloads folder regardless of the scratch HOME.
 
 ## Limits and gotchas
 
-- WebDriver mode needs `apt-get install webkit2gtk-driver` and
-  `cargo install tauri-driver --locked` (installed on this machine 2026-10-10).
-  `withGlobalTauri` is off, so use the `invoke` helper that `js` provides.
-- ProseMirror ignores synthetic key events; type into editors with `$D click` +
-  `$D type` (real X input), and use `js` to read the result.
-- An OS file **drag-drop** still can't be simulated; `paste-image` exercises the same
-  image-insert path, and `read_file_base64` (the drop fallback) can be called via `js`.
-- JS `prompt()`/`confirm()` are native GTK dialogs: `type` + `key Return` works;
-  screenshots are of the whole display so they show up.
-- Xvfb must use Mesa EGL on this machine (the script sets
-  `__EGL_VENDOR_LIBRARY_FILENAMES`); with the NVIDIA vendor it aborts at startup.
-  It listens on TCP only because WSLg owns `/tmp/.X11-unix`. Never use WSLg's
-  `DISPLAY=:0` — X clients hang on it.
-- Don't use `pgrep -f`/`pkill -f` with a pattern that appears in your own command
-  line; use `$D down`.
+- Needs `webkit2gtk-driver` (apt) and `tauri-driver` (cargo) for `--webdriver`.
+  `withGlobalTauri` is off, so use the `invoke` helper `js` provides.
+- ProseMirror ignores synthetic key events: type with `$D click`/`$D type`/`$D key`
+  (or `focusBlock(n)` then `$D type`), and read back with `eval`.
+- OS file drag-drop can't be simulated; `paste-image` exercises the same insert path.
+- JS `prompt()`/`confirm()` are native GTK dialogs: `type` + `key Return`; they show
+  in `shot`, not `wshot`.
+- Xvfb must use Mesa EGL here (the script sets `__EGL_VENDOR_LIBRARY_FILENAMES`;
+  the NVIDIA vendor aborts it) and listens on TCP only (WSLg owns `/tmp/.X11-unix`).
+  Never use WSLg's `DISPLAY=:0`.
+- Don't `pgrep -f`/`pkill -f` a pattern that appears in your own command line; use `$D down`.
+- JS passed on a command line must not contain `'`; put longer scripts in a file
+  and pass `"$(cat file.js)"`.

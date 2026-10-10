@@ -2,30 +2,43 @@
 # Drive the REAL MiNotes desktop app (Tauri/WebKitGTK) on a private virtual
 # display, against a throwaway HOME. Never touches the user's ~/.minotes.
 #
-#   desktop.sh up [--no-build] [--webdriver]
+# Lifecycle
+#   desktop.sh up [--no-build] [--webdriver] [--keep] [--profile NAME]
 #                                start display, build + launch app, wait for window.
-#                                --webdriver launches through tauri-driver so the
-#                                js/text/wclick/wshot commands work (DOM access).
-#   desktop.sh shot <name>       screenshot → prints the PNG path
-#   desktop.sh click <x> <y>     left click (window is at 0,0 so page coords == screen coords)
-#   desktop.sh key <keys...>     e.g. key ctrl+p   |  key Escape  |  key Return
-#   desktop.sh type <text>       type text into the focused widget / dialog
-#   desktop.sh cli <args...>     run the minotes CLI against the scratch database
+#                                --webdriver  launch through tauri-driver (DOM commands below)
+#                                --keep       keep the profile's data (default: wipe it)
+#                                --profile    which scratch HOME to use (default "home");
+#                                             two profiles = two "devices"
+#   desktop.sh restart           quit and relaunch, same mode + profile, data kept
+#   desktop.sh status | log [n] | down
+#
+# Input + screenshots (always available; window is at 0,0 so page px == screen px)
+#   desktop.sh shot <name>       screenshot of the display → prints the PNG path
+#   desktop.sh click <x> <y> | key <keys...> | type <text>     (xdotool, real X input)
+#   desktop.sh cli <args...>     minotes CLI against the current profile's database
 #   desktop.sh fixture-pdf       write a 1-page test PDF → prints its path
-#   desktop.sh js '<body>'       (webdriver) run async JS in the app, print the JSON result.
-#                                Body is an async function body: use `return`, `await`;
+#
+# WebDriver (needs `up --webdriver`)
+#   desktop.sh js '<body>'       run an async function body in the app, print JSON.
 #                                `invoke(cmd, args)` calls a Tauri command.
-#   desktop.sh text <css>        (webdriver) innerText of the first match
-#   desktop.sh wclick <css>      (webdriver) click the first match
-#   desktop.sh wshot <name>      (webdriver) screenshot of the webview only
-#   desktop.sh paste-image       (webdriver) paste a generated red 96x96 PNG into the
-#                                focused view (e.g. an open whiteboard)
-#   desktop.sh status            is everything alive?
-#   desktop.sh log               tail the app's stdout/stderr
-#   desktop.sh down              stop app + display (state dir is kept for inspection)
+#   desktop.sh eval '<expr>'     evaluate an expression (agent-browser compatible)
+#   desktop.sh press <Combo>     real key input: Control+k, Escape, Control+Shift+K
+#   desktop.sh text <css> | wclick <css> | wshot <name> | snapshot [-i]
+#   desktop.sh wait '<expr>' [seconds]      poll until truthy
+#   desktop.sh paste-image       paste a generated red 96x96 PNG into the current view
+#   desktop.sh seed-demo         load the mock backend's demo pages into the real DB
+#   desktop.sh audit             UX/accessibility signals for the current screen (JSON)
+#   ux-tour.sh [--no-build]      every main view: screenshot + audit + timing → ux/tour.md
+#
+# Assertions + report (results accumulate in the state dir until `report --reset`)
+#   desktop.sh expect <label> '<expr>'            passes when expr becomes truthy (≤5s)
+#   desktop.sh expect-db <label> '<sql>' <want>   passes when the query prints <want>
+#   desktop.sh errors [--clear]                   uncaught errors / CSP violations seen
+#   desktop.sh report [--reset]                   pass/fail table; exit 1 on any failure
 set -euo pipefail
 
-REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="$(cd "$HERE/../../.." && pwd)"
 STATE="${DESKTOP_CHECK_DIR:-${TMPDIR:-/tmp}/minotes-desktop-check-$(id -u)}"
 DNUM="${DESKTOP_CHECK_DISPLAY:-97}"
 export DISPLAY="localhost:$DNUM"
@@ -33,47 +46,40 @@ export DISPLAY="localhost:$DNUM"
 MESA_EGL=/usr/share/glvnd/egl_vendor.d/50_mesa.json
 [ -f "$MESA_EGL" ] && export __EGL_VENDOR_LIBRARY_FILENAMES="$MESA_EGL"
 
-APP_HOME="$STATE/home"; DB="$APP_HOME/.minotes/default.db"; SHOTS="$STATE/shots"
+mkdir -p "$STATE"
+PROFILE="$(cat "$STATE/profile" 2>/dev/null || echo home)"
+set_profile() { PROFILE="$1"; echo "$PROFILE" >"$STATE/profile"; APP_HOME="$STATE/$PROFILE"; DB="$APP_HOME/.minotes/default.db"; }
+set_profile "$PROFILE"
+SHOTS="$STATE/shots"; RESULTS="$STATE/results.tsv"
 BIN="$REPO/target/debug/minotes-app"; CLI="$REPO/target/debug/minotes"
-
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WD_PORT="${DESKTOP_CHECK_WD_PORT:-4455}"
+
 wd() { python3 "$HERE/wd.py" "http://127.0.0.1:$WD_PORT" "$STATE/wd.sid" "$@"; }
 jsstr() { python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1"; }
-
 alive() { [ -f "$STATE/$1.pid" ] && kill -0 "$(cat "$STATE/$1.pid")" 2>/dev/null; }
 x() { timeout 15 "$@"; }
 win() { x xwininfo -root -tree 2>/dev/null | awk '/"MiNotes"/ {print $1; exit}'; }
 need() { for t in "$@"; do command -v "$t" >/dev/null || { echo "missing tool: $t" >&2; exit 2; }; done; }
+record() { printf '%s\t%s\t%s\n' "$1" "$2" "${3:-}" >>"$RESULTS"; }
 
-cmd="${1:-}"; shift || true
-case "$cmd" in
-up)
-  need Xvfb xdotool xwininfo import
-  mkdir -p "$STATE" "$SHOTS"
-  if ! alive xvfb; then
-    # TCP only: on WSLg /tmp/.X11-unix is owned by the system compositor.
-    Xvfb ":$DNUM" -nolisten unix -listen tcp -ac -screen 0 1280x900x24 >"$STATE/xvfb.log" 2>&1 &
-    echo $! >"$STATE/xvfb.pid"; sleep 2
-    alive xvfb || { echo "Xvfb failed to start:" >&2; tail -5 "$STATE/xvfb.log" >&2; exit 1; }
-  fi
-  build=1; webdriver=0
-  for a in "$@"; do case "$a" in --no-build) build=0 ;; --webdriver) webdriver=1 ;; *) echo "unknown option: $a" >&2; exit 2 ;; esac; done
-  if [ "$build" = 1 ]; then
-    echo "building desktop app + CLI (debug; production frontend + CSP)…"
-    (cd "$REPO/crates/minotes-app" && npx tauri build --debug --no-bundle) >"$STATE/build.log" 2>&1 \
-      || { echo "build failed:" >&2; tail -15 "$STATE/build.log" >&2; exit 1; }
-    (cd "$REPO" && cargo build -q -p minotes-cli) >>"$STATE/build.log" 2>&1
-  fi
-  [ -x "$BIN" ] || { echo "no binary at $BIN (run without --no-build)" >&2; exit 1; }
+stop_app() {
+  [ -f "$STATE/wd.sid" ] && { wd quit >/dev/null 2>&1 || true; rm -f "$STATE/wd.sid"; }
   if alive app; then
-    [ -f "$STATE/wd.sid" ] && { wd quit >/dev/null 2>&1 || true; }
-    kill "$(cat "$STATE/app.pid")" 2>/dev/null || true; sleep 1
+    kill "$(cat "$STATE/app.pid")" 2>/dev/null || true
+    for _ in $(seq 1 20); do alive app || break; sleep 0.25; done
   fi
-  rm -rf "$APP_HOME" "$STATE/wd.sid"; mkdir -p "$APP_HOME"
+  rm -f "$STATE/app.pid"
+  # tauri-driver leaves the app and WebKitWebDriver behind if the session wasn't
+  # closed cleanly; they'd keep the profile's database open.
+  for _ in $(seq 1 20); do [ -z "$(win)" ] && break; sleep 0.25; done
+  if [ -n "$(win)" ]; then x xdotool search --name '^MiNotes$' 2>/dev/null | head -1 | xargs -r -I{} timeout 5 xdotool windowkill {} 2>/dev/null || true; sleep 1; fi
+}
+
+launch() { # $1 = webdriver 0|1
   export WAYLAND_DISPLAY= GDK_BACKEND=x11 LIBGL_ALWAYS_SOFTWARE=1 \
     WEBKIT_DISABLE_COMPOSITING_MODE=1 WEBKIT_DISABLE_DMABUF_RENDERER=1
-  if [ "$webdriver" = 1 ]; then
+  echo "$1" >"$STATE/mode"
+  if [ "$1" = 1 ]; then
     # tauri-driver (wrapping WebKitWebDriver) launches the app itself, so the app
     # inherits this environment — including the scratch HOME.
     TD="$(command -v tauri-driver || echo "$HOME/.cargo/bin/tauri-driver")"
@@ -88,8 +94,47 @@ up)
   fi
   for _ in $(seq 1 40); do [ -n "$(win)" ] && break; alive app || break; sleep 1; done
   [ -n "$(win)" ] || { echo "app window never appeared:" >&2; tail -10 "$STATE/app.log" >&2; exit 1; }
-  sleep 4   # first paint + initial data load
-  echo "up: display=$DISPLAY window=$(win) home=$APP_HOME shots=$SHOTS"
+  if [ "$1" = 1 ]; then
+    wd wait 'window.__MINOTES__ && typeof window.__MINOTES__.navigateTo === "function"' 30 || true
+    sleep 1
+  else
+    sleep 4   # first paint + initial data load
+  fi
+}
+
+cmd="${1:-}"; shift || true
+case "$cmd" in
+up)
+  need Xvfb xdotool xwininfo import
+  mkdir -p "$SHOTS"
+  build=1; webdriver=0; keep=0
+  while [ $# -gt 0 ]; do case "$1" in
+    --no-build) build=0 ;; --webdriver) webdriver=1 ;; --keep) keep=1 ;;
+    --profile) set_profile "${2:?--profile NAME}"; shift ;;
+    *) echo "unknown option: $1" >&2; exit 2 ;; esac; shift; done
+  if ! alive xvfb; then
+    # TCP only: on WSLg /tmp/.X11-unix is owned by the system compositor.
+    Xvfb ":$DNUM" -nolisten unix -listen tcp -ac -screen 0 1280x900x24 >"$STATE/xvfb.log" 2>&1 &
+    echo $! >"$STATE/xvfb.pid"; sleep 2
+    alive xvfb || { echo "Xvfb failed to start:" >&2; tail -5 "$STATE/xvfb.log" >&2; exit 1; }
+  fi
+  if [ "$build" = 1 ]; then
+    echo "building desktop app + CLI (debug; production frontend + CSP)…"
+    (cd "$REPO/crates/minotes-app" && npx tauri build --debug --no-bundle) >"$STATE/build.log" 2>&1 \
+      || { echo "build failed:" >&2; tail -15 "$STATE/build.log" >&2; exit 1; }
+    (cd "$REPO" && cargo build -q -p minotes-cli) >>"$STATE/build.log" 2>&1
+  fi
+  [ -x "$BIN" ] || { echo "no binary at $BIN (run without --no-build)" >&2; exit 1; }
+  stop_app
+  [ "$keep" = 1 ] || rm -rf "$APP_HOME"
+  mkdir -p "$APP_HOME"
+  launch "$webdriver"
+  echo "up: display=$DISPLAY window=$(win) profile=$PROFILE home=$APP_HOME shots=$SHOTS"
+  ;;
+restart)
+  mode="$(cat "$STATE/mode" 2>/dev/null || echo 0)"
+  stop_app; launch "$mode"
+  echo "restarted: profile=$PROFILE (data kept)"
   ;;
 shot)
   name="${1:?usage: shot <name>}"; mkdir -p "$SHOTS"; out="$SHOTS/$name.png"
@@ -100,10 +145,51 @@ click) x xdotool mousemove "${1:?x}" "${2:?y}" click 1 ;;
 key)   x xdotool key "$@" ;;
 type)  x xdotool type --delay 15 -- "$*" ;;
 cli)   [ -x "$CLI" ] || { echo "no CLI at $CLI" >&2; exit 1; }; "$CLI" --graph "$DB" "$@" ;;
-js)     wd js "${1:?usage: js '<async function body>'}" ;;
-text)   wd js "return document.querySelector($(jsstr "${1:?css}"))?.innerText ?? null" ;;
-wclick) wd js "const el = document.querySelector($(jsstr "${1:?css}")); if (!el) throw new Error('no match'); el.click(); return true" ;;
-wshot)  mkdir -p "$SHOTS"; wd shot "$SHOTS/${1:?usage: wshot <name>}.png" ;;
+js)       wd js "${1:?usage: js '<async function body>'}" ;;
+eval)     wd eval "${1:?usage: eval '<expression>'}" ;;
+press)    wd press "${1:?usage: press <Combo>}" ;;
+snapshot) wd snapshot "$@" ;;
+wait)     wd wait "$@" ;;
+errors)   wd errors "$@" ;;
+audit)    wd js "$(cat "$HERE/audit.js")" ;;
+text)     wd js "return document.querySelector($(jsstr "${1:?css}"))?.innerText ?? null" ;;
+wclick)   wd js "const el = document.querySelector($(jsstr "${1:?css}")); if (!el) throw new Error('no match'); el.click(); return true" ;;
+wshot)    mkdir -p "$SHOTS"; wd shot "$SHOTS/${1:?usage: wshot <name>}.png" ;;
+expect)
+  label="${1:?usage: expect <label> '<expr>'}"; expr="${2:?expr}"
+  if wd wait "$expr" "${3:-5}" 2>/dev/null; then
+    record PASS "$label"; echo "PASS  $label"
+  else
+    mkdir -p "$SHOTS"; shot="$SHOTS/FAIL-$(echo "$label" | tr -c 'A-Za-z0-9' '-' | cut -c1-50).png"
+    wd shot "$shot" >/dev/null 2>&1 || true
+    got="$(wd eval "$expr" 2>&1 | head -c 200 || true)"
+    record FAIL "$label" "got: $got  screenshot: $shot"; echo "FAIL  $label  (got: $got)"; exit 1
+  fi
+  ;;
+expect-db)
+  label="${1:?usage: expect-db <label> '<sql>' <want>}"; want="${3?want}"
+  got="$(sqlite3 "$DB" "${2:?sql}" 2>&1 || true)"
+  if [ "$got" = "$want" ]; then record PASS "$label"; echo "PASS  $label"
+  else record FAIL "$label" "want: $want  got: $got"; echo "FAIL  $label  (want: $want, got: $got)"; exit 1; fi
+  ;;
+report)
+  touch "$RESULTS"
+  p=$(grep -c '^PASS' "$RESULTS" || true); f=$(grep -c '^FAIL' "$RESULTS" || true)
+  errs=""; [ -f "$STATE/wd.sid" ] && errs="$(wd errors 2>/dev/null || true)"
+  hard="$(printf '%s\n' "$errs" | grep -E '^(uncaught|csp|unhandledrejection)' || true)"
+  echo "desktop-check: $p passed, $f failed"
+  grep '^FAIL' "$RESULTS" | awk -F'\t' '{print "  ✗ " $2 " — " $3}' || true
+  if [ -n "$hard" ]; then echo "page errors:"; printf '%s\n' "$hard" | sed 's/^/  ! /'; fi
+  soft=$(printf '%s\n' "$errs" | grep -c '^console.error' || true)
+  [ "$soft" -gt 0 ] && echo "($soft console.error lines — see: desktop.sh errors)"
+  [ "${1:-}" = "--reset" ] && : >"$RESULTS"
+  [ "$f" = 0 ] && [ -z "$hard" ]
+  ;;
+seed-demo)
+  # Browser-mode journeys assume the mock backend's demo pages. Replay that seed
+  # through the real API so the same journeys can run against the real backend.
+  wd js "$(cat "$HERE/seed-demo.js")"
+  ;;
 paste-image)
   b64="$(python3 -c "
 import zlib,struct,base64
@@ -133,14 +219,14 @@ PY
   ;;
 status)
   alive xvfb && echo "xvfb: up ($DISPLAY)" || echo "xvfb: down"
-  alive app && echo "app: up (window $(win))" || echo "app: down"
+  alive app && echo "app: up (window $(win), profile $PROFILE, webdriver=$(cat "$STATE/mode" 2>/dev/null || echo 0))" || echo "app: down"
   echo "state: $STATE"
   ;;
 log) tail -n "${1:-30}" "$STATE/app.log" ;;
 down)
-  [ -f "$STATE/wd.sid" ] && { wd quit >/dev/null 2>&1 || true; rm -f "$STATE/wd.sid"; }
-  for p in app xvfb; do alive $p && kill "$(cat "$STATE/$p.pid")" 2>/dev/null || true; rm -f "$STATE/$p.pid"; done
+  stop_app
+  alive xvfb && kill "$(cat "$STATE/xvfb.pid")" 2>/dev/null || true; rm -f "$STATE/xvfb.pid"
   echo "down (screenshots kept in $SHOTS)"
   ;;
-*) sed -n '2,26p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2 ;;
+*) sed -n '2,38p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac
