@@ -401,10 +401,9 @@ body {
 }
 
 /* Indent levels — soft indentation only */
-.block[data-depth="1"] { margin-left: 20px; }
-.block[data-depth="2"] { margin-left: 40px; }
-.block[data-depth="3"] { margin-left: 60px; }
-.block[data-depth="4"] { margin-left: 80px; }
+/* Any depth: BlockItem sets --depth. (Fixed per-level rules stopped at 4, so a
+   level-5+ block snapped back to the left margin.) */
+.block[data-depth] { margin-left: calc(var(--depth, 0) * 20px); }
 
 /* === Full Tree Mode === */
 /*
@@ -497,10 +496,7 @@ body {
 }
 
 /* ── Indent: 18px per level ── */
-.block-list.tree-mode .block[data-depth="1"] { margin-left: 18px; }
-.block-list.tree-mode .block[data-depth="2"] { margin-left: 36px; }
-.block-list.tree-mode .block[data-depth="3"] { margin-left: 54px; }
-.block-list.tree-mode .block[data-depth="4"] { margin-left: 72px; }
+.block-list.tree-mode .block[data-depth] { margin-left: calc(var(--depth, 0) * 18px); }
 
 /* Depth contrast: lines stay readable, text can fade */
 .block-list.tree-mode .block[data-depth="1"]::before,
@@ -577,6 +573,32 @@ body {
 }
 
 .todo-badge:hover { opacity: 0.8; }
+
+/* A keyword badge sits on top of the literal "TODO " text in the editor. Size it
+   from a hidden copy of that keyword in the editor's own font, so it covers the
+   word exactly in any font instead of leaving letters poking out. */
+.todo-badge-cover {
+  padding: 0 3px;
+  margin-left: -3px;
+  top: 4px;
+}
+.todo-badge-sizer {
+  display: inline-block;
+  visibility: hidden;
+  font-size: 14px;          /* .block-content */
+  font-weight: 400;
+  letter-spacing: normal;
+  height: 18px;
+  line-height: 18px;
+  vertical-align: top;
+}
+.todo-badge-label {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
 
 .todo-badge-todo {
   background: #f9e2af;

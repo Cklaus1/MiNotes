@@ -228,3 +228,22 @@ fn csv_quotes_lone_carriage_return() {
     let s = String::from_utf8_lossy(&out.stdout);
     assert!(s.contains("\"a\rb\""), "lone CR must be quoted: {s:?}");
 }
+
+#[test]
+fn global_flags_work_after_the_subcommand() {
+    let h = TempHome::new();
+    let db = h.db();
+    setup_page(&h, "P");
+    run(&h, &["--graph", &db, "block", "create", "P", "hello"]);
+
+    // `-f` / `--graph` used to be accepted only BEFORE the subcommand.
+    let out = run(&h, &["page", "get", "P", "-f", "md", "--graph", &db]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let md = String::from_utf8_lossy(&out.stdout);
+    assert!(md.contains("# P") && md.contains("hello"), "{md}");
+
+    // …and still work before it.
+    let out = run(&h, &["--graph", &db, "-f", "md", "page", "get", "P"]);
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stdout).contains("hello"));
+}

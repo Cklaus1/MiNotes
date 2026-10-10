@@ -9,6 +9,35 @@ use crate::models::{Block, RestoreBlock};
 const BLOCK_COLS: &str =
     "id, page_id, parent_id, position, content, format, collapsed, created_at, updated_at";
 
+/// Reorder position-sorted blocks into depth-first outline order. Blocks whose
+/// parent is missing (or that sit in a parent cycle) are appended at the end so
+/// nothing is ever dropped.
+fn tree_order(blocks: Vec<Block>) -> Vec<Block> {
+    use std::collections::{HashMap, HashSet};
+    let ids: HashSet<Uuid> = blocks.iter().map(|b| b.id).collect();
+    let mut children: HashMap<Option<Uuid>, Vec<usize>> = HashMap::new();
+    for (i, b) in blocks.iter().enumerate() {
+        // A parent that isn't on this page is treated as "no parent".
+        let key = b.parent_id.filter(|p| ids.contains(p));
+        children.entry(key).or_default().push(i); // input is position-sorted
+    }
+    let mut order = Vec::with_capacity(blocks.len());
+    let mut seen = vec![false; blocks.len()];
+    let mut stack: Vec<usize> = children.get(&None).map(|v| v.iter().rev().copied().collect()).unwrap_or_default();
+    while let Some(i) = stack.pop() {
+        if std::mem::replace(&mut seen[i], true) {
+            continue;
+        }
+        order.push(i);
+        if let Some(kids) = children.get(&Some(blocks[i].id)) {
+            stack.extend(kids.iter().rev().copied());
+        }
+    }
+    order.extend((0..blocks.len()).filter(|&i| !seen[i])); // cycles: keep, at the end
+    let mut slots: Vec<Option<Block>> = blocks.into_iter().map(Some).collect();
+    order.into_iter().filter_map(|i| slots[i].take()).collect()
+}
+
 impl Database {
     /// Sync the links table for a block by parsing its content for [[page links]] and ((block refs)).
     ///
@@ -440,6 +469,12 @@ impl Database {
         self.set_block_parent(id, parent_id, None, "block.reparented", actor)
     }
 
+    /// All blocks of a page in outline order: depth-first, siblings by position.
+    ///
+    /// Positions are only meaningful among siblings (a first child has position 1
+    /// whatever its parent's position is), so a flat `ORDER BY position` puts
+    /// children above their parents. Every consumer — the editor, export, kanban —
+    /// renders this list top to bottom, so it must already be in outline order.
     pub fn get_page_blocks(&self, page_id: &Uuid) -> Result<Vec<Block>> {
         let mut stmt = self.conn.prepare(&format!(
             "SELECT {BLOCK_COLS} FROM blocks WHERE page_id = ?1 ORDER BY position"
@@ -451,7 +486,7 @@ impl Database {
         for row in rows {
             blocks.push(row.map_err(Error::Database)?);
         }
-        Ok(blocks)
+        Ok(tree_order(blocks))
     }
 
     /// Recreate blocks with their ORIGINAL id / page / parent / position / content
@@ -1012,4 +1047,26 @@ mod tests {
         assert!(v.properties.is_empty());
         assert_eq!(v.parent_id, Some(id));
     }
+    #[test]
+    fn test_page_blocks_are_in_outline_order() {
+        let db = Database::open_in_memory().unwrap();
+        let p = db.create_page("P", None, false, None, "t").unwrap();
+        let a = db.create_block(&p.id, "a", None, None, "t").unwrap();
+        let b = db.create_block(&p.id, "b", None, None, "t").unwrap();
+        // First children get position 1 — lower than their parents' positions.
+        let b1 = db.create_block(&p.id, "b1", Some(&b.id), None, "t").unwrap();
+        let b1x = db.create_block(&p.id, "b1x", Some(&b1.id), None, "t").unwrap();
+        let b2 = db.create_block(&p.id, "b2", Some(&b.id), None, "t").unwrap();
+        let c = db.create_block(&p.id, "c", None, None, "t").unwrap();
+        let a1 = db.create_block(&p.id, "a1", Some(&a.id), None, "t").unwrap();
+        let got: Vec<String> = db.get_page_blocks(&p.id).unwrap().into_iter().map(|x| x.content).collect();
+        assert_eq!(got, ["a", "a1", "b", "b1", "b1x", "b2", "c"]);
+        let _ = (b1x, b2, c, a1);
+
+        // A corrupt parent cycle must not drop or loop: the blocks still come back.
+        db.conn.execute_batch("PRAGMA foreign_keys=OFF;").unwrap();
+        db.conn.execute("UPDATE blocks SET parent_id = ?1 WHERE id = ?1", rusqlite::params![a.id.to_string()]).unwrap();
+        assert_eq!(db.get_page_blocks(&p.id).unwrap().len(), 7);
+    }
+
 }

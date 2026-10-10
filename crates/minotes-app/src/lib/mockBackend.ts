@@ -249,10 +249,32 @@ seedData();
 
 // ── Helper functions ──
 
+// Outline order (depth-first, siblings by position) — same contract as core's
+// get_page_blocks. Positions only order siblings, so a flat sort would put a
+// first child (position 1) above its parent.
 function getPageBlocks(pageId: string): Block[] {
-  return Array.from(blocks.values())
+  const all = Array.from(blocks.values())
     .filter(b => b.page_id === pageId)
     .sort((a, b) => a.position - b.position);
+  const ids = new Set(all.map(b => b.id));
+  const kids = new Map<string, Block[]>();
+  for (const b of all) {
+    const key = b.parent_id && ids.has(b.parent_id) ? b.parent_id : "";
+    (kids.get(key) ?? kids.set(key, []).get(key)!).push(b);
+  }
+  const out: Block[] = [];
+  const seen = new Set<string>();
+  const walk = (key: string) => {
+    for (const b of kids.get(key) ?? []) {
+      if (seen.has(b.id)) continue;
+      seen.add(b.id);
+      out.push(b);
+      walk(b.id);
+    }
+  };
+  walk("");
+  for (const b of all) if (!seen.has(b.id)) out.push(b); // parent cycles: keep, at the end
+  return out;
 }
 
 function findPage(titleOrId: string): Page | undefined {
@@ -325,7 +347,8 @@ export const mockHandlers: Record<string, (args: any) => any> = {
     }
 
     const id = genId();
-    const siblings = getPageBlocks(pageId);
+    // Positions are per-parent, as in core: a first child gets position 1.
+    const siblings = getPageBlocks(pageId).filter(b => (b.parent_id ?? undefined) === (parentId ?? undefined));
     const maxPos = siblings.length > 0 ? Math.max(...siblings.map(b => b.position)) : 0;
     const block: Block = {
       id, page_id: pageId, parent_id: parentId,

@@ -19,7 +19,7 @@ use output::Format;
 struct Cli {
     /// Path to the graph database file. Defaults to the desktop app's active
     /// graph (~/.minotes/<active_graph>.db). A leading ~ is expanded.
-    #[arg(long)]
+    #[arg(long, global = true)]
     graph: Option<String>,
 
     /// Create the --graph database if it does not exist (otherwise a missing
@@ -28,11 +28,12 @@ struct Cli {
     create: bool,
 
     /// Actor name for event attribution
-    #[arg(long, default_value = "user")]
+    #[arg(long, global = true, default_value = "user")]
     actor: String,
 
-    /// Output format: json, text, md, csv, opml
-    #[arg(long, short, default_value = "json")]
+    /// Output format: json, text, md, csv, opml. Global: works before or after
+    /// the subcommand (`minotes page get X -f md`).
+    #[arg(long, short, global = true, default_value = "json")]
     format: Format,
 
     #[command(subcommand)]

@@ -297,6 +297,7 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
     <div
       className={`block${selected ? " selected" : ""}${dropPosition === "above" ? " drop-above" : ""}${dropPosition === "below" ? " drop-below" : ""}`}
       data-depth={depth > 0 ? String(depth) : undefined}
+      style={depth > 0 ? ({ "--depth": depth } as React.CSSProperties) : undefined}
       data-tree-last={isLastSibling ? "true" : undefined}
       data-active-path={isOnActivePath ? "true" : undefined}
       data-block-id={dataBlockId ?? block.id}
@@ -387,13 +388,13 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
 
       {/* TODO/DOING/DONE badge */}
       {block.content.startsWith("TODO ") && (
-        <span className="todo-badge todo-badge-todo" onClick={handleToggleTodo} title="Click to cycle: TODO → DOING → DONE">TODO</span>
+        <span className="todo-badge todo-badge-todo todo-badge-cover" onClick={handleToggleTodo} title="Click to cycle: TODO → DOING → DONE"><span className="todo-badge-sizer" aria-hidden="true">TODO</span><span className="todo-badge-label">TODO</span></span>
       )}
       {block.content.startsWith("DOING ") && (
-        <span className="todo-badge todo-badge-doing" onClick={handleToggleTodo} title="Click to cycle: DOING → DONE">DOING</span>
+        <span className="todo-badge todo-badge-doing todo-badge-cover" onClick={handleToggleTodo} title="Click to cycle: DOING → DONE"><span className="todo-badge-sizer" aria-hidden="true">DOING</span><span className="todo-badge-label">DOING</span></span>
       )}
       {block.content.startsWith("DONE ") && (
-        <span className="todo-badge todo-badge-done" onClick={handleToggleTodo} title="Click to remove DONE state">DONE</span>
+        <span className="todo-badge todo-badge-done todo-badge-cover" onClick={handleToggleTodo} title="Click to remove DONE state"><span className="todo-badge-sizer" aria-hidden="true">DONE</span><span className="todo-badge-label">DONE</span></span>
       )}
       {/* {{todo:pending}} badge */}
       {block.content === "{{todo:pending}}" && (
