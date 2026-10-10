@@ -1,405 +1,242 @@
-# MiNotes Encryption PRD
+# PRD: Notebook Encryption
 
-## Overview
+Status: draft · Owner: Chris Klaus · Rewritten 2026-10-10
 
-Application-level encryption for MiNotes Project folders. Users can mark any Project folder as encrypted — all pages and blocks within that folder are encrypted at rest using AES-256-GCM. The encryption is transparent during use (unlock once per session) and protects data in the database file, in sync transit, and in backups.
+> **Supersedes the per-folder design.** The earlier version of this PRD encrypted
+> individual fields (block content, page titles, property values) per Project
+> folder with AES-256-GCM. It was never implemented. It is replaced because it
+> left structure readable (folder names, counts, timestamps, link shape, property
+> keys), left plaintext copies in the search index, the undo/event log, whiteboards
+> and the git-sync files — each needing its own handling — and required every
+> content query to know about locked/unlocked state. The original is in git history
+> (`docs/PRD-encryption.md` before this rewrite). Kept from it: the passphrase and
+> unlock dialogs, the Argon2id parameters, and the in-memory key rules.
 
-## Problem Statement
+## 1. Overview
 
-Users store sensitive information in their notes — passwords, journal entries, medical info, business strategy, legal documents. Today, anyone with access to the SQLite database file (`~/.minotes/default.db`) can read all content in plaintext. Users need a way to protect specific folders without encrypting their entire knowledge base.
+Encrypt a whole notebook at rest. A notebook is either **encrypted** or not; an
+encrypted notebook is **locked** (unreadable) or **unlocked** (fully usable).
+Sensitive notes go in their own encrypted notebook (see `PRD-notebooks.md` —
+notebooks are cheap to create and switch).
 
-## Goals
+**One-liner:** the notebook's database file is encrypted with SQLCipher; the key
+is random, wrapped by the user's passphrase and by a recovery key, and may be
+remembered per device in the OS keychain.
 
-1. Encrypt selected Project folders so content is unreadable without a passphrase
-2. Encryption is transparent during use — unlock once, work normally
-3. Encrypted data stays encrypted through sync, export, and backup
-4. Zero-knowledge design — MiNotes (and any sync server) never sees plaintext
-5. Simple UX — no key management, GPG, or certificates required
+## 2. Threat model
 
-## Non-Goals
+Protects against
+- A lost or stolen device, or a disk pulled from one.
+- A copied notebook folder, a leaked backup, a cloud-sync provider or git host
+  reading the files.
+- Another OS user on the same machine reading the files.
 
-- End-to-end encrypted real-time collaboration (future)
-- Encrypting the entire database (too disruptive to UX)
-- Hardware key / biometric unlock (future enhancement)
-- Key escrow or recovery (user is responsible for their passphrase)
+Does not protect against
+- Malware or another person acting inside the user's unlocked session while the
+  notebook is unlocked (auto-lock narrows this; nothing closes it).
+- A weak passphrase (Argon2id slows guessing; it cannot fix "1234").
+- The user losing both the passphrase and the recovery key. There is no backdoor.
 
-## User Stories
+## 3. Goals / non-goals
 
-### US-1: Encrypt a Project folder
-As a user, I want to right-click a Project folder and select "Encrypt" so that all notes inside it are protected by a passphrase.
+Goals
+1. Nothing about an encrypted notebook's content or structure is readable without
+   the key: text, titles, folder names, counts, search index, undo log, whiteboards.
+2. Unlocked, the notebook behaves exactly like an unencrypted one — search,
+   backlinks, kanban, undo all work with no special cases.
+3. Changing the passphrase is instant and does not rewrite the notebook.
+4. A forgotten passphrase is recoverable with a recovery key.
+5. Sync still works for encrypted notebooks without exposing plaintext.
 
-### US-2: Unlock an encrypted folder
-As a user, I want to enter my passphrase once when I open the app (or click a locked folder) so I can read and edit my encrypted notes normally for the rest of the session.
+Non-goals
+- Per-folder or per-page locking inside a notebook.
+- Sharing an encrypted notebook with other people (multi-recipient keys).
+- Hiding that a notebook exists or how large it is.
+- Protecting memory against a local attacker with debugger access.
 
-### US-3: Lock encrypted folders
-As a user, I want to lock all encrypted folders (manually or on app close) so that my data is protected when I walk away.
+## 4. Design
 
-### US-4: Move pages into/out of encrypted folders
-As a user, I want to drag a page into an encrypted folder and have it automatically encrypted, or drag it out and have it decrypted (with confirmation).
+### 4.1 Database encryption
 
-### US-5: Sync encrypted folders
-As a user, I want encrypted folders to sync between devices with the encrypted content intact — the sync layer never sees plaintext.
+- SQLCipher 4 via `rusqlite`'s `bundled-sqlcipher-vendored-openssl` feature
+  (vendored so Windows and Android builds need no system OpenSSL).
+- AES-256, page-level, with SQLCipher's per-page HMAC (tamper detection).
+- The database is keyed with a **raw 256-bit key** (`PRAGMA key = "x'…'"`), so
+  SQLCipher's own passphrase KDF is skipped — key derivation is ours (4.2).
+- WAL and temp files: SQLCipher encrypts the WAL and journal; set
+  `PRAGMA temp_store = MEMORY` so temp tables never touch disk in plaintext.
+- `Database::open` gains an optional key. A wrong key surfaces as a clear
+  "wrong passphrase" error (SQLCipher fails on the first read), never as a panic
+  or as "database is corrupt".
 
-### US-6: Change passphrase
-As a user, I want to change the passphrase on an encrypted folder without losing any data.
-
-### US-7: Search within encrypted folders
-As a user, I want search to include results from unlocked encrypted folders, and exclude results from locked folders.
-
-## Design
-
-### Encryption Scheme
-
-```
-Passphrase
-    │
-    ▼
-Argon2id (salt, 3 iterations, 64MB memory, 4 parallelism)
-    │
-    ▼
-256-bit Derived Key (DEK wrapper)
-    │
-    ▼
-Unwraps Folder Encryption Key (FEK) ──► AES-256-GCM encrypt/decrypt
-    │
-    ▼
-Each block/page title encrypted with FEK + unique nonce
-```
-
-**Why two layers of keys?**
-- The Folder Encryption Key (FEK) is a random 256-bit key generated once when encryption is enabled
-- The FEK is wrapped (encrypted) by the passphrase-derived key
-- Changing the passphrase only re-wraps the FEK — no need to re-encrypt every block
-- Team sharing (future): the FEK can be wrapped with multiple passphrases or shared keys
-
-### What Gets Encrypted
-
-| Field | Encrypted | Rationale |
-|-------|-----------|-----------|
-| Block content | Yes | Primary sensitive data |
-| Page title | Yes | Titles often reveal content |
-| Page icon | No | Low sensitivity, needed for locked-state UI |
-| Folder name | No | Needed for navigation when locked |
-| Block position, parent_id | No | Structural, needed for tree rendering |
-| Block timestamps | No | Low sensitivity |
-| Properties (key) | No | Needed for query engine |
-| Properties (value) | Yes | Values may be sensitive |
-| Links (from_block, to_page) | Partially | Link targets within encrypted folder are encrypted; cross-folder links use page IDs (opaque) |
-
-### Encrypted Data Format
-
-Each encrypted field is stored as a base64-encoded blob:
+### 4.2 Keys (envelope encryption)
 
 ```
-ENC:v1:<12-byte-nonce-hex>:<ciphertext-base64>
+passphrase ──Argon2id──► KEK_p ─┐
+                                ├─ wraps ─► DEK (random 256-bit) ─► SQLCipher
+recovery key (random) ─HKDF──► KEK_r ─┘
 ```
 
-- Prefix `ENC:v1:` allows detection of encrypted vs plaintext content
-- Nonce is unique per write (regenerated on every update)
-- Ciphertext includes the AES-GCM authentication tag (16 bytes)
+- **DEK** (data key): 32 random bytes from the OS CSPRNG, generated once per
+  notebook. Never shown, never derived from the passphrase.
+- **KEK_p**: Argon2id(passphrase, 16-byte random salt, m = 64 MiB, t = 3, p = 4)
+  → 32 bytes. Parameters are stored with the wrapped key so they can be raised
+  later.
+- **Recovery key**: 32 random bytes, shown once as 8 groups of base32 with a
+  checksum; **KEK_r** = HKDF-SHA256 over it.
+- Each KEK wraps the DEK with AES-256-GCM (fresh 12-byte nonce). The two wrapped
+  copies live in `notebook.json` (outside the encrypted database, by necessity):
 
-### Database Schema Changes
-
-```sql
--- Add to folders table
-ALTER TABLE folders ADD COLUMN encrypted INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE folders ADD COLUMN encryption_salt BLOB;        -- Argon2 salt (16 bytes)
-ALTER TABLE folders ADD COLUMN encrypted_fek BLOB;          -- FEK wrapped by derived key
-ALTER TABLE folders ADD COLUMN fek_nonce BLOB;              -- Nonce used to wrap FEK
-ALTER TABLE folders ADD COLUMN key_check BLOB;              -- Encrypted known plaintext for passphrase verification
-```
-
-### State Machine
-
-```
-                    ┌─────────────────┐
-                    │   UNENCRYPTED   │
-                    └────────┬────────┘
-                             │ User enables encryption
-                             │ (enters new passphrase)
-                             ▼
-                    ┌─────────────────┐
-          ┌────────│    UNLOCKED     │────────┐
-          │        └────────┬────────┘        │
-          │                 │                 │
-     User locks        App closes       User works
-     manually          (auto-lock)       normally
-          │                 │                 │
-          ▼                 ▼                 │
-     ┌─────────────────────────┐              │
-     │        LOCKED           │──────────────┘
-     │  (passphrase required)  │  User enters passphrase
-     └─────────────────────────┘
-```
-
-### Key Management In Memory
-
-```rust
-struct AppState {
-    db: Mutex<Database>,
-    current_graph: Mutex<String>,
-    // New: encryption keys held in memory for unlocked folders
-    folder_keys: Mutex<HashMap<Uuid, Vec<u8>>>,  // folder_id → decrypted FEK
+```json
+"encryption": {
+  "version": 1, "cipher": "sqlcipher4",
+  "slots": [
+    {"type": "passphrase", "kdf": "argon2id", "m": 65536, "t": 3, "p": 4,
+     "salt": "…", "nonce": "…", "wrapped": "…"},
+    {"type": "recovery", "kdf": "hkdf-sha256", "nonce": "…", "wrapped": "…"}
+  ]
 }
 ```
 
-- Keys are held in memory only while folders are unlocked
-- On lock or app close, `folder_keys` is cleared
-- Keys are never written to disk in plaintext
-- Keys are never sent over the network
+- **Change passphrase** = unwrap the DEK with the old one, re-wrap with the new
+  one, rewrite one slot atomically. The database is untouched.
+- **Rotate the DEK** (after suspected compromise) = `PRAGMA rekey`, which rewrites
+  the database; offered under "Advanced", not part of changing the passphrase.
+- `notebook.json` otherwise holds only the notebook's id and format version for an
+  encrypted notebook — **not its name** (the registry in `~/.minotes` keeps a local
+  display name).
 
-## UX Design
+### 4.3 Remembering the key on a device
 
-### Sidebar — Locked Folder
+Off by default. "Keep unlocked on this device" stores the **DEK** in the OS
+keychain (macOS Keychain, Windows Credential Manager, Linux Secret Service,
+Android Keystore), keyed by notebook id, via the `keyring` crate.
 
-```
-📁 🔒 Private Journal          (locked)
-    Click to unlock...
-```
+- If the keychain is unavailable (headless Linux, WSL without a secret service),
+  the option is disabled with an explanation — never fall back to a file.
+- "Forget on this device" deletes the entry. Changing the passphrase does not
+  invalidate remembered devices (they hold the DEK); rotating the DEK does.
+- Not offered: key files, and "no passphrase" encryption. Biometric unlock can be
+  layered on the keychain entry later where the platform supports it.
 
-- Locked folders show a lock icon
-- Clicking expands to show "Enter passphrase to unlock"
-- Pages inside are not listed (titles are encrypted)
-
-### Sidebar — Unlocked Folder
-
-```
-📁 🔓 Private Journal          (unlocked)
-    📄 Therapy Notes
-    📄 Financial Planning
-    📄 Health Records
-```
-
-- Unlocked folders show an open lock icon
-- Pages listed normally — decrypted in memory
-- Right-click folder → "Lock" to re-lock
-
-### Unlock Dialog
+### 4.4 Lock state
 
 ```
-┌─────────────────────────────────┐
-│  🔒 Unlock "Private Journal"   │
-│                                 │
-│  Passphrase: [••••••••••••]    │
-│                                 │
-│  [ ] Remember until app closes  │
-│                                 │
-│  [Cancel]          [Unlock]     │
-└─────────────────────────────────┘
+            unlock (passphrase | recovery key | keychain)
+  LOCKED ───────────────────────────────────────────────► UNLOCKED
+     ▲                                                        │
+     └──────── lock now · auto-lock timer · sleep · quit ◄────┘
 ```
 
-### Enable Encryption Dialog
+- Locking closes the database connection, zeroizes the DEK and KEKs in memory
+  (`zeroize` crate), clears undo history, closes open views of that notebook and
+  drops any cached page data from the frontend.
+- Auto-lock: after N minutes without input (default 15, configurable, "never"
+  allowed) and on system sleep/lock where the platform reports it.
+- A locked notebook shows only: its local display name, a lock icon, and the
+  unlock dialog. No titles, counts or recent pages.
+- The CLI reads the passphrase from a prompt, `MINOTES_PASSPHRASE`, or the
+  keychain; it never accepts it as a command-line argument (visible in `ps`).
 
-```
-┌──────────────────────────────────────┐
-│  🔐 Encrypt "Private Journal"       │
-│                                      │
-│  All pages in this folder will be    │
-│  encrypted. You must remember your   │
-│  passphrase — there is no recovery.  │
-│                                      │
-│  Passphrase:  [••••••••••••]        │
-│  Confirm:     [••••••••••••]        │
-│                                      │
-│  Strength: ████████░░ Strong         │
-│                                      │
-│  ⚠ If you forget your passphrase,   │
-│  your data cannot be recovered.      │
-│                                      │
-│  [Cancel]           [Encrypt]        │
-└──────────────────────────────────────┘
-```
+### 4.5 Plaintext outside the database
 
-### Move Page Into Encrypted Folder
+Everything that would leak must be handled explicitly:
 
-```
-"Meeting Notes" will be encrypted and
-protected by the folder's passphrase.
+| Copy | Encrypted notebook behaviour |
+|---|---|
+| Markdown mirror (`notes/`) | **Off by default.** Option: an *encrypted mirror* — each file encrypted with a key derived from the DEK (age-style, one file per page, filenames are opaque ids). Readable only by MiNotes; exists so git sync has files to move. |
+| Git sync | Syncs the encrypted mirror. Merges become "newer file wins per page" (ciphertext cannot be three-way merged); conflicting edits keep both as today's conflict-copy pages after decryption. The remote sees file count, sizes and timing only. |
+| Export / publish site | Allowed while unlocked, with a one-time "this writes unencrypted files" confirmation. |
+| Whiteboard legacy localStorage copies | Deleted when a notebook is encrypted. |
+| Webview storage (settings, collapsed state, recent pages) | Recent-page titles and anything content-derived move into the database; only non-sensitive UI preferences stay in webview storage. |
+| OS swap / crash dumps | Out of scope; documented. |
+| Link previews fetched for a page | Fetched while unlocked only; cached inside the database. |
 
-[Cancel]  [Encrypt & Move]
-```
+### 4.6 Converting
 
-### Move Page Out of Encrypted Folder
+- **Encrypt an existing notebook**: create an encrypted copy with
+  `sqlcipher_export`, verify (integrity check + row counts per table), swap it in,
+  then securely remove the plaintext database, its WAL/SHM, the plaintext mirror
+  (including `.git` history — warn that old commits on any remote still contain
+  plaintext), `.minotes-trash/`, and legacy whiteboard storage. Show exactly what
+  will be deleted before starting.
+- **Remove encryption**: the reverse, behind the passphrase and a confirmation.
+- Both are resumable: a marker file records the step, and a crash mid-way leaves
+  either the old or the new notebook intact, never neither.
 
-```
-"Meeting Notes" will be decrypted and
-stored in plaintext. Anyone with database
-access will be able to read it.
+## 5. UX
 
-[Cancel]  [Decrypt & Move]
-```
+- **Create**: "New notebook…" has an "Encrypt this notebook" option → passphrase
+  twice with a strength meter (zxcvbn-style, minimum "fair") → recovery key screen:
+  shown once, with Copy / Save to file / Print, and a required "I have saved my
+  recovery key" checkbox.
+- **Unlock dialog**: passphrase field, "Keep unlocked on this device", "Use
+  recovery key instead". Wrong passphrase: inline message, exponential delay after
+  5 attempts in a session (the KDF is the real defence; the delay is courtesy).
+- **Sidebar**: lock icon beside the notebook name; "Lock now" in the notebook menu
+  and a shortcut (Ctrl+Shift+L).
+- **Settings → Security**: change passphrase, view/regenerate recovery key
+  (requires passphrase; regenerating invalidates the old one), remembered-on-this-
+  device toggle, auto-lock time, encrypt/decrypt notebook, rotate key.
+- Using the recovery key forces setting a new passphrase and offers a new
+  recovery key.
 
-## API / Tauri Commands
+## 6. Implementation outline
 
-### New Commands
+1. `rusqlite` → `bundled-sqlcipher-vendored-openssl`; confirm Linux, Windows and
+   Android builds and binary-size impact. All unencrypted notebooks keep working
+   (SQLCipher opens plain SQLite files when no key is given).
+2. `minotes-core`: `crypto` module (DEK generation, Argon2id, HKDF, AES-GCM wrap,
+   recovery-key encoding); `Database::open_encrypted`; key slots in `notebook.json`.
+3. Tauri: `create_encrypted_notebook`, `unlock_notebook`, `lock_notebook`,
+   `change_passphrase`, `recover_with_key`, `set_remember_device`,
+   `encrypt_notebook`, `decrypt_notebook`. `AppState` holds
+   `Option<Database>` per notebook; every command returns a typed "locked" error
+   the frontend turns into the unlock dialog.
+4. Frontend: dialogs, lock state in the notebook switcher, auto-lock timer,
+   clearing caches on lock.
+5. Encrypted mirror + sync adaptation (can ship after 1–4: until then, encrypted
+   notebooks simply have mirror and sync off).
+6. CLI: prompt / env / keychain.
+7. Mock backend: lock state and wrong-passphrase behaviour (no real crypto) so
+   browser journeys can cover the flows.
 
-```rust
-#[tauri::command]
-fn enable_folder_encryption(folder_id: String, passphrase: String) -> Result<(), String>
-// Generate FEK, derive key from passphrase, wrap FEK, encrypt all existing content
+Depends on `PRD-notebooks.md` Phase 1 (switcher) and Phase 3 (`notebook.json`).
+Encryption of a notebook in the legacy `~/.minotes/<name>.db` location stores its
+slots in `~/.minotes/<name>.encryption.json`.
 
-#[tauri::command]
-fn disable_folder_encryption(folder_id: String, passphrase: String) -> Result<(), String>
-// Verify passphrase, decrypt all content, remove encryption metadata
+## 7. Testing
 
-#[tauri::command]
-fn unlock_folder(folder_id: String, passphrase: String) -> Result<bool, String>
-// Derive key, unwrap FEK, verify via key_check, store FEK in folder_keys
+- Core: wrap/unwrap round-trips; wrong passphrase and wrong recovery key rejected;
+  change passphrase leaves database bytes unchanged; tampered slot or database page
+  detected; Argon2 parameters read from the slot; convert/deconvert preserve every
+  table and survive a simulated crash at each step.
+- **Leak test** (the important one): create an encrypted notebook with distinctive
+  marker strings in titles, blocks, folder names, properties, whiteboards and
+  search queries; then scan every file the app wrote (notebook folder, registry,
+  webview storage, temp dir, logs) for the markers. None may appear.
+- Desktop journeys (`tests/desktop-journey-test.sh`): create encrypted, lock,
+  wrong passphrase, unlock, restart → locked, remembered device → unlocked,
+  recovery-key flow, auto-lock, encrypt an existing notebook, two-device sync of an
+  encrypted notebook.
+- Scale run on an encrypted notebook to confirm overhead stays within ~15%.
 
-#[tauri::command]
-fn lock_folder(folder_id: String) -> Result<(), String>
-// Remove FEK from folder_keys
+## 8. Risks
 
-#[tauri::command]
-fn lock_all_folders() -> Result<(), String>
-// Clear all keys from folder_keys
+| Risk | Mitigation |
+|---|---|
+| User loses passphrase and recovery key | Recovery key is mandatory at setup and re-printable while unlocked; plain-language warning; nothing else is possible by design. |
+| A plaintext copy is missed | The leak test in §7 runs in CI against every release. |
+| Keychain entry leaks the DEK to other software in the session | Opt-in, explained; auto-lock; "Forget on this device". |
+| Conversion interrupted | Resumable with verification before any deletion. |
+| Build complexity (vendored OpenSSL on Windows/Android) | Spike first (step 1) before committing to the rest. |
+| Encrypted sync loses fine-grained merging | Conflict copies preserve both versions; documented trade-off. |
 
-#[tauri::command]
-fn change_folder_passphrase(folder_id: String, old_passphrase: String, new_passphrase: String) -> Result<(), String>
-// Verify old, derive new key, re-wrap FEK (content unchanged)
+## 9. Open questions
 
-#[tauri::command]
-fn is_folder_unlocked(folder_id: String) -> Result<bool, String>
-// Check if FEK is in folder_keys
-```
-
-### Modified Commands
-
-```rust
-// These commands must decrypt on read if folder is encrypted + unlocked:
-fn get_page_tree(...)   // Decrypt page title + block content
-fn list_pages(...)      // Decrypt page titles for unlocked folders, show "[Locked]" for locked
-fn search_blocks(...)   // Only search unlocked encrypted folders
-
-// These commands must encrypt on write if folder is encrypted:
-fn create_block(...)    // Encrypt content before DB write
-fn update_block(...)    // Encrypt content before DB write
-fn create_page(...)     // Encrypt title before DB write
-fn rename_page(...)     // Encrypt new title before DB write
-```
-
-## Implementation Plan
-
-### Phase 1: Core Encryption (Backend)
-
-1. Add `aes-gcm` and `argon2` crates to `minotes-core`
-2. Create `crypto.rs` module:
-   - `derive_key(passphrase, salt) → [u8; 32]`
-   - `generate_fek() → [u8; 32]`
-   - `wrap_fek(fek, derived_key) → (encrypted_fek, nonce)`
-   - `unwrap_fek(encrypted_fek, nonce, derived_key) → fek`
-   - `encrypt_field(plaintext, fek) → "ENC:v1:nonce:ciphertext"`
-   - `decrypt_field(encrypted, fek) → plaintext`
-   - `is_encrypted(value) → bool`
-3. Database migration: add encryption columns to `folders` table
-4. Implement `enable_folder_encryption` — encrypts all existing blocks/titles
-5. Implement `unlock_folder` / `lock_folder` — key management in `AppState`
-
-### Phase 2: Read/Write Integration (Backend)
-
-6. Modify `get_page_tree` — decrypt titles and content for unlocked folders
-7. Modify `create_block` / `update_block` — encrypt if folder is encrypted
-8. Modify `create_page` / `rename_page` — encrypt titles
-9. Modify `search_blocks` — skip locked folders, decrypt results from unlocked
-10. Modify `list_pages` — show encrypted titles as "[Locked]" or decrypt if unlocked
-11. Modify `move_page_to_folder` — encrypt/decrypt on folder boundary crossing
-
-### Phase 3: Frontend UX
-
-12. Lock/unlock UI in sidebar (lock icon, unlock dialog)
-13. Enable encryption dialog (right-click folder → Encrypt)
-14. Change passphrase dialog (right-click encrypted folder → Change Passphrase)
-15. Move page confirmation dialogs (encrypt/decrypt on drag)
-16. Lock all on app close (cleanup handler)
-17. Keyboard shortcut: Ctrl+L to lock all folders
-
-### Phase 4: Sync Integration
-
-18. Encrypted blocks sync as ciphertext — no changes to sync protocol
-19. Encrypted folder metadata (salt, wrapped FEK) syncs to enable unlock on other devices
-20. Conflict resolution works on ciphertext (last-write-wins still applies)
-
-### Phase 5: Mock Backend
-
-21. Implement encryption in `mockBackend.ts` using Web Crypto API (AES-GCM + PBKDF2)
-22. Mirror the same `ENC:v1:` format for browser testing
-
-## Security Considerations
-
-### Threat Model
-
-| Threat | Protected? | How |
-|--------|-----------|-----|
-| Someone copies your .db file | Yes | Content encrypted with AES-256-GCM |
-| Someone accesses your machine while app is closed | Yes | Keys not in memory |
-| Someone accesses your machine while app is open | Partial | Unlocked folders are readable in memory |
-| Sync server reads your data | Yes | Server only sees ciphertext |
-| Brute-force passphrase attack | Mitigated | Argon2id with high memory cost (64MB) |
-| Known-plaintext attack | Mitigated | AES-GCM with unique nonces |
-| Passphrase forgotten | Not recoverable | By design — no backdoor |
-
-### What This Does NOT Protect
-
-- Memory dumps while folders are unlocked
-- Keyloggers capturing the passphrase
-- Screenshots of decrypted content
-- OS-level full-disk access while app is running
-- Weak passphrases (mitigated by strength meter, not prevented)
-
-### Passphrase Strength Requirements
-
-- Minimum 8 characters
-- Strength meter shown (zxcvbn or similar)
-- No maximum length
-- No character restrictions
-- Warning shown for weak passphrases, but not blocked
-
-## Testing
-
-### Unit Tests (Rust)
-- Encrypt/decrypt round-trip
-- Wrong passphrase returns error
-- Different nonces produce different ciphertext
-- Key derivation is deterministic (same passphrase + salt = same key)
-- FEK wrap/unwrap round-trip
-- Passphrase change preserves data
-
-### Integration Tests
-- Enable encryption on folder with existing pages
-- Create/read/update/delete blocks in encrypted folder
-- Search includes unlocked, excludes locked
-- Move page between encrypted and unencrypted folders
-- Lock/unlock cycle preserves all data
-- App restart requires re-unlock
-
-### User Journey Tests
-- Journey: Enable encryption, add notes, lock, verify unreadable, unlock, verify readable
-- Journey: Move page into encrypted folder, move it out
-- Journey: Change passphrase, verify old passphrase fails, new works
-- Journey: Search across mix of encrypted and unencrypted folders
-
-## Dependencies
-
-### Rust Crates
-- `aes-gcm` — AES-256-GCM encryption
-- `argon2` — Argon2id key derivation
-- `rand` — Cryptographic random number generation (nonces, salts, FEK)
-
-### Frontend
-- Web Crypto API (for mock backend) — built into browsers, no npm packages needed
-
-## Rollout
-
-1. Ship as opt-in feature behind Settings toggle: "Enable Folder Encryption"
-2. Default: off — no encryption until user explicitly enables on a folder
-3. No migration needed — existing folders remain unencrypted
-4. Feature flag allows disabling if critical bugs found
-
-## Future Enhancements
-
-- Biometric unlock (OS keychain integration)
-- Team encryption (FEK wrapped with multiple keys)
-- Encrypted attachments (images, PDFs)
-- Encrypted export (password-protected ZIP)
-- Auto-lock timer (lock after N minutes of inactivity)
-- Encrypted search index (currently search skips locked folders)
+1. Should the mirror be off or encrypted-by-default for encrypted notebooks? (Off
+   is simpler and ships sooner; encrypted is needed for sync.)
+2. Default auto-lock time: 15 minutes, or never-until-quit?
+3. Is the minimum passphrase strength enforced or advisory?
+4. Offer biometric unlock on Android/macOS in v1, or later?
+5. Should the registry hide encrypted notebooks' display names until unlocked?
