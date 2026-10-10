@@ -98,6 +98,46 @@ pub fn validate_image_path(path: &str) -> Result<PathBuf, String> {
     Ok(canon)
 }
 
+// ── PDF viewer ──
+
+pub const MAX_PDF_BYTES: u64 = 200 * 1024 * 1024;
+
+fn has_pdf_extension(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("pdf"))
+        .unwrap_or(false)
+}
+
+/// Validate a path the user asked the PDF viewer to open. Same rules as images:
+/// absolute (a leading `~/` is expanded against `home`), `.pdf` extension checked
+/// on the *canonical* path so a `x.pdf` symlink to a secret is refused, regular
+/// file, size-capped. Returns the canonical path.
+pub fn validate_pdf_path(path: &str, home: Option<&Path>) -> Result<PathBuf, String> {
+    let expanded = match (path.strip_prefix("~/"), home) {
+        (Some(rest), Some(h)) => h.join(rest),
+        _ => PathBuf::from(path),
+    };
+    if !expanded.is_absolute() {
+        return Err("PDF path must be absolute".into());
+    }
+    if !has_pdf_extension(&expanded) {
+        return Err("Not a PDF file".into());
+    }
+    let canon = std::fs::canonicalize(&expanded).map_err(|e| format!("Cannot open PDF: {e}"))?;
+    if !has_pdf_extension(&canon) {
+        return Err("Not a PDF file".into());
+    }
+    let meta = std::fs::metadata(&canon).map_err(|e| format!("Cannot open PDF: {e}"))?;
+    if !meta.is_file() {
+        return Err("Not a regular file".into());
+    }
+    if meta.len() > MAX_PDF_BYTES {
+        return Err(format!("PDF too large (max {} MB)", MAX_PDF_BYTES / 1024 / 1024));
+    }
+    Ok(canon)
+}
+
 // ── Publish output directory ──
 
 /// Canonicalize the deepest existing ancestor of `path`, then re-append the
@@ -362,6 +402,34 @@ mod tests {
             let _ = std::fs::remove_file(&link);
             std::os::unix::fs::symlink(&secret, &link).unwrap();
             assert!(validate_image_path(link.to_str().unwrap()).is_err());
+        }
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn pdf_path_validation() {
+        let tmp = std::env::temp_dir().join(format!("minotes-pdf-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let pdf = tmp.join("Doc.PDF");
+        std::fs::write(&pdf, b"%PDF-1.4").unwrap();
+        let secret = tmp.join("secret.txt");
+        std::fs::write(&secret, b"s3cret").unwrap();
+        assert!(validate_pdf_path(pdf.to_str().unwrap(), None).is_ok());
+        assert!(validate_pdf_path(secret.to_str().unwrap(), None).is_err());
+        assert!(validate_pdf_path("relative.pdf", None).is_err());
+        assert!(validate_pdf_path(tmp.join("missing.pdf").to_str().unwrap(), None).is_err());
+        // `~/` expands against the given home; without one it stays relative → refused.
+        assert!(validate_pdf_path("~/Doc.PDF", Some(&tmp)).is_ok());
+        assert!(validate_pdf_path("~/Doc.PDF", None).is_err());
+        let dir = tmp.join("dir.pdf");
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(validate_pdf_path(dir.to_str().unwrap(), None).is_err());
+        #[cfg(unix)]
+        {
+            let link = tmp.join("evil.pdf");
+            let _ = std::fs::remove_file(&link);
+            std::os::unix::fs::symlink(&secret, &link).unwrap();
+            assert!(validate_pdf_path(link.to_str().unwrap(), None).is_err());
         }
         std::fs::remove_dir_all(&tmp).ok();
     }

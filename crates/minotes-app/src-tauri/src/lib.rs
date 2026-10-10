@@ -1014,6 +1014,20 @@ fn base64_encode(data: &[u8]) -> String {
     result
 }
 
+/// PDF viewer: the webview cannot read local files by path (pdf.js would fetch the
+/// path relative to the app origin), so the bytes come through IPC as a binary
+/// response. Restricted to regular `.pdf` files (see `validate_pdf_path`).
+#[tauri::command]
+fn read_pdf_file(path: String) -> Result<tauri::ipc::Response, String> {
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    let canon = security::validate_pdf_path(&path, home.as_deref())?;
+    let bytes = std::fs::read(&canon).map_err(|e| format!("Cannot open PDF: {e}"))?;
+    if bytes.len() as u64 > security::MAX_PDF_BYTES {
+        return Err("PDF too large".into());
+    }
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
 #[tauri::command]
 fn read_file_base64(path: String) -> Result<String, String> {
     // SECURITY: only used for OS drag-and-drop of images onto the whiteboard. Restrict
@@ -1546,6 +1560,7 @@ pub fn run() {
             reorder_block,
             paste_image_wsl,
             read_file_base64,
+            read_pdf_file,
             fetch_og_metadata,
             get_block,
             archive_page,

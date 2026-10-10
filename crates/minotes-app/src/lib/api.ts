@@ -682,3 +682,15 @@ export const getWhiteboard = (id: string) =>
 export const saveWhiteboard = (id: string, data: string) =>
   invoke<void>("save_whiteboard", { id, data });
 // ── End whiteboards ──
+
+// ── PDF viewer ──
+/**
+ * Bytes of a local PDF. In the desktop app the webview can't read files by path,
+ * so they come over IPC; in browser mode this returns null and the caller loads
+ * `path` as a URL instead.
+ */
+export async function readPdfFile(path: string): Promise<Uint8Array | null> {
+  if (!isTauri) return null;
+  const buf = await tauriInvoke<ArrayBuffer>("read_pdf_file", { path });
+  return new Uint8Array(buf);
+}

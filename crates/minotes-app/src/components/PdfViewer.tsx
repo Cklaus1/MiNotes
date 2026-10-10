@@ -34,6 +34,7 @@ export default function PdfViewer({ filePath, onClose, onBlockLink }: Props) {
   const [noteText, setNoteText] = useState("");
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; highlight: api.Highlight } | null>(null);
   const [pageInput, setPageInput] = useState("");
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const overlayRef = useRef<HTMLCanvasElement>(null);
@@ -43,24 +44,33 @@ export default function PdfViewer({ filePath, onClose, onBlockLink }: Props) {
   // file change / unmount.
   useEffect(() => {
     let cancelled = false;
-    const loadingTask = pdfjs.getDocument(filePath);
-    loadingTask.promise.then(
-      (doc) => {
+    let loadingTask: pdfjs.PDFDocumentLoadingTask | null = null;
+    setLoadError(null);
+    setNumPages(0);
+    (async () => {
+      try {
+        // Desktop: bytes over IPC (the webview can't fetch a filesystem path).
+        // Browser mode: readPdfFile returns null and filePath is loaded as a URL.
+        const data = await api.readPdfFile(filePath);
+        if (cancelled) return;
+        loadingTask = pdfjs.getDocument(data ? { data } : filePath);
+        const doc = await loadingTask.promise;
         if (cancelled) return;
         setPdfDoc(doc);
         setNumPages(doc.numPages);
         setPageNum(1);
         setPageInput("1");
-      },
-      (err) => {
-        if (!cancelled) console.error("Failed to load PDF:", err);
-      },
-    );
+      } catch (err: any) {
+        if (cancelled) return;
+        console.error("Failed to load PDF:", err);
+        setLoadError(typeof err === "string" ? err : err?.message ?? String(err));
+      }
+    })();
     return () => {
       cancelled = true;
       setPdfDoc(null);
       // Destroys the PDFDocumentProxy too, if loading finished.
-      void loadingTask.destroy();
+      void loadingTask?.destroy();
     };
   }, [filePath]);
 
@@ -351,7 +361,14 @@ export default function PdfViewer({ filePath, onClose, onBlockLink }: Props) {
       <div className="pdf-body">
         {/* Canvas area */}
         <div className="pdf-canvas-container" ref={containerRef}>
-          <div className="pdf-canvas-wrapper" onMouseUp={handleMouseUp}>
+          {loadError && (
+            <div className="pdf-load-error" role="alert">
+              <strong>Couldn't open this PDF</strong>
+              <span>{loadError}</span>
+              <code>{filePath}</code>
+            </div>
+          )}
+          <div className="pdf-canvas-wrapper" onMouseUp={handleMouseUp} style={loadError ? { display: "none" } : undefined}>
             <canvas ref={canvasRef} className="pdf-canvas" />
             <canvas
               ref={overlayRef}
