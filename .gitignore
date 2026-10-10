@@ -12,3 +12,4 @@ cache/
 .claude/worktrees/
 .claude/settings.local.json
 tests/.*.sh
+__pycache__/

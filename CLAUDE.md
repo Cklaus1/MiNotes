@@ -59,8 +59,10 @@ bash tests/user-journey-test.sh
 # Desktop app (Tauri dev mode)
 cd crates/minotes-app && npm run tauri dev
 
-# Headless check of the REAL desktop app (CSP, IPC, files) — see .claude/skills/desktop-check
-.claude/skills/desktop-check/desktop.sh up   # then shot/click/key/cli/down
+# Journeys against the REAL desktop app (real backend, production CSP) — see .claude/skills/desktop-check
+JOURNEY_BACKEND=desktop bash tests/user-journey-test.sh   # the 52 browser journeys on the real backend
+bash tests/desktop-journey-test.sh                        # restart persistence, real typing, CLI interop, 2-device sync
+.claude/skills/desktop-check/ux-tour.sh                   # screenshot + UX audit of every main view
 
 # CLI
 cargo run -p minotes-cli -- --graph ~/.minotes/default.db page list
@@ -70,7 +72,8 @@ cargo run -p minotes-cli -- --graph ~/.minotes/default.db page list
 
 - Tests use `agent-browser` (headless Chrome via CDP) — must be installed separately
 - Test API exposed on `window.__MINOTES__` for automation
-- 37 user journeys, ~190 assertions in `tests/user-journey-test.sh`
+- 52 user journeys, 255 assertions in `tests/user-journey-test.sh` (browser + mock by default; `JOURNEY_BACKEND=desktop` runs them on the real app). 44 more in `tests/desktop-journey-test.sh`.
+- `get_page_blocks`/`getPageTree` return blocks in **outline order** (depth-first, siblings by position). Positions are per-parent — never sort a page's blocks by position alone.
 - ProseMirror doesn't respond to CDP keyboard events — use `window.__MINOTES__` API instead
 - Browser-mode tests use the mock backend and don't enforce the CSP. For anything Tauri-only use the `desktop-check` skill (Xvfb + xdotool + screenshots against a throwaway HOME).
 - PDFs open via the `read_pdf_file` command (bytes over IPC); the webview can't fetch filesystem paths.
@@ -111,8 +114,11 @@ Without these flags, WebKit fails silently (MESA/Zink GPU errors) and no window 
 ## PRDs
 
 - `docs/PRD-editor-improvements.md` — 10 editor/UX features (tables, templates, kanban, etc.)
-- `docs/PRD-encryption.md` — per-folder AES-256-GCM encryption
+- `docs/PRD-encryption.md` — whole-notebook encryption (SQLCipher, wrapped key, recovery key)
 - `docs/PRD-git-sync.md` — Git-based sync with conflict resolution
 - `docs/PRD-kanban.md` — Kanban board view
 - `docs/PRD-mindmap.md` — ReactFlow + dagre mind map view
 - `docs/PRD-sidebar-navigation.md` — Sidebar navigation design
+- `docs/PRD-notebooks.md` — notebooks: sidebar switcher, markdown mirror, notebook folders
+- `docs/PRD-import.md` — import from Obsidian, Evernote (.enex), markdown folders; attachment store
+- `docs/PRD-plugin-architecture.md` — sandboxed (Wasm + iframe) plugins and a free public marketplace
