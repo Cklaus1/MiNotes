@@ -59,6 +59,9 @@ bash tests/user-journey-test.sh
 # Desktop app (Tauri dev mode)
 cd crates/minotes-app && npm run tauri dev
 
+# Headless check of the REAL desktop app (CSP, IPC, files) — see .claude/skills/desktop-check
+.claude/skills/desktop-check/desktop.sh up   # then shot/click/key/cli/down
+
 # CLI
 cargo run -p minotes-cli -- --graph ~/.minotes/default.db page list
 ```
@@ -69,6 +72,8 @@ cargo run -p minotes-cli -- --graph ~/.minotes/default.db page list
 - Test API exposed on `window.__MINOTES__` for automation
 - 37 user journeys, ~190 assertions in `tests/user-journey-test.sh`
 - ProseMirror doesn't respond to CDP keyboard events — use `window.__MINOTES__` API instead
+- Browser-mode tests use the mock backend and don't enforce the CSP. For anything Tauri-only use the `desktop-check` skill (Xvfb + xdotool + screenshots against a throwaway HOME).
+- PDFs open via the `read_pdf_file` command (bytes over IPC); the webview can't fetch filesystem paths.
 
 ## Important gotchas
 
