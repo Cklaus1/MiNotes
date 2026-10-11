@@ -32,12 +32,17 @@ impl Database {
     }
 
     pub fn list_favorites(&self) -> Result<Vec<Page>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT p.id, p.title, p.icon, p.folder_id, f.position, p.is_journal, p.journal_date, p.created_at, p.updated_at
+        // Favourites of trashed/archived pages are kept (restore brings the star
+        // back) but not listed while the page is hidden.
+        let mut stmt = self.conn.prepare(&format!(
+            "{}
+             SELECT p.id, p.title, p.icon, p.folder_id, f.position, p.is_journal, p.journal_date, p.created_at, p.updated_at
              FROM favorites f
              JOIN pages p ON p.id = f.page_id
+             WHERE p.id NOT IN (SELECT id FROM hidden_pages)
              ORDER BY f.position",
-        )?;
+            crate::repo::trash::hidden_pages_cte()
+        ))?;
         let rows = stmt.query_map([], |row| {
             let id_str: String = row.get(0)?;
             let folder_str: Option<String> = row.get(3)?;

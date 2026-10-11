@@ -188,6 +188,9 @@ impl Database {
         if let Err(e) = self.gc_whiteboards() {
             eprintln!("[minotes] whiteboard GC failed: {e}");
         }
+        // ── Import / attachments: same rule, same moments ──
+        self.gc_attachments_quietly();
+        // ── End import ──
     }
 }
 

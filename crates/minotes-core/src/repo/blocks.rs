@@ -76,6 +76,9 @@ impl Database {
                 }
             }
         }
+        // ── Import / attachments ──
+        self.sync_block_attachments(block_id, content)?;
+        // ── End import ──
         Ok(())
     }
 
@@ -167,13 +170,24 @@ impl Database {
         self.tx(|| {
             let now = Utc::now();
 
+            // Readable errors instead of a raw "FOREIGN KEY constraint failed".
+            let page_exists: bool = self.conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM pages WHERE id = ?1)",
+                rusqlite::params![page_id.to_string()],
+                |row| row.get(0),
+            )?;
+            if !page_exists {
+                return Err(Error::NotFound(format!("Page {page_id}")));
+            }
             if let Some(parent) = parent_id {
-                if let Some(pp) = self.block_page_id(parent)? {
-                    if pp != *page_id {
+                match self.block_page_id(parent)? {
+                    None => return Err(Error::NotFound(format!("Parent block {parent}"))),
+                    Some(pp) if pp != *page_id => {
                         return Err(Error::InvalidInput(format!(
                             "Parent block {parent} is on a different page"
                         )));
                     }
+                    Some(_) => {}
                 }
             }
 

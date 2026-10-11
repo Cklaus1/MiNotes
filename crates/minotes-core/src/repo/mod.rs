@@ -21,3 +21,6 @@ pub mod templates;
 pub mod trash;
 pub mod ai_suggestions;
 pub mod whiteboards;
+// ── Import / attachments ──
+pub mod attachments;
+// ── End import ──

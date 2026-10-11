@@ -21,8 +21,9 @@ impl Database {
     }
 
     /// Create a page with a caller-supplied id. Used by sync import to preserve the
-    /// stable page UUID from frontmatter so identity survives the round-trip (Bug #3).
-    pub(crate) fn create_page_with_id(
+    /// stable page UUID from frontmatter so identity survives the round-trip (Bug #3),
+    /// and by the app to materialise a "virtual" journal under the id it showed.
+    pub fn create_page_with_id(
         &self,
         id: Uuid,
         title: &str,
@@ -31,12 +32,18 @@ impl Database {
         journal_date: Option<NaiveDate>,
         actor: &str,
     ) -> Result<Page> {
+        let title = normalize_title(title)?;
+        let title = title.as_str();
         self.tx(|| {
             let now = Utc::now();
 
+            // A trashed page doesn't keep its title from the user.
+            self.free_title_from_trash(title)?;
             // Check for duplicate title (exact, as enforced by the UNIQUE column).
             if self.get_page_by_title(title)?.is_some() {
-                return Err(Error::AlreadyExists(format!("Page '{title}'")));
+                return Err(Error::AlreadyExists(format!(
+                    "A page titled '{title}' already exists"
+                )));
             }
 
             // Auto-position at end of root pages
@@ -200,7 +207,13 @@ impl Database {
     /// blocks that link to it (found via the links table), atomically. Links inside
     /// inline code spans / fenced code blocks are left untouched.
     pub fn rename_page(&self, id: &Uuid, new_title: &str, actor: &str) -> Result<Page> {
+        let new_title = normalize_title(new_title)?;
+        let new_title = new_title.as_str();
         self.tx(|| {
+            // A trashed page doesn't keep its title from the user.
+            if self.get_page_by_title(new_title)?.is_some_and(|p| p.id != *id) {
+                self.free_title_from_trash(new_title)?;
+            }
             // Pre-check for conflict so we can return a friendly error rather than
             // a raw SQLite UNIQUE constraint violation.
             if let Some(existing) = self.get_page_by_title(new_title)? {
@@ -269,6 +282,67 @@ impl Database {
             .ok_or_else(|| Error::NotFound(format!("Page {id}")))?;
         self.emit_event("page.reordered", &page.id, "page", &page, actor)?;
         Ok(page)
+    }
+}
+
+/// Canonical form of a user-typed page/folder name: line breaks (and the
+/// whitespace around them) become a single space, and leading/trailing
+/// whitespace is dropped. `None` when nothing visible is left.
+pub fn normalize_name(name: &str) -> Option<String> {
+    let joined = name
+        .split(['\n', '\r', '\u{2028}', '\u{2029}'])
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let trimmed = joined.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+/// Page titles are stored normalised (see [`normalize_name`]) so `[[Title]]`
+/// resolves to what the user sees; a blank title is rejected.
+fn normalize_title(title: &str) -> Result<String> {
+    normalize_name(title)
+        .ok_or_else(|| Error::InvalidInput("Page title cannot be empty".to_string()))
+}
+
+/// Title of the journal page for a date: `Journal/YYYY-MM-DD`.
+pub fn journal_title(date: NaiveDate) -> String {
+    format!("Journal/{date}")
+}
+
+/// Date of a journal title (`Journal/YYYY-MM-DD`), if it is one.
+pub fn journal_date_of(title: &str) -> Option<NaiveDate> {
+    let d = title.strip_prefix("Journal/")?;
+    NaiveDate::parse_from_str(d, "%Y-%m-%d").ok().filter(|nd| nd.to_string() == d)
+}
+
+impl Database {
+    /// The live (not trashed) journal page for a date, if any.
+    pub fn find_journal(&self, date: NaiveDate) -> Result<Option<Page>> {
+        match self.get_page_by_title(&journal_title(date))? {
+            Some(p) if !self.is_trashed(&p.id)? => Ok(Some(p)),
+            _ => Ok(None),
+        }
+    }
+
+    /// Get the journal page for a date, creating it if needed (`id` lets a caller
+    /// materialise a page it already showed under that id). A trashed journal for
+    /// that date stays in the trash; a fresh page takes the title.
+    pub fn get_or_create_journal(&self, date: NaiveDate, id: Option<Uuid>, actor: &str) -> Result<Page> {
+        self.tx(|| {
+            if let Some(p) = self.find_journal(date)? {
+                return Ok(p);
+            }
+            self.create_page_with_id(
+                id.unwrap_or_else(Uuid::now_v7),
+                &journal_title(date),
+                None,
+                true,
+                Some(date),
+                actor,
+            )
+        })
     }
 }
 
@@ -366,8 +440,12 @@ mod tests {
         );
         assert_eq!(db.get_block(&b2.id).unwrap().unwrap().content, "code `[[Old]]` but [[Brand New]]");
         assert_eq!(db.get_block(&untouched.id).unwrap().unwrap().content, "[[Older]]");
-        // b1 has two links, b2 one (the code-span [[Old]] no longer resolves).
-        assert_eq!(db.get_backlinks(&page.id).unwrap().len(), 3);
+        // b1 has two links, b2 one (the code-span [[Old]] no longer resolves);
+        // backlinks are one per source block.
+        let n_links: i64 = db.conn.query_row(
+            "SELECT COUNT(*) FROM links WHERE to_page = ?1", [page.id.to_string()], |r| r.get(0)).unwrap();
+        assert_eq!(n_links, 3);
+        assert_eq!(db.get_backlinks(&page.id).unwrap().len(), 2);
         // The next edit keeps the backlink (b1 now has one link, b2 still one).
         db.update_block(&b1.id, Some("see [[Brand New]] edited"), "user").unwrap();
         assert_eq!(db.get_backlinks(&page.id).unwrap().len(), 2);
@@ -419,5 +497,37 @@ mod tests {
             .unwrap();
         assert_eq!(n, 0, "no page.deleted event for a failed delete");
         assert!(db.get_page(&page.id).unwrap().is_some());
+    }
+
+    #[test]
+    fn test_titles_are_trimmed_and_single_line() {
+        let db = Database::open_in_memory().unwrap();
+        let p = db.create_page("  Padded  ", None, false, None, "user").unwrap();
+        assert_eq!(p.title, "Padded");
+        assert_eq!(db.get_page_by_title("Padded").unwrap().unwrap().id, p.id);
+        let q = db.create_page("Line1\nLine2\r\n  Line3\r", None, false, None, "user").unwrap();
+        assert_eq!(q.title, "Line1 Line2 Line3");
+        // Duplicate detection sees the normalised title.
+        assert!(db.create_page(" Padded\n", None, false, None, "user").is_err());
+        for blank in ["", "   ", "\n\t\n"] {
+            let e = db.create_page(blank, None, false, None, "user").unwrap_err().to_string();
+            assert_eq!(e, "Invalid input: Page title cannot be empty");
+            let e = db.rename_page(&p.id, blank, "user").unwrap_err().to_string();
+            assert_eq!(e, "Invalid input: Page title cannot be empty");
+        }
+        let r = db.rename_page(&p.id, "\n  New\nName  ", "user").unwrap();
+        assert_eq!(r.title, "New Name");
+        // Internal runs of spaces on one line are the user's business.
+        assert_eq!(db.rename_page(&p.id, "a  b", "user").unwrap().title, "a  b");
+    }
+
+    #[test]
+    fn test_rename_with_padding_rewrites_links_to_trimmed_title() {
+        let db = Database::open_in_memory().unwrap();
+        let target = db.create_page("Old", None, false, None, "user").unwrap();
+        let src = db.create_page("Src", None, false, None, "user").unwrap();
+        let b = db.create_block(&src.id, "see [[Old]]", None, None, "user").unwrap();
+        db.rename_page(&target.id, "  New  ", "user").unwrap();
+        assert_eq!(db.get_block(&b.id).unwrap().unwrap().content, "see [[New]]");
     }
 }

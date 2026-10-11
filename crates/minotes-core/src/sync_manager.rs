@@ -14,9 +14,9 @@
 //! The last imported commit is persisted in `.git/minotes-sync-state.json`, so an
 //! import that failed or was interrupted is retried on the next cycle.
 
+use std::collections::HashSet;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -25,37 +25,27 @@ use uuid::Uuid;
 use crate::db::Database;
 use crate::error::{Error, Result};
 use crate::git_cmd;
+use crate::mirror::{MirrorTarget, FS_LOCK as SYNC_LOCK};
+use crate::repo::export::ExportOptions;
 use crate::repo::sync::{SyncOptions, SyncResult};
-
-/// Serializes sync cycles within the process (a timer and a manual click, say).
-static SYNC_LOCK: Mutex<()> = Mutex::new(());
 
 const IMPORT_ACTOR: &str = "git-sync";
 const STATE_FILE: &str = "minotes-sync-state.json";
 
-fn home_dir() -> PathBuf {
-    std::env::var("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("."))
+/// The notebook a sync is for (`graph` = the active notebook key).
+fn notebook(graph: &str) -> crate::notebook::Notebook {
+    crate::notebook::resolve(graph).unwrap_or_else(|_| crate::notebook::Notebook::legacy("default"))
 }
 
-fn is_default_graph(graph: &str) -> bool {
-    graph.is_empty() || graph == "default"
-}
-
-/// Sync directory for a graph. The "default" graph keeps the historical
-/// `~/MiNotes_Sync`; every other graph gets its own sibling repo
-/// `~/MiNotes_Sync-<graph>` so graphs never share (and bleed) content. (A nested
-/// `~/MiNotes_Sync/<graph>` would be tracked by — and imported into — the default
-/// graph's repo.)
+/// Sync directory for a graph = its markdown mirror. Legacy notebooks keep
+/// `~/MiNotes_Sync` ("default") or `~/MiNotes_Sync-<graph>` (a nested
+/// `~/MiNotes_Sync/<graph>` would be tracked by — and imported into — the
+/// default graph's repo); notebooks in a folder sync `<folder>/notes`.
 pub fn sync_dir_for_graph(graph: &str) -> PathBuf {
-    if is_default_graph(graph) {
-        home_dir().join("MiNotes_Sync")
-    } else {
-        home_dir().join(format!(
-            "MiNotes_Sync-{}",
-            crate::repo::export::sanitize_component(graph)
-        ))
+    match crate::notebook::resolve(graph) {
+        Ok(nb) => nb.mirror_dir(),
+        // Not a valid name: never escape HOME.
+        Err(_) => crate::notebook::legacy_mirror_dir(&crate::repo::export::sanitize_component(graph)),
     }
 }
 
@@ -65,16 +55,11 @@ pub fn default_sync_dir() -> PathBuf {
 }
 
 fn config_path(graph: &str) -> PathBuf {
-    let dir = home_dir().join(".minotes");
-    std::fs::create_dir_all(&dir).ok();
-    if is_default_graph(graph) {
-        dir.join("sync-config.json")
-    } else {
-        dir.join(format!(
-            "sync-config-{}.json",
-            crate::repo::export::sanitize_component(graph)
-        ))
+    let p = notebook(graph).sync_config_path();
+    if let Some(parent) = p.parent() {
+        std::fs::create_dir_all(parent).ok();
     }
+    p
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -102,6 +87,40 @@ fn write_config(graph: &str, config: &SyncConfig) -> Result<()> {
 struct RepoState {
     /// Commit whose tree has been fully imported into the DB.
     imported_head: Option<String>,
+    /// Deletions from another device that the mass-delete guard refused to
+    /// apply, waiting for the user. Their files stay deleted (the mirror does not
+    /// write them back) until the user picks "Move to trash" or "Keep them".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    held: Option<HeldState>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+struct HeldState {
+    page_ids: Vec<Uuid>,
+    folder_ids: Vec<Uuid>,
+    held_at: String,
+}
+
+/// Deletions held back by the mass-delete guard, as shown to the user.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct HeldDeletions {
+    pub pages: usize,
+    pub folders: usize,
+    /// Up to 20 page titles (then folder names), for the notice.
+    pub titles: Vec<String>,
+    /// Pages in the notebook (excluding trash), for "34 of 50".
+    pub total_pages: usize,
+}
+
+/// Pages/folders an export must leave out while their deletion is held.
+pub fn held_export_options(dir: &Path) -> ExportOptions {
+    match read_state(dir).held {
+        Some(h) => ExportOptions {
+            skip_pages: h.page_ids.into_iter().collect(),
+            skip_folders: h.folder_ids.into_iter().collect(),
+        },
+        None => ExportOptions::default(),
+    }
 }
 
 fn read_state(dir: &Path) -> RepoState {
@@ -113,8 +132,108 @@ fn read_state(dir: &Path) -> RepoState {
 
 fn write_state(dir: &Path, st: &RepoState) -> Result<()> {
     let json = serde_json::to_string(st)?;
-    std::fs::write(dir.join(".git").join(STATE_FILE), json)
+    crate::repo::export::atomic_write(&dir.join(".git").join(STATE_FILE), json.as_bytes())
         .map_err(|e| Error::Git(format!("Failed to write sync state: {e}")))
+}
+
+fn set_imported_head(dir: &Path, head: Option<String>) -> Result<()> {
+    let mut st = read_state(dir);
+    st.imported_head = head;
+    write_state(dir, &st)
+}
+
+/// Drop held deletions that no longer apply: the page/folder is gone or already
+/// trashed, or it was edited here after the hold (an edit beats a deletion).
+fn refresh_held(db: &Database, dir: &Path) -> Result<()> {
+    let mut st = read_state(dir);
+    let Some(mut h) = st.held.clone() else { return Ok(()) };
+    let since = DateTime::parse_from_rfc3339(&h.held_at).map(|d| d.with_timezone(&Utc)).ok();
+    let edited = match since {
+        Some(t) => db.pages_modified_since(t, IMPORT_ACTOR)?,
+        None => HashSet::new(),
+    };
+    let mut keep_pages = Vec::new();
+    for id in &h.page_ids {
+        if db.get_page(id)?.is_some() && !db.is_trashed(id)? && !edited.contains(id) {
+            keep_pages.push(*id);
+        }
+    }
+    let mut keep_folders = Vec::new();
+    for id in &h.folder_ids {
+        if db.get_folder(id)?.is_some() && !db.list_trash()?.iter().any(|t| t.id == id.to_string()) {
+            keep_folders.push(*id);
+        }
+    }
+    h.page_ids = keep_pages;
+    h.folder_ids = keep_folders;
+    let new = if h.page_ids.is_empty() && h.folder_ids.is_empty() { None } else { Some(h) };
+    if new != st.held {
+        st.held = new;
+        write_state(dir, &st)?;
+    }
+    Ok(())
+}
+
+fn held_summary(db: &Database, dir: &Path) -> Result<Option<HeldDeletions>> {
+    let Some(h) = read_state(dir).held else { return Ok(None) };
+    let mut titles = Vec::new();
+    for id in &h.page_ids {
+        if titles.len() >= 20 {
+            break;
+        }
+        if let Some(p) = db.get_page(id)? {
+            titles.push(p.title);
+        }
+    }
+    for id in &h.folder_ids {
+        if titles.len() >= 20 {
+            break;
+        }
+        if let Some(f) = db.get_folder(id)? {
+            titles.push(format!("{}/", f.name));
+        }
+    }
+    let total_pages: usize = db.conn.query_row(
+        "SELECT COUNT(*) FROM pages WHERE id NOT IN (SELECT page_id FROM trash)",
+        [],
+        |r| r.get::<_, i64>(0),
+    )? as usize;
+    Ok(Some(HeldDeletions { pages: h.page_ids.len(), folders: h.folder_ids.len(), titles, total_pages }))
+}
+
+/// The user's answer to held deletions. `move_to_trash`: apply them (to trash,
+/// recoverable). Otherwise keep the pages: the hold is dropped and the next
+/// export writes their files again. Returns how many items were trashed.
+///
+/// Callers serialise this with sync cycles (hold `mirror::FS_LOCK`, then the DB).
+pub fn resolve_held_deletions_in_dir(db: &Database, dir: &Path, move_to_trash: bool) -> Result<usize> {
+    let mut st = read_state(dir);
+    let Some(h) = st.held.take() else { return Ok(0) };
+    let mut n = 0;
+    if move_to_trash {
+        db.tx(|| {
+            for id in &h.folder_ids {
+                if db.get_folder(id)?.is_some() {
+                    db.trash_folder(id)?;
+                    n += 1;
+                }
+            }
+            for id in &h.page_ids {
+                if db.get_page(id)?.is_some() && !db.is_trashed(id)? {
+                    db.trash_page(id)?;
+                    n += 1;
+                }
+            }
+            Ok(())
+        })?;
+    }
+    write_state(dir, &st)?;
+    Ok(n)
+}
+
+/// [`resolve_held_deletions_in_dir`] for a graph's sync dir.
+pub fn resolve_held_deletions(db: &Database, graph: &str, move_to_trash: bool) -> Result<usize> {
+    resolve_held_deletions_in_dir(db, &sync_dir_for_graph(graph), move_to_trash)
 }
 
 fn ensure_gitignore(dir: &Path) {
@@ -140,6 +259,25 @@ fn ensure_gitignore(dir: &Path) {
     }
 }
 
+// ── Import / attachments ──
+/// Attachments over the git-sync limit are listed in `_attachments/.gitignore`
+/// by the mirror; make sure git also never sees half-copied temp files.
+fn ensure_attachment_gitignore(dir: &Path) {
+    let gi = dir.join(".gitignore");
+    let existing = std::fs::read_to_string(&gi).unwrap_or_default();
+    let line = format!("{}/**/.*{}", crate::repo::attachments::MIRROR_DIR, crate::repo::export::TMP_SUFFIX);
+    if !existing.lines().any(|l| l.trim() == line) {
+        let mut out = existing.clone();
+        if !out.is_empty() && !out.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push_str(&line);
+        out.push('\n');
+        let _ = std::fs::write(&gi, out);
+    }
+}
+// ── End import ──
+
 fn commit_message() -> String {
     format!("sync: {} @ {}", git_cmd::get_hostname(), Utc::now().to_rfc3339())
 }
@@ -156,17 +294,70 @@ pub struct GitSyncStatus {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct GitSyncResult {
+    /// Git AND the import went through.
     pub success: bool,
     pub pages_exported: u32,
     pub pages_imported: u32,
     pub conflicts_resolved: u32,
     pub error: Option<String>,
+    /// Per-file import problems (the rest of the import still went through;
+    /// the commit is re-imported next cycle).
+    #[serde(default)]
+    pub import_errors: Vec<String>,
+    /// Deletions from another device the mass-delete guard held back.
+    pub held_deletions: Option<HeldDeletions>,
+    /// The remote could not be reached (shown as "offline", not as a failure).
+    #[serde(default)]
+    pub offline: bool,
+    /// Non-fatal notices (e.g. attachments over 50 MB left out of git).
+    #[serde(default)]
+    pub warnings: Vec<String>,
+}
+
+impl GitSyncResult {
+    fn not_enabled() -> Self {
+        GitSyncResult {
+            success: false,
+            pages_exported: 0,
+            pages_imported: 0,
+            conflicts_resolved: 0,
+            error: Some("Sync is not enabled".to_string()),
+            import_errors: vec![],
+            held_deletions: None,
+            offline: false,
+            warnings: vec![],
+        }
+    }
+}
+
+/// Does a git error mean "the remote is unreachable" (offline) rather than a
+/// real failure?
+pub fn is_offline_error(msg: &str) -> bool {
+    let m = msg.to_lowercase();
+    [
+        "network error",
+        "could not resolve host",
+        "could not resolve hostname",
+        "connection refused",
+        "connection timed out",
+        "network is unreachable",
+        "no route to host",
+        "could not read from remote repository",
+        "unable to access",
+        "failed to connect",
+        "operation timed out",
+        "temporary failure in name resolution",
+    ]
+    .iter()
+    .any(|k| m.contains(k))
 }
 
 /// Outcome of phase 1.
 #[derive(Debug, Clone)]
 pub struct ExportPhase {
     pub pages_exported: u32,
+    /// Attachments left out of git (over the size limit).
+    pub large_attachments: Vec<String>,
     /// Instant just before the DB was read for export. Local edits after this are
     /// protected from being overwritten by the phase-3 import.
     pub export_time: DateTime<Utc>,
@@ -235,6 +426,9 @@ where
         let _guard = SYNC_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let sync_dir = sync_dir_for_graph(graph);
         enable_in_dir(&sync_dir, &lock_db)?;
+        // The mirror's own bookkeeping must match what enable just wrote.
+        let db = lock_db()?;
+        let _ = crate::mirror::run(&db, &MirrorTarget::for_notebook(&notebook(graph)), true);
     }
 
     let mut config = read_config(graph);
@@ -286,7 +480,7 @@ where
         }
         git_cmd::commit_all(sync_dir, &commit_message())?;
         if let Some(head) = git_cmd::rev_parse_head(sync_dir)? {
-            write_state(sync_dir, &RepoState { imported_head: Some(head) })?;
+            set_imported_head(sync_dir, Some(head))?;
         }
     }
 
@@ -306,12 +500,25 @@ pub fn disable_sync(graph: &str) -> Result<()> {
     Ok(())
 }
 
-/// Phase 1: export DB → filesystem (pruning stale files) and commit. Needs the DB.
+/// Phase 1: flush the markdown mirror (a full pass: export DB → filesystem,
+/// pruning stale files) and commit. Needs the DB. Sync does not export on its own:
+/// the mirror writes the files, sync commits them.
 pub fn export_and_commit(db: &Database, sync_dir: &Path) -> Result<ExportPhase> {
+    export_and_commit_target(db, &MirrorTarget::new(sync_dir, None))
+}
+
+/// [`export_and_commit`] for a mirror target (its state is kept current, so the
+/// next incremental mirror pass knows what was written).
+pub fn export_and_commit_target(db: &Database, target: &MirrorTarget) -> Result<ExportPhase> {
+    let sync_dir = target.dir.as_path();
     git_cmd::abort_stale_rebase(sync_dir)?;
     ensure_gitignore(sync_dir);
+    ensure_attachment_gitignore(sync_dir);
+    refresh_held(db, sync_dir)?;
     let export_time = Utc::now();
-    let report = db.export_markdown_synced(sync_dir)?;
+    let mut target = target.clone();
+    target.skip = held_export_options(sync_dir);
+    let report = crate::mirror::run(db, &target, true)?;
 
     let before = git_cmd::rev_parse_head(sync_dir)?;
     let committed = git_cmd::commit_all(sync_dir, &commit_message())?;
@@ -324,7 +531,7 @@ pub fn export_and_commit(db: &Database, sync_dir: &Path) -> Result<ExportPhase> 
             write_state(sync_dir, &st)?;
         }
     }
-    Ok(ExportPhase { pages_exported: report.written.len() as u32, export_time })
+    Ok(ExportPhase { pages_exported: report.pages_rendered as u32, export_time, large_attachments: report.large_attachments })
 }
 
 fn pull_with_resolve(sync_dir: &Path) -> Result<u32> {
@@ -437,10 +644,29 @@ pub fn apply_import(
     for e in &r.errors {
         eprintln!("[minotes-sync] import: {e}");
     }
+    let mut st = read_state(sync_dir);
+    // Deletions the guard refused: remember them (so the mirror doesn't write the
+    // files back, silently undoing the other device's delete) until the user decides.
+    if !r.held_page_ids.is_empty() || !r.held_folder_ids.is_empty() {
+        let mut h = st.held.take().unwrap_or_default();
+        for id in &r.held_page_ids {
+            if !h.page_ids.contains(id) {
+                h.page_ids.push(*id);
+            }
+        }
+        for id in &r.held_folder_ids {
+            if !h.folder_ids.contains(id) {
+                h.folder_ids.push(*id);
+            }
+        }
+        h.held_at = Utc::now().to_rfc3339();
+        st.held = Some(h);
+    }
     // Only mark the commit as imported when every page went in; otherwise retry.
     if r.errors.is_empty() {
-        write_state(sync_dir, &RepoState { imported_head: Some(pending.head.clone()) })?;
+        st.imported_head = Some(pending.head.clone());
     }
+    write_state(sync_dir, &st)?;
     Ok(r)
 }
 
@@ -450,6 +676,17 @@ where
     G: Deref<Target = Database>,
     F: Fn() -> Result<G>,
 {
+    sync_cycle(&MirrorTarget::new(sync_dir, None), lock_db)
+}
+
+/// One full cycle on a notebook's mirror: flush the mirror + commit, pull/push,
+/// import (see module docs).
+pub fn sync_cycle<G, F>(target: &MirrorTarget, lock_db: F) -> Result<GitSyncResult>
+where
+    G: Deref<Target = Database>,
+    F: Fn() -> Result<G>,
+{
+    let sync_dir = target.dir.as_path();
     let _guard = SYNC_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     if !git_cmd::is_git_repo(sync_dir) {
         return Err(Error::Git("Sync directory is not a git repo".to_string()));
@@ -458,7 +695,7 @@ where
     // Phase 1 (DB lock)
     let export = {
         let db = lock_db()?;
-        export_and_commit(&db, sync_dir)?
+        export_and_commit_target(&db, target)?
     };
 
     // Phase 2 (no DB lock)
@@ -466,18 +703,41 @@ where
 
     // Phase 3 (DB lock, only if the pull brought something in)
     let mut pages_imported = 0u32;
+    let mut import_errors = Vec::new();
     if let Some(pending) = pending_import(sync_dir)? {
         let db = lock_db()?;
         let r = apply_import(&db, sync_dir, &pending, Some(export.export_time))?;
         pages_imported = (r.pages_created.len() + r.pages_updated.len() + r.pages_deleted.len()) as u32;
+        import_errors = r.errors.clone();
     }
+    let held_deletions = {
+        let db = lock_db()?;
+        held_summary(&db, sync_dir)?
+    };
 
+    let offline = git.error.as_deref().map(is_offline_error).unwrap_or(false);
+    let error = match (&git.error, import_errors.first()) {
+        (Some(e), _) => Some(e.clone()),
+        (None, Some(first)) => Some(format!(
+            "Could not import {} file(s) from the other device: {first}",
+            import_errors.len()
+        )),
+        (None, None) => None,
+    };
     Ok(GitSyncResult {
-        success: git.error.is_none(),
+        success: error.is_none(),
         pages_exported: export.pages_exported,
         pages_imported,
         conflicts_resolved: git.conflicts_resolved,
-        error: git.error,
+        error,
+        import_errors,
+        held_deletions,
+        offline,
+        warnings: export
+            .large_attachments
+            .iter()
+            .map(|a| format!("{a} is over 50 MB and was not synced"))
+            .collect(),
     })
 }
 
@@ -496,15 +756,9 @@ where
 {
     let config = read_config(graph);
     if !config.enabled {
-        return Ok(GitSyncResult {
-            success: false,
-            pages_exported: 0,
-            pages_imported: 0,
-            conflicts_resolved: 0,
-            error: Some("Sync is not enabled".to_string()),
-        });
+        return Ok(GitSyncResult::not_enabled());
     }
-    let result = sync_cycle_in_dir(&sync_dir_for_graph(graph), lock_db)?;
+    let result = sync_cycle(&MirrorTarget::for_notebook(&notebook(graph)), lock_db)?;
     if result.success {
         update_last_sync(graph)?;
     }
@@ -543,6 +797,7 @@ mod tests {
 
     #[test]
     fn test_sync_dir_per_graph() {
+        let _home = crate::notebook::tests::FakeHome::new();
         let d = sync_dir_for_graph("default");
         assert!(d.ends_with("MiNotes_Sync"));
         let w = sync_dir_for_graph("work");
@@ -912,6 +1167,175 @@ mod tests {
         assert!(!db_a.is_trashed(&keep.id).unwrap());
         cycle(&b, &db_b);
         assert!(db_b.get_page(&p.id).unwrap().is_none());
+    }
+
+    fn cycle_any(dir: &Path, db: &Database) -> GitSyncResult {
+        sync_cycle_in_dir(dir, || Ok(db)).unwrap()
+    }
+
+    // P0: another device deleting most of the notebook is HELD, shown to the user,
+    // and NOT silently undone by the next export; "Move to trash" applies it.
+    #[test]
+    fn test_mass_delete_guard_is_surfaced_and_held() {
+        if !git_cmd::git_available() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let (_remote, a, b) = setup_remote_and_devices(tmp.path());
+        let db_a = Database::open_in_memory().unwrap();
+        let db_b = Database::open_in_memory().unwrap();
+        let mut ids = Vec::new();
+        for i in 0..30 {
+            let p = db_a.create_page(&format!("Note {i:02}"), None, false, None, "user").unwrap();
+            db_a.create_block(&p.id, &format!("body {i}"), None, None, "user").unwrap();
+            ids.push(p.id);
+        }
+        cycle(&a, &db_a);
+        cycle(&b, &db_b);
+        assert_eq!(db_b.list_pages(None).unwrap().len(), 30);
+
+        // A deletes 25 of 30 pages.
+        for id in &ids[..25] {
+            db_a.trash_page(id).unwrap();
+        }
+        cycle(&a, &db_a);
+        let r = cycle(&b, &db_b);
+        let held = r.held_deletions.clone().expect("guard trip is reported");
+        assert_eq!(held.pages, 25);
+        assert_eq!(held.total_pages, 30);
+        assert!(held.titles.contains(&"Note 00".to_string()));
+        assert!(r.import_errors.is_empty(), "a held deletion is not an import error");
+        assert_eq!(db_b.list_pages(None).unwrap().len(), 30, "nothing trashed without the user");
+
+        // Further cycles keep holding: the files are NOT written back (that would
+        // undo A's deletion everywhere), and the notice persists.
+        for _ in 0..2 {
+            let r = cycle(&b, &db_b);
+            assert_eq!(r.held_deletions.as_ref().map(|h| h.pages), Some(25));
+        }
+        assert!(!b.join("Note 00.md").exists());
+        cycle(&a, &db_a);
+        assert!(db_a.is_trashed(&ids[0]).unwrap(), "A's deletion is not reverted");
+        assert!(!a.join("Note 00.md").exists());
+
+        // Editing a held page here keeps it (an edit beats a deletion).
+        db_b.create_block(&ids[24], "kept by B", None, None, "user").unwrap();
+        let r = cycle(&b, &db_b);
+        assert_eq!(r.held_deletions.as_ref().map(|h| h.pages), Some(24));
+        assert!(b.join("Note 24.md").exists());
+
+        // "Move to trash" applies the rest.
+        let n = resolve_held_deletions_in_dir(&db_b, &b, true).unwrap();
+        assert_eq!(n, 24);
+        assert!(db_b.is_trashed(&ids[0]).unwrap());
+        assert!(!db_b.is_trashed(&ids[24]).unwrap());
+        let r = cycle(&b, &db_b);
+        assert!(r.held_deletions.is_none());
+        assert_eq!(db_b.list_pages(None).unwrap().len(), 6);
+    }
+
+    #[test]
+    fn test_keep_held_deletions_restores_files() {
+        if !git_cmd::git_available() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let (_remote, a, b) = setup_remote_and_devices(tmp.path());
+        let db_a = Database::open_in_memory().unwrap();
+        let db_b = Database::open_in_memory().unwrap();
+        let mut ids = Vec::new();
+        for i in 0..4 {
+            ids.push(db_a.create_page(&format!("P{i}"), None, false, None, "user").unwrap().id);
+        }
+        cycle(&a, &db_a);
+        cycle(&b, &db_b);
+        for id in &ids[..3] {
+            db_a.trash_page(id).unwrap(); // 3 of 4 > half
+        }
+        cycle(&a, &db_a);
+        assert_eq!(cycle(&b, &db_b).held_deletions.map(|h| h.pages), Some(3));
+        assert_eq!(resolve_held_deletions_in_dir(&db_b, &b, false).unwrap(), 0);
+        let r = cycle(&b, &db_b);
+        assert!(r.held_deletions.is_none());
+        assert!(b.join("P0.md").exists(), "kept pages are exported again");
+        assert!(!db_b.is_trashed(&ids[0]).unwrap());
+    }
+
+    // P0: an import failure is a failed sync (not "success"), and is retried.
+    #[test]
+    fn test_import_errors_reach_the_result() {
+        if !git_cmd::git_available() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let (_remote, a, b) = setup_remote_and_devices(tmp.path());
+        let db_a = Database::open_in_memory().unwrap();
+        let db_b = Database::open_in_memory().unwrap();
+        db_a.create_page("Fine", None, false, None, "user").unwrap();
+        let poison = db_a.create_page("Poison", None, false, None, "user").unwrap();
+        cycle(&a, &db_a);
+        db_b.conn
+            .execute_batch(
+                "CREATE TEMP TRIGGER no_poison BEFORE INSERT ON pages WHEN NEW.title = 'Poison'
+                 BEGIN SELECT RAISE(ABORT, 'poisoned'); END;",
+            )
+            .unwrap();
+        let r = cycle_any(&b, &db_b);
+        assert!(!r.success, "import errors make the sync unsuccessful");
+        assert!(!r.offline);
+        assert!(r.import_errors.iter().any(|e| e.contains("Poison")), "{:?}", r.import_errors);
+        assert!(r.error.as_deref().unwrap_or("").contains("import"), "{:?}", r.error);
+        assert!(db_b.get_page_by_title("Fine").unwrap().is_some(), "the rest went in");
+        db_b.conn.execute_batch("DROP TRIGGER no_poison").unwrap();
+        let r = cycle_any(&b, &db_b);
+        assert!(r.success, "{:?}", r.error);
+        assert!(db_b.get_page(&poison.id).unwrap().is_some(), "retried next cycle");
+    }
+
+    // P0: an unreachable remote is "offline", not a hard failure.
+    #[test]
+    fn test_unreachable_remote_is_offline() {
+        if !git_cmd::git_available() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let (remote, a, _b) = setup_remote_and_devices(tmp.path());
+        let db_a = Database::open_in_memory().unwrap();
+        db_a.create_page("X", None, false, None, "user").unwrap();
+        cycle(&a, &db_a);
+        std::fs::rename(&remote, tmp.path().join("gone.git")).unwrap();
+        let r = cycle_any(&a, &db_a);
+        assert!(!r.success);
+        assert!(r.offline, "{:?}", r.error);
+        assert!(is_offline_error("fatal: unable to access 'https://x/': Could not resolve host: x"));
+        assert!(!is_offline_error("Authentication failed — check your SSH keys or credentials"));
+    }
+
+    // Sync on top of the mirror: a notebook's sync dir IS its mirror, and the
+    // mirror's incremental state stays valid across sync cycles.
+    #[test]
+    fn test_sync_commits_the_notebook_mirror() {
+        if !git_cmd::git_available() {
+            return;
+        }
+        let _home = crate::notebook::tests::FakeHome::new();
+        let root = _home.path().join("Book");
+        let nb = crate::notebook::create_in_folder(&root, "Book").unwrap();
+        assert_eq!(sync_dir_for_graph(&nb.key), root.join("notes"));
+        let db = nb.open_db().unwrap();
+        let p = db.create_page("Hello", None, false, None, "user").unwrap();
+        let target = MirrorTarget::for_notebook(&nb);
+        crate::mirror::run(&db, &target, false).unwrap();
+        assert!(root.join("notes/Hello.md").exists(), "the mirror runs without git");
+        git_cmd::init_repo(&root.join("notes")).unwrap();
+        git_cmd::tests::configure_test_repo(&root.join("notes"));
+        let r = sync_cycle(&target, || Ok(&db)).unwrap();
+        assert!(r.success, "{:?}", r.error);
+        assert!(git_cmd::rev_parse_head(&root.join("notes")).unwrap().is_some(), "committed");
+        db.create_block(&p.id, "after sync", None, None, "user").unwrap();
+        let rep = crate::mirror::run(&db, &target, false).unwrap();
+        assert!(!rep.full, "state still valid after a sync cycle");
+        assert_eq!(rep.written_paths, vec!["Hello.md".to_string()]);
     }
 
     // Both devices created a "Work" folder independently (e.g. folders created

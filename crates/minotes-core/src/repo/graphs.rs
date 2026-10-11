@@ -63,7 +63,7 @@ pub fn create_graph(base_dir: &Path, name: &str) -> Result<GraphInfo> {
     let db_path = base_dir.join(format!("{name}.db"));
 
     if db_path.exists() {
-        return Err(Error::AlreadyExists(format!("Graph '{name}'")));
+        return Err(Error::AlreadyExists(format!("A graph named '{name}' already exists")));
     }
 
     // Create the database (this initializes the schema)

@@ -25,7 +25,7 @@ impl Database {
             ],
         ).map_err(|e| match e {
             rusqlite::Error::SqliteFailure(_, _) => {
-                Error::AlreadyExists(format!("Alias '{alias}'"))
+                Error::AlreadyExists(format!("The alias '{alias}' is already in use"))
             }
             other => Error::Database(other),
         })?;

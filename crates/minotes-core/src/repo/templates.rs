@@ -30,7 +30,7 @@ impl Database {
             ],
         ).map_err(|e| match e {
             rusqlite::Error::SqliteFailure(_, _) => {
-                Error::AlreadyExists(format!("Template '{name}'"))
+                Error::AlreadyExists(format!("A template named '{name}' already exists"))
             }
             other => Error::Database(other),
         })?;
@@ -113,14 +113,32 @@ impl Database {
 
         // Walk lines but keep fenced code blocks (```...```) as a single block
         // so multi-line code in templates is preserved intact.
+        // Leading indentation is outline nesting: a line indented deeper than the
+        // previous one becomes its child (any consistent unit: 2/4 spaces, tabs).
         let lines: Vec<&str> = template.content.lines().collect();
         let mut blocks = Vec::new();
+        // (indent width, block id) of the open ancestors, innermost last.
+        let mut stack: Vec<(usize, Uuid)> = Vec::new();
+        let indent_of = |l: &str| -> usize {
+            l.chars()
+                .take_while(|c| *c == ' ' || *c == '\t')
+                .map(|c| if c == '\t' { 4 } else { 1 })
+                .sum()
+        };
         let mut i = 0;
         while i < lines.len() {
             let line = lines[i];
             let trimmed = line.trim_start();
+            if !line.trim().is_empty() {
+                let indent = indent_of(line);
+                while stack.last().is_some_and(|(w, _)| *w >= indent) {
+                    stack.pop();
+                }
+            }
+            let parent = stack.last().map(|(_, id)| *id);
             if trimmed.starts_with("```") {
-                let mut buf = String::from(line);
+                let indent = indent_of(line);
+                let mut buf = String::from(trimmed);
                 i += 1;
                 while i < lines.len() {
                     buf.push('\n');
@@ -129,7 +147,8 @@ impl Database {
                     i += 1;
                     if closes { break; }
                 }
-                let block = self.create_block(page_id, &buf, None, None, actor)?;
+                let block = self.create_block(page_id, &buf, parent.as_ref(), None, actor)?;
+                stack.push((indent, block.id));
                 blocks.push(block);
                 continue;
             }
@@ -137,7 +156,8 @@ impl Database {
                 i += 1;
                 continue;
             }
-            let block = self.create_block(page_id, line, None, None, actor)?;
+            let block = self.create_block(page_id, trimmed.trim_end(), parent.as_ref(), None, actor)?;
+            stack.push((indent_of(line), block.id));
             blocks.push(block);
             i += 1;
         }
@@ -265,5 +285,30 @@ mod tests {
             .unwrap();
         assert_eq!(ev, 0, "no events for rolled-back work");
         assert!(db.conn.is_autocommit());
+    }
+
+    // An indented template line is a CHILD block (no leading spaces in its text).
+    #[test]
+    fn test_apply_template_indentation_is_nesting() {
+        let db = Database::open_in_memory().unwrap();
+        db.create_template("T", None, "first\n  nested\n    deeper\n  nested two\nsecond\n\tTabbed", "user").unwrap();
+        let page = db.create_page("P", None, false, None, "user").unwrap();
+        let made = db.apply_template(&page.id, "T", "user").unwrap();
+        assert_eq!(made.len(), 6);
+        let tree = db.get_page_blocks(&page.id).unwrap();
+        let by_id: std::collections::HashMap<_, _> = tree.iter().map(|b| (b.id, b.content.clone())).collect();
+        let shape: Vec<(String, Option<String>)> = tree
+            .iter()
+            .map(|b| (b.content.clone(), b.parent_id.map(|p| by_id[&p].clone())))
+            .collect();
+        let s = |a: &str, p: Option<&str>| (a.to_string(), p.map(String::from));
+        assert_eq!(shape, vec![
+            s("first", None),
+            s("nested", Some("first")),
+            s("deeper", Some("nested")),
+            s("nested two", Some("first")),
+            s("second", None),
+            s("Tabbed", Some("second")),
+        ]);
     }
 }

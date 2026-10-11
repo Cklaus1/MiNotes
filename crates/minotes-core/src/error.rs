@@ -6,7 +6,7 @@ pub enum Error {
     Database(#[from] rusqlite::Error),
     #[error("Not found: {0}")]
     NotFound(String),
-    #[error("Already exists: {0}")]
+    #[error("{0}")]
     AlreadyExists(String),
     #[error("Invalid input: {0}")]
     InvalidInput(String),

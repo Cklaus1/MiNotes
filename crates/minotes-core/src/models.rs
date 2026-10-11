@@ -87,6 +87,15 @@ pub struct RestoreBlock {
     pub properties: Vec<(String, String)>,
 }
 
+/// A block plus the title of the page it lives on — enough to show it and
+/// navigate to it in one round trip (block refs, backlinks, flashcards).
+#[derive(Debug, Clone, Serialize)]
+pub struct BlockWithPage {
+    #[serde(flatten)]
+    pub block: Block,
+    pub page_title: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Link {
     pub id: Uuid,

@@ -32,6 +32,11 @@ pub struct SyncResult {
     pub whiteboards_imported: Vec<String>,
     /// Per-file / per-step problems. The import of other pages still went through.
     pub errors: Vec<String>,
+    /// Pages removed upstream that the mass-delete guard refused to trash
+    /// (the caller holds them for the user to decide).
+    pub held_page_ids: Vec<Uuid>,
+    /// Folders likewise.
+    pub held_folder_ids: Vec<Uuid>,
 }
 
 /// Options for [`Database::sync_dir_with`].
@@ -111,6 +116,10 @@ pub(crate) fn scan_markdown_tree(root: &Path) -> Scan {
             let rel = rel_dir.join(&name);
             if ft.is_dir() {
                 if name_str.starts_with('.') {
+                    continue;
+                }
+                // ── Import / attachments: the mirror's attachment files ──
+                if rel_dir.as_os_str().is_empty() && name_str == crate::repo::attachments::MIRROR_DIR {
                     continue;
                 }
                 scan.dirs.push(rel.clone());
@@ -211,6 +220,8 @@ impl Database {
     /// Returns the page and folder ids that exist in the DB because of (or in
     /// agreement with) files in `dir`.
     fn import_dir(&self, dir: &Path, actor: &str, opts: &SyncOptions, result: &mut SyncResult) -> Result<HashSet<Uuid>> {
+        // ── Import / attachments: files another device synced ──
+        self.import_mirror_attachments(dir, result);
         let scan = scan_markdown_tree(dir);
         let mut complete = scan.complete;
         result.errors.extend(scan.errors.iter().cloned());
@@ -231,6 +242,8 @@ impl Database {
                         Some(t) => t.to_string(),
                         None => text,
                     };
+                    // ── Import / attachments: relative mirror links → attachment: refs ──
+                    let content = crate::repo::attachments::unrewrite_mirror_links(&content);
                     let fm = parse_frontmatter(&content);
                     let stem = f
                         .rel
@@ -319,6 +332,7 @@ impl Database {
             None => HashSet::new(),
         };
         let mut seen: HashSet<Uuid> = HashSet::new();
+        let mut failed: HashSet<Uuid> = HashSet::new();
         let mut folder_cache: HashMap<Vec<String>, Uuid> = HashMap::new();
         let present_folders = self.import_folder_markers(
             dir,
@@ -353,6 +367,14 @@ impl Database {
                     *result = snapshot;
                     seen = seen_snapshot;
                     complete = false; // don't let a failed page look "missing"
+                    // Nor "ours": a file that never made it in must not enter the
+                    // export manifest, or the next export would prune it as a
+                    // local deletion and push that deletion to every device.
+                    if let Some(id) = f.fm.id {
+                        if self.get_page(&id)?.is_none() {
+                            failed.insert(id);
+                        }
+                    }
                     eprintln!("[minotes-sync] import of {} failed: {e}", f.rel.display());
                     result.errors.push(format!("{}: {e}", f.rel.display()));
                 }
@@ -383,7 +405,7 @@ impl Database {
                     .push("Directory scan was incomplete; skipped deleting missing pages".to_string());
             }
         }
-        Ok(seen.into_iter().chain(present_folders).collect())
+        Ok(seen.into_iter().filter(|id| !failed.contains(id)).chain(present_folders).collect())
     }
 
     fn ensure_folder_path(
@@ -625,11 +647,18 @@ impl Database {
                 |r| r.get::<_, i64>(0),
             )? as usize;
             if !live_pages.is_empty() && !deletion_allowed(live_pages.len(), total, force) {
-                result.errors.push(format!(
-                    "Refusing to trash folder '{}' with {} of {total} pages removed upstream in one sync (safety guard)",
+                // Not an error: held for the user (see `held_folder_ids`).
+                eprintln!(
+                    "[minotes-sync] holding deletion of folder '{}' with {} of {total} pages (safety guard)",
                     folder.name,
                     live_pages.len()
-                ));
+                );
+                result.held_folder_ids.push(*id);
+                for p in live_pages {
+                    if !result.held_page_ids.contains(&p) {
+                        result.held_page_ids.push(p);
+                    }
+                }
                 continue;
             }
             self.trash_folder(id)?;
@@ -694,7 +723,7 @@ impl Database {
 
     /// Ids of pages changed locally (by anyone but `import_actor`) after `since`:
     /// page/block edits, deletions (via the event log), trash and archive moves.
-    fn pages_modified_since(&self, since: DateTime<Utc>, import_actor: &str) -> Result<HashSet<Uuid>> {
+    pub(crate) fn pages_modified_since(&self, since: DateTime<Utc>, import_actor: &str) -> Result<HashSet<Uuid>> {
         let t = since.to_rfc3339();
         let mut stmt = self.conn.prepare(
             "SELECT id FROM pages WHERE updated_at > ?1
@@ -733,7 +762,17 @@ impl Database {
 
     /// Apply page properties from frontmatter. Returns true if anything changed.
     /// (Properties missing from the file are left alone, not deleted.)
-    fn apply_fm_properties(&self, page_id: &Uuid, props: &[(String, String)], actor: &str) -> Result<bool> {
+    /// A value the DB refuses (e.g. it doesn't match the property's declared
+    /// schema type) skips just that property: it is reported in `result.errors`
+    /// and the rest of the page still imports.
+    fn apply_fm_properties(
+        &self,
+        page_id: &Uuid,
+        props: &[(String, String)],
+        actor: &str,
+        result: &mut SyncResult,
+        label: &str,
+    ) -> Result<bool> {
         if props.is_empty() {
             return Ok(false);
         }
@@ -745,8 +784,10 @@ impl Database {
         let mut changed = false;
         for (k, v) in props {
             if current.get(k).and_then(|x| x.as_deref()) != Some(v.as_str()) {
-                self.set_property(page_id, "page", k, v, "text", actor)?;
-                changed = true;
+                match self.tx(|| self.set_property(page_id, "page", k, v, "text", actor)) {
+                    Ok(_) => changed = true,
+                    Err(e) => result.errors.push(format!("{label}: property '{k}' skipped: {e}")),
+                }
             }
         }
         Ok(changed)
@@ -812,7 +853,7 @@ impl Database {
                 )?;
                 meta_changed = true;
             }
-            meta_changed |= self.apply_fm_properties(&existing.id, &fm.props, actor)?;
+            meta_changed |= self.apply_fm_properties(&existing.id, &fm.props, actor, result, &file.rel.display().to_string())?;
             if fm.id.is_some() {
                 // Written by our exporter, so the frontmatter is the page's full
                 // (representable) property set: drop what the file no longer has.
@@ -852,7 +893,7 @@ impl Database {
             if let Some(fid) = folder_id {
                 self.move_page_to_folder(&page.id, Some(&fid), actor)?;
             }
-            self.apply_fm_properties(&page.id, &fm.props, actor)?;
+            self.apply_fm_properties(&page.id, &fm.props, actor, result, &file.rel.display().to_string())?;
             self.reconcile_page_blocks(&page.id, &new_blocks, actor, result)?;
             result.pages_created.push(title);
         }
@@ -1051,10 +1092,16 @@ impl Database {
             |r| r.get::<_, i64>(0),
         )? as usize;
         if !deletion_allowed(to_trash.len(), total, force) {
-            result.errors.push(format!(
-                "Refusing to trash {} of {total} pages removed upstream in one sync (safety guard)",
+            // Not an error: held for the user to decide (see `held_page_ids`).
+            eprintln!(
+                "[minotes-sync] holding deletion of {} of {total} pages removed upstream (safety guard)",
                 to_trash.len()
-            ));
+            );
+            for p in to_trash {
+                if !result.held_page_ids.contains(&p.id) {
+                    result.held_page_ids.push(p.id);
+                }
+            }
             return Ok(());
         }
         for page in to_trash {
@@ -1098,6 +1145,43 @@ impl Database {
         Ok(())
     }
 }
+
+// ── Import / attachments ──
+impl Database {
+    /// Adopt `<dir>/_attachments/<hash>/<file>` files this store doesn't have
+    /// (pulled from another device). The content must hash to the directory
+    /// name; anything else is reported and left alone.
+    pub(crate) fn import_mirror_attachments(&self, dir: &Path, result: &mut SyncResult) {
+        use crate::repo::attachments::{is_valid_hash, MIRROR_DIR};
+        let root = dir.join(MIRROR_DIR);
+        let Ok(rd) = fs::read_dir(&root) else { return };
+        if self.attachments_dir().is_none() {
+            return;
+        }
+        for e in rd.flatten() {
+            let hash = e.file_name().to_string_lossy().to_string();
+            if !is_valid_hash(&hash) || self.attachment_file(&hash).is_some() {
+                continue;
+            }
+            let Ok(files) = fs::read_dir(e.path()) else { continue };
+            let Some(file) = files.flatten().find(|f| f.file_type().map(|t| t.is_file()).unwrap_or(false)) else { continue };
+            let name = file.file_name().to_string_lossy().to_string();
+            let existed = self.get_attachment(&hash).ok().flatten().is_some();
+            match self.store_attachment_file(&file.path(), Some(&name), None) {
+                Ok(s) if s.attachment.hash == hash => {}
+                Ok(s) => {
+                    if !s.created || existed {
+                        continue;
+                    }
+                    let _ = self.delete_attachment_raw(&s.attachment.hash);
+                    result.errors.push(format!("{MIRROR_DIR}/{hash}/{name}: content does not match its hash; ignored"));
+                }
+                Err(err) => result.errors.push(format!("{MIRROR_DIR}/{hash}/{name}: {err}")),
+            }
+        }
+    }
+}
+// ── End import ──
 
 #[derive(Debug)]
 pub(crate) struct ParsedBlock {
@@ -1669,6 +1753,27 @@ mod tests {
         let db2 = Database::open_in_memory().unwrap();
         db2.sync_dir(&dir, "u", false, false).unwrap();
         assert_eq!(db2.list_pages(None).unwrap().len(), 4);
+    }
+
+    // An invalid property value skips that property, not the page.
+    #[test]
+    fn test_bad_property_value_skips_only_that_property() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::open_in_memory().unwrap();
+        db.conn
+            .execute_batch(
+                "CREATE TEMP TRIGGER no_bad BEFORE INSERT ON properties WHEN NEW.key = 'rating'
+                 BEGIN SELECT RAISE(ABORT, 'value does not match schema'); END;",
+            )
+            .unwrap();
+        fs::write(dir.path().join("P.md"), "---\ntitle: \"P\"\nrating: lots\nstatus: ok\n---\n\n- body\n").unwrap();
+        let r = db.sync_dir(dir.path(), "u", false, false).unwrap();
+        assert!(r.errors.iter().any(|e| e.contains("rating")), "{:?}", r.errors);
+        let p = db.get_page_by_title("P").unwrap().expect("page imported");
+        assert_eq!(db.get_page_blocks(&p.id).unwrap().len(), 1);
+        let props = db.get_properties(&p.id).unwrap();
+        assert!(props.iter().any(|x| x.key == "status"));
+        assert!(!props.iter().any(|x| x.key == "rating"));
     }
 
     // #11: a partial scan or a mass disappearance must not mass-trash.

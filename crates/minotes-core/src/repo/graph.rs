@@ -39,13 +39,21 @@ pub struct GraphStats {
 impl Database {
     /// Get full graph data for visualization.
     pub fn get_graph_data(&self) -> Result<GraphData> {
-        // Nodes: pages with block and link counts
-        let mut stmt = self.conn.prepare(
-            "SELECT p.id, p.title,
+        // Trashed/archived pages are not part of the visible graph: no nodes for
+        // them and no edges from or to them.
+        let hidden = crate::repo::trash::hidden_pages_cte();
+        // Nodes: pages with block and (visible) incoming link counts
+        let mut stmt = self.conn.prepare(&format!(
+            "{hidden}
+             SELECT p.id, p.title,
                     (SELECT COUNT(*) FROM blocks WHERE page_id = p.id) as block_count,
-                    (SELECT COUNT(*) FROM links WHERE to_page = p.id) as link_count
-             FROM pages p ORDER BY p.title",
-        )?;
+                    (SELECT COUNT(*) FROM links l JOIN blocks b ON b.id = l.from_block
+                      WHERE l.to_page = p.id
+                        AND b.page_id NOT IN (SELECT id FROM hidden_pages)) as link_count
+             FROM pages p
+             WHERE p.id NOT IN (SELECT id FROM hidden_pages)
+             ORDER BY p.title"
+        ))?;
         let nodes: Vec<GraphNode> = stmt
             .query_map([], |row| {
                 let id_str: String = row.get(0)?;
@@ -60,13 +68,16 @@ impl Database {
             .collect();
 
         // Edges: aggregated links between pages
-        let mut stmt = self.conn.prepare(
-            "SELECT b.page_id as from_page, l.to_page, COUNT(*) as cnt
+        let mut stmt = self.conn.prepare(&format!(
+            "{hidden}
+             SELECT b.page_id as from_page, l.to_page, COUNT(*) as cnt
              FROM links l
              JOIN blocks b ON l.from_block = b.id
              WHERE l.to_page IS NOT NULL
-             GROUP BY b.page_id, l.to_page",
-        )?;
+               AND b.page_id NOT IN (SELECT id FROM hidden_pages)
+               AND l.to_page NOT IN (SELECT id FROM hidden_pages)
+             GROUP BY b.page_id, l.to_page"
+        ))?;
         let edges: Vec<GraphEdge> = stmt
             .query_map([], |row| {
                 let from_str: String = row.get(0)?;

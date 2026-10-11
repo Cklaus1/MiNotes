@@ -56,6 +56,62 @@ pub struct ExportReport {
     pub written: Vec<String>,
     /// Relative paths of stale files moved into `.minotes-trash/`.
     pub pruned: Vec<String>,
+    /// Every exported page: (id, path relative to the export root, sha256 of the
+    /// file content). The markdown mirror records these to export incrementally.
+    #[serde(skip)]
+    pub page_files: Vec<(Uuid, PathBuf, String)>,
+    /// Every exported folder: (id, directory relative to the export root).
+    #[serde(skip)]
+    pub folder_dirs: Vec<(Uuid, PathBuf)>,
+    /// Files actually (re)written because their content changed.
+    #[serde(skip)]
+    pub changed: usize,
+    // ── Import / attachments ──
+    /// Attachments over the git-sync limit (kept out of git, reported).
+    #[serde(default)]
+    pub large_attachments: Vec<String>,
+    // ── End import ──
+}
+
+/// What an export leaves out. Used to hold back pages/folders whose deletion on
+/// another device is waiting for the user's decision (git sync's mass-delete
+/// guard): writing their files again would silently undo that deletion.
+#[derive(Debug, Clone, Default)]
+pub struct ExportOptions {
+    pub skip_pages: HashSet<Uuid>,
+    pub skip_folders: HashSet<Uuid>,
+}
+
+/// Hex sha256 of a file's content (the mirror's change marker).
+pub(crate) fn content_hash(content: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let d = Sha256::digest(content.as_bytes());
+    d.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Suffix of the temp files `atomic_write` creates (dot-prefixed, never `.md`,
+/// so no scanner ever picks one up).
+pub(crate) const TMP_SUFFIX: &str = ".minotes-tmp";
+
+/// Write `content` to `path` atomically: a temp file in the same directory, then
+/// a rename over the target. A reader (another app, git, a crash) only ever sees
+/// the old or the new file, never a half-written one.
+pub(crate) fn atomic_write(path: &Path, content: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let dir = path.parent().unwrap_or(Path::new("."));
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
+    let tmp = dir.join(format!(".{name}.{}{TMP_SUFFIX}", Uuid::now_v7().simple()));
+    let res = (|| {
+        let mut f = fs::File::create(&tmp)?;
+        f.write_all(content)?;
+        f.flush()?;
+        drop(f);
+        fs::rename(&tmp, path)
+    })();
+    if res.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    res
 }
 
 /// Where each page / folder lands on disk, relative to the export root.
@@ -147,7 +203,7 @@ pub(crate) fn add_to_manifest(root: &Path, ids: impl IntoIterator<Item = Uuid>) 
 }
 
 /// Move `rel` (relative to `root`) into `.minotes-trash/<stamp>/rel`.
-fn move_to_sync_trash(root: &Path, rel: &Path, stamp: &str) -> std::io::Result<()> {
+pub(crate) fn move_to_sync_trash(root: &Path, rel: &Path, stamp: &str) -> std::io::Result<()> {
     let mut dest = root.join(SYNC_TRASH_DIR).join(stamp).join(rel);
     if dest.exists() {
         let ext = rel.extension().and_then(|e| e.to_str()).unwrap_or("bak").to_string();
@@ -159,13 +215,21 @@ fn move_to_sync_trash(root: &Path, rel: &Path, stamp: &str) -> std::io::Result<(
     fs::rename(root.join(rel), &dest)
 }
 
-/// Write `content` to `path` unless it already holds exactly that.
-fn write_if_changed(path: &Path, content: &str) -> Result<()> {
+/// Write `content` to `path` (atomically) unless it already holds exactly that.
+/// Returns whether the file was written.
+pub(crate) fn write_if_changed(path: &Path, content: &str) -> Result<bool> {
     if fs::read_to_string(path).map(|c| c == content).unwrap_or(false) {
-        return Ok(());
+        return Ok(false);
     }
-    fs::write(path, content)
-        .map_err(|e| crate::error::Error::InvalidInput(format!("Write failed: {e}")))
+    atomic_write(path, content.as_bytes())
+        .map_err(|e| crate::error::Error::InvalidInput(format!("Write failed for {}: {e}", path.display())))?;
+    Ok(true)
+}
+
+/// The JSON written to a folder's `.minotes-folder.json`.
+pub(crate) fn folder_marker_json(folder: &crate::models::Folder) -> Result<String> {
+    let marker = FolderMarker { id: folder.id, name: folder.name.clone(), parent: folder.parent_id };
+    Ok(serde_json::to_string_pretty(&marker)? + "\n")
 }
 
 impl Database {
@@ -179,55 +243,65 @@ impl Database {
     ///   `{{whiteboard:<id>}}` in the markdown). `import_markdown_dir` and sync
     ///   import read these back.
     pub fn export_markdown(&self, output_dir: &Path) -> Result<Vec<String>> {
-        Ok(self.export_markdown_inner(output_dir, false)?.written)
+        Ok(self.export_markdown_inner(output_dir, false, &ExportOptions::default())?.written)
     }
 
     /// Export for sync: like `export_markdown`, but afterwards moves every stale
     /// `.md` (a renamed/moved page's old file, a trashed or deleted page's file) into
     /// `.minotes-trash/`, so a stale copy can never be re-imported and revert the DB.
     pub fn export_markdown_synced(&self, output_dir: &Path) -> Result<ExportReport> {
-        self.export_markdown_inner(output_dir, true)
+        self.export_markdown_inner(output_dir, true, &ExportOptions::default())
     }
 
-    fn export_markdown_inner(&self, output_dir: &Path, prune: bool) -> Result<ExportReport> {
-        fs::create_dir_all(output_dir)
-            .map_err(|e| crate::error::Error::InvalidInput(format!("Cannot create dir: {e}")))?;
+    /// [`export_markdown_synced`](Self::export_markdown_synced) leaving out the
+    /// pages and folders in `opts` (their files are neither written nor pruned
+    /// by id — they are simply absent from the plan).
+    pub fn export_markdown_synced_with(&self, output_dir: &Path, opts: &ExportOptions) -> Result<ExportReport> {
+        self.export_markdown_inner(output_dir, true, opts)
+    }
 
-        let plan = self.plan_export_paths()?;
+    fn export_markdown_inner(&self, output_dir: &Path, prune: bool, opts: &ExportOptions) -> Result<ExportReport> {
+        let prepared = self.prepare_export(output_dir, prune, opts)?;
+        apply_export(output_dir, prepared)
+    }
+
+    /// Everything an export needs from the database: the path plan, every page
+    /// rendered, folder markers, whiteboard sidecars and (when pruning) the
+    /// facts the pruner decides by. Reading only — the files are written by
+    /// [`apply_export`], which needs no database, so a caller can release the
+    /// DB lock in between (the markdown mirror does).
+    pub(crate) fn prepare_export(&self, root: &Path, prune: bool, opts: &ExportOptions) -> Result<PreparedExport> {
+        let mut plan = self.plan_export_paths()?;
+        if !opts.skip_pages.is_empty() || !opts.skip_folders.is_empty() {
+            plan.pages.retain(|(p, _)| !opts.skip_pages.contains(&p.id));
+            plan.folders.retain(|(f, _)| !opts.skip_folders.contains(&f.id));
+            plan.folder_dirs = plan.folders.iter().map(|(_, d)| d.clone()).collect();
+        }
+        let mut folders = Vec::with_capacity(plan.folders.len());
         for (folder, rel) in &plan.folders {
-            let dir = safe_join(output_dir, rel)?;
-            fs::create_dir_all(&dir)
-                .map_err(|e| crate::error::Error::InvalidInput(format!("Cannot create dir: {e}")))?;
-            // Stable folder identity (renames/deletes propagate; empty folders
-            // round-trip because git now has a file to track).
-            let marker = FolderMarker { id: folder.id, name: folder.name.clone(), parent: folder.parent_id };
-            let json = serde_json::to_string_pretty(&marker)? + "\n";
-            write_if_changed(&dir.join(FOLDER_MARKER), &json)?;
+            folders.push((folder.id, rel.clone(), folder_marker_json(folder)?));
         }
-
-        let mut report = ExportReport::default();
+        let mut pages = Vec::with_capacity(plan.pages.len());
+        // ── Import / attachments: references become relative `_attachments/` links ──
+        let mut attachments: Vec<AttachmentCopy> = Vec::new();
         for (page, rel) in &plan.pages {
-            let filepath = safe_join(output_dir, rel)?;
-            if let Some(parent) = filepath.parent() {
-                fs::create_dir_all(parent)
-                    .map_err(|e| crate::error::Error::InvalidInput(format!("Cannot create dir: {e}")))?;
-            }
-            let md = self.render_page_markdown(page)?;
-            // Skip unchanged files so mtimes stay meaningful (used to break ties).
-            let unchanged = fs::read_to_string(&filepath).map(|c| c == md).unwrap_or(false);
-            if !unchanged {
-                fs::write(&filepath, &md)
-                    .map_err(|e| crate::error::Error::InvalidInput(format!("Write failed: {e}")))?;
-            }
-            report.written.push(filepath.display().to_string());
+            let (md, copies) = self.render_page_for_export(page, rel)?;
+            attachments.extend(copies);
+            pages.push((page.id, rel.clone(), md));
         }
-
-        self.export_whiteboards(output_dir, &plan)?;
-
-        if prune {
-            report.pruned = self.prune_stale_files(output_dir, &plan)?;
-        }
-        Ok(report)
+        let att_prune = if prune {
+            let keep = self.referenced_attachment_hashes()?;
+            let known: HashSet<String> = self.list_attachments()?.into_iter().map(|a| a.hash).collect();
+            Some((keep, known))
+        } else {
+            None
+        };
+        // ── End import ──
+        let ids: Vec<Uuid> = plan.pages.iter().map(|(p, _)| p.id).collect();
+        let refs: Vec<String> = self.whiteboards_on_pages(&ids)?.into_iter().collect();
+        let sidecars = self.render_whiteboard_sidecars(root, refs)?;
+        let prune_inputs = if prune { Some(self.prune_inputs(&plan)?) } else { None };
+        Ok(PreparedExport { plan, pages, folders, sidecars, prune: prune_inputs, attachments, att_prune })
     }
 
     /// Compute a deterministic, collision-free export path for every live page.
@@ -235,6 +309,8 @@ impl Database {
     /// are broken by page id so every device picks the same name.
     pub(crate) fn plan_export_paths(&self) -> Result<ExportPlan> {
         let mut taken: HashMap<PathBuf, HashSet<String>> = HashMap::new();
+        // ── Import / attachments: the root `_attachments/` dir is not a folder ──
+        taken.entry(PathBuf::new()).or_default().insert(crate::repo::attachments::MIRROR_DIR.to_lowercase());
         let mut folder_map: HashMap<Uuid, PathBuf> = HashMap::new();
         let mut folders = Vec::new();
         self.plan_folder_dirs(Path::new(""), None, &mut taken, &mut folder_map, &mut folders, 0)?;
@@ -290,50 +366,36 @@ impl Database {
         Ok(())
     }
 
-    /// Write a sidecar for every whiteboard referenced by an exported page.
-    /// A sidecar that is NEWER than the DB copy (pulled, not imported yet) is left
-    /// alone — an older board must never overwrite a newer one.
-    fn export_whiteboards(&self, root: &Path, plan: &ExportPlan) -> Result<()> {
-        let ids: Vec<Uuid> = plan.pages.iter().map(|(p, _)| p.id).collect();
-        let mut refs: Vec<String> = self.whiteboards_on_pages(&ids)?.into_iter().collect();
+    /// Sidecar files (path relative to the export root, JSON) for the given
+    /// boards. Boards never saved are skipped, and so is a board whose sidecar on
+    /// disk is NEWER than the DB copy (pulled, not imported yet): an older board
+    /// must never overwrite a newer one.
+    pub(crate) fn render_whiteboard_sidecars(
+        &self,
+        root: &Path,
+        mut refs: Vec<String>,
+    ) -> Result<Vec<(PathBuf, String)>> {
         refs.sort();
-        let dir = root.join(WHITEBOARD_DIR);
+        refs.dedup();
+        let mut out = Vec::new();
         for id in refs {
             let Ok(Some(wb)) = self.get_whiteboard(&id) else { continue }; // never saved
-            let path = dir.join(format!("{id}.json"));
-            if let Ok(text) = fs::read_to_string(&path) {
+            let rel = Path::new(WHITEBOARD_DIR).join(format!("{id}.json"));
+            if let Ok(text) = fs::read_to_string(root.join(&rel)) {
                 if let Ok(f) = serde_json::from_str::<WhiteboardFile>(&text) {
                     if ts_newer(&f.updated_at, &wb.updated_at) {
                         continue;
                     }
                 }
             }
-            fs::create_dir_all(&dir)
-                .map_err(|e| crate::error::Error::InvalidInput(format!("Cannot create dir: {e}")))?;
             let file = WhiteboardFile { id: wb.id, updated_at: wb.updated_at, data: wb.data };
-            write_if_changed(&path, &(serde_json::to_string_pretty(&file)? + "\n"))?;
+            out.push((rel, serde_json::to_string_pretty(&file)? + "\n"));
         }
-        Ok(())
+        Ok(out)
     }
 
-    /// Move stale files into `.minotes-trash/` (see `export_markdown_synced`).
-    ///
-    /// Pages: a `.md` is stale when its frontmatter id belongs to a page that is
-    /// trashed, lives at a different path now, or is gone locally although this
-    /// dir's manifest lists it (exported or imported here before — so it was
-    /// deleted locally, possibly before its first export). Files with an id this
-    /// DB has never seen are left alone: they may be pages pulled from a remote
-    /// that simply haven't been imported yet.
-    ///
-    /// Folder markers: same rules by folder id (planned elsewhere, trashed, or
-    /// gone-but-listed ⇒ stale); then directories that are no longer a folder are
-    /// removed once empty.
-    ///
-    /// Whiteboard sidecars: stale when no surviving `.md` and no live/archived page
-    /// references the board — unless the file is newer than the DB copy (not
-    /// imported yet). Conflict copies are dropped once the DB is at least as new.
-    fn prune_stale_files(&self, root: &Path, plan: &ExportPlan) -> Result<Vec<String>> {
-        let expected: HashMap<Uuid, &PathBuf> = plan.pages.iter().map(|(p, rel)| (p.id, rel)).collect();
+    /// The database facts [`prune_stale_files`] decides by.
+    pub(crate) fn prune_inputs(&self, plan: &ExportPlan) -> Result<PruneInputs> {
         let mut known: HashSet<Uuid> = HashSet::new();
         let mut trashed: HashSet<Uuid> = HashSet::new();
         {
@@ -369,131 +431,23 @@ impl Database {
                 }
             }
         }
-        let planned_folders: HashMap<Uuid, &PathBuf> =
-            plan.folders.iter().map(|(f, rel)| (f.id, rel)).collect();
-        let manifest_path = root.join(EXPORT_MANIFEST);
-        let previously_exported: HashSet<Uuid> = fs::read_to_string(&manifest_path)
-            .map(|s| s.lines().filter_map(|l| Uuid::parse_str(l.trim()).ok()).collect())
-            .unwrap_or_default();
-
-        let scan = crate::repo::sync::scan_markdown_tree(root);
-        let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%S%.3f").to_string();
-        let mut pruned = Vec::new();
-        // Whiteboards referenced by .md files that stay in the dir.
-        let mut wb_keep: HashSet<String> = HashSet::new();
-        for file in &scan.files {
-            let Ok(content) = fs::read_to_string(&file.abs) else { continue };
-            let stale = match crate::repo::sync::parse_frontmatter_id(&content) {
-                None => false,
-                Some(id) => {
-                    if trashed.contains(&id) {
-                        true
-                    } else if let Some(exp) = expected.get(&id) {
-                        file.rel != **exp
-                    } else if known.contains(&id) {
-                        false // archived: not exported, leave its file untouched
-                    } else {
-                        previously_exported.contains(&id) // deleted locally
-                    }
-                }
-            };
-            if !stale {
-                wb_keep.extend(crate::repo::whiteboards::whiteboard_refs(&content));
-                continue;
-            }
-            match move_to_sync_trash(root, &file.rel, &stamp) {
-                Ok(()) => pruned.push(file.rel.display().to_string()),
-                Err(e) => eprintln!("[minotes-sync] could not prune stale {}: {e}", file.abs.display()),
-            }
-        }
-
-        // Folder markers.
-        for d in &scan.dirs {
-            // Git conflict copies of a marker (two devices wrote the same folder
-            // dir, e.g. right after upgrading): the in-place marker wins and the
-            // other id is adopted by name on import, so the copies are just noise.
-            if let Ok(rd) = fs::read_dir(root.join(d)) {
-                for e in rd.flatten() {
-                    let name = e.file_name().to_string_lossy().to_string();
-                    if name.starts_with(".minotes-folder.conflict-") && name.ends_with(".json") {
-                        let rel = d.join(&name);
-                        if move_to_sync_trash(root, &rel, &stamp).is_ok() {
-                            pruned.push(rel.display().to_string());
-                        }
-                    }
-                }
-            }
-            let Some(m) = read_folder_marker(root, d) else { continue };
-            let stale = if trashed_folders.contains(&m.id) {
-                true
-            } else if let Some(exp) = planned_folders.get(&m.id) {
-                d != *exp
-            } else if known_folders.contains(&m.id) {
-                false // archived folder: leave untouched
-            } else {
-                previously_exported.contains(&m.id)
-            };
-            if stale {
-                let rel = d.join(FOLDER_MARKER);
-                match move_to_sync_trash(root, &rel, &stamp) {
-                    Ok(()) => pruned.push(rel.display().to_string()),
-                    Err(e) => eprintln!("[minotes-sync] could not prune stale {}: {e}", rel.display()),
-                }
-            }
-        }
-
-        // Remove directories left empty that no longer correspond to a folder, so an
-        // old (renamed) folder name can't be resurrected on the next import.
-        let wanted: HashSet<PathBuf> = plan
-            .folder_dirs
-            .iter()
-            .flat_map(|d| d.ancestors().map(Path::to_path_buf).collect::<Vec<_>>())
-            .collect();
-        let mut dirs = scan.dirs.clone();
-        dirs.sort_by_key(|d| std::cmp::Reverse(d.components().count()));
-        for d in dirs {
-            if !wanted.contains(&d) {
-                let _ = fs::remove_dir(root.join(&d)); // only succeeds when empty
-            }
-        }
-
-        // Whiteboard sidecars.
         let mut live_and_archived: Vec<Uuid> = plan.pages.iter().map(|(p, _)| p.id).collect();
         live_and_archived.extend(plan.archived_ids.iter().copied());
-        wb_keep.extend(self.whiteboards_on_pages(&live_and_archived)?);
-        let (wb_files, _) = read_whiteboard_files(root);
-        for (rel, f) in &wb_files {
-            let canonical = rel.file_name().and_then(|n| n.to_str()) == Some(format!("{}.json", f.id).as_str());
-            let newer_than_db = match self.get_whiteboard(&f.id).ok().flatten() {
-                Some(w) => ts_newer(&f.updated_at, &w.updated_at),
-                None => true,
-            };
-            let stale = if newer_than_db {
-                false // not imported yet: never drop newer data
-            } else if !canonical {
-                true // conflict copy already absorbed
-            } else {
-                !wb_keep.contains(&f.id)
-            };
-            if stale {
-                match move_to_sync_trash(root, rel, &stamp) {
-                    Ok(()) => pruned.push(rel.display().to_string()),
-                    Err(e) => eprintln!("[minotes-sync] could not prune stale {}: {e}", rel.display()),
-                }
+        let wb_referenced = self.whiteboards_on_pages(&live_and_archived)?;
+        let mut wb_db = HashMap::new();
+        {
+            let mut stmt = self.conn.prepare("SELECT id, updated_at FROM whiteboards")?;
+            let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+            for r in rows {
+                let (id, at) = r?;
+                wb_db.insert(id, at);
             }
         }
-        let _ = fs::remove_dir(root.join(WHITEBOARD_DIR)); // only when empty
-
-        let mut ids: Vec<String> = plan.pages.iter().map(|(p, _)| p.id.to_string()).collect();
-        ids.extend(plan.archived_ids.iter().filter(|i| known.contains(i)).map(|i| i.to_string()));
-        ids.extend(known_folders.iter().filter(|i| !trashed_folders.contains(i)).map(|i| i.to_string()));
-        ids.sort();
-        let _ = fs::write(&manifest_path, ids.join("\n") + "\n");
-        Ok(pruned)
+        Ok(PruneInputs { known, trashed, known_folders, trashed_folders, wb_referenced, wb_db })
     }
 
     /// Render a page as markdown with YAML frontmatter.
-    fn render_page_markdown(&self, page: &crate::models::Page) -> Result<String> {
+    pub(crate) fn render_page_markdown(&self, page: &crate::models::Page) -> Result<String> {
         let blocks = self.get_page_blocks(&page.id)?;
         let properties = self.get_properties(&page.id)?;
 
@@ -552,9 +506,10 @@ impl Database {
                 stack.push((Some(root.id), 0));
             }
         }
+        let by_id: HashMap<uuid::Uuid, &crate::models::Block> = blocks.iter().map(|b| (b.id, b)).collect();
         let mut emitted = 0usize;
         while let Some((Some(id), depth)) = stack.pop() {
-            if let Some(block) = blocks.iter().find(|b| b.id == id) {
+            if let Some(block) = by_id.get(&id) {
                 md.push_str(&render_block_lines(&block.content, depth, &block.id));
                 emitted += 1;
             }
@@ -911,6 +866,357 @@ impl Database {
     }
 }
 
+/// An export rendered from the database, ready to be written (see
+/// [`Database::prepare_export`]).
+pub struct PreparedExport {
+    pub(crate) plan: ExportPlan,
+    /// (page id, relative path, markdown)
+    pub(crate) pages: Vec<(Uuid, PathBuf, String)>,
+    /// (folder id, relative dir, marker JSON)
+    pub(crate) folders: Vec<(Uuid, PathBuf, String)>,
+    /// (relative path, JSON)
+    pub(crate) sidecars: Vec<(PathBuf, String)>,
+    pub(crate) prune: Option<PruneInputs>,
+    // ── Import / attachments ──
+    pub(crate) attachments: Vec<AttachmentCopy>,
+    /// (hashes something references, hashes in the local store) — full passes.
+    pub(crate) att_prune: Option<(HashSet<String>, HashSet<String>)>,
+    // ── End import ──
+}
+
+/// What the pruner needs to know about the database.
+pub(crate) struct PruneInputs {
+    known: HashSet<Uuid>,
+    trashed: HashSet<Uuid>,
+    known_folders: HashSet<Uuid>,
+    trashed_folders: HashSet<Uuid>,
+    /// Boards referenced by live or archived pages.
+    wb_referenced: HashSet<String>,
+    /// Every board in the DB: id -> updated_at.
+    wb_db: HashMap<String, String>,
+}
+
+/// Write a prepared export into `root` (no database needed). Unchanged files are
+/// not rewritten; every write is atomic.
+pub(crate) fn apply_export(root: &Path, prepared: PreparedExport) -> Result<ExportReport> {
+    let mkdir = |d: &Path| {
+        fs::create_dir_all(d).map_err(|e| crate::error::Error::InvalidInput(format!("Cannot create dir: {e}")))
+    };
+    mkdir(root)?;
+    let mut report = ExportReport::default();
+    for (id, rel, json) in &prepared.folders {
+        let dir = safe_join(root, rel)?;
+        mkdir(&dir)?;
+        // Stable folder identity (renames/deletes propagate; empty folders
+        // round-trip because git now has a file to track).
+        if write_if_changed(&dir.join(FOLDER_MARKER), json)? {
+            report.changed += 1;
+        }
+        report.folder_dirs.push((*id, rel.clone()));
+    }
+    for (id, rel, md) in &prepared.pages {
+        let filepath = safe_join(root, rel)?;
+        if let Some(parent) = filepath.parent() {
+            mkdir(parent)?;
+        }
+        if let Some(inputs) = &prepared.prune {
+            if holds_unknown_page(&filepath, id, &inputs.known) {
+                // A page this DB has never seen sits there (pulled, not imported
+                // yet): never overwrite it. The import adopts it; the next pass
+                // writes this page once the names are settled.
+                eprintln!("[minotes-mirror] not overwriting {} (holds a page not imported yet)", rel.display());
+                continue;
+            }
+        }
+        // Skip unchanged files so mtimes stay meaningful (used to break ties).
+        if write_if_changed(&filepath, md)? {
+            report.changed += 1;
+        }
+        report.written.push(filepath.display().to_string());
+        report.page_files.push((*id, rel.clone(), content_hash(md)));
+    }
+    for (rel, json) in &prepared.sidecars {
+        let path = safe_join(root, rel)?;
+        if let Some(parent) = path.parent() {
+            mkdir(parent)?;
+        }
+        if write_if_changed(&path, json)? {
+            report.changed += 1;
+        }
+    }
+    if let Some(inputs) = &prepared.prune {
+        report.pruned = prune_stale_files(root, &prepared.plan, inputs)?;
+    }
+    // ── Import / attachments ──
+    let (n, large) = apply_attachment_copies(root, &prepared.attachments)?;
+    report.changed += n;
+    report.large_attachments = large;
+    if let Some((keep, known)) = &prepared.att_prune {
+        report.pruned.extend(prune_attachment_dirs(root, keep, known));
+    }
+    // ── End import ──
+    Ok(report)
+}
+
+// ── Import / attachments ──
+
+/// An attachment an export copies to `<root>/_attachments/<hash>/<name>`.
+#[derive(Debug, Clone)]
+pub(crate) struct AttachmentCopy {
+    pub(crate) hash: String,
+    pub(crate) rel: PathBuf,
+    pub(crate) src: PathBuf,
+    pub(crate) size: u64,
+}
+
+impl Database {
+    /// A page's markdown as an export at `rel` writes it: attachment references
+    /// become relative `_attachments/<hash>/<name>` links (sync import turns them
+    /// back), plus the files those links need.
+    pub(crate) fn render_page_for_export(&self, page: &Page, rel: &Path) -> Result<(String, Vec<AttachmentCopy>)> {
+        let md = self.render_page_markdown(page)?;
+        if !md.contains("attachment:") {
+            return Ok((md, Vec::new()));
+        }
+        let depth = rel.components().count().saturating_sub(1);
+        let (md, used) = crate::repo::attachments::rewrite_for_mirror(&md, depth);
+        let mut copies = Vec::new();
+        for (hash, enc) in used {
+            let Some(src) = self.attachment_file(&hash) else { continue };
+            let size = fs::metadata(&src).map(|m| m.len()).unwrap_or(0);
+            let name = sanitize_component(&crate::repo::attachments::decode_name(&enc));
+            copies.push(AttachmentCopy {
+                rel: Path::new(crate::repo::attachments::MIRROR_DIR).join(&hash).join(name),
+                hash,
+                src,
+                size,
+            });
+        }
+        Ok((md, copies))
+    }
+}
+
+/// Copy attachments into the export (skipping ones already there — content-
+/// addressed, so same path + size means same file). Files over the git-sync
+/// limit are listed in `_attachments/.gitignore` and returned as warnings.
+pub(crate) fn apply_attachment_copies(root: &Path, copies: &[AttachmentCopy]) -> Result<(usize, Vec<String>)> {
+    let mut written = 0;
+    let mut large = Vec::new();
+    let mut done: HashSet<&PathBuf> = HashSet::new();
+    for c in copies {
+        if !done.insert(&c.rel) {
+            continue;
+        }
+        let dest = safe_join(root, &c.rel)?;
+        if c.size > crate::repo::attachments::GIT_SYNC_MAX_BYTES {
+            large.push(format!("{} ({} MB)", c.rel.display(), c.size / (1024 * 1024)));
+        }
+        if fs::metadata(&dest).map(|m| m.len() == c.size).unwrap_or(false) {
+            continue;
+        }
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent).map_err(|e| crate::error::Error::InvalidInput(format!("Cannot create dir: {e}")))?;
+        }
+        let tmp = dest.with_file_name(format!(".{}{TMP_SUFFIX}", Uuid::now_v7().simple()));
+        let r = fs::copy(&c.src, &tmp).and_then(|_| fs::rename(&tmp, &dest));
+        if let Err(e) = r {
+            let _ = fs::remove_file(&tmp);
+            eprintln!("[minotes-mirror] could not copy attachment {}: {e}", c.rel.display());
+            continue;
+        }
+        written += 1;
+    }
+    if !large.is_empty() {
+        let gi = root.join(crate::repo::attachments::MIRROR_DIR).join(".gitignore");
+        let existing = fs::read_to_string(&gi).unwrap_or_default();
+        let mut out = existing.clone();
+        for c in copies.iter().filter(|c| c.size > crate::repo::attachments::GIT_SYNC_MAX_BYTES) {
+            let line = format!("/{}/", c.hash);
+            if !out.lines().any(|l| l.trim() == line) {
+                out.push_str(&line);
+                out.push('\n');
+            }
+        }
+        if out != existing {
+            let _ = atomic_write(&gi, out.as_bytes());
+        }
+    }
+    Ok((written, large))
+}
+
+/// Move `_attachments/<hash>/` directories nothing references any more into
+/// `.minotes-trash/` — only hashes this database knows (a pulled attachment
+/// not imported yet is never touched).
+pub(crate) fn prune_attachment_dirs(root: &Path, keep: &HashSet<String>, known: &HashSet<String>) -> Vec<String> {
+    let dir = root.join(crate::repo::attachments::MIRROR_DIR);
+    let Ok(rd) = fs::read_dir(&dir) else { return vec![] };
+    let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%S%.3f").to_string();
+    let mut pruned = Vec::new();
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().to_string();
+        if !crate::repo::attachments::is_valid_hash(&name) || keep.contains(&name) || !known.contains(&name) {
+            continue;
+        }
+        let rel = Path::new(crate::repo::attachments::MIRROR_DIR).join(&name);
+        if move_to_sync_trash(root, &rel, &stamp).is_ok() {
+            pruned.push(rel.display().to_string());
+        }
+    }
+    pruned
+}
+// ── End import ──
+
+/// Does the file at `path` carry another page's id that `known` doesn't have?
+pub(crate) fn holds_unknown_page(path: &Path, id: &Uuid, known: &HashSet<Uuid>) -> bool {
+    let Ok(text) = fs::read_to_string(path) else { return false };
+    match crate::repo::sync::parse_frontmatter_id(&text) {
+        Some(other) => other != *id && !known.contains(&other),
+        None => false,
+    }
+}
+
+/// Move stale files into `.minotes-trash/` (see `export_markdown_synced`).
+///
+/// Pages: a `.md` is stale when its frontmatter id belongs to a page that is
+/// trashed, lives at a different path now, or is gone locally although this
+/// dir's manifest lists it (exported or imported here before — so it was
+/// deleted locally, possibly before its first export). Files with an id this
+/// DB has never seen are left alone: they may be pages pulled from a remote
+/// that simply haven't been imported yet.
+///
+/// Folder markers: same rules by folder id (planned elsewhere, trashed, or
+/// gone-but-listed ⇒ stale); then directories that are no longer a folder are
+/// removed once empty.
+///
+/// Whiteboard sidecars: stale when no surviving `.md` and no live/archived page
+/// references the board — unless the file is newer than the DB copy (not
+/// imported yet). Conflict copies are dropped once the DB is at least as new.
+pub(crate) fn prune_stale_files(root: &Path, plan: &ExportPlan, db: &PruneInputs) -> Result<Vec<String>> {
+    let expected: HashMap<Uuid, &PathBuf> = plan.pages.iter().map(|(p, rel)| (p.id, rel)).collect();
+    let planned_folders: HashMap<Uuid, &PathBuf> =
+        plan.folders.iter().map(|(f, rel)| (f.id, rel)).collect();
+    let manifest_path = root.join(EXPORT_MANIFEST);
+    let previously_exported: HashSet<Uuid> = fs::read_to_string(&manifest_path)
+        .map(|s| s.lines().filter_map(|l| Uuid::parse_str(l.trim()).ok()).collect())
+        .unwrap_or_default();
+
+    let scan = crate::repo::sync::scan_markdown_tree(root);
+    let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%S%.3f").to_string();
+    let mut pruned = Vec::new();
+    // Whiteboards referenced by .md files that stay in the dir.
+    let mut wb_keep: HashSet<String> = HashSet::new();
+    for file in &scan.files {
+        let Ok(content) = fs::read_to_string(&file.abs) else { continue };
+        let stale = match crate::repo::sync::parse_frontmatter_id(&content) {
+            None => false,
+            Some(id) => {
+                if db.trashed.contains(&id) {
+                    true
+                } else if let Some(exp) = expected.get(&id) {
+                    file.rel != **exp
+                } else if db.known.contains(&id) {
+                    false // archived (or held back): not exported, leave its file untouched
+                } else {
+                    previously_exported.contains(&id) // deleted locally
+                }
+            }
+        };
+        if !stale {
+            wb_keep.extend(crate::repo::whiteboards::whiteboard_refs(&content));
+            continue;
+        }
+        match move_to_sync_trash(root, &file.rel, &stamp) {
+            Ok(()) => pruned.push(file.rel.display().to_string()),
+            Err(e) => eprintln!("[minotes-sync] could not prune stale {}: {e}", file.abs.display()),
+        }
+    }
+
+    // Folder markers.
+    for d in &scan.dirs {
+        // Git conflict copies of a marker (two devices wrote the same folder
+        // dir, e.g. right after upgrading): the in-place marker wins and the
+        // other id is adopted by name on import, so the copies are just noise.
+        if let Ok(rd) = fs::read_dir(root.join(d)) {
+            for e in rd.flatten() {
+                let name = e.file_name().to_string_lossy().to_string();
+                if name.starts_with(".minotes-folder.conflict-") && name.ends_with(".json") {
+                    let rel = d.join(&name);
+                    if move_to_sync_trash(root, &rel, &stamp).is_ok() {
+                        pruned.push(rel.display().to_string());
+                    }
+                }
+            }
+        }
+        let Some(m) = read_folder_marker(root, d) else { continue };
+        let stale = if db.trashed_folders.contains(&m.id) {
+            true
+        } else if let Some(exp) = planned_folders.get(&m.id) {
+            d != *exp
+        } else if db.known_folders.contains(&m.id) {
+            false // archived folder: leave untouched
+        } else {
+            previously_exported.contains(&m.id)
+        };
+        if stale {
+            let rel = d.join(FOLDER_MARKER);
+            match move_to_sync_trash(root, &rel, &stamp) {
+                Ok(()) => pruned.push(rel.display().to_string()),
+                Err(e) => eprintln!("[minotes-sync] could not prune stale {}: {e}", rel.display()),
+            }
+        }
+    }
+
+    // Remove directories left empty that no longer correspond to a folder, so an
+    // old (renamed) folder name can't be resurrected on the next import.
+    let wanted: HashSet<PathBuf> = plan
+        .folder_dirs
+        .iter()
+        .flat_map(|d| d.ancestors().map(Path::to_path_buf).collect::<Vec<_>>())
+        .collect();
+    let mut dirs = scan.dirs.clone();
+    dirs.sort_by_key(|d| std::cmp::Reverse(d.components().count()));
+    for d in dirs {
+        if !wanted.contains(&d) {
+            let _ = fs::remove_dir(root.join(&d)); // only succeeds when empty
+        }
+    }
+
+    // Whiteboard sidecars.
+    wb_keep.extend(db.wb_referenced.iter().cloned());
+    let (wb_files, _) = read_whiteboard_files(root);
+    for (rel, f) in &wb_files {
+        let canonical = rel.file_name().and_then(|n| n.to_str()) == Some(format!("{}.json", f.id).as_str());
+        let newer_than_db = match db.wb_db.get(&f.id) {
+            Some(at) => ts_newer(&f.updated_at, at),
+            None => true,
+        };
+        let stale = if newer_than_db {
+            false // not imported yet: never drop newer data
+        } else if !canonical {
+            true // conflict copy already absorbed
+        } else {
+            !wb_keep.contains(&f.id)
+        };
+        if stale {
+            match move_to_sync_trash(root, rel, &stamp) {
+                Ok(()) => pruned.push(rel.display().to_string()),
+                Err(e) => eprintln!("[minotes-sync] could not prune stale {}: {e}", rel.display()),
+            }
+        }
+    }
+    let _ = fs::remove_dir(root.join(WHITEBOARD_DIR)); // only when empty
+
+    let mut ids: Vec<String> = plan.pages.iter().map(|(p, _)| p.id.to_string()).collect();
+    ids.extend(plan.archived_ids.iter().filter(|i| db.known.contains(i)).map(|i| i.to_string()));
+    ids.extend(db.known_folders.iter().filter(|i| !db.trashed_folders.contains(i)).map(|i| i.to_string()));
+    // Held-back pages keep their manifest entry: they were exported here before.
+    ids.extend(previously_exported.iter().filter(|i| db.known.contains(i) && !db.trashed.contains(i)).map(|i| i.to_string()));
+    ids.sort();
+    ids.dedup();
+    let _ = atomic_write(&manifest_path, (ids.join("\n") + "\n").as_bytes());
+    Ok(pruned)
+}
+
 /// Render one block as a bullet at `depth`, encoding multi-line content safely
 /// (Bug #13). The first line follows `- `; any further lines are written as
 /// continuation lines indented two spaces DEEPER than a child bullet and WITHOUT a
@@ -964,7 +1270,7 @@ fn sanitize_filename(name: &str) -> String {
 /// `.` (`.`, `..`, `.git`, hidden) gets a `_` prefix so it can never escape the
 /// sync dir, land in `.git`, or be skipped by the importer (which ignores
 /// dot-folders). Long names are truncated to stay under filesystem limits.
-pub(crate) fn sanitize_component(name: &str) -> String {
+pub fn sanitize_component(name: &str) -> String {
     let mut s: String = name
         .chars()
         .map(|c| match c {
@@ -1015,7 +1321,7 @@ fn unique_name(base: &str, ext: &str, id: &Uuid, taken: &mut HashSet<String>) ->
 }
 
 /// Join a planned relative path onto `root`, refusing anything that could escape it.
-fn safe_join(root: &Path, rel: &Path) -> Result<PathBuf> {
+pub(crate) fn safe_join(root: &Path, rel: &Path) -> Result<PathBuf> {
     use std::path::Component;
     for c in rel.components() {
         match c {

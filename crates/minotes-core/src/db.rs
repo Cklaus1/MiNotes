@@ -228,7 +228,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS blocks_fts USING fts5(
     content,
     content='blocks',
     content_rowid='rowid',
-    tokenize='porter unicode61'
+    tokenize='unicode61 remove_diacritics 2'
 );
 
 -- Triggers to keep FTS in sync
@@ -246,19 +246,45 @@ END;
 
 pub struct Database {
     pub conn: Connection,
+    // ── Import / attachments ──
+    /// Where this database's attachment store lives when it can't be derived
+    /// from the file path (in-memory databases, tests). See `attachments_dir`.
+    pub(crate) attachments_override: std::cell::RefCell<Option<std::path::PathBuf>>,
+    // ── End import ──
 }
 
 impl Database {
     pub fn open(path: &Path) -> Result<Self> {
         let conn = Connection::open(path)?;
-        let db = Self { conn };
+        let db = Self { conn, attachments_override: Default::default() };
         db.init()?;
         Ok(db)
     }
 
+    /// Open an existing database without writing to it (a notebook another
+    /// MiNotes instance has open). No schema setup or migrations run, and
+    /// `query_only` makes any write fail instead of changing the file.
+    pub fn open_read_only(path: &Path) -> Result<Self> {
+        use rusqlite::OpenFlags;
+        let conn = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        conn.execute_batch("PRAGMA busy_timeout=5000; PRAGMA query_only=ON; PRAGMA foreign_keys=ON;")?;
+        Ok(Self { conn, attachments_override: Default::default() })
+    }
+
+    /// Is this connection read-only (see [`open_read_only`](Self::open_read_only))?
+    pub fn is_read_only(&self) -> bool {
+        self.conn
+            .query_row("PRAGMA query_only", [], |r| r.get::<_, i64>(0))
+            .map(|v| v != 0)
+            .unwrap_or(false)
+    }
+
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
-        let db = Self { conn };
+        let db = Self { conn, attachments_override: Default::default() };
         db.init()?;
         Ok(db)
     }
@@ -408,6 +434,10 @@ impl Database {
         self.conn.execute_batch(FTS_SCHEMA)?;
         self.run_migrations()?;
         self.migrate_whiteboards()?;
+        // ── Import / attachments ──
+        self.migrate_attachments()?;
+        self.migrate_import_runs()?;
+        // ── End import ──
         Ok(())
     }
 
@@ -426,6 +456,17 @@ impl Database {
             (3, "CREATE INDEX IF NOT EXISTS idx_pages_title_nocase ON pages(title COLLATE NOCASE);
                  CREATE INDEX IF NOT EXISTS idx_aliases_alias_nocase ON page_aliases(alias COLLATE NOCASE);
                  CREATE INDEX IF NOT EXISTS idx_highlights_block ON highlights(block_id);"),
+            // v4: (a) search matches word PREFIXES while typing; the porter stemmer
+            // broke that (`runn` matched nothing: `running` was indexed as `run`),
+            // so the FTS index is rebuilt with plain unicode61 (accents still
+            // folded). (b) a trashed page whose title is taken by a new page keeps
+            // its original title here, for display and restore.
+            (4, "DROP TABLE IF EXISTS blocks_fts;
+                 CREATE VIRTUAL TABLE blocks_fts USING fts5(
+                     content, content='blocks', content_rowid='rowid',
+                     tokenize='unicode61 remove_diacritics 2');
+                 INSERT INTO blocks_fts(blocks_fts) VALUES('rebuild');
+                 ALTER TABLE trash ADD COLUMN original_title TEXT;"),
         ];
 
         let current: i64 = self
@@ -690,5 +731,32 @@ mod tests {
         assert!(db.get_page_by_title("Outer").unwrap().is_some());
         assert!(db.get_page_by_title("Inner").unwrap().is_none());
         assert!(db.conn.is_autocommit());
+    }
+
+    // v4 migrates an existing v3 database: FTS rebuilt without porter (prefix
+    // search works on existing blocks) and trash gains original_title.
+    #[test]
+    fn test_v4_migration_from_v3() {
+        let db = Database::open_in_memory().unwrap();
+        let p = db.create_page("P", None, false, None, "user").unwrap();
+        db.create_block(&p.id, "running late", None, None, "user").unwrap();
+        db.conn
+            .execute_batch(
+                "DROP TABLE blocks_fts;
+                 CREATE VIRTUAL TABLE blocks_fts USING fts5(content, content='blocks',
+                     content_rowid='rowid', tokenize='porter unicode61');
+                 INSERT INTO blocks_fts(blocks_fts) VALUES('rebuild');
+                 DROP TABLE trash;
+                 CREATE TABLE trash (page_id TEXT PRIMARY KEY REFERENCES pages(id) ON DELETE CASCADE,
+                                     deleted_at TEXT NOT NULL);
+                 PRAGMA user_version = 3;",
+            )
+            .unwrap();
+        assert!(db.search("runn", None).unwrap().is_empty(), "porter index: prefix broken");
+        db.run_migrations().unwrap();
+        assert_eq!(db.search("runn", None).unwrap().len(), 1);
+        db.trash_page(&p.id).unwrap();
+        db.create_page("P", None, false, None, "user").unwrap();
+        assert_eq!(db.list_trash().unwrap()[0].title, "P");
     }
 }

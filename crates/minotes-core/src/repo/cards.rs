@@ -67,6 +67,12 @@ impl Database {
             return Err(Error::NotFound(format!("Block {block_id}")));
         }
 
+        // A block is at most one card: making a card of a block that already is one
+        // returns the existing card (keeping its review history) instead of a duplicate.
+        if let Some(existing) = self.get_card_for_block(block_id)? {
+            return Ok(existing);
+        }
+
         let card = Card {
             id,
             block_id: *block_id,
@@ -103,6 +109,28 @@ impl Database {
 
         self.emit_event("card.created", &card.id, "card", &card, actor)?;
         Ok(card)
+    }
+
+    /// The card made from `block_id`, if any.
+    pub fn get_card_for_block(&self, block_id: &Uuid) -> Result<Option<Card>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, block_id, card_type, due, stability, difficulty, reps, lapses, state, last_review, created_at, updated_at
+             FROM cards WHERE block_id = ?1 ORDER BY created_at ASC LIMIT 1",
+        )?;
+        let mut rows = stmt.query_map([block_id.to_string()], |row| Self::row_to_card(row))?;
+        Ok(rows.next().transpose()?)
+    }
+
+    /// Every card, oldest first (the UI uses this to mark which blocks are cards).
+    pub fn list_cards(&self) -> Result<Vec<Card>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, block_id, card_type, due, stability, difficulty, reps, lapses, state, last_review, created_at, updated_at
+             FROM cards ORDER BY created_at ASC",
+        )?;
+        let cards = stmt
+            .query_map([], |row| Self::row_to_card(row))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(cards)
     }
 
     pub fn get_due_cards(&self, limit: i64) -> Result<Vec<Card>> {
@@ -275,5 +303,31 @@ impl Database {
             created_at: parse_ts(&created_str),
             updated_at: parse_ts(&updated_str),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::db::Database;
+
+    #[test]
+    fn test_create_card_is_idempotent_per_block() {
+        let db = Database::open_in_memory().unwrap();
+        let page = db.create_page("Cards", None, false, None, "user").unwrap();
+        let block = db.create_block(&page.id, "Question?", None, None, "user").unwrap();
+
+        let first = db.create_card(&block.id, "basic", "user").unwrap();
+        let second = db.create_card(&block.id, "basic", "user").unwrap();
+        assert_eq!(first.id, second.id, "second create returns the existing card");
+        assert_eq!(db.list_cards().unwrap().len(), 1);
+        assert_eq!(db.get_card_for_block(&block.id).unwrap().unwrap().id, first.id);
+        assert_eq!(db.get_due_cards(10).unwrap().len(), 1, "a new card is due now");
+
+        db.review_card(&first.id, "good", "user").unwrap();
+        assert!(db.get_due_cards(10).unwrap().is_empty(), "reviewed card is no longer due");
+
+        assert!(db.delete_card(&first.id, "user").unwrap());
+        assert!(db.get_card_for_block(&block.id).unwrap().is_none());
+        assert!(db.list_cards().unwrap().is_empty());
     }
 }

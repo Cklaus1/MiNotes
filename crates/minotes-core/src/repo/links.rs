@@ -43,11 +43,21 @@ impl Database {
         Ok(link)
     }
 
+    /// Links into a page, ONE per source block (a block that links the page twice
+    /// is one backlink), newest first. Blocks on trashed/archived pages are left
+    /// out: the user can't see those pages, so they mustn't surface here.
     pub fn get_backlinks(&self, page_id: &Uuid) -> Result<Vec<Link>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, from_block, to_page, to_block, link_type, created_at
-             FROM links WHERE to_page = ?1 ORDER BY created_at DESC",
-        )?;
+        let mut stmt = self.conn.prepare(&format!(
+            "{}
+             SELECT l.id, l.from_block, l.to_page, l.to_block, l.link_type, l.created_at
+             FROM links l JOIN blocks b ON b.id = l.from_block
+             WHERE l.to_page = ?1
+               AND b.page_id NOT IN (SELECT id FROM hidden_pages)
+               AND l.rowid = (SELECT MIN(l2.rowid) FROM links l2
+                              WHERE l2.from_block = l.from_block AND l2.to_page = l.to_page)
+             ORDER BY l.created_at DESC, l.id",
+            crate::repo::trash::hidden_pages_cte()
+        ))?;
         let rows = stmt.query_map(rusqlite::params![page_id.to_string()], |row| {
             row_to_link(row)
         })?;
@@ -72,15 +82,22 @@ impl Database {
             backlinks.iter().map(|l| l.from_block).collect();
 
         // Search for blocks containing the page title (case-insensitive LIKE)
-        let pattern = format!("%{}%", title.replace('%', "\\%").replace('_', "\\_"));
-        let mut stmt = self.conn.prepare(
-            "SELECT id, page_id, parent_id, position, content, format, collapsed, created_at, updated_at
+        let pattern = format!(
+            "%{}%",
+            title.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+        );
+        // Mentions on trashed/archived pages are hidden like the pages themselves.
+        let mut stmt = self.conn.prepare(&format!(
+            "{}
+             SELECT id, page_id, parent_id, position, content, format, collapsed, created_at, updated_at
              FROM blocks
              WHERE content LIKE ?1 ESCAPE '\\'
                AND page_id != ?2
+               AND page_id NOT IN (SELECT id FROM hidden_pages)
              ORDER BY created_at DESC
              LIMIT 50",
-        )?;
+            crate::repo::trash::hidden_pages_cte()
+        ))?;
         let rows = stmt.query_map(
             rusqlite::params![pattern, page_id.to_string()],
             |row| {
@@ -125,6 +142,67 @@ impl Database {
             }
         }
         Ok(results)
+    }
+
+    /// Backlinks with their source block and its page title, in ONE call (the
+    /// panel used to fetch every source block separately: N+1 IPC round trips).
+    pub fn get_backlink_blocks(&self, page_id: &Uuid) -> Result<Vec<(Link, crate::models::BlockWithPage)>> {
+        let links = self.get_backlinks(page_id)?;
+        let ids: Vec<Uuid> = links.iter().map(|l| l.from_block).collect();
+        let blocks = self.get_blocks_with_pages(&ids)?;
+        let by_id: std::collections::HashMap<Uuid, crate::models::BlockWithPage> =
+            blocks.into_iter().map(|b| (b.block.id, b)).collect();
+        Ok(links
+            .into_iter()
+            .filter_map(|l| by_id.get(&l.from_block).cloned().map(|b| (l, b)))
+            .collect())
+    }
+
+    /// Several blocks by id, each with its page title, in input order; unknown
+    /// ids are skipped. One query regardless of how many ids.
+    pub fn get_blocks_with_pages(&self, ids: &[Uuid]) -> Result<Vec<crate::models::BlockWithPage>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let json = serde_json::to_string(&ids.iter().map(Uuid::to_string).collect::<Vec<_>>())?;
+        let mut stmt = self.conn.prepare(
+            "SELECT b.id, b.page_id, b.parent_id, b.position, b.content, b.format, b.collapsed,
+                    b.created_at, b.updated_at, p.title
+             FROM blocks b JOIN pages p ON p.id = b.page_id
+             WHERE b.id IN (SELECT value FROM json_each(?1))",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![json], |row| {
+            let id_str: String = row.get(0)?;
+            let page_id_str: String = row.get(1)?;
+            let parent_id_str: Option<String> = row.get(2)?;
+            let created_str: String = row.get(7)?;
+            let updated_str: String = row.get(8)?;
+            let ts = |s: &str| {
+                chrono::DateTime::parse_from_rfc3339(s)
+                    .map(|dt| dt.with_timezone(&chrono::Utc))
+                    .unwrap_or_else(|_| chrono::Utc::now())
+            };
+            Ok(crate::models::BlockWithPage {
+                block: crate::models::Block {
+                    id: Uuid::parse_str(&id_str).unwrap_or_default(),
+                    page_id: Uuid::parse_str(&page_id_str).unwrap_or_default(),
+                    parent_id: parent_id_str.and_then(|s| Uuid::parse_str(&s).ok()),
+                    position: row.get(3)?,
+                    content: row.get(4)?,
+                    format: row.get(5)?,
+                    collapsed: row.get::<_, i32>(6)? != 0,
+                    created_at: ts(&created_str),
+                    updated_at: ts(&updated_str),
+                },
+                page_title: row.get(9)?,
+            })
+        })?;
+        let mut by_id = std::collections::HashMap::new();
+        for r in rows {
+            let b = r.map_err(Error::Database)?;
+            by_id.insert(b.block.id, b);
+        }
+        Ok(ids.iter().filter_map(|id| by_id.remove(id)).collect())
     }
 
     pub fn get_forward_links(&self, page_id: &Uuid) -> Result<Vec<Link>> {

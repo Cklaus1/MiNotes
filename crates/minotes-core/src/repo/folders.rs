@@ -13,6 +13,13 @@ pub(crate) const FOLDER_SUBTREE: &str = "sub(id) AS (
     SELECT f.id FROM folders f JOIN sub ON f.parent_id = sub.id
 )";
 
+/// Folder names follow the page-title rule: trimmed, line breaks collapsed to
+/// a space, never blank.
+fn normalize_folder_name(name: &str) -> Result<String> {
+    crate::repo::pages::normalize_name(name)
+        .ok_or_else(|| Error::InvalidInput("Folder name cannot be empty".to_string()))
+}
+
 impl Database {
     pub fn create_folder(
         &self,
@@ -36,6 +43,8 @@ impl Database {
         color: Option<&str>,
         actor: &str,
     ) -> Result<Folder> {
+        let name = normalize_folder_name(name)?;
+        let name = name.as_str();
         let now = Utc::now();
 
         // Auto-position at end of siblings
@@ -105,6 +114,7 @@ impl Database {
     }
 
     pub fn rename_folder(&self, id: &Uuid, new_name: &str, actor: &str) -> Result<Folder> {
+        let new_name = normalize_folder_name(new_name)?;
         let now = Utc::now();
         let count = self.conn.execute(
             "UPDATE folders SET name = ?1, updated_at = ?2 WHERE id = ?3",
@@ -367,5 +377,21 @@ mod tests {
 
         let p = db.get_page(&page.id).unwrap().unwrap();
         assert!(p.folder_id.is_none()); // page survives, just unparented
+    }
+
+    #[test]
+    fn test_folder_names_are_trimmed_and_never_blank() {
+        let db = Database::open_in_memory().unwrap();
+        let f = db.create_folder("  Work\nStuff ", None, None, None, "user").unwrap();
+        assert_eq!(f.name, "Work Stuff");
+        assert_eq!(db.get_folder(&f.id).unwrap().unwrap().name, "Work Stuff");
+        for blank in ["", "  ", "\r\n"] {
+            let e = db.create_folder(blank, None, None, None, "user").unwrap_err().to_string();
+            assert_eq!(e, "Invalid input: Folder name cannot be empty");
+            let e = db.rename_folder(&f.id, blank, "user").unwrap_err().to_string();
+            assert_eq!(e, "Invalid input: Folder name cannot be empty");
+        }
+        assert_eq!(db.rename_folder(&f.id, " Home ", "user").unwrap().name, "Home");
+        assert_eq!(db.get_folder(&f.id).unwrap().unwrap().name, "Home");
     }
 }

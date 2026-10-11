@@ -27,7 +27,8 @@ impl Database {
     pub fn archive_page(&self, page_id: &Uuid) -> Result<()> {
         self.tx(|| {
             let now = Utc::now();
-            self.remove_favorite(page_id)?;
+            // The favourite entry is kept (hidden while archived) so unarchiving
+            // brings the star back.
             self.conn.execute(
                 "INSERT OR IGNORE INTO archive (page_id, archived_at) VALUES (?1, ?2)",
                 rusqlite::params![page_id.to_string(), now.to_rfc3339()],
@@ -53,10 +54,6 @@ impl Database {
             let subtree_pages = format!(
                 "WITH RECURSIVE {FOLDER_SUBTREE} SELECT p.id FROM pages p WHERE p.folder_id IN (SELECT id FROM sub)"
             );
-            self.conn.execute(
-                &format!("DELETE FROM favorites WHERE page_id IN ({subtree_pages})"),
-                rusqlite::params![fid],
-            )?;
             let n = self.conn.execute(
                 &format!(
                     "INSERT OR IGNORE INTO archive (page_id, archived_at)

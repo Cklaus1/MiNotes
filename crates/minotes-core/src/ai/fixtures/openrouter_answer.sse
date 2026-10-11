@@ -1,0 +1,12 @@
+: OPENROUTER PROCESSING
+
+data: {"id":"gen-2","model":"anthropic/claude-opus-x","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"We chose $20 per seat "},"finish_reason":null}]}
+
+data: {"id":"gen-2","model":"anthropic/claude-opus-x","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"[[cite:BLOCK_ID]]."},"finish_reason":null}]}
+
+data: {"id":"gen-2","model":"anthropic/claude-opus-x","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":"stop","native_finish_reason":"end_turn"}]}
+
+data: {"id":"gen-2","model":"anthropic/claude-opus-x","object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":6000,"completion_tokens":20,"total_tokens":6020,"cost":0.0105,"prompt_tokens_details":{"cached_tokens":5000}}}
+
+data: [DONE]
+
