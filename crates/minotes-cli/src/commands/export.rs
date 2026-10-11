@@ -7,13 +7,13 @@ use crate::output::{print_error, print_json, print_message};
 
 #[derive(Subcommand)]
 pub enum ExportCmd {
-    /// Export graph as markdown files
+    /// Export the notebook as markdown files
     Markdown {
         /// Output directory
         #[arg(long, default_value = "./export")]
         output: String,
     },
-    /// Export graph as JSON
+    /// Export the notebook as JSON
     Json,
 }
 

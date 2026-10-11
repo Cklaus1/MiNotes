@@ -143,7 +143,7 @@ export function createImportMockHandlers(m: H): H {
     import_run: async ({ destination, options }: { destination: any; options: any }) => {
       if (!scanned) throw "Scan a source first";
       const { kind, name } = scanned;
-      const original = m.get_current_graph({});
+      const original = m.get_current_notebook({});
       let notebookKey: string | null = null;
       let notebookName: string | null = null;
       if (destination.kind === "new_notebook") {
@@ -153,7 +153,7 @@ export function createImportMockHandlers(m: H): H {
         const nb = m.create_notebook({ name: nbName });
         notebookKey = nb.key;
         notebookName = nb.name;
-        m.switch_graph({ name: nb.key });
+        m.switch_notebook({ key: nb.key });
       }
       const runId = `run-${Date.now().toString(36)}`;
       const run = { id: runId, pages: [] as string[], folders: [] as string[], hashes: new Map<string, string>(), status: "done", started_at: new Date().toISOString(), source: kind, notebook: notebookKey ?? original };
@@ -217,7 +217,7 @@ export function createImportMockHandlers(m: H): H {
           notebook_key: notebookKey, notebook_name: notebookName,
         };
       } finally {
-        if (notebookKey) m.switch_graph({ name: original });
+        if (notebookKey) m.switch_notebook({ key: original });
       }
     },
     import_undo: ({ runId, keepEdited }: { runId: string; keepEdited?: boolean }) => {
@@ -236,7 +236,7 @@ export function createImportMockHandlers(m: H): H {
       run.status = edited.length ? "partially_undone" : "undone";
       return { ...base, undone: true };
     },
-    import_runs: () => runs.filter((r) => r.notebook === m.get_current_graph({})).map((r) => ({
+    import_runs: () => runs.filter((r) => r.notebook === m.get_current_notebook({})).map((r) => ({
       id: r.id, source: r.source, origin: "", source_path: "", started_at: r.started_at, finished_at: r.started_at, status: r.status, report_page: r.pages[r.pages.length - 1], pages: r.pages.length,
     })),
   };

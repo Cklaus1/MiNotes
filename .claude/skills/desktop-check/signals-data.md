@@ -1,7 +1,7 @@
 # Data signals: parity, scale, visual regression
 
 Three tools that produce evidence a single journey run can't: where the browser
-tests' mock lies, how the real app behaves as the graph grows, and whether a
+tests' mock lies, how the real app behaves as the notebook grows, and whether a
 view's pixels changed. Each writes markdown into `$DESKTOP_CHECK_DIR/signals/`,
 is re-runnable and non-interactive, and exits 0 unless the tool itself broke
 (findings are not failures). Give each run its own `DESKTOP_CHECK_DIR`,
@@ -70,7 +70,7 @@ per block). Then, median of 3:
 
 **Read the output** (`signals/scale.md`; raw `scale-<S>.tsv`): one row per metric,
 a column per size, the L/S ratio and flags — **OVER 1 s**, **SUPER-LINEAR** (grew
->1.3× faster than the block count), **GROWS** (should not depend on graph size but
+>1.3× faster than the block count), **GROWS** (should not depend on notebook size but
 got >1.5× slower). Xvfb is software rendering: read across a row, never as
 absolute numbers. `scale-notes.md` (appended to the report) holds the code reading
 behind each call-out — refresh it when the numbers move.

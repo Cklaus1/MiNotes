@@ -6,6 +6,7 @@ pub mod graph;
 pub mod import;
 pub mod journal;
 pub mod links;
+pub mod notebook;
 pub mod page;
 pub mod property;
 pub mod query;

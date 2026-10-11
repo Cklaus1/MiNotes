@@ -3,7 +3,7 @@
 //! notebooks…", the database file watcher, the markdown-mirror worker, and the
 //! mirror-folder watcher that imports edits made outside MiNotes (Phase 4).
 //!
-//! Lock order everywhere: `mirror::FS_LOCK` → `AppState.db` → `current_graph`
+//! Lock order everywhere: `mirror::FS_LOCK` → `AppState.db` → `current_notebook`
 //! → `session` → `virtual_journals`.
 
 use std::collections::BTreeSet;
@@ -598,13 +598,13 @@ pub fn switch_to(app: &AppHandle, state: &AppState, nb: Notebook, force: bool) -
         if old.key != nb.key && !old_ro {
             notebook::release_lock(&old.lock_path());
         }
-        *state.current_graph.lock().map_err(|e| e.to_string())? = nb.key.clone();
+        *state.current_notebook.lock().map_err(|e| e.to_string())? = nb.key.clone();
         let mut s = state.session.lock().map_err(|e| e.to_string())?;
         *s = Session { notebook: nb.clone(), held_by, notice: None };
         state.virtual_journals.lock().map_err(|e| e.to_string())?.clear();
         session_info(&s)
     };
-    crate::set_active_graph_name(&nb.key);
+    crate::set_active_notebook_key(&nb.key);
     notebook::touch_last_opened(&nb);
     if let Some(w) = app.try_state::<DbWatch>() {
         w.watch(&nb.db_path());
@@ -700,14 +700,14 @@ pub fn rename_notebook(state: State<'_, AppState>, key: String, name: String) ->
 /// Delete a notebook (refused for the open one). The markdown copy is kept.
 #[tauri::command]
 pub fn delete_notebook(state: State<'_, AppState>, key: String) -> Result<(), String> {
-    let current = state.current_graph.lock().map_err(|e| e.to_string())?.clone();
+    let current = state.current_notebook.lock().map_err(|e| e.to_string())?.clone();
     notebook::delete(&key, &current).map_err(|e| e.to_string())
 }
 
 /// Remove an (unavailable) folder notebook from the list without touching files.
 #[tauri::command]
 pub fn forget_notebook(state: State<'_, AppState>, key: String) -> Result<(), String> {
-    let current = state.current_graph.lock().map_err(|e| e.to_string())?.clone();
+    let current = state.current_notebook.lock().map_err(|e| e.to_string())?.clone();
     if current == key {
         return Err("Cannot remove the open notebook from the list".into());
     }
@@ -751,11 +751,11 @@ pub fn move_notebook_to_folder(app: AppHandle, state: State<'_, AppState>, path:
         };
         *db = new_db; // closes the old database before its files go
         notebook::release_lock(&src.lock_path());
-        *state.current_graph.lock().map_err(|e| e.to_string())? = new_nb.key.clone();
+        *state.current_notebook.lock().map_err(|e| e.to_string())? = new_nb.key.clone();
         *state.session.lock().map_err(|e| e.to_string())? =
             Session { notebook: new_nb.clone(), held_by: None, notice: None };
         state.virtual_journals.lock().map_err(|e| e.to_string())?.clear();
-        crate::set_active_graph_name(&new_nb.key);
+        crate::set_active_notebook_key(&new_nb.key);
         if let Err(e) = prepared.finish() {
             eprintln!("[minotes] moved, but could not remove all old files: {e}");
         }
@@ -803,7 +803,7 @@ pub fn git_sync_resolve_deletions(app: AppHandle, state: State<'_, AppState>, ac
         "keep" => false,
         _ => return Err(format!("Unknown action '{action}'")),
     };
-    let graph = state.current_graph.lock().map_err(|e| e.to_string())?.clone();
+    let graph = state.current_notebook.lock().map_err(|e| e.to_string())?.clone();
     let n = {
         let _fs = FS_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let db = state.db.lock().map_err(|e| e.to_string())?;

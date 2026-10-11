@@ -8,7 +8,7 @@ pub mod export;
 pub mod favorites;
 pub mod folders;
 pub mod graph;
-pub mod graphs;
+pub mod legacy_notebooks;
 pub mod links;
 pub mod pages;
 pub mod properties;

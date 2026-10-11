@@ -68,14 +68,14 @@ phases. The database lock is held only in phases 1 and 3.
 Robustness built in: a stale rebase is aborted at the start of every cycle. Every
 git call has a 120 s watchdog and never prompts (`GIT_TERMINAL_PROMPT=0`, no
 editor). Stalled HTTP transfers are aborted. Paths are NUL-separated, so non-ASCII
-names are safe. Tauri commands are async and check that the active graph is still
-the one being synced, so switching graphs mid-sync aborts instead of importing
+names are safe. Tauri commands are async and check that the active notebook is still
+the one being synced, so switching notebooks mid-sync aborts instead of importing
 into the wrong notebook.
 
 ### 3.2 Files on disk
 
 ```
-~/MiNotes_Sync[-<graph>]/          # one repo per graph; default graph keeps ~/MiNotes_Sync
+~/MiNotes_Sync[-<name>]/           # one repo per notebook; "default" keeps ~/MiNotes_Sync
 ├── .gitignore                     # .minotes-trash/, export manifest, OS junk
 ├── Getting Started.md
 ├── Project Alpha/
@@ -135,7 +135,7 @@ of sync. When it ships:
 
 - **Sync stops owning the export.** Phase 1 of the cycle becomes "flush the
   mirror, then commit". Git sync is "the mirror folder is also a git repo".
-- Sync dir = the mirror folder. Legacy notebooks keep `~/MiNotes_Sync[-<graph>]`.
+- Sync dir = the mirror folder. Legacy notebooks keep `~/MiNotes_Sync[-<name>]`.
   Notebooks in a chosen folder use `<notebook>/notes/`. "Move notebook to a
   folder…" carries `.git` along.
 - Outside edits (notebooks Phase 4) and pulled changes go through the **same**
@@ -169,8 +169,8 @@ only file count, sizes and timing.
 | Whiteboard sidecars, newer wins | Done | `repo/export.rs` (`export_whiteboards`), `repo/sync.rs` |
 | Conflict copies as separate pages (fresh ids) | Done | `git_cmd.rs` (`auto_resolve_conflicts`), `repo/sync.rs` (`rewrite_as_conflict_copy`) |
 | Upstream deletions → trash; mass-delete guard | Done in core, **not surfaced** | `repo/sync.rs` (`deletion_allowed`) |
-| Per-graph sync dirs and config | Done | `sync_manager.rs` (`sync_dir_for_graph`) |
-| Tauri commands (async, graph-switch safe) | Done | `minotes-app/src-tauri/src/lib.rs` (`git_sync*`) |
+| Per-notebook sync dirs and config | Done | `sync_manager.rs` (`sync_dir_for_notebook`) |
+| Tauri commands (async, notebook-switch safe) | Done | `minotes-app/src-tauri/src/lib.rs` (`git_sync*`) |
 | Triggers: open, focus, 30 s after save | Done | `minotes-app/src/App.tsx` (`triggerSync`) |
 | Settings toggle, remote/branch (advanced), last sync, error + retry | Done | `components/SettingsPanel.tsx` |
 | Status-bar indicator (synced / syncing / error) | Done | `App.tsx` → status bar |

@@ -200,8 +200,9 @@ pub struct Template {
     pub updated_at: DateTime<Utc>,
 }
 
+/// A legacy notebook database (`~/.minotes/<name>.db`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GraphInfo {
+pub struct LegacyNotebookInfo {
     pub name: String,
     pub path: String,
     pub size_bytes: u64,

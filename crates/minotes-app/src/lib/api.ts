@@ -442,33 +442,19 @@ export const disablePlugin = (name: string) =>
 export const uninstallPlugin = (name: string) =>
   invoke<boolean>("uninstall_plugin", { name });
 
-// Multi-Graph Management (F-020)
-export interface GraphInfo {
-  name: string;
-  path: string;
-  size_bytes: number;
-  modified_at: string;
-}
+// ── Notebooks ──
 
-export const listGraphs = () =>
-  invoke<GraphInfo[]>("list_graphs");
+/** Open another notebook (by key). UI code should call lib/notebooks.switchNotebook,
+ *  which also resets per-notebook UI state. */
+export const switchNotebook = (key: string) =>
+  invoke<boolean>("switch_notebook", { key });
 
-export const switchGraph = (name: string) =>
-  invoke<boolean>("switch_graph", { name });
-
-export const createGraph = (name: string) =>
-  invoke<GraphInfo>("create_graph_cmd", { name });
-
-export const deleteGraph = (name: string) =>
-  invoke<boolean>("delete_graph_cmd", { name });
-
-export const getCurrentGraph = () =>
-  invoke<string>("get_current_graph");
-
-// ── Notebooks (UI word; "graph" in commands) ──
+/** The open notebook's key. */
+export const getCurrentNotebook = () =>
+  invoke<string>("get_current_notebook");
 
 export interface NotebookInfo {
-  /** What switchGraph() takes: a legacy graph name, or a folder notebook's id. */
+  /** What switchNotebook() takes: a legacy notebook's name, or a folder notebook's id. */
   key: string;
   name: string;
   /** "legacy" (~/.minotes/<name>.db) or "folder" (a notebook folder). */

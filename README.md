@@ -132,7 +132,12 @@ minotes journal create "Quick note"
 minotes folder create "Projects"
 minotes folder list
 
-# Graph & stats
+# Notebooks
+minotes notebook list
+minotes notebook create "Research"            # ~/MiNotes/Research
+minotes --notebook "Research" page list       # name, notebook folder or .db path
+
+# Stats & links
 minotes stats
 minotes -f text stats
 minotes backlinks "Project Alpha"
@@ -182,7 +187,7 @@ cargo test
 
 ## Data Storage
 
-All data is stored locally in SQLite at `~/.minotes/default.db`. No cloud services, no telemetry, no external API calls. Multi-graph support allows switching between separate databases.
+All data is stored locally in SQLite at `~/.minotes/default.db`. No cloud services, no telemetry, no external API calls. Multiple notebooks (separate databases) are supported: switch from the sidebar header, or `minotes --notebook <name> …` / `minotes notebook list|create` on the CLI.
 
 ## PRDs & Roadmap
 

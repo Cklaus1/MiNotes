@@ -3,16 +3,11 @@ import * as api from "../lib/api";
 import { NOTEBOOKS_CHANGED, NOTEBOOK_SWITCHED } from "../lib/notebooks";
 import "./notebooks.css";
 
-interface Props {
-  /** Kept for the Graph view's API; switching now happens in the sidebar. */
-  onSwitch?: () => void;
-}
-
 /**
  * Read-only label of the open notebook in the Graph view toolbar. Notebooks are
  * switched, created and managed from the sidebar header.
  */
-export default function GraphSwitcher(_props: Props) {
+export default function NotebookLabel() {
   const [name, setName] = useState<string>("");
 
   useEffect(() => {

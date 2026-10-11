@@ -10,26 +10,25 @@ mod output;
 
 use commands::{
     block::BlockCmd, export::{ExportCmd, ImportCmd}, folder::FolderCmd,
-    graph::GraphCmd, journal::JournalCmd, page::PageCmd, property::PropertyCmd,
+    graph::GraphCmd, journal::JournalCmd, notebook::NotebookCmd, page::PageCmd, property::PropertyCmd,
 };
 use output::Format;
 
 #[derive(Parser)]
 #[command(name = "minotes", version, about = "Local-first knowledge management CLI")]
 struct Cli {
-    /// Path to the graph database file, or to a notebook folder (the one that
-    /// holds notebook.minotes). Defaults to the desktop app's active notebook.
-    /// A leading ~ is expanded.
-    #[arg(long, global = true)]
-    graph: Option<String>,
-
-    /// Open a notebook by its name (as listed by `minotes notebooks`), resolved
-    /// through ~/.minotes/notebooks.json and ~/.minotes/*.db.
-    #[arg(long, global = true, conflicts_with = "graph")]
+    /// Notebook to use: a notebook name (as listed by `minotes notebook list`),
+    /// a notebook folder (the one holding notebook.minotes), or a database file
+    /// path. Defaults to the desktop app's open notebook. A leading ~ is expanded.
+    #[arg(long, short = 'n', global = true, value_name = "NAME|FOLDER|PATH")]
     notebook: Option<String>,
 
-    /// Create the --graph database if it does not exist (otherwise a missing
-    /// explicit path is an error, to catch typos)
+    /// Deprecated alias for `--notebook <path>`.
+    #[arg(long, global = true, hide = true, conflicts_with = "notebook")]
+    graph: Option<String>,
+
+    /// Create the --notebook database file if it does not exist (otherwise a
+    /// missing explicit path is an error, to catch typos)
     #[arg(long)]
     create: bool,
 
@@ -44,6 +43,10 @@ struct Cli {
 
     #[command(subcommand)]
     command: Commands,
+
+    /// Set when the value in `notebook` came from the deprecated `--graph`.
+    #[arg(skip)]
+    graph_alias: bool,
 }
 
 #[derive(Subcommand)]
@@ -114,17 +117,17 @@ enum Commands {
         /// Page title or UUID
         id: String,
     },
-    /// Graph data and analysis
+    /// Link graph of pages: data, neighbors, statistics
     Graph {
         #[command(subcommand)]
         cmd: GraphCmd,
     },
-    /// Export graph data
+    /// Export the notebook
     Export {
         #[command(subcommand)]
         cmd: ExportCmd,
     },
-    /// Import data into graph
+    /// Import into a notebook (Obsidian, Evernote, markdown)
     Import {
         #[command(subcommand)]
         cmd: ImportCmd,
@@ -143,10 +146,16 @@ enum Commands {
     },
     /// Rebuild the full-text search index
     Reindex,
-    /// Show graph statistics
+    /// Show notebook statistics (pages, blocks, links, …)
     Stats,
-    /// List known notebooks (name, kind, location, availability)
-    Notebooks,
+    /// Manage notebooks (list, current, create, open, rename, delete)
+    ///
+    /// `minotes notebooks` (the old spelling) lists them.
+    #[command(alias = "notebooks")]
+    Notebook {
+        #[command(subcommand)]
+        cmd: Option<NotebookCmd>,
+    },
     /// Batch create blocks from stdin (JSON array)
     #[command(name = "batch-create")]
     BatchCreate {
@@ -156,10 +165,18 @@ enum Commands {
 }
 
 fn main() {
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
 
-    if let Commands::Notebooks = cli.command {
-        process::exit(run_notebooks(&cli.format));
+    if let Some(path) = cli.graph.take() {
+        // stderr only: stdout stays clean JSON.
+        eprintln!("minotes: --graph is deprecated; use --notebook <name|folder|path>");
+        // The old flag always meant a path, never a name.
+        cli.notebook = Some(path);
+        cli.graph_alias = true;
+    }
+
+    if let Commands::Notebook { cmd } = cli.command {
+        process::exit(commands::notebook::run(cmd, &cli.format));
     }
 
     // ── Import: sources that may create a new notebook run before any DB is opened ──
@@ -173,12 +190,8 @@ fn main() {
             _ => None,
         };
         if let Some((kind, paths, parent, args)) = job {
-            let explicit = if cli.notebook.is_some() || cli.graph.is_some() {
-                let r = match cli.notebook.as_deref() {
-                    Some(name) => resolve_notebook_name(name),
-                    None => resolve_graph_path(cli.graph.as_deref(), cli.create),
-                };
-                match r {
+            let explicit = if cli.notebook.is_some() {
+                match resolve_db(&cli) {
                     Ok(p) => Some(p),
                     Err(msg) => {
                         output::print_error(&msg);
@@ -193,11 +206,7 @@ fn main() {
     }
     // ── End import ──
 
-    let resolved = match cli.notebook.as_deref() {
-        Some(name) => resolve_notebook_name(name),
-        None => resolve_graph_path(cli.graph.as_deref(), cli.create),
-    };
-    let graph_path = match resolved {
+    let db_path = match resolve_db(&cli) {
         Ok(p) => p,
         Err(msg) => {
             output::print_error(&msg);
@@ -205,7 +214,7 @@ fn main() {
         }
     };
 
-    let db = match Database::open(&graph_path) {
+    let db = match Database::open(&db_path) {
         Ok(db) => db,
         Err(e) => {
             output::print_error(&format!("Failed to open database: {e}"));
@@ -246,114 +255,19 @@ fn main() {
         Commands::Reindex => run_reindex(&db),
         Commands::Stats => run_stats(&db, fmt),
         Commands::BatchCreate { page } => run_batch_create(&db, &page, &cli.actor),
-        Commands::Notebooks => unreachable!(),
+        Commands::Notebook { .. } => unreachable!(),
     };
 
     process::exit(exit_code);
 }
 
-fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME").filter(|h| !h.is_empty()).map(PathBuf::from)
-}
-
-/// Expand a leading `~` / `~/` to the home directory.
-fn expand_tilde(p: &str) -> PathBuf {
-    if p == "~" {
-        if let Some(h) = home_dir() { return h; }
-    } else if let Some(rest) = p.strip_prefix("~/") {
-        if let Some(h) = home_dir() { return h.join(rest); }
+/// The database the command opens: `--notebook` (or the deprecated `--graph`,
+/// which always meant a path), else the desktop app's open notebook.
+fn resolve_db(cli: &Cli) -> Result<PathBuf, String> {
+    match (cli.notebook.as_deref(), cli.graph_alias) {
+        (Some(p), true) => commands::notebook::resolve_path(p, cli.create),
+        (sel, _) => commands::notebook::resolve_selector(sel, cli.create),
     }
-    PathBuf::from(p)
-}
-
-/// The desktop app's active notebook database: `~/.minotes/active_graph` holds
-/// a legacy name (→ `~/.minotes/<name>.db`) or a folder notebook's id (→
-/// `<folder>/notebook.minotes`, via the registry). Default "default".
-fn default_graph_path() -> Result<(PathBuf, bool), String> {
-    let home = home_dir().ok_or("HOME is not set; pass --graph <path>")?;
-    let base = home.join(".minotes");
-    let key = std::fs::read_to_string(base.join("active_graph"))
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "default".to_string());
-    match minotes_core::notebook::resolve(&key) {
-        Ok(nb) if nb.is_folder() => {
-            if !nb.available() {
-                return Err(format!(
-                    "The app's notebook '{}' is unavailable ({} not found)",
-                    nb.name,
-                    nb.db_path().display()
-                ));
-            }
-            Ok((nb.db_path(), false))
-        }
-        _ => Ok((base.join(format!("{key}.db")), true)),
-    }
-}
-
-fn resolve_notebook_name(name: &str) -> Result<PathBuf, String> {
-    let nb = minotes_core::notebook::find_by_name(name).map_err(|e| e.to_string())?;
-    if !nb.available() {
-        return Err(format!("Notebook '{}' is unavailable ({} not found)", nb.name, nb.db_path().display()));
-    }
-    Ok(nb.db_path())
-}
-
-/// Resolve which DB file to open. The default (app) graph is created on
-/// demand, like the app does (legacy notebooks only — a folder notebook is never
-/// silently recreated); an explicit --graph path must already exist unless
-/// --create is given. A notebook folder means its notebook.minotes.
-fn resolve_graph_path(explicit: Option<&str>, create: bool) -> Result<PathBuf, String> {
-    let (path, may_create) = match explicit {
-        Some(p) => {
-            let path = expand_tilde(p);
-            if path.is_dir() {
-                if !path.join(minotes_core::notebook::DB_FILE).is_file() {
-                    return Err(format!(
-                        "{} is a folder but not a MiNotes notebook (no {} inside)",
-                        path.display(),
-                        minotes_core::notebook::DB_FILE
-                    ));
-                }
-                return Ok(path.join(minotes_core::notebook::DB_FILE));
-            }
-            (path, create)
-        }
-        None => default_graph_path()?,
-    };
-    if !path.exists() {
-        if !may_create {
-            return Err(format!(
-                "Graph database not found: {} (pass --create to create a new graph)",
-                path.display()
-            ));
-        }
-        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("Cannot create directory {}: {e}", parent.display()))?;
-        }
-    }
-    Ok(path)
-}
-
-fn run_notebooks(fmt: &Format) -> i32 {
-    let list = minotes_core::notebook::list();
-    match fmt {
-        Format::Text | Format::Md => {
-            for n in &list {
-                println!(
-                    "{}\t{}\t{}{}",
-                    n.name,
-                    n.kind,
-                    n.path,
-                    if n.available { "" } else { "\t(unavailable)" }
-                );
-            }
-        }
-        _ => output::print_json(&serde_json::json!({ "notebooks": list, "count": list.len() })),
-    }
-    0
 }
 
 fn run_reindex(db: &Database) -> i32 {

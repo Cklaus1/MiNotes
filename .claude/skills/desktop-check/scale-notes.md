@@ -4,7 +4,7 @@ Measured on Xvfb/software rendering, debug build: compare across sizes only.
 
 1. **Opening a 2,000-block page freezes the UI for ~21–24 s; leaving it, ~12–14 s.**
    One uninterrupted main-thread stall (longest gap between two `setTimeout(0)`
-   polls ≈ the whole duration), independent of graph size. `PageView.tsx` renders
+   polls ≈ the whole duration), independent of notebook size. `PageView.tsx` renders
    `filteredVisibleBlocks.map(block => <BlockItem …>)` with no windowing, and
    every `BlockItem` creates its own TipTap/ProseMirror editor (`useBlockEditor` →
    `useEditor`): 2,000 editors, ~15–18k DOM nodes. Leaving destroys them all.
@@ -34,10 +34,10 @@ Measured on Xvfb/software rendering, debug build: compare across sizes only.
    (`block_count`, `link_count`) over unindexed-by-page scans. Small in absolute
    terms; the graph view itself drops to 42 fps at 1,000 nodes while the force
    layout runs.
-6. **Opening a small page gets slower with graph size** (90 → 159 ms): the open
+6. **Opening a small page gets slower with notebook size** (90 → 159 ms): the open
    path issues ~25–31 IPC calls (11 `get_properties` for 10 blocks, `list_pages`
    ×2, `get_folder_tree`, `get_pending_todo_count`, `list_trash`, `list_archived`…,
-   i.e. sidebar refreshes ride along with navigation); the whole-graph ones
+   i.e. sidebar refreshes ride along with navigation); the whole-notebook ones
    (`list_pages`, `get_folder_tree`, `get_pending_todo_count` — 9/10/24 ms at L)
    are what grow. `get_pending_todo_count` scans every block's text in Rust.
 7. **Cold start is flat (~2 s to a stable screen)** once launched on a private

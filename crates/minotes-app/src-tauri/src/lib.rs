@@ -3,9 +3,8 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use minotes_core::db::Database;
-use minotes_core::models::{Block, BlockWithPage, Card, CssSnippet, Folder, GraphInfo, Highlight, Page, PageTree, Plugin, Property, RestoreBlock, SrsStats, SyncStatus, Template, VersionInfo};
+use minotes_core::models::{Block, BlockWithPage, Card, CssSnippet, Folder, Highlight, Page, PageTree, Plugin, Property, RestoreBlock, SrsStats, SyncStatus, Template, VersionInfo};
 use minotes_core::repo::graph::GraphStats;
-use minotes_core::repo::graphs;
 use minotes_core::repo::archive::ArchiveItem;
 use minotes_core::repo::trash::TrashItem;
 use minotes_core::sync_manager::{self, GitSyncResult, GitSyncStatus};
@@ -20,8 +19,8 @@ mod import_commands;
 
 pub(crate) struct AppState {
     pub(crate) db: Mutex<Database>,
-    /// Key of the open notebook (legacy graph name, or a folder notebook's id).
-    pub(crate) current_graph: Mutex<String>,
+    /// Key of the open notebook (legacy notebook name, or a folder notebook's id).
+    pub(crate) current_notebook: Mutex<String>,
     /// The open notebook: location, lock / read-only state, startup notice.
     pub(crate) session: Mutex<notebooks::Session>,
     /// Journal pages shown but not yet written ("virtual"): date -> the id the
@@ -60,23 +59,25 @@ fn base_dir() -> PathBuf {
     dir
 }
 
-// Bug #16: the active graph selection must survive restarts. Persist the name to a
+// Bug #16: the active notebook selection must survive restarts. Persist its key to a
 // small file in the data dir; read it at startup so we reopen the correct DB.
-fn active_graph_file() -> PathBuf {
+// The file keeps its historical name `active_graph` (the CLI reads it too).
+fn active_notebook_file() -> PathBuf {
     base_dir().join("active_graph")
 }
 
-fn active_graph_name() -> String {
-    std::fs::read_to_string(active_graph_file())
+fn active_notebook_key() -> String {
+    std::fs::read_to_string(active_notebook_file())
         .ok()
         .map(|s| s.trim().to_string())
         // A tampered active_graph file must not steer startup outside the data dir.
-        .filter(|s| security::validate_graph_name(s).is_ok())
+        .filter(|s| security::validate_notebook_key(s).is_ok())
         .unwrap_or_else(|| "default".to_string())
 }
 
-pub(crate) fn set_active_graph_name(name: &str) {
-    let _ = std::fs::write(active_graph_file(), name);
+/// Persist the open notebook's key.
+pub(crate) fn set_active_notebook_key(key: &str) {
+    let _ = std::fs::write(active_notebook_file(), key);
 }
 
 fn dirs_next() -> Option<PathBuf> {
@@ -753,25 +754,19 @@ fn uninstall_plugin(state: State<'_, AppState>, name: String) -> Result<bool, St
     db.uninstall_plugin(&name).map_err(|e| e.to_string())
 }
 
-// ── Multi-Graph Management (F-020) ──
+// ── Switching notebooks (management commands live in notebooks.rs) ──
 
 #[tauri::command]
-fn list_graphs() -> Result<Vec<GraphInfo>, String> {
-    let dir = base_dir();
-    graphs::list_graphs(&dir).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn switch_graph(app: tauri::AppHandle, state: State<'_, AppState>, name: String) -> Result<bool, String> {
-    // SECURITY: same validation as create_graph — `../../x` must not open/migrate an
-    // arbitrary .db outside the data dir. (Folder notebook keys are registry ids.)
-    security::validate_graph_name(&name)?;
-    let nb = minotes_core::notebook::resolve(&name).map_err(|e| e.to_string())?;
+fn switch_notebook(app: tauri::AppHandle, state: State<'_, AppState>, key: String) -> Result<bool, String> {
+    // SECURITY: `../../x` must not open/migrate an arbitrary .db outside the data
+    // dir. (Folder notebook keys are registry ids.)
+    security::validate_notebook_key(&key)?;
+    let nb = minotes_core::notebook::resolve(&key).map_err(|e| e.to_string())?;
     if !nb.available() {
         return Err(if nb.is_folder() {
             format!("Notebook \u{201c}{}\u{201d} is unavailable: its folder was not found", nb.name)
         } else {
-            format!("Graph '{name}' does not exist")
+            format!("Notebook '{key}' does not exist")
         });
     }
     // Bug #16: switch_to persists the selection so it survives a restart.
@@ -780,28 +775,8 @@ fn switch_graph(app: tauri::AppHandle, state: State<'_, AppState>, name: String)
 }
 
 #[tauri::command]
-fn create_graph_cmd(name: String) -> Result<GraphInfo, String> {
-    let dir = base_dir();
-    graphs::create_graph(&dir, &name).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn delete_graph_cmd(state: State<'_, AppState>, name: String) -> Result<bool, String> {
-    security::validate_graph_name(&name)?;
-    // Prevent deleting the currently active graph
-    let current = state.current_graph.lock().map_err(|e| e.to_string())?;
-    if *current == name {
-        return Err("Cannot delete the currently active graph. Switch to another graph first.".to_string());
-    }
-    drop(current);
-
-    let dir = base_dir();
-    graphs::delete_graph(&dir, &name).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn get_current_graph(state: State<'_, AppState>) -> Result<String, String> {
-    let current = state.current_graph.lock().map_err(|e| e.to_string())?;
+fn get_current_notebook(state: State<'_, AppState>) -> Result<String, String> {
+    let current = state.current_notebook.lock().map_err(|e| e.to_string())?;
     Ok(current.clone())
 }
 
@@ -1368,29 +1343,29 @@ fn empty_trash(state: State<'_, AppState>) -> Result<u32, String> {
 // These commands run on Tauri's async pool (`#[tauri::command(async)]`), not the
 // main thread, so git network I/O never freezes the UI. The DB mutex is taken
 // only around the DB phases (export / import) — never across pull/push — and
-// every lock re-checks that the graph being synced is still the active one, so a
-// graph switch mid-sync can't import graph A's files into graph B.
+// every lock re-checks that the notebook being synced is still the active one, so a
+// notebook switch mid-sync can't import notebook A's files into notebook B.
 
-fn current_graph_name(state: &AppState) -> Result<String, String> {
-    state.current_graph.lock().map(|g| g.clone()).map_err(|e| e.to_string())
+fn current_notebook_key(state: &AppState) -> Result<String, String> {
+    state.current_notebook.lock().map(|g| g.clone()).map_err(|e| e.to_string())
 }
 
-fn lock_db_for_graph<'a>(
+fn lock_db_for_notebook<'a>(
     state: &'a AppState,
-    graph: &str,
+    key: &str,
 ) -> minotes_core::error::Result<std::sync::MutexGuard<'a, Database>> {
     let db = state
         .db
         .lock()
         .map_err(|e| minotes_core::error::Error::Git(format!("DB lock poisoned: {e}")))?;
     let current = state
-        .current_graph
+        .current_notebook
         .lock()
-        .map_err(|e| minotes_core::error::Error::Git(format!("Graph lock poisoned: {e}")))?
+        .map_err(|e| minotes_core::error::Error::Git(format!("Notebook lock poisoned: {e}")))?
         .clone();
-    if current != graph {
+    if current != key {
         return Err(minotes_core::error::Error::Git(format!(
-            "Active graph changed from '{graph}' to '{current}' during sync; aborted"
+            "Active notebook changed from '{key}' to '{current}' during sync; aborted"
         )));
     }
     Ok(db)
@@ -1404,15 +1379,15 @@ fn git_available() -> bool {
 #[tauri::command(async)]
 fn git_sync_enable(state: State<'_, AppState>) -> Result<GitSyncStatus, String> {
     refuse_read_only(&state)?;
-    let graph = current_graph_name(&state)?;
-    sync_manager::enable_sync_with(&graph, || lock_db_for_graph(&state, &graph))
+    let key = current_notebook_key(&state)?;
+    sync_manager::enable_sync_with(&key, || lock_db_for_notebook(&state, &key))
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command(async)]
 fn git_sync_disable(state: State<'_, AppState>) -> Result<(), String> {
-    let graph = current_graph_name(&state)?;
-    sync_manager::disable_sync(&graph).map_err(|e| e.to_string())
+    let key = current_notebook_key(&state)?;
+    sync_manager::disable_sync(&key).map_err(|e| e.to_string())
 }
 
 fn refuse_read_only(state: &AppState) -> Result<(), String> {
@@ -1425,17 +1400,17 @@ fn refuse_read_only(state: &AppState) -> Result<(), String> {
 #[tauri::command(async)]
 fn git_sync(state: State<'_, AppState>) -> Result<GitSyncResult, String> {
     refuse_read_only(&state)?;
-    let graph = current_graph_name(&state)?;
+    let key = current_notebook_key(&state)?;
     // Export (DB lock) → pull/push (no lock) → import only if the pull brought
     // remote commits (DB lock; pages edited during the network phase are kept).
-    sync_manager::full_sync_with(&graph, || lock_db_for_graph(&state, &graph))
+    sync_manager::full_sync_with(&key, || lock_db_for_notebook(&state, &key))
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command(async)]
 fn git_sync_status(state: State<'_, AppState>) -> Result<GitSyncStatus, String> {
-    let graph = current_graph_name(&state)?;
-    sync_manager::get_sync_status(&graph).map_err(|e| e.to_string())
+    let key = current_notebook_key(&state)?;
+    sync_manager::get_sync_status(&key).map_err(|e| e.to_string())
 }
 
 /// Count pending TODOs across all pages.
@@ -1544,7 +1519,7 @@ fn get_properties_batch(
 /// replacement in the missing folder's place).
 fn startup_notebook() -> (minotes_core::notebook::Notebook, Option<String>) {
     use minotes_core::notebook::{self, Notebook};
-    let key = active_graph_name();
+    let key = active_notebook_key();
     match notebook::resolve(&key) {
         Ok(nb) if !nb.is_folder() || nb.available() => (nb, None),
         Ok(nb) => (
@@ -1598,7 +1573,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState {
             db: Mutex::new(db),
-            current_graph: Mutex::new(startup_key),
+            current_notebook: Mutex::new(startup_key),
             session: Mutex::new(notebooks::Session { notebook: nb, held_by, notice }),
             virtual_journals: Mutex::new(HashMap::new()),
         })
@@ -1656,11 +1631,8 @@ pub fn run() {
             enable_plugin,
             disable_plugin,
             uninstall_plugin,
-            list_graphs,
-            switch_graph,
-            create_graph_cmd,
-            delete_graph_cmd,
-            get_current_graph,
+            switch_notebook,
+            get_current_notebook,
             clip_content,
             create_highlight,
             get_highlights,

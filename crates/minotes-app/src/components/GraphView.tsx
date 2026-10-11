@@ -11,12 +11,11 @@ import {
   type SimulationLinkDatum,
 } from "d3-force";
 import * as api from "../lib/api";
-import GraphSwitcher from "./GraphSwitcher";
+import NotebookLabel from "./NotebookLabel";
 
 interface Props {
   onPageClick: (id: string) => void;
   onClose: () => void;
-  onGraphSwitch: () => void;
 }
 
 interface SimNode extends SimulationNodeDatum {
@@ -64,7 +63,7 @@ function readHidePref(): boolean | null {
   } catch { return null; }
 }
 
-export default function GraphView({ onPageClick, onClose, onGraphSwitch }: Props) {
+export default function GraphView({ onPageClick, onClose }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -541,7 +540,7 @@ export default function GraphView({ onPageClick, onClose, onGraphSwitch }: Props
   return (
     <div className="graph-view">
       <div className="graph-toolbar">
-        <GraphSwitcher onSwitch={onGraphSwitch} />
+        <NotebookLabel />
         <span className="graph-toolbar-stats">
           {counts.nodes} nodes · {counts.edges} edges
           {hideUnlinked && unlinkedCount > 0 && (

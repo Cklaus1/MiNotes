@@ -304,7 +304,7 @@ MiNotes ships a `minotes` CLI binary with 40+ subcommands. This is the primary i
 
 **CLI Design Principles:**
 - Every command outputs JSON by default (`--format json`), human-readable with `--format table`
-- Consistent flags: `--graph <path>` to target a specific graph, `--actor <name>` to tag the event source
+- Consistent flags: `--notebook <name|folder|path>` to target a specific notebook (`--graph` is a deprecated alias), `--actor <name>` to tag the event source
 - Batch operations via stdin: pipe JSON arrays for bulk creates/updates
 - Exit codes: 0 = success, 1 = error, 2 = not found
 - Sub-100ms for read operations, <200ms for writes (Rust binary, no runtime startup)

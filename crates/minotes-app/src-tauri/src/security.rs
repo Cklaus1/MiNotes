@@ -41,12 +41,13 @@ pub fn safe_png_filename(name: &str) -> Result<String, String> {
     Ok(format!("{stem}.png"))
 }
 
-// ── Graph names ──
+// ── Notebook keys ──
 
-/// Same rule `minotes_core::repo::graphs::create_graph` enforces: non-empty, no path
-/// separators, no dots, no NUL. Applied to every command that turns a graph name into
-/// a path under the data dir (switch/delete/startup), not just create.
-pub fn validate_graph_name(name: &str) -> Result<(), String> {
+/// Same rule `minotes_core::repo::legacy_notebooks::create` enforces: non-empty, no
+/// path separators, no dots, no NUL. Applied to every notebook key (a legacy name,
+/// which becomes a path under the data dir, or a folder notebook's id) that comes
+/// from outside (switch, startup).
+pub fn validate_notebook_key(name: &str) -> Result<(), String> {
     if name.is_empty()
         || name.contains('/')
         || name.contains('\\')
@@ -55,7 +56,7 @@ pub fn validate_graph_name(name: &str) -> Result<(), String> {
         || name.chars().any(|c| c.is_control())
     {
         return Err(format!(
-            "Invalid graph name: '{name}'. Must be non-empty and contain no path separators or dots."
+            "Invalid notebook name: '{name}'. Must be non-empty and contain no path separators or dots."
         ));
     }
     Ok(())
@@ -387,11 +388,11 @@ mod tests {
     }
 
     #[test]
-    fn graph_name_validation() {
-        assert!(validate_graph_name("default").is_ok());
-        assert!(validate_graph_name("work-notes_2").is_ok());
+    fn notebook_key_validation() {
+        assert!(validate_notebook_key("default").is_ok());
+        assert!(validate_notebook_key("work-notes_2").is_ok());
         for bad in ["", "..", "../../x", "a/b", "a\\b", "x.db", "a\0b"] {
-            assert!(validate_graph_name(bad).is_err(), "should reject {bad:?}");
+            assert!(validate_notebook_key(bad).is_err(), "should reject {bad:?}");
         }
     }
 

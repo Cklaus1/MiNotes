@@ -1,7 +1,7 @@
 //! `minotes import obsidian|markdown|evernote|undo|runs` (PRD-import §4.1).
 //!
 //! Destination: `--into <notebook name or folder>` imports into an existing
-//! notebook (a new Project "Imported from … (date)"); `--graph`/`--notebook`
+//! notebook (a new Project "Imported from … (date)"); `--notebook <name|folder|path>`
 //! does the same for that database; otherwise a NEW folder notebook named
 //! after the source is created (at `--location`, default `~/MiNotes/<name>`).
 
@@ -115,7 +115,7 @@ fn destination(a: &ImportArgs, explicit_db: Option<PathBuf>, source_name: &str) 
     Ok((nb.db_path(), Destination::Root, Some(name)))
 }
 
-/// Run an import subcommand. `explicit_db` is the `--graph`/`--notebook` database, if given.
+/// Run an import subcommand. `explicit_db` is the `--notebook` database, if given.
 pub fn run(kind: SourceKind, paths: Vec<String>, parent: Option<String>, a: &ImportArgs, explicit_db: Option<PathBuf>) -> i32 {
     let opts = match options(a, parent) {
         Ok(o) => o,

@@ -1,5 +1,5 @@
 //! End-to-end tests for the `minotes` binary against throwaway databases.
-//! Every test uses its own temp dir and sets HOME to it, so the default graph
+//! Every test uses its own temp dir and sets HOME to it, so the default notebook
 //! path (~/.minotes/...) never touches the real user data.
 
 use std::io::Write;
@@ -65,45 +65,45 @@ fn json(out: &Output) -> serde_json::Value {
     })
 }
 
-/// Create a fresh graph at the temp db path and a page in it; returns the page id.
+/// Create a fresh notebook database at the temp db path and a page in it; returns the page id.
 fn setup_page(h: &TempHome, title: &str) -> String {
     let db = h.db();
-    let out = run(h, &["--graph", &db, "--create", "page", "create", title]);
+    let out = run(h, &["--notebook", &db, "--create", "page", "create", title]);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     json(&out)["id"].as_str().unwrap().to_string()
 }
 
 #[test]
-fn explicit_missing_graph_errors_without_create() {
+fn explicit_missing_notebook_db_errors_without_create() {
     let h = TempHome::new();
     let db = h.db();
-    let out = run(&h, &["--graph", &db, "page", "list"]);
+    let out = run(&h, &["--notebook", &db, "page", "list"]);
     assert!(!out.status.success());
     assert!(!Path::new(&db).exists(), "must not silently create the DB");
     assert!(String::from_utf8_lossy(&out.stderr).contains("not found"));
 
-    let out = run(&h, &["--graph", &db, "--create", "page", "list"]);
+    let out = run(&h, &["--notebook", &db, "--create", "page", "list"]);
     assert!(out.status.success());
     assert!(Path::new(&db).exists());
 }
 
 #[test]
-fn default_graph_is_app_active_graph_and_tilde_expands() {
+fn default_notebook_is_app_active_notebook_and_tilde_expands() {
     let h = TempHome::new();
-    // No --graph: uses ~/.minotes/default.db (created on demand like the app).
+    // No --notebook: uses ~/.minotes/default.db (created on demand like the app).
     let out = run(&h, &["page", "create", "Hello"]);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     assert!(h.path().join(".minotes/default.db").exists());
 
-    // active_graph file selects another graph.
+    // active_graph file selects another notebook.
     std::fs::write(h.path().join(".minotes/active_graph"), "work\n").unwrap();
     let out = run(&h, &["page", "list"]);
     assert!(out.status.success());
     assert!(h.path().join(".minotes/work.db").exists());
     assert_eq!(json(&out).as_array().unwrap().len(), 0);
 
-    // ~ in --graph expands to $HOME.
-    let out = run(&h, &["--graph", "~/.minotes/default.db", "page", "list"]);
+    // ~ in --notebook expands to $HOME.
+    let out = run(&h, &["--notebook", "~/.minotes/default.db", "page", "list"]);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let titles: Vec<_> = json(&out)
         .as_array()
@@ -119,12 +119,12 @@ fn page_delete_moves_to_trash_by_default() {
     let h = TempHome::new();
     let db = h.db();
     let id = setup_page(&h, "Doomed");
-    let out = run(&h, &["--graph", &db, "page", "delete", "Doomed"]);
+    let out = run(&h, &["--notebook", &db, "page", "delete", "Doomed"]);
     assert!(out.status.success());
 
-    let out = run(&h, &["--graph", &db, "query", &format!("SELECT COUNT(*) AS n FROM trash WHERE page_id = '{id}'")]);
+    let out = run(&h, &["--notebook", &db, "query", &format!("SELECT COUNT(*) AS n FROM trash WHERE page_id = '{id}'")]);
     assert_eq!(json(&out)["rows"][0]["n"], 1, "page should be in trash");
-    let out = run(&h, &["--graph", &db, "query", &format!("SELECT COUNT(*) AS n FROM pages WHERE id = '{id}'")]);
+    let out = run(&h, &["--notebook", &db, "query", &format!("SELECT COUNT(*) AS n FROM pages WHERE id = '{id}'")]);
     assert_eq!(json(&out)["rows"][0]["n"], 1, "page row must still exist");
 }
 
@@ -134,14 +134,14 @@ fn page_delete_permanent_requires_yes() {
     let db = h.db();
     let id = setup_page(&h, "Gone");
     // Non-TTY stdin, no --yes → refused.
-    let out = run(&h, &["--graph", &db, "page", "delete", "Gone", "--permanent"]);
+    let out = run(&h, &["--notebook", &db, "page", "delete", "Gone", "--permanent"]);
     assert!(!out.status.success());
     let q = format!("SELECT COUNT(*) AS n FROM pages WHERE id = '{id}'");
-    assert_eq!(json(&run(&h, &["--graph", &db, "query", &q]))["rows"][0]["n"], 1);
+    assert_eq!(json(&run(&h, &["--notebook", &db, "query", &q]))["rows"][0]["n"], 1);
 
-    let out = run(&h, &["--graph", &db, "page", "delete", "Gone", "--permanent", "--yes"]);
+    let out = run(&h, &["--notebook", &db, "page", "delete", "Gone", "--permanent", "--yes"]);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    assert_eq!(json(&run(&h, &["--graph", &db, "query", &q]))["rows"][0]["n"], 0);
+    assert_eq!(json(&run(&h, &["--notebook", &db, "query", &q]))["rows"][0]["n"], 0);
 }
 
 #[test]
@@ -149,7 +149,7 @@ fn invalid_uuids_are_errors() {
     let h = TempHome::new();
     let db = h.db();
     setup_page(&h, "P");
-    let out = run(&h, &["--graph", &db, "block", "create", "P", "hi", "--parent", "not-a-uuid"]);
+    let out = run(&h, &["--notebook", &db, "block", "create", "P", "hi", "--parent", "not-a-uuid"]);
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("Invalid parent UUID"));
 
@@ -157,13 +157,13 @@ fn invalid_uuids_are_errors() {
         vec!["folder", "create", "F", "--parent", "bogus"],
         vec!["folder", "list", "--parent", "bogus"],
     ] {
-        let mut full = vec!["--graph", db.as_str()];
+        let mut full = vec!["--notebook", db.as_str()];
         full.extend(args.iter());
         let out = run(&h, &full);
         assert!(!out.status.success(), "{args:?} should fail");
     }
     // No folder was created by the failed call.
-    let out = run(&h, &["--graph", &db, "folder", "list"]);
+    let out = run(&h, &["--notebook", &db, "folder", "list"]);
     assert_eq!(json(&out).as_array().unwrap().len(), 0);
 }
 
@@ -172,16 +172,16 @@ fn content_may_start_with_hyphen() {
     let h = TempHome::new();
     let db = h.db();
     setup_page(&h, "P");
-    let out = run(&h, &["--graph", &db, "block", "create", "P", "- [ ] a task"]);
+    let out = run(&h, &["--notebook", &db, "block", "create", "P", "- [ ] a task"]);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     assert_eq!(json(&out)["content"], "- [ ] a task");
     let id = json(&out)["id"].as_str().unwrap().to_string();
 
-    let out = run(&h, &["--graph", &db, "block", "update", &id, "--content", "-x"]);
+    let out = run(&h, &["--notebook", &db, "block", "update", &id, "--content", "-x"]);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     assert_eq!(json(&out)["content"], "-x");
 
-    let out = run(&h, &["--graph", &db, "journal", "create", "-- dash entry", "--date", "2026-01-02"]);
+    let out = run(&h, &["--notebook", &db, "journal", "create", "-- dash entry", "--date", "2026-01-02"]);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     assert_eq!(json(&out)["content"], "-- dash entry");
 }
@@ -192,13 +192,13 @@ fn batch_create_is_atomic() {
     let db = h.db();
     setup_page(&h, "P");
     let input = r#"[{"content":"one"},{"content":"two","parent_id":"garbage"}]"#;
-    let out = run_stdin(&h, &["--graph", &db, "batch-create", "P"], Some(input));
+    let out = run_stdin(&h, &["--notebook", &db, "batch-create", "P"], Some(input));
     assert!(!out.status.success());
     let q = "SELECT COUNT(*) AS n FROM blocks";
-    assert_eq!(json(&run(&h, &["--graph", &db, "query", q]))["rows"][0]["n"], 0);
+    assert_eq!(json(&run(&h, &["--notebook", &db, "query", q]))["rows"][0]["n"], 0);
 
     let input = r#"[{"content":"one"},{"content":"two"}]"#;
-    let out = run_stdin(&h, &["--graph", &db, "batch-create", "P"], Some(input));
+    let out = run_stdin(&h, &["--notebook", &db, "batch-create", "P"], Some(input));
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     assert_eq!(json(&out)["created"], 2);
 }
@@ -208,11 +208,11 @@ fn reindex_rebuilds_search() {
     let h = TempHome::new();
     let db = h.db();
     setup_page(&h, "P");
-    run(&h, &["--graph", &db, "block", "create", "P", "zebra crossing"]);
-    let out = run(&h, &["--graph", &db, "reindex"]);
+    run(&h, &["--notebook", &db, "block", "create", "P", "zebra crossing"]);
+    let out = run(&h, &["--notebook", &db, "reindex"]);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     assert_eq!(json(&out)["blocks_indexed"], 1);
-    let out = run(&h, &["--graph", &db, "search", "zebra"]);
+    let out = run(&h, &["--notebook", &db, "search", "zebra"]);
     assert!(out.status.success());
     assert_eq!(json(&out)["count"], 1);
 }
@@ -222,8 +222,8 @@ fn csv_quotes_lone_carriage_return() {
     let h = TempHome::new();
     let db = h.db();
     setup_page(&h, "P");
-    run(&h, &["--graph", &db, "block", "create", "P", "a\rb"]);
-    let out = run(&h, &["--graph", &db, "-f", "csv", "page", "get", "P"]);
+    run(&h, &["--notebook", &db, "block", "create", "P", "a\rb"]);
+    let out = run(&h, &["--notebook", &db, "-f", "csv", "page", "get", "P"]);
     assert!(out.status.success());
     let s = String::from_utf8_lossy(&out.stdout);
     assert!(s.contains("\"a\rb\""), "lone CR must be quoted: {s:?}");
@@ -234,16 +234,16 @@ fn global_flags_work_after_the_subcommand() {
     let h = TempHome::new();
     let db = h.db();
     setup_page(&h, "P");
-    run(&h, &["--graph", &db, "block", "create", "P", "hello"]);
+    run(&h, &["--notebook", &db, "block", "create", "P", "hello"]);
 
-    // `-f` / `--graph` used to be accepted only BEFORE the subcommand.
-    let out = run(&h, &["page", "get", "P", "-f", "md", "--graph", &db]);
+    // `-f` / `--notebook` used to be accepted only BEFORE the subcommand.
+    let out = run(&h, &["page", "get", "P", "-f", "md", "--notebook", &db]);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let md = String::from_utf8_lossy(&out.stdout);
     assert!(md.contains("# P") && md.contains("hello"), "{md}");
 
     // …and still work before it.
-    let out = run(&h, &["--graph", &db, "-f", "md", "page", "get", "P"]);
+    let out = run(&h, &["--notebook", &db, "-f", "md", "page", "get", "P"]);
     assert!(out.status.success());
     assert!(String::from_utf8_lossy(&out.stdout).contains("hello"));
 }
@@ -254,7 +254,7 @@ fn make_notebook(h: &TempHome, folder: &str, name: &str, id: &str) -> PathBuf {
     std::fs::create_dir_all(root.join("notes")).unwrap();
     std::fs::create_dir_all(root.join(".minotes")).unwrap();
     let db = root.join("notebook.minotes").to_string_lossy().into_owned();
-    let out = run(h, &["--graph", &db, "--create", "page", "create", &format!("{name} page")]);
+    let out = run(h, &["--notebook", &db, "--create", "page", "create", &format!("{name} page")]);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     std::fs::write(
         root.join("notebook.json"),
@@ -279,13 +279,13 @@ fn titles(out: &Output) -> Vec<String> {
 }
 
 #[test]
-fn graph_accepts_a_notebook_folder_and_notebook_resolves_by_name() {
+fn notebook_accepts_a_folder_a_path_or_a_name() {
     let h = TempHome::new();
     let work = make_notebook(&h, "MiNotes/Work", "Work", "0195a000-0000-7000-8000-000000000001");
     make_notebook(&h, "Elsewhere/Home", "Home Notes", "0195a000-0000-7000-8000-000000000002");
 
-    // --graph <folder> opens its notebook.minotes.
-    let out = run(&h, &["--graph", &work.to_string_lossy(), "page", "list"]);
+    // --notebook <folder> opens its notebook.minotes.
+    let out = run(&h, &["--notebook", &work.to_string_lossy(), "page", "list"]);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     assert_eq!(titles(&out), vec!["Work page".to_string()]);
 
@@ -301,7 +301,7 @@ fn graph_accepts_a_notebook_folder_and_notebook_resolves_by_name() {
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("No notebook named"));
     std::fs::create_dir_all(h.path().join("plain")).unwrap();
-    let out = run(&h, &["--graph", &h.path().join("plain").to_string_lossy(), "page", "list"]);
+    let out = run(&h, &["--notebook", &h.path().join("plain").to_string_lossy(), "page", "list"]);
     assert!(!out.status.success());
     assert!(!h.path().join("plain/notebook.minotes").exists());
 
@@ -330,4 +330,101 @@ fn missing_notebook_folder_is_an_error_not_a_new_notebook() {
     assert!(!root.exists(), "the missing folder is not recreated");
     let v = json(&run(&h, &["notebooks"]));
     assert_eq!(v["notebooks"][0]["available"], false);
+}
+
+#[test]
+fn deprecated_graph_flag_still_works_and_warns_on_stderr_only() {
+    let h = TempHome::new();
+    let db = h.db();
+    let out = run(&h, &["--graph", &db, "--create", "page", "create", "Old flag"]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    // stdout is still clean JSON; the notice is on stderr.
+    assert_eq!(json(&out)["title"], "Old flag");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--graph is deprecated"));
+    // After the subcommand too, and it means the same database as --notebook.
+    let out = run(&h, &["page", "list", "--graph", &db]);
+    assert_eq!(titles(&out), vec!["Old flag".to_string()]);
+    let out = run(&h, &["--notebook", &db, "page", "list"]);
+    assert_eq!(titles(&out), vec!["Old flag".to_string()]);
+    assert!(out.stderr.is_empty(), "no notice for --notebook");
+    // --graph and --notebook together are refused.
+    let out = run(&h, &["--graph", &db, "--notebook", &db, "page", "list"]);
+    assert!(!out.status.success());
+}
+
+#[test]
+fn notebook_commands_create_list_current_rename_delete() {
+    let h = TempHome::new();
+    // create: default location ~/MiNotes/<name>, the app's layout.
+    let out = run(&h, &["notebook", "create", "Research"]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let v = json(&out);
+    assert_eq!(v["name"], "Research");
+    assert_eq!(v["kind"], "folder");
+    let root = h.path().join("MiNotes/Research");
+    assert!(root.join("notebook.minotes").is_file());
+    assert!(root.join("notebook.json").is_file());
+    assert!(root.join("notes").is_dir());
+
+    // --location picks the folder.
+    let loc = h.path().join("Elsewhere/Side");
+    let out = run(&h, &["notebook", "create", "Side", "--location", &loc.to_string_lossy()]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(loc.join("notebook.minotes").is_file());
+    // Same name twice and bad names are refused.
+    assert!(!run(&h, &["notebook", "create", "Research"]).status.success());
+    assert!(!run(&h, &["notebook", "create", "a.b"]).status.success());
+
+    // --notebook <name> opens the new notebook.
+    let out = run(&h, &["--notebook", "Research", "page", "create", "In research"]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = run(&h, &["-n", "Research", "page", "list"]);
+    assert_eq!(titles(&out), vec!["In research".to_string()]);
+
+    // A legacy notebook (~/.minotes/<name>.db) is selectable by name too.
+    run(&h, &["page", "create", "In default"]);
+    let out = run(&h, &["--notebook", "default", "page", "list"]);
+    assert_eq!(titles(&out), vec!["In default".to_string()]);
+
+    // list (and the old `notebooks` spelling).
+    let v = json(&run(&h, &["notebook", "list"]));
+    assert_eq!(v["count"], 3);
+    assert_eq!(json(&run(&h, &["notebooks"]))["count"], 3);
+    let out = run(&h, &["notebook", "list", "-f", "text"]);
+    assert!(String::from_utf8_lossy(&out.stdout).contains("Research\tfolder\t"));
+
+    // current = the app's open notebook.
+    assert_eq!(json(&run(&h, &["notebook", "current"]))["key"], "default");
+
+    // rename keeps the folder.
+    let out = run(&h, &["notebook", "rename", "Side", "Side Project"]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(json(&out)["name"], "Side Project");
+    assert!(loc.join("notebook.minotes").is_file());
+
+    // delete needs --yes and is refused for the app's open notebook.
+    let out = run(&h, &["notebook", "delete", "Side Project"]);
+    assert!(!out.status.success());
+    assert!(loc.join("notebook.minotes").is_file());
+    let out = run(&h, &["notebook", "delete", "default", "--yes"]);
+    assert!(!out.status.success());
+    assert!(h.path().join(".minotes/default.db").is_file());
+    let out = run(&h, &["notebook", "delete", "Side Project", "--yes"]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(!loc.join("notebook.minotes").exists());
+    assert_eq!(json(&run(&h, &["notebook", "list"]))["count"], 2);
+}
+
+#[test]
+fn notebook_open_registers_an_existing_folder() {
+    let h = TempHome::new();
+    let root = h.path().join("MiNotes/Shared");
+    assert!(run(&h, &["notebook", "create", "Shared"]).status.success());
+    // Forget it by wiping the registry, then open the folder again.
+    std::fs::remove_file(h.path().join(".minotes/notebooks.json")).unwrap();
+    assert_eq!(json(&run(&h, &["notebook", "list"]))["count"], 0);
+    let out = run(&h, &["notebook", "open", &root.to_string_lossy()]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(json(&out)["name"], "Shared");
+    assert!(run(&h, &["--notebook", "Shared", "page", "list"]).status.success());
 }

@@ -308,7 +308,10 @@ is "Landed on today's journal" "$(ev "String((window.__MINOTES__.getCurrentPage(
 
 step "The CLI opens it by name or by folder"
 [[ "$(mjs --notebook "Field Notes" page list -f text)" == *"Field Page"* ]] && pass "minotes --notebook 'Field Notes'" || fail "CLI --notebook" "$(mjs --notebook "Field Notes" page list -f text | head -3)"
-is "minotes --graph <folder> searches it" "$(mjs --graph "$FOLDER" search "edited field note" -f json | python3 -c 'import sys,json;print(json.load(sys.stdin)["count"])' 2>/dev/null)" "1"
+is "minotes --notebook <folder> searches it" "$(mjs --notebook "$FOLDER" search "edited field note" -f json | python3 -c 'import sys,json;print(json.load(sys.stdin)["count"])' 2>/dev/null)" "1"
+# The deprecated --graph alias still works; its notice goes to stderr, so stdout stays JSON.
+is "deprecated --graph <folder> still works (stdout stays JSON)" "$(HOME="$NBH" "$REPO_ROOT/target/debug/minotes" --graph "$FOLDER" search "edited field note" -f json 2>/dev/null | python3 -c 'import sys,json;print(json.load(sys.stdin)["count"])' 2>/dev/null)" "1"
+is "--graph prints a deprecation notice on stderr" "$(HOME="$NBH" "$REPO_ROOT/target/debug/minotes" --graph "$FOLDER" page list 2>&1 >/dev/null | grep -c 'deprecated')" "1"
 
 step "Settings shows where the markdown copy is and that it is current"
 api "openSettings()" >/dev/null; sleep 1.5
@@ -332,7 +335,7 @@ step "A folder that went missing is unavailable — never recreated — and can 
 ev "window.__MINOTES__.switchNotebook('$KEY')" >/dev/null; sleep 2
 mv "$COPY" "$COPY (unplugged)"
 is "Listed as unavailable" "$(ev "(async()=>{$A5 return String((await api.listNotebooks()).find(n=>n.key==='$COPY_KEY')?.available)})()")" "false"
-is "Switching to it is refused" "$(ev "(async()=>{$A5 try{await api.switchGraph('$COPY_KEY');return 'opened'}catch(e){return 'refused'}})()")" "refused"
+is "Switching to it is refused" "$(ev "(async()=>{$A5 try{await api.switchNotebook('$COPY_KEY');return 'opened'}catch(e){return 'refused'}})()")" "refused"
 [[ ! -e "$COPY" ]] && pass "No empty notebook was created in its place" || fail "Missing folder recreated" "$(ls -A "$COPY")"
 ev "(async()=>{$A5 await api.locateNotebook('$COPY_KEY','$COPY (unplugged)');return 'ok'})()" >/dev/null
 is "Locate… finds it again" "$(ev "(async()=>{$A5 return String((await api.listNotebooks()).find(n=>n.key==='$COPY_KEY')?.available)})()")" "true"

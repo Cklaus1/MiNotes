@@ -1,13 +1,17 @@
+//! Legacy notebooks: databases stored as `<base>/<name>.db` (normally
+//! `~/.minotes/<name>.db`, keyed by `<name>`). The file layout is unchanged from
+//! when these were called "graphs"; see `crate::notebook` for both kinds.
+
 use std::fs;
 use std::path::Path;
 
 use crate::db::Database;
 use crate::error::{Error, Result};
-use crate::models::GraphInfo;
+use crate::models::LegacyNotebookInfo;
 
-/// List all graph databases (`.db` files) in the given base directory.
-pub fn list_graphs(base_dir: &Path) -> Result<Vec<GraphInfo>> {
-    let mut graphs = Vec::new();
+/// List all legacy notebook databases (`.db` files) in the given base directory.
+pub fn list(base_dir: &Path) -> Result<Vec<LegacyNotebookInfo>> {
+    let mut found = Vec::new();
 
     let entries = fs::read_dir(base_dir).map_err(|e| {
         Error::InvalidInput(format!("Cannot read directory {}: {}", base_dir.display(), e))
@@ -31,7 +35,7 @@ pub fn list_graphs(base_dir: &Path) -> Result<Vec<GraphInfo>> {
                     })
                     .unwrap_or_default();
 
-                graphs.push(GraphInfo {
+                found.push(LegacyNotebookInfo {
                     name: stem.to_string(),
                     path: path.to_string_lossy().to_string(),
                     size_bytes: meta.len(),
@@ -41,13 +45,13 @@ pub fn list_graphs(base_dir: &Path) -> Result<Vec<GraphInfo>> {
         }
     }
 
-    graphs.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(graphs)
+    found.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(found)
 }
 
-/// Create a new graph database with the given name.
-/// Returns the GraphInfo for the newly created database.
-pub fn create_graph(base_dir: &Path, name: &str) -> Result<GraphInfo> {
+/// Create a new legacy notebook database with the given name.
+/// Returns the LegacyNotebookInfo for the newly created database.
+pub fn create(base_dir: &Path, name: &str) -> Result<LegacyNotebookInfo> {
     // Validate name: no path separators, no dots (except the .db we add)
     if name.is_empty()
         || name.contains('/')
@@ -56,14 +60,14 @@ pub fn create_graph(base_dir: &Path, name: &str) -> Result<GraphInfo> {
         || name.contains('\0')
     {
         return Err(Error::InvalidInput(format!(
-            "Invalid graph name: '{name}'. Must be non-empty and contain no path separators or dots."
+            "Invalid notebook name: '{name}'. Must be non-empty and contain no path separators or dots."
         )));
     }
 
     let db_path = base_dir.join(format!("{name}.db"));
 
     if db_path.exists() {
-        return Err(Error::AlreadyExists(format!("A graph named '{name}' already exists")));
+        return Err(Error::AlreadyExists(format!("A notebook named '{name}' already exists")));
     }
 
     // Create the database (this initializes the schema)
@@ -81,7 +85,7 @@ pub fn create_graph(base_dir: &Path, name: &str) -> Result<GraphInfo> {
         })
         .unwrap_or_default();
 
-    Ok(GraphInfo {
+    Ok(LegacyNotebookInfo {
         name: name.to_string(),
         path: db_path.to_string_lossy().to_string(),
         size_bytes: meta.len(),
@@ -89,11 +93,11 @@ pub fn create_graph(base_dir: &Path, name: &str) -> Result<GraphInfo> {
     })
 }
 
-/// Delete a graph database file.
+/// Delete a legacy notebook database file.
 /// Returns true if the file was deleted, false if it didn't exist.
-pub fn delete_graph(base_dir: &Path, name: &str) -> Result<bool> {
+pub fn delete(base_dir: &Path, name: &str) -> Result<bool> {
     if name.is_empty() || name.contains('/') || name.contains('\\') || name.contains('\0') {
-        return Err(Error::InvalidInput(format!("Invalid graph name: '{name}'")));
+        return Err(Error::InvalidInput(format!("Invalid notebook name: '{name}'")));
     }
 
     let db_path = base_dir.join(format!("{name}.db"));
@@ -109,7 +113,7 @@ pub fn delete_graph(base_dir: &Path, name: &str) -> Result<bool> {
     let _ = fs::remove_file(&shm_path);
 
     fs::remove_file(&db_path)
-        .map_err(|e| Error::InvalidInput(format!("Failed to delete graph '{name}': {e}")))?;
+        .map_err(|e| Error::InvalidInput(format!("Failed to delete notebook '{name}': {e}")))?;
 
     Ok(true)
 }
@@ -120,46 +124,46 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn test_create_and_list_graphs() {
+    fn test_create_and_list() {
         let tmp = TempDir::new().unwrap();
         let base = tmp.path();
 
         // Initially empty
-        let graphs = list_graphs(base).unwrap();
-        assert!(graphs.is_empty());
+        let found = list(base).unwrap();
+        assert!(found.is_empty());
 
-        // Create a graph
-        let info = create_graph(base, "work").unwrap();
+        // Create one
+        let info = create(base, "work").unwrap();
         assert_eq!(info.name, "work");
         assert!(info.size_bytes > 0);
 
         // List should have one
-        let graphs = list_graphs(base).unwrap();
-        assert_eq!(graphs.len(), 1);
-        assert_eq!(graphs[0].name, "work");
+        let found = list(base).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].name, "work");
     }
 
     #[test]
-    fn test_create_duplicate_graph() {
+    fn test_create_duplicate() {
         let tmp = TempDir::new().unwrap();
-        create_graph(tmp.path(), "test").unwrap();
-        let err = create_graph(tmp.path(), "test");
+        create(tmp.path(), "test").unwrap();
+        let err = create(tmp.path(), "test");
         assert!(err.is_err());
     }
 
     #[test]
-    fn test_delete_graph() {
+    fn test_delete() {
         let tmp = TempDir::new().unwrap();
-        create_graph(tmp.path(), "temp").unwrap();
-        assert!(delete_graph(tmp.path(), "temp").unwrap());
-        assert!(!delete_graph(tmp.path(), "temp").unwrap());
+        create(tmp.path(), "temp").unwrap();
+        assert!(delete(tmp.path(), "temp").unwrap());
+        assert!(!delete(tmp.path(), "temp").unwrap());
     }
 
     #[test]
-    fn test_invalid_graph_names() {
+    fn test_invalid_names() {
         let tmp = TempDir::new().unwrap();
-        assert!(create_graph(tmp.path(), "").is_err());
-        assert!(create_graph(tmp.path(), "foo/bar").is_err());
-        assert!(create_graph(tmp.path(), "foo.bar").is_err());
+        assert!(create(tmp.path(), "").is_err());
+        assert!(create(tmp.path(), "foo/bar").is_err());
+        assert!(create(tmp.path(), "foo.bar").is_err());
     }
 }

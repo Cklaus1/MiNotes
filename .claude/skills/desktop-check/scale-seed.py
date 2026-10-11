@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate a deterministic markdown graph for scale-tour.sh.
+"""Generate a deterministic markdown notebook for scale-tour.sh.
 
 usage: scale-seed.py <out-dir> <pages> <blocks> [big-page-blocks=2000]
 

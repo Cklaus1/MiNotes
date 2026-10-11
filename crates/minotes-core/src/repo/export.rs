@@ -253,7 +253,7 @@ pub(crate) fn folder_marker_json(folder: &crate::models::Folder) -> Result<Strin
 }
 
 impl Database {
-    /// Export entire graph as markdown files into a directory,
+    /// Export the entire notebook as markdown files into a directory,
     /// mirroring the folder hierarchy as real filesystem directories.
     ///
     /// Besides the `.md` files this writes, exactly like the sync export:
@@ -544,7 +544,7 @@ impl Database {
         Ok(md)
     }
 
-    /// Export entire graph as OPML (outline format).
+    /// Export the entire notebook as OPML (outline format).
     pub fn export_opml(&self) -> Result<String> {
         let pages = self.list_pages(Some(10000))?;
         let mut opml = String::new();
@@ -572,7 +572,7 @@ impl Database {
         Ok(opml)
     }
 
-    /// Export entire graph as a single JSON object.
+    /// Export the entire notebook as a single JSON object.
     pub fn export_json(&self) -> Result<serde_json::Value> {
         let pages = self.list_pages(Some(10000))?;
         let mut pages_with_blocks = Vec::new();
@@ -630,7 +630,7 @@ impl Database {
         Ok(count)
     }
 
-    /// Import markdown files from a directory into the graph.
+    /// Import markdown files from a directory into the notebook.
     pub fn import_markdown_dir(&self, input_dir: &Path, actor: &str) -> Result<Vec<String>> {
         let mut imported = Vec::new();
 
@@ -791,7 +791,7 @@ impl Database {
         Ok(org)
     }
 
-    /// Generate a static HTML site from the graph.
+    /// Generate a static HTML site from the notebook.
     pub fn publish_static_site(&self, output_dir: &Path) -> Result<Vec<String>> {
         fs::create_dir_all(output_dir)
             .map_err(|e| crate::error::Error::InvalidInput(format!("Cannot create dir: {e}")))?;

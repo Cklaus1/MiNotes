@@ -1,7 +1,7 @@
 // Whiteboard utility functions — separated from Whiteboard.tsx component
 // to avoid breaking Vite React Fast Refresh (components-only exports rule)
 //
-// Storage: whiteboard data lives in the graph's SQLite DB (`whiteboards`
+// Storage: whiteboard data lives in the notebook's SQLite DB (`whiteboards`
 // table, via get_whiteboard / save_whiteboard). Older versions kept it only in
 // webview localStorage under `minotes-whiteboard-<id>`; on first load of a
 // whiteboard with no DB row, that legacy copy is imported into the DB. The

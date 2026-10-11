@@ -32,30 +32,30 @@ use crate::repo::sync::{SyncOptions, SyncResult};
 const IMPORT_ACTOR: &str = "git-sync";
 const STATE_FILE: &str = "minotes-sync-state.json";
 
-/// The notebook a sync is for (`graph` = the active notebook key).
-fn notebook(graph: &str) -> crate::notebook::Notebook {
-    crate::notebook::resolve(graph).unwrap_or_else(|_| crate::notebook::Notebook::legacy("default"))
+/// The notebook a sync is for (`key` = the active notebook key).
+fn notebook(key: &str) -> crate::notebook::Notebook {
+    crate::notebook::resolve(key).unwrap_or_else(|_| crate::notebook::Notebook::legacy("default"))
 }
 
-/// Sync directory for a graph = its markdown mirror. Legacy notebooks keep
-/// `~/MiNotes_Sync` ("default") or `~/MiNotes_Sync-<graph>` (a nested
-/// `~/MiNotes_Sync/<graph>` would be tracked by — and imported into — the
-/// default graph's repo); notebooks in a folder sync `<folder>/notes`.
-pub fn sync_dir_for_graph(graph: &str) -> PathBuf {
-    match crate::notebook::resolve(graph) {
+/// Sync directory for a notebook = its markdown mirror. Legacy notebooks keep
+/// `~/MiNotes_Sync` ("default") or `~/MiNotes_Sync-<name>` (a nested
+/// `~/MiNotes_Sync/<name>` would be tracked by — and imported into — the
+/// default notebook's repo); notebooks in a folder sync `<folder>/notes`.
+pub fn sync_dir_for_notebook(key: &str) -> PathBuf {
+    match crate::notebook::resolve(key) {
         Ok(nb) => nb.mirror_dir(),
         // Not a valid name: never escape HOME.
-        Err(_) => crate::notebook::legacy_mirror_dir(&crate::repo::export::sanitize_component(graph)),
+        Err(_) => crate::notebook::legacy_mirror_dir(&crate::repo::export::sanitize_component(key)),
     }
 }
 
-/// Sync directory of the default graph: ~/MiNotes_Sync
+/// Sync directory of the default notebook: ~/MiNotes_Sync
 pub fn default_sync_dir() -> PathBuf {
-    sync_dir_for_graph("default")
+    sync_dir_for_notebook("default")
 }
 
-fn config_path(graph: &str) -> PathBuf {
-    let p = notebook(graph).sync_config_path();
+fn config_path(key: &str) -> PathBuf {
+    let p = notebook(key).sync_config_path();
     if let Some(parent) = p.parent() {
         std::fs::create_dir_all(parent).ok();
     }
@@ -68,16 +68,16 @@ pub struct SyncConfig {
     pub last_sync: Option<String>,
 }
 
-fn read_config(graph: &str) -> SyncConfig {
-    std::fs::read_to_string(config_path(graph))
+fn read_config(key: &str) -> SyncConfig {
+    std::fs::read_to_string(config_path(key))
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default()
 }
 
-fn write_config(graph: &str, config: &SyncConfig) -> Result<()> {
+fn write_config(key: &str, config: &SyncConfig) -> Result<()> {
     let json = serde_json::to_string_pretty(config)?;
-    std::fs::write(config_path(graph), json)
+    std::fs::write(config_path(key), json)
         .map_err(|e| Error::Git(format!("Failed to write sync config: {e}")))?;
     Ok(())
 }
@@ -231,9 +231,9 @@ pub fn resolve_held_deletions_in_dir(db: &Database, dir: &Path, move_to_trash: b
     Ok(n)
 }
 
-/// [`resolve_held_deletions_in_dir`] for a graph's sync dir.
-pub fn resolve_held_deletions(db: &Database, graph: &str, move_to_trash: bool) -> Result<usize> {
-    resolve_held_deletions_in_dir(db, &sync_dir_for_graph(graph), move_to_trash)
+/// [`resolve_held_deletions_in_dir`] for a notebook's sync dir.
+pub fn resolve_held_deletions(db: &Database, key: &str, move_to_trash: bool) -> Result<usize> {
+    resolve_held_deletions_in_dir(db, &sync_dir_for_notebook(key), move_to_trash)
 }
 
 fn ensure_gitignore(dir: &Path) {
@@ -391,10 +391,10 @@ pub fn git_available() -> bool {
     git_cmd::git_available()
 }
 
-/// Get current sync status for a graph by reading config + git repo state.
-pub fn get_sync_status(graph: &str) -> Result<GitSyncStatus> {
-    let config = read_config(graph);
-    let sync_dir = sync_dir_for_graph(graph);
+/// Get current sync status for a notebook by reading config + git repo state.
+pub fn get_sync_status(key: &str) -> Result<GitSyncStatus> {
+    let config = read_config(key);
+    let sync_dir = sync_dir_for_notebook(key);
 
     if !config.enabled || !git_cmd::is_git_repo(&sync_dir) {
         return Ok(GitSyncStatus {
@@ -416,9 +416,9 @@ pub fn get_sync_status(graph: &str) -> Result<GitSyncStatus> {
     })
 }
 
-/// Enable git sync for a graph. `lock_db` is called only around the DB work (never
+/// Enable git sync for a notebook. `lock_db` is called only around the DB work (never
 /// across git network calls), so the UI stays responsive.
-pub fn enable_sync_with<G, F>(graph: &str, lock_db: F) -> Result<GitSyncStatus>
+pub fn enable_sync_with<G, F>(key: &str, lock_db: F) -> Result<GitSyncStatus>
 where
     G: Deref<Target = Database>,
     F: Fn() -> Result<G>,
@@ -428,24 +428,24 @@ where
     }
     {
         let _guard = SYNC_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let sync_dir = sync_dir_for_graph(graph);
+        let sync_dir = sync_dir_for_notebook(key);
         enable_in_dir(&sync_dir, &lock_db)?;
         // The mirror's own bookkeeping must match what enable just wrote.
         let db = lock_db()?;
-        let _ = crate::mirror::run(&db, &MirrorTarget::for_notebook(&notebook(graph)), true);
+        let _ = crate::mirror::run(&db, &MirrorTarget::for_notebook(&notebook(key)), true);
     }
 
-    let mut config = read_config(graph);
+    let mut config = read_config(key);
     config.enabled = true;
     config.last_sync = Some(Utc::now().to_rfc3339());
-    write_config(graph, &config)?;
+    write_config(key, &config)?;
 
-    get_sync_status(graph)
+    get_sync_status(key)
 }
 
 /// Convenience wrapper for callers that already own the DB.
-pub fn enable_sync(db: &Database, graph: &str) -> Result<GitSyncStatus> {
-    enable_sync_with(graph, || Ok(db))
+pub fn enable_sync(db: &Database, key: &str) -> Result<GitSyncStatus> {
+    enable_sync_with(key, || Ok(db))
 }
 
 /// Init (if needed), pull, merge remote content into the DB, export, commit, push.
@@ -496,11 +496,11 @@ where
     Ok(())
 }
 
-/// Disable sync for a graph (does not delete the git repo).
-pub fn disable_sync(graph: &str) -> Result<()> {
-    let mut config = read_config(graph);
+/// Disable sync for a notebook (does not delete the git repo).
+pub fn disable_sync(key: &str) -> Result<()> {
+    let mut config = read_config(key);
     config.enabled = false;
-    write_config(graph, &config)?;
+    write_config(key, &config)?;
     Ok(())
 }
 
@@ -751,33 +751,33 @@ where
     })
 }
 
-/// Update the last_sync timestamp in the graph's config file.
-pub fn update_last_sync(graph: &str) -> Result<()> {
-    let mut config = read_config(graph);
+/// Update the last_sync timestamp in the notebook's sync config file.
+pub fn update_last_sync(key: &str) -> Result<()> {
+    let mut config = read_config(key);
     config.last_sync = Some(Utc::now().to_rfc3339());
-    write_config(graph, &config)
+    write_config(key, &config)
 }
 
-/// Full sync cycle for a graph. `lock_db` is invoked only for the DB phases.
-pub fn full_sync_with<G, F>(graph: &str, lock_db: F) -> Result<GitSyncResult>
+/// Full sync cycle for a notebook. `lock_db` is invoked only for the DB phases.
+pub fn full_sync_with<G, F>(key: &str, lock_db: F) -> Result<GitSyncResult>
 where
     G: Deref<Target = Database>,
     F: Fn() -> Result<G>,
 {
-    let config = read_config(graph);
+    let config = read_config(key);
     if !config.enabled {
         return Ok(GitSyncResult::not_enabled());
     }
-    let result = sync_cycle(&MirrorTarget::for_notebook(&notebook(graph)), lock_db)?;
+    let result = sync_cycle(&MirrorTarget::for_notebook(&notebook(key)), lock_db)?;
     if result.success {
-        update_last_sync(graph)?;
+        update_last_sync(key)?;
     }
     Ok(result)
 }
 
 /// Convenience wrapper for callers that already own the DB.
-pub fn full_sync(db: &Database, graph: &str) -> Result<GitSyncResult> {
-    full_sync_with(graph, || Ok(db))
+pub fn full_sync(db: &Database, key: &str) -> Result<GitSyncResult> {
+    full_sync_with(key, || Ok(db))
 }
 
 #[cfg(test)]
@@ -806,15 +806,15 @@ mod tests {
     }
 
     #[test]
-    fn test_sync_dir_per_graph() {
+    fn test_sync_dir_per_notebook() {
         let _home = crate::notebook::tests::FakeHome::new();
-        let d = sync_dir_for_graph("default");
+        let d = sync_dir_for_notebook("default");
         assert!(d.ends_with("MiNotes_Sync"));
-        let w = sync_dir_for_graph("work");
+        let w = sync_dir_for_notebook("work");
         assert_eq!(w.file_name().unwrap(), "MiNotes_Sync-work");
         assert_ne!(d, w);
-        let evil = sync_dir_for_graph("../../etc");
-        assert_eq!(evil.parent(), d.parent(), "graph name must not escape HOME");
+        let evil = sync_dir_for_notebook("../../etc");
+        assert_eq!(evil.parent(), d.parent(), "notebook name must not escape HOME");
         assert_ne!(config_path("default"), config_path("work"));
     }
 
@@ -1331,7 +1331,7 @@ mod tests {
         let _home = crate::notebook::tests::FakeHome::new();
         let root = _home.path().join("Book");
         let nb = crate::notebook::create_in_folder(&root, "Book").unwrap();
-        assert_eq!(sync_dir_for_graph(&nb.key), root.join("notes"));
+        assert_eq!(sync_dir_for_notebook(&nb.key), root.join("notes"));
         let db = nb.open_db().unwrap();
         let p = db.create_page("Hello", None, false, None, "user").unwrap();
         let target = MirrorTarget::for_notebook(&nb);

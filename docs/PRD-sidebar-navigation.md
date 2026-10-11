@@ -74,7 +74,7 @@ Paths under `crates/minotes-app/src/`. "ux-int" / "feat-tc" = worktree, merging 
 | Remove unfiled "Pages" section | Not started — reconsidered, see below | `Sidebar.tsx` |
 | All Pages: filter by tag / date; bulk move/delete/tag | Not started | `AllPagesView.tsx` |
 | Progressive disclosure / welcome state for empty notebook | Not started (Projects header always shows) | `Sidebar.tsx` |
-| Notebook switcher in header | Not started (planned, `PRD-notebooks.md` Ph.1) | `GraphSwitcher.tsx` today |
+| Notebook switcher in header | Done (`PRD-notebooks.md` Ph.1) | `NotebookSwitcher.tsx` in the sidebar header; the Graph view shows a read-only `NotebookLabel.tsx` |
 | `Ctrl+[` / `Ctrl+]` previous/next project | Not started — cut | — |
 
 ### Obsolete or changed decisions

@@ -19,7 +19,7 @@ freeze() { "$D" js "$(cat "$HERE/visual-freeze.js")" 2>/dev/null; }
 freeze >"$OUTDIR/freeze.json"
 "$D" seed-demo >/dev/null
 e() { "$D" eval "$1" 2>/dev/null | tr -d '"'; }
-# Same messy graph as ux-tour.sh.
+# Same messy notebook as ux-tour.sh.
 e "(async()=>{const api=await import('/src/lib/api.ts');
   const long=await api.createPage('A very long page title that keeps going to see how the sidebar and header cope with it — part two');
   let parent; for(let i=0;i<6;i++){const b=await api.createBlock(long.id,'Nesting level '+(i+1)+' with enough text to wrap onto a second line when the indentation gets deep enough to squeeze it',parent);parent=b.id}

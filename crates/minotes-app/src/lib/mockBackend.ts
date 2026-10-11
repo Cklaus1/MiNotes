@@ -1246,40 +1246,21 @@ const handlers: Record<string, (args: any) => any> = {
   },
   delete_card: ({ cardId }: { cardId: string }) => cards.delete(cardId),
   // ── Notebooks (mirrors minotes-core notebook.rs + the app's switch) ──
-  list_graphs: () => mockNotebooks.filter(n => n.kind === "legacy").map(n => ({
-    name: n.key, path: n.db_path, size_bytes: 4096, modified_at: n.modified_at,
-  })),
-  switch_graph: ({ name }: { name: string }) => {
-    validateGraphKey(name);
-    const nb = mockNotebooks.find(n => n.key === name);
-    if (!nb) fail(`Graph '${name}' does not exist`);
+  switch_notebook: ({ key }: { key: string }) => {
+    validateNotebookKey(key);
+    const nb = mockNotebooks.find(n => n.key === key);
+    if (!nb) fail(`Notebook '${key}' does not exist`);
     if (!nb.available) fail(`Notebook \u201c${nb.name}\u201d is unavailable: its folder was not found`);
-    if (name !== currentNotebook) {
+    if (key !== currentNotebook) {
       notebookStores.set(currentNotebook, snapshotStore());
-      restoreStore(notebookStores.get(name) ?? emptyStore());
-      notebookStores.delete(name);
-      currentNotebook = name;
+      restoreStore(notebookStores.get(key) ?? emptyStore());
+      notebookStores.delete(key);
+      currentNotebook = key;
     }
     nb.last_opened = ts();
     return true;
   },
-  create_graph_cmd: ({ name }: { name: string }) => {
-    if (!name || /[/\\.\0]/.test(name)) fail(`Invalid input: Invalid graph name: '${name}'. Must be non-empty and contain no path separators or dots.`);
-    if (mockNotebooks.some(n => n.key === name)) fail(`A graph named '${name}' already exists`);
-    const nb = legacyNotebook(name);
-    mockNotebooks.push(nb);
-    return { name, path: nb.db_path, size_bytes: 4096, modified_at: nb.modified_at };
-  },
-  delete_graph_cmd: ({ name }: { name: string }) => {
-    validateGraphKey(name);
-    if (name === currentNotebook) fail("Cannot delete the currently active graph. Switch to another graph first.");
-    const i = mockNotebooks.findIndex(n => n.key === name && n.kind === "legacy");
-    if (i < 0) return false;
-    mockNotebooks.splice(i, 1);
-    notebookStores.delete(name);
-    return true;
-  },
-  get_current_graph: () => currentNotebook,
+  get_current_notebook: () => currentNotebook,
   list_notebooks: () => [...mockNotebooks].sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()) || a.key.localeCompare(b.key)),
   get_notebook_session: () => {
     const nb = mockNotebooks.find(n => n.key === currentNotebook)!;
@@ -1645,9 +1626,9 @@ const mockFolders: Map<string, MockNotebook> = new Map();
 let currentNotebook = "default";
 let mirrorWrittenAt: string | null = null;
 
-function validateGraphKey(name: string) {
+function validateNotebookKey(name: string) {
   if (!name || /[/\\.\0]/.test(name) || /[\u0000-\u001f]/.test(name)) {
-    fail(`Invalid graph name: '${name}'. Must be non-empty and contain no path separators or dots.`);
+    fail(`Invalid notebook name: '${name}'. Must be non-empty and contain no path separators or dots.`);
   }
 }
 
@@ -1701,7 +1682,7 @@ const notebookStores: Map<string, MockStore> = new Map();
 // ── Argument validation, as Tauri does before the Rust command runs ──
 // Generated from the #[tauri::command] signatures in src-tauri/src/lib.rs:
 // non-Option params are required; params the command parses as a UUID must be one.
-const REQUIRED_ARGS: Record<string, string[]> = {"get_page_tree":["titleOrId"],"create_page":["title"],"delete_page":["id"],"rename_page":["id","newTitle"],"create_block":["pageId","content"],"update_block":["id","content"],"delete_block":["id"],"search_blocks":["query"],"get_backlinks":["pageId"],"get_unlinked_references":["pageId"],"run_query":["sql"],"create_folder":["name"],"move_page_to_folder":["pageId"],"reorder_page":["id","newPosition"],"set_property":["entityId","entityType","key","value"],"get_properties":["entityId"],"get_inherited_properties":["blockId"],"delete_property":["entityId","key"],"delete_folder":["id"],"update_folder_appearance":["id"],"rename_folder":["id","newName"],"create_card":["blockId","cardType"],"review_card":["cardId","rating"],"delete_card":["cardId"],"add_favorite":["pageId"],"remove_favorite":["pageId"],"reorder_favorite":["pageId","newPosition"],"add_alias":["pageId","alias"],"remove_alias":["alias"],"get_aliases":["pageId"],"create_template":["name","content"],"apply_template":["pageId","templateName"],"delete_template":["name"],"publish_site":["outputDir"],"move_block":["id","newParent","position"],"reorder_block":["id","position"],"reparent_block":["id"],"register_plugin":["name","version"],"enable_plugin":["name"],"disable_plugin":["name"],"uninstall_plugin":["name"],"switch_graph":["name"],"create_graph_cmd":["name"],"delete_graph_cmd":["name"],"create_highlight":["pdfPath","pageNum","x","y","width","height","color"],"get_highlights":["pdfPath"],"update_highlight_note":["id","note"],"delete_highlight":["id"],"search_highlights":["query"],"sync_page":["pageId"],"get_version_history":["pageId"],"restore_version":["pageId","versionHash"],"plugin_storage_get":["pluginName","key"],"plugin_storage_set":["pluginName","key","value"],"add_css_snippet":["name","css","source"],"toggle_css_snippet":["name"],"delete_css_snippet":["name"],"update_css_snippet":["name","css"],"clip_content":["title","content"],"save_png_to_downloads":["filename","data"],"read_pdf_file":["path"],"read_file_base64":["path"],"fetch_og_metadata":["url"],"get_block":["id"],"get_blocks":["ids"],"get_properties_batch":["entityIds"],"archive_page":["id"],"unarchive_page":["id"],"archive_folder":["id"],"unarchive_folder":["id"],"trash_page":["id"],"trash_folder":["id"],"restore_from_trash":["id","itemType"],"permanently_delete":["id","itemType"],"get_whiteboard":["id"],"save_whiteboard":["id","data"],"restore_blocks":["blocks"],"default_notebook_location":["name"],"create_notebook":["name"],"open_notebook_folder":["path"],"locate_notebook":["key","path"],"rename_notebook":["key","name"],"delete_notebook":["key"],"forget_notebook":["key"],"move_notebook_to_folder":["path"],"git_sync_resolve_deletions":["action"]};
+const REQUIRED_ARGS: Record<string, string[]> = {"get_page_tree":["titleOrId"],"create_page":["title"],"delete_page":["id"],"rename_page":["id","newTitle"],"create_block":["pageId","content"],"update_block":["id","content"],"delete_block":["id"],"search_blocks":["query"],"get_backlinks":["pageId"],"get_unlinked_references":["pageId"],"run_query":["sql"],"create_folder":["name"],"move_page_to_folder":["pageId"],"reorder_page":["id","newPosition"],"set_property":["entityId","entityType","key","value"],"get_properties":["entityId"],"get_inherited_properties":["blockId"],"delete_property":["entityId","key"],"delete_folder":["id"],"update_folder_appearance":["id"],"rename_folder":["id","newName"],"create_card":["blockId","cardType"],"review_card":["cardId","rating"],"delete_card":["cardId"],"add_favorite":["pageId"],"remove_favorite":["pageId"],"reorder_favorite":["pageId","newPosition"],"add_alias":["pageId","alias"],"remove_alias":["alias"],"get_aliases":["pageId"],"create_template":["name","content"],"apply_template":["pageId","templateName"],"delete_template":["name"],"publish_site":["outputDir"],"move_block":["id","newParent","position"],"reorder_block":["id","position"],"reparent_block":["id"],"register_plugin":["name","version"],"enable_plugin":["name"],"disable_plugin":["name"],"uninstall_plugin":["name"],"switch_notebook":["key"],"create_highlight":["pdfPath","pageNum","x","y","width","height","color"],"get_highlights":["pdfPath"],"update_highlight_note":["id","note"],"delete_highlight":["id"],"search_highlights":["query"],"sync_page":["pageId"],"get_version_history":["pageId"],"restore_version":["pageId","versionHash"],"plugin_storage_get":["pluginName","key"],"plugin_storage_set":["pluginName","key","value"],"add_css_snippet":["name","css","source"],"toggle_css_snippet":["name"],"delete_css_snippet":["name"],"update_css_snippet":["name","css"],"clip_content":["title","content"],"save_png_to_downloads":["filename","data"],"read_pdf_file":["path"],"read_file_base64":["path"],"fetch_og_metadata":["url"],"get_block":["id"],"get_blocks":["ids"],"get_properties_batch":["entityIds"],"archive_page":["id"],"unarchive_page":["id"],"archive_folder":["id"],"unarchive_folder":["id"],"trash_page":["id"],"trash_folder":["id"],"restore_from_trash":["id","itemType"],"permanently_delete":["id","itemType"],"get_whiteboard":["id"],"save_whiteboard":["id","data"],"restore_blocks":["blocks"],"default_notebook_location":["name"],"create_notebook":["name"],"open_notebook_folder":["path"],"locate_notebook":["key","path"],"rename_notebook":["key","name"],"delete_notebook":["key"],"forget_notebook":["key"],"move_notebook_to_folder":["path"],"git_sync_resolve_deletions":["action"]};
 const UUID_ARGS: Record<string, string[]> = {"delete_page":["id"],"rename_page":["id"],"create_block":["pageId","parentId?"],"update_block":["id"],"delete_block":["id"],"get_backlinks":["pageId"],"get_unlinked_references":["pageId"],"create_folder":["parentId?"],"move_page_to_folder":["pageId","folderId?"],"reorder_page":["id"],"set_property":["entityId"],"get_properties":["entityId"],"get_inherited_properties":["blockId"],"delete_property":["entityId"],"delete_folder":["id"],"update_folder_appearance":["id"],"rename_folder":["id"],"create_card":["blockId"],"review_card":["cardId"],"delete_card":["cardId"],"add_favorite":["pageId"],"remove_favorite":["pageId"],"reorder_favorite":["pageId"],"add_alias":["pageId"],"get_aliases":["pageId"],"apply_template":["pageId"],"move_block":["id","newParent"],"reorder_block":["id","parentId?"],"reparent_block":["id","parentId?"],"update_highlight_note":["id"],"delete_highlight":["id"],"sync_page":["pageId"],"get_version_history":["pageId"],"restore_version":["pageId"],"get_block":["id"],"archive_page":["id"],"unarchive_page":["id"],"archive_folder":["id"],"unarchive_folder":["id"],"trash_page":["id"],"trash_folder":["id"],"restore_from_trash":["id"],"permanently_delete":["id"]};
 
 /** The uuid crate's message for a malformed id (what the Tauri command returns). */

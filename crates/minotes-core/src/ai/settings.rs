@@ -1,4 +1,4 @@
-//! AI settings, stored per notebook (graph DB) in the `ai_settings` table.
+//! AI settings, stored per notebook (in its database) in the `ai_settings` table.
 //!
 //! API keys are NOT part of these settings and never touch the database: the
 //! desktop shell keeps the OpenRouter key in the OS keychain (or reads

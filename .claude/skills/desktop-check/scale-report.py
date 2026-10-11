@@ -7,7 +7,7 @@ Each TSV line is `metric <TAB> json`; a metric measured N times has N lines.
 The table shows the median per size. Call-outs are computed, not hand-written:
   OVER 1 s      median above 1000 ms at any size
   SUPER-LINEAR  grows faster than the block count between the smallest and largest size
-  GROWS         a metric whose work does not depend on graph size (opening the same
+  GROWS         a metric whose work does not depend on notebook size (opening the same
                 page, typing) but which got >1.5x slower
 The reviewer's reading of the code (likely causes) lives in scale-notes.md next
 to this script and is appended verbatim.
@@ -45,7 +45,7 @@ def one(s, metric, field):
     r = data[s].get(metric, [{}])[0]
     return r.get(field) if isinstance(r, dict) else None
 
-rows = []   # (label, {size: value}, unit, kind, note)   kind: "const" = should not depend on graph size
+rows = []   # (label, {size: value}, unit, kind, note)   kind: "const" = should not depend on notebook size
 def add(label, fn, unit="ms", kind="scales", note=""):
     vals = {}
     for s in sizes:
@@ -154,7 +154,7 @@ for label, vals, unit, kind, note in rows:
     print(f"| {label} | " + " | ".join(fmt(vals.get(s), unit) for s in sizes) + f" | {unit} | {ratio} | {' '.join('**' + f + '**' for f in flags)} | {note} |")
 
 print("\n## Call-outs\n")
-if not callouts: print("Nothing over 1 s, nothing growing faster than the graph.\n")
+if not callouts: print("Nothing over 1 s, nothing growing faster than the notebook.\n")
 for label, vals, unit, flags, ratio, note in callouts:
     print(f"- **{' + '.join(flags)}** — {label}: " + ", ".join(f"{s} {fmt(vals.get(s), unit)}" for s in sizes) + f" {unit}" + (f" ({ratio} for x{growth:.1f} blocks)" if ratio and growth else ""))
 print()

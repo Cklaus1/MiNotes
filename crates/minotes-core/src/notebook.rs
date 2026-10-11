@@ -1,7 +1,8 @@
-//! Notebooks: where a graph's database, markdown mirror and app-private state live.
+//! Notebooks: where a notebook's database, markdown mirror and app-private state live.
 //!
-//! Two kinds exist side by side (the UI calls both "notebooks"; code and the CLI
-//! keep the word "graph"):
+//! Two kinds exist side by side (both are "notebooks" in the UI, the CLI and the
+//! commands; they used to be called "graphs", which survives only in on-disk
+//! names such as `~/.minotes/active_graph`):
 //!
 //! - **Legacy** — `~/.minotes/<name>.db`, keyed by `<name>`. Its markdown mirror is
 //!   `~/MiNotes_Sync[-<name>]` (exactly where git sync has always put it), its sync
@@ -73,7 +74,7 @@ fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     crate::repo::export::atomic_write(path, json.as_bytes()).map_err(|e| io_err("Cannot write", path, e))
 }
 
-/// The rules a notebook name must follow (same as graph names have always had):
+/// The rules a notebook name must follow (same as legacy names have always had):
 /// non-empty, no path separators, no dots, no NUL, at most 100 characters.
 pub fn validate_name(name: &str) -> Result<()> {
     let ok = !name.trim().is_empty()
@@ -198,7 +199,7 @@ pub enum Location {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Notebook {
-    /// What `switch_graph` / `active_graph` / sync are keyed by: the legacy name,
+    /// What `switch_notebook` / `active_graph` / sync are keyed by: the legacy name,
     /// or the folder notebook's id.
     pub key: String,
     /// Display name.
@@ -316,7 +317,7 @@ impl Notebook {
     }
 }
 
-/// Resolve a key (`active_graph`, `switch_graph`, `--graph` default) to a notebook.
+/// Resolve a key (`active_graph`, `switch_notebook`, the CLI default) to a notebook.
 /// A registered folder notebook id wins; otherwise it is a legacy name.
 pub fn resolve(key: &str) -> Result<Notebook> {
     let reg = Registry::load();
@@ -347,7 +348,7 @@ pub fn find_by_name(name: &str) -> Result<Notebook> {
         [one] => resolve(&one.key),
         [] => Err(Error::NotFound(format!("No notebook named '{name}'"))),
         _ => Err(Error::InvalidInput(format!(
-            "Several notebooks are named '{name}'; pass --graph <folder> instead"
+            "Several notebooks are named '{name}'; pass --notebook <folder> instead"
         ))),
     }
 }
@@ -416,8 +417,8 @@ pub fn info(nb: &Notebook) -> NotebookInfo {
 /// (including unavailable ones, so the UI can offer "Locate…").
 pub fn list() -> Vec<NotebookInfo> {
     let mut out = Vec::new();
-    if let Ok(graphs) = crate::repo::graphs::list_graphs(&base_dir()) {
-        for g in graphs {
+    if let Ok(legacy) = crate::repo::legacy_notebooks::list(&base_dir()) {
+        for g in legacy {
             out.push(info(&Notebook::legacy(&g.name)));
         }
     }
@@ -648,7 +649,7 @@ pub fn delete(key: &str, active_key: &str) -> Result<()> {
     let mut reg = Registry::load();
     match &nb.location {
         Location::Legacy { name } => {
-            crate::repo::graphs::delete_graph(&base_dir(), name)?;
+            crate::repo::legacy_notebooks::delete(&base_dir(), name)?;
             reg.legacy_names.remove(name);
             reg.legacy_last_opened.remove(name);
             let _ = fs::remove_file(nb.mirror_state_path());
@@ -1149,7 +1150,7 @@ pub(crate) mod tests {
         assert_eq!(nb.sync_config_path(), root.join(PRIVATE_DIR).join("sync-config.json"));
 
         // Listed with legacy notebooks.
-        crate::repo::graphs::create_graph(&base_dir(), "default").unwrap();
+        crate::repo::legacy_notebooks::create(&base_dir(), "default").unwrap();
         let all = list();
         assert_eq!(all.iter().map(|n| n.kind.as_str()).collect::<Vec<_>>().len(), 2);
         assert!(all.iter().any(|n| n.key == "default" && n.kind == "legacy"));
@@ -1301,8 +1302,8 @@ pub(crate) mod tests {
     #[test]
     fn test_rename_and_delete() {
         let home = FakeHome::new();
-        crate::repo::graphs::create_graph(&base_dir(), "default").unwrap();
-        crate::repo::graphs::create_graph(&base_dir(), "work").unwrap();
+        crate::repo::legacy_notebooks::create(&base_dir(), "default").unwrap();
+        crate::repo::legacy_notebooks::create(&base_dir(), "work").unwrap();
         let nb = create_in_folder(&home.path().join("F"), "Folder Book").unwrap();
 
         rename("work", "Work Stuff").unwrap();

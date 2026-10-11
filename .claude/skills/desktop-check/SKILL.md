@@ -73,7 +73,7 @@ native dialogs); take a screenshot first and read positions off it.
 
 `ux-tour.sh [--no-build]` visits ~17 views (journal, rich/long/empty pages, editing,
 search with/without results, settings, graph, mindmap, kanban, whiteboard, all
-pages, trash) on a deliberately messy graph, and for each writes a screenshot, an
+pages, trash) on a deliberately messy notebook, and for each writes a screenshot, an
 audit JSON and a timing into `$DESKTOP_CHECK_DIR/ux/`, summarised in `tour.md`.
 
 Then do the part a script can't: **look at every screenshot** and judge it. Report
@@ -137,7 +137,7 @@ Each must hold in the shipped app:
 - `js 'try { eval("1"); return "NOT blocked" } catch { return "blocked" }'` → blocked (CSP)
 - `js 'return typeof window.__TAURI__'` → `"undefined"`
 - `invoke("read_file_base64", {path: "/etc/passwd"})`, `invoke("read_pdf_file", {path: "/etc/passwd"})` → rejected
-- `invoke("switch_graph", {name: "../../evil"})`, `invoke("run_query", {sql: "BEGIN"})` → rejected
+- `invoke("switch_notebook", {key: "../../evil"})`, `invoke("run_query", {sql: "BEGIN"})` → rejected
 - SSRF: serve a page with a distinctive `<title>` on `127.0.0.1:<port>`, call
   `invoke("fetch_og_metadata", {url})` for `127.0.0.1`, `localhost`, `[::1]`,
   `0.0.0.0` — the title must NOT come back and the server log must show no request.

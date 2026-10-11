@@ -2,8 +2,6 @@
  * Notebook helpers shared by the sidebar switcher, the notebook dialogs, the
  * banners and App: switching (with per-notebook UI state), the folder picker
  * (native dialog, with a test hook), and the events that tie them together.
- *
- * "Notebook" is the UI word; the backend commands still say "graph".
  */
 import * as api from "./api";
 import { undoStack } from "./undoStack";
@@ -46,9 +44,9 @@ export async function switchNotebook(key: string): Promise<void> {
   if (switching) return;
   switching = true;
   try {
-    const from = await api.getCurrentGraph();
+    const from = await api.getCurrentNotebook();
     if (from === key) return;
-    await api.switchGraph(key);
+    await api.switchNotebook(key);
     swapLocalState(from, key);
     undoStack.clear();
     window.dispatchEvent(new CustomEvent(NOTEBOOK_SWITCHED, { detail: { key, from } }));

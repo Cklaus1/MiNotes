@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Scale tour: how does the REAL app behave as the graph grows?
-# For each size it seeds a deterministic graph through the CLI (scale-seed.py +
+# Scale tour: how does the REAL app behave as the notebook grows?
+# For each size it seeds a deterministic notebook through the CLI (scale-seed.py +
 # `minotes import dir`), then measures inside the app (scale-lib.js) and writes
 #   $DESKTOP_CHECK_DIR/signals/scale.md      size x metric table + call-outs
 #   $DESKTOP_CHECK_DIR/signals/scale-<S>.tsv raw samples per size

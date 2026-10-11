@@ -60,8 +60,8 @@ Non-goals
 - The sidebar header shows the current notebook's name next to "MiNotes"; clicking
   it opens a menu: the list of notebooks (current one checked), "New notebook…",
   "Manage notebooks…".
-- UI text says **Notebook** everywhere. Code, commands and the CLI keep `graph`
-  for now (renaming them is churn with no user benefit).
+- UI text says **Notebook** everywhere. (Code, commands and the CLI followed
+  later — see §9 Q5.)
 - Switching closes any open view/panel and lands on that notebook's journal for
   today. Undo history is per notebook and is cleared on switch.
 - The Graph view keeps a read-only label of the current notebook; its dropdown goes.
@@ -107,8 +107,8 @@ My Notebook/
 - A lock file in `.minotes/` records which app instance has the notebook open. A
   second instance opens it read-only with a clear banner. (SQLite's own locking
   stays the real guard.)
-- The CLI accepts a notebook folder for `--graph` as well as a `.db` path, and
-  `--notebook <name>` resolves through the registry.
+- The CLI's `--notebook` accepts a notebook name (resolved through the registry),
+  a notebook folder, or a `.db` path.
 - If the folder is missing at launch (unplugged drive, moved folder): show the
   notebook as unavailable with "Locate…" — never silently create an empty one.
 
@@ -210,4 +210,13 @@ sensitive. Decide in the encryption PRD; this layout accommodates both.
 3. Cross-notebook search and links: out of scope here — worth a follow-up?
 4. Mobile (the Android build): fixed app storage only, or folder access via the
    system picker?
-5. Rename `graph` → `notebook` in the CLI and commands eventually, with aliases?
+5. ~~Rename `graph` → `notebook` in the CLI and commands eventually, with aliases?~~
+   **Resolved: renamed.** "Graph" now means only the link graph (Graph view,
+   `minotes graph data|neighbors|stats`). The CLI's one selector is
+   `--notebook <name|folder|path>`; `--graph <path>` stays as a hidden,
+   deprecated alias (notice on stderr). `minotes notebook list|current|create|open|rename|delete`
+   (`minotes notebooks` = list). Tauri commands are `switch_notebook` /
+   `get_current_notebook` (the dead `list_graphs` / `create_graph_cmd` /
+   `delete_graph_cmd` were removed in favour of the `*_notebook` commands). On-disk
+   names are unchanged: `~/.minotes/active_graph`, `~/.minotes/<name>.db`,
+   `~/MiNotes_Sync[-<name>]`.

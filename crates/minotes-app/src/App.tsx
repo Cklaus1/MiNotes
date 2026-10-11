@@ -528,7 +528,7 @@ export default function App() {
   // Another notebook was opened: close views and panels, forget per-notebook UI
   // state, and land on that notebook's journal for today.
   useEffect(() => {
-    api.getCurrentGraph().then(k => setNotebookKey(k ?? "")).catch(() => {});
+    api.getCurrentNotebook().then(k => setNotebookKey(k ?? "")).catch(() => {});
     const onSwitch = (e: Event) => {
       const key = (e as CustomEvent<{ key: string }>).detail?.key ?? "";
       setNotebookKey(key);
@@ -906,7 +906,6 @@ export default function App() {
               onClose={() => { setCanvasMode(null); }}
               onPageClick={(id) => { openPage(id); setCanvasMode(null); }}
               onRefreshPage={() => { if (activePage) openPage(activePage.page.id); }}
-              onGraphSwitch={() => { setCanvasMode(null); setTimeout(() => { refresh(); setCanvasMode("graph"); }, 200); }}
               onWhiteboardClose={() => { setWhiteboardId(null); setCanvasMode(null); }}
               onRenameTitle={activePage ? (newTitle: string) => {
                 if (activePage.page.is_journal) {

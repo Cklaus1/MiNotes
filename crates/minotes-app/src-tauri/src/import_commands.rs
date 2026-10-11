@@ -249,7 +249,7 @@ struct AppDb<'a> {
 impl import::DbAccess for AppDb<'_> {
     fn with<R>(&self, f: &mut dyn FnMut(&Database) -> minotes_core::error::Result<R>) -> minotes_core::error::Result<R> {
         let db = self.state.db.lock().map_err(|e| minotes_core::error::Error::InvalidInput(e.to_string()))?;
-        let cur = self.state.current_graph.lock().map(|g| g.clone()).unwrap_or_default();
+        let cur = self.state.current_notebook.lock().map(|g| g.clone()).unwrap_or_default();
         if cur != self.key {
             return Err(minotes_core::error::Error::InvalidInput("The notebook was switched during the import".into()));
         }
@@ -301,7 +301,7 @@ pub fn import_preview(state: State<'_, AppState>, imp: State<'_, ImportState>, o
     let model = imp.model.lock().map_err(|e| e.to_string())?.clone().ok_or("Scan a source first")?;
     match destination {
         Some(ImportDestination::Current { .. }) => {
-            let key = state.current_graph.lock().map_err(|e| e.to_string())?.clone();
+            let key = state.current_notebook.lock().map_err(|e| e.to_string())?.clone();
             import::preview_for(&AppDb { state: &state, key }, &model, &opts).map_err(|e| e.to_string())
         }
         _ => Ok(import::preview(&model, &opts, &|_| false, &Default::default())),
@@ -381,7 +381,7 @@ pub fn import_run(app: AppHandle, state: State<'_, AppState>, imp: State<'_, Imp
         }
         ImportDestination::Current { project } => {
             refuse_read_only(&state)?;
-            let key = state.current_graph.lock().map_err(|e| e.to_string())?.clone();
+            let key = state.current_notebook.lock().map_err(|e| e.to_string())?.clone();
             let report = import::import(&AppDb { state: &state, key }, &model, &opts, &Destination::NewProject { name: project }, &cancel, &progress)
                 .map_err(|e| e.to_string())?;
             if let Some(w) = app.try_state::<notebooks::MirrorWorker>() {

@@ -20,14 +20,13 @@ interface Props {
   onClose: () => void;
   onPageClick: (id: string) => void;
   onRefreshPage: () => void;
-  onGraphSwitch: () => void;
   onWhiteboardClose: () => void;
   onRenameTitle?: (newTitle: string) => void;
 }
 
 export default function CanvasMode({
   initialMode, pageId, pageTitle, isJournal, journalDate, blocks, whiteboardId,
-  onClose, onPageClick, onRefreshPage, onGraphSwitch, onWhiteboardClose, onRenameTitle,
+  onClose, onPageClick, onRefreshPage, onWhiteboardClose, onRenameTitle,
 }: Props) {
   const [mode, setMode] = useState<CanvasModeType>(initialMode);
   // App changes initialMode while the canvas is already open (Ctrl+G from Draw,
@@ -50,7 +49,6 @@ export default function CanvasMode({
           <GraphView
             onPageClick={(id) => { onPageClick(id); onClose(); }}
             onClose={onClose}
-            onGraphSwitch={onGraphSwitch}
           />
         );
       case "mindmap":

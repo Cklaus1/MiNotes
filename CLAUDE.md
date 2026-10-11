@@ -61,19 +61,21 @@ bash tests/user-journey-test.sh
 cd crates/minotes-app && npm run tauri dev
 
 # Journeys against the REAL desktop app (real backend, production CSP) — see .claude/skills/desktop-check
-JOURNEY_BACKEND=desktop bash tests/user-journey-test.sh   # the 52 browser journeys on the real backend
+JOURNEY_BACKEND=desktop bash tests/user-journey-test.sh   # the browser journeys on the real backend
 bash tests/desktop-journey-test.sh                        # restart persistence, real typing, CLI interop, 2-device sync
 .claude/skills/desktop-check/ux-tour.sh                   # screenshot + UX audit of every main view
 
 # CLI
-cargo run -p minotes-cli -- --graph ~/.minotes/default.db page list
+cargo run -p minotes-cli -- --notebook ~/.minotes/default.db page list
+cargo run -p minotes-cli -- --notebook "Work" page list      # by name; also a notebook folder
+cargo run -p minotes-cli -- notebook list                     # notebook create|open|rename|delete|current
 ```
 
 ## Testing
 
 - Tests use `agent-browser` (headless Chrome via CDP) — must be installed separately
 - Test API exposed on `window.__MINOTES__` for automation
-- 52 user journeys, 255 assertions in `tests/user-journey-test.sh` (browser + mock by default; `JOURNEY_BACKEND=desktop` runs them on the real app). Desktop journeys D1–D7 (139 assertions) in `tests/desktop-journey-test.sh`; D7 covers outside edits of the markdown copy.
+- 61 user journeys, ~396 assertions in `tests/user-journey-test.sh` (browser + mock by default; `JOURNEY_BACKEND=desktop` runs them on the real app). Desktop journeys D1–D7 (~141 assertions) in `tests/desktop-journey-test.sh`; D7 covers outside edits of the markdown copy.
 - `get_page_blocks`/`getPageTree` return blocks in **outline order** (depth-first, siblings by position). Positions are per-parent — never sort a page's blocks by position alone.
 - ProseMirror doesn't respond to CDP keyboard events — use `window.__MINOTES__` API instead
 - Browser-mode tests use the mock backend and don't enforce the CSP. For anything Tauri-only use the `desktop-check` skill (Xvfb + xdotool + screenshots against a throwaway HOME).
@@ -94,7 +96,9 @@ cargo run -p minotes-cli -- --graph ~/.minotes/default.db page list
 
 ## CLI gotchas
 
-- **`--graph` defaults to the app's active graph** (`~/.minotes/<active_graph>.db`); a leading `~` is expanded. An explicit `--graph` path that doesn't exist is an error unless `--create` is passed.
+- **`--notebook <name|folder|path>` (`-n`) selects the database**; without it the CLI uses the app's open notebook (key in `~/.minotes/active_graph`: a legacy `~/.minotes/<name>.db` or a folder notebook). A leading `~` is expanded. An explicit `.db` path that doesn't exist is an error unless `--create` is passed. `--graph <path>` is a hidden, deprecated alias (path only; prints a notice on stderr, never stdout).
+- **"graph" means only the link graph** (Graph view, `minotes graph data|neighbors|stats`, `repo/graph.rs`). Databases are "notebooks" everywhere (CLI, Tauri commands `switch_notebook`/`get_current_notebook`, `api.ts`). On-disk names keep the old word: `~/.minotes/active_graph`, `~/.minotes/<name>.db`, `~/MiNotes_Sync[-<name>]` — don't rename them.
+- **`minotes notebook create <name>`** makes a folder notebook at `~/MiNotes/<name>` (`--location <dir>` to choose), exactly like the app; `minotes notebooks` still lists.
 - **`page delete` moves to trash** (like the app). Hard delete needs `--permanent --yes` (or a TTY confirmation).
 - **`page create` has no `--folder` flag** — create the page first, then assign it: `minotes folder add-page <page-id> <folder-id>`. Using `property set folder_id` does nothing (that key is not the DB column).
 - **`page get <title>`** returns page + all blocks by default. Use `--no-blocks` for metadata only.
