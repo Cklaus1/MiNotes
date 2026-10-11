@@ -135,6 +135,15 @@ pub fn deleted_files_between(dir: &Path, old: &str, new: &str) -> Result<Vec<Str
     Ok(out)
 }
 
+/// Paths (relative, NUL-safe, unquoted) added, modified or deleted between two commits.
+pub fn changed_files_between(dir: &Path, old: &str, new: &str) -> Result<Vec<String>> {
+    let (stdout, stderr, ok) = run_git(dir, &["diff", "--name-only", "-z", "--no-renames", old, new])?;
+    if !ok {
+        return Err(Error::Git(format!("git diff failed: {stderr}")));
+    }
+    Ok(stdout.split('\0').filter(|s| !s.is_empty()).map(str::to_string).collect())
+}
+
 /// Contents of `path` at `rev` (None if absent).
 pub fn show_file_at(dir: &Path, rev: &str, path: &str) -> Result<Option<String>> {
     let (stdout, _, ok) = run_git(dir, &["show", &format!("{rev}:{path}")])?;

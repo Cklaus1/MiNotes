@@ -33,6 +33,7 @@ import { pageTitleConflict } from "./lib/pageNames";
 import { getRecentPages } from "./lib/recentFiles";
 import { getSettings } from "./lib/settings";
 import NotebookBanner from "./components/NotebookBanner";
+import { listenOutsideEdits, OUTSIDE_PAGES_CHANGED } from "./lib/outsideEdits";
 import { NOTEBOOK_SWITCHED, setNextPickedFolder, switchNotebook } from "./lib/notebooks";
 import { notifyCardsChanged } from "./lib/cards";
 // ── AI platform ──
@@ -495,6 +496,20 @@ export default function App() {
     }
   }, [activePage, refresh, openPage, openJournal]);
 
+  // Files of the markdown copy edited in another app were imported: reload the
+  // open page if it was one of them (the sidebar refreshes on its own).
+  useEffect(() => listenOutsideEdits(), []);
+  useEffect(() => {
+    const onChanged = (e: Event) => {
+      const ids = (e as CustomEvent<{ ids: string[] }>).detail?.ids ?? [];
+      const cur = activePageIdRef.current;
+      if (cur && ids.includes(cur)) openPage(cur).catch(() => {});
+      refresh();
+    };
+    window.addEventListener(OUTSIDE_PAGES_CHANGED, onChanged);
+    return () => window.removeEventListener(OUTSIDE_PAGES_CHANGED, onChanged);
+  }, [openPage, refresh]);
+
   // The other device's mass deletion: the user decides.
   const resolveHeldDeletions = useCallback(async (action: "trash" | "keep") => {
     try {
@@ -862,7 +877,7 @@ export default function App() {
       />
       <div className="main workspace-split mod-root" style={{ position: "relative", display: "flex", flexDirection: "row" }}>
         <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }}>
-          <NotebookBanner heldDeletions={heldDeletions} onResolveHeld={resolveHeldDeletions} />
+          <NotebookBanner heldDeletions={heldDeletions} onResolveHeld={resolveHeldDeletions} onOpenPage={id => { openPage(id).catch(() => {}); }} />
           {lastError && (
             <div style={{ background: "#f38ba8", color: "#1e1e2e", padding: "8px 16px", fontSize: 13, fontWeight: 600 }}>
               {lastError}

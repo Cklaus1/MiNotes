@@ -66,6 +66,10 @@ pub struct ExportReport {
     /// Files actually (re)written because their content changed.
     #[serde(skip)]
     pub changed: usize,
+    /// Pages NOT written because their file was changed outside MiNotes since
+    /// the mirror last wrote it (see [`PreparedExport::guard`]): (id, path).
+    #[serde(skip)]
+    pub guarded: Vec<(Uuid, PathBuf)>,
     // ── Import / attachments ──
     /// Attachments over the git-sync limit (kept out of git, reported).
     #[serde(default)]
@@ -84,9 +88,25 @@ pub struct ExportOptions {
 
 /// Hex sha256 of a file's content (the mirror's change marker).
 pub(crate) fn content_hash(content: &str) -> String {
+    bytes_hash(content.as_bytes())
+}
+
+/// Hex sha256 of raw bytes (same value as [`content_hash`] for UTF-8 text).
+pub(crate) fn bytes_hash(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
-    let d = Sha256::digest(content.as_bytes());
+    let d = Sha256::digest(bytes);
     d.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Outside-edit guard (PRD-notebooks Phase 4): would writing `new_content` to
+/// `path` destroy an edit made outside MiNotes? True when the file exists, no
+/// longer hashes to `recorded` (what the mirror last wrote there) and is not
+/// already `new_content`. Hashes, never timestamps.
+pub(crate) fn edited_outside(path: &Path, recorded: &str, new_content: &str) -> bool {
+    match fs::read(path) {
+        Ok(bytes) => bytes != new_content.as_bytes() && bytes_hash(&bytes) != recorded,
+        Err(_) => false,
+    }
 }
 
 /// Suffix of the temp files `atomic_write` creates (dot-prefixed, never `.md`,
@@ -301,7 +321,7 @@ impl Database {
         let refs: Vec<String> = self.whiteboards_on_pages(&ids)?.into_iter().collect();
         let sidecars = self.render_whiteboard_sidecars(root, refs)?;
         let prune_inputs = if prune { Some(self.prune_inputs(&plan)?) } else { None };
-        Ok(PreparedExport { plan, pages, folders, sidecars, prune: prune_inputs, attachments, att_prune })
+        Ok(PreparedExport { plan, pages, folders, sidecars, prune: prune_inputs, attachments, att_prune, guard: HashMap::new() })
     }
 
     /// Compute a deterministic, collision-free export path for every live page.
@@ -882,6 +902,10 @@ pub struct PreparedExport {
     /// (hashes something references, hashes in the local store) — full passes.
     pub(crate) att_prune: Option<(HashSet<String>, HashSet<String>)>,
     // ── End import ──
+    /// Page id → hash of the file the mirror last wrote at the page's (same)
+    /// path. A file there that changed since is not overwritten (reported in
+    /// [`ExportReport::guarded`]); the outside-edit import picks it up.
+    pub(crate) guard: HashMap<Uuid, String>,
 }
 
 /// What the pruner needs to know about the database.
@@ -925,6 +949,13 @@ pub(crate) fn apply_export(root: &Path, prepared: PreparedExport) -> Result<Expo
                 // yet): never overwrite it. The import adopts it; the next pass
                 // writes this page once the names are settled.
                 eprintln!("[minotes-mirror] not overwriting {} (holds a page not imported yet)", rel.display());
+                continue;
+            }
+        }
+        if let Some(recorded) = prepared.guard.get(id) {
+            if edited_outside(&filepath, recorded, md) {
+                eprintln!("[minotes-mirror] not overwriting {} (edited outside MiNotes)", rel.display());
+                report.guarded.push((*id, rel.clone()));
                 continue;
             }
         }

@@ -41,7 +41,7 @@ echo "════════════════════════�
 echo "  MiNotes Desktop Journeys (real app, real backend)"
 echo "═══════════════════════════════════════════════"
 
-rm -rf "$STATE"/{persist,devA,devB,nbook,remote.git} "$STATE/results.tsv"
+rm -rf "$STATE"/{persist,devA,devB,nbook,outside,remote.git} "$STATE/results.tsv"
 if [[ -z "$DESKTOP_NO_BUILD" ]]; then
   "$DC" up --webdriver --profile persist >/dev/null || { echo "build/launch failed"; exit 1; }
 else
@@ -451,6 +451,99 @@ waitfor "[...document.querySelectorAll('.block img')].some(i=>i.complete&&i.natu
   && pass "The pasted image renders after a restart" || fail "Pasted image after restart" "$(ev "[...document.querySelectorAll('.block img')].map(i=>i.src+':'+i.naturalWidth).join(' ')")"
 "$DC" wshot "d6-pasted-after-restart" >/dev/null
 is "attachment:// serves nothing outside the store" "$(ev "(async()=>{const load=u=>new Promise(r=>{const i=new Image();i.onload=()=>r('loaded');i.onerror=()=>r('refused');i.src=u});const ok=await load('attachment://localhost/$PH');return [ok,await load('attachment://localhost/..%2F..%2Fnotebook.minotes'),await load('attachment://localhost/'+'0'.repeat(64))].join(',')})()")" "loaded,refused,refused"
+
+# ═══════════════════════════════════════════════
+journey "D7. I edit my notes in another app while MiNotes is open"
+# The markdown copy (here a legacy notebook's ~/MiNotes_Sync) is edited with the
+# shell: changes reach the open page, removed lines go to the Trash, edits on both
+# sides keep both versions, files dropped in become pages, deleted files trash
+# their page, unreadable files are left alone, and a read-only window imports nothing.
+# ═══════════════════════════════════════════════
+device outside || true
+OH="$STATE/outside"; MD="$OH/MiNotes_Sync"; OF="$MD/Outside Page.md"
+A7="const api=await import('/src/lib/api.ts');"
+# wait_js <async expr returning a string> <substring> [secs]: poll until it contains the substring
+wait_js() { local n=$(( ${3:-15} * 2 )); for _ in $(seq 1 $n); do [[ "$(ev "$1")" == *"$2"* ]] && return 0; sleep 0.5; done; return 1; }
+TRASH7="(async()=>{$A7 return (await api.listTrash()).map(t=>t.title).join('|')})()"
+# sub <file> <python-expr over s>: rewrite a file in place, like another editor would
+sub() { python3 -c 'import sys;p=sys.argv[1];s=open(p,encoding="utf-8").read();s=eval(sys.argv[2]);open(p,"w",encoding="utf-8").write(s)' "$1" "$2"; }
+
+step "A page and its markdown file"
+ev "(async()=>{$A7 const p=await api.createPage('Outside Page');for(const t of ['first line','second line','third line'])await api.createBlock(p.id,t);return 'ok'})()" >/dev/null
+wait_file "$OF" 15 "third line" && pass "Outside Page.md written" || fail "Mirror file" "$(ls "$MD" 2>&1)"
+api "navigateTo('Outside Page')" >/dev/null; sleep 1.5
+ID_FIRST=$(ev "(async()=>{$A7 return (await api.getPageTree('Outside Page')).blocks[0].id})()")
+
+step "I edit the file with another program — the open page follows"
+sub "$OF" "s.replace('second line','second line, edited in vim') + '- added in vim\n'"
+waitfor "document.body.innerText.includes('added in vim') && document.body.innerText.includes('edited in vim')" 15 \
+  && pass "The open page shows the outside edit without a reload" || fail "Open page not refreshed" "$(blocks_of 'Outside Page')"
+is "Blocks: ids kept, edit + new line imported" "$(blocks_of 'Outside Page')" "first line ¦ second line, edited in vim ¦ third line ¦ added in vim"
+is "The first block kept its id" "$(ev "(async()=>{$A7 return (await api.getPageTree('Outside Page')).blocks[0].id})()")" "$ID_FIRST"
+waitfor "[...document.querySelectorAll('.minotes-toast')].some(t=>t.textContent.includes('Updated “Outside Page”'))" 5 \
+  && pass "A quiet toast says the page was updated from the file" || fail "No toast" "$(ev "[...document.querySelectorAll('.minotes-toast')].map(t=>t.textContent).join(' | ')")"
+"$DC" wshot "d7-outside-edit" >/dev/null
+wait_file "$OF" 10 "added in vim <!-- id:" && pass "MiNotes then writes the file back with block ids" || fail "File not re-rendered" "$(tail -2 "$OF")"
+is "No conflict copy for a one-sided edit" "$(ev "(async()=>{$A7 return String((await api.listPages(1000)).some(p=>p.title.includes('(edited outside)')))})()")" "false"
+
+step "I delete a line in the file — the block goes to the Trash, and undo brings it back"
+sub "$OF" "''.join(l for l in s.splitlines(True) if 'third line' not in l)"
+wait_js "(async()=>{$A7 return (await api.getPageTree('Outside Page')).blocks.map(b=>b.content).join('|')})()" "edited in vim|added in vim" 15 \
+  && pass "The line is gone from the page" || fail "Line not removed" "$(blocks_of 'Outside Page')"
+[[ "$(ev "$TRASH7")" == *"Outside Page (removed outside"* ]] && pass "Its block is in the Trash (a 'removed outside' page)" || fail "Removed block not in Trash" "$(ev "$TRASH7")"
+ev "(async()=>{const u=await import('/src/lib/undoManager.ts');await u.executeUndo();return 'ok'})()" >/dev/null
+wait_js "(async()=>{$A7 return (await api.getPageTree('Outside Page')).blocks.map(b=>b.content).join('|')})()" "edited in vim|third line|added in vim" 10 \
+  && pass "Undo (one step) restores the line" || fail "Undo" "$(blocks_of 'Outside Page')"
+[[ "$(ev "$TRASH7")" != *"removed outside"* ]] && pass "…and the emptied Trash page is gone" || fail "Parking page left" "$(ev "$TRASH7")"
+wait_file "$OF" 10 "third line" && pass "The file gets the line back" || fail "File after undo" "$(cat "$OF")"
+sleep 2.5
+
+step "The page and its file both change — both versions are kept"
+ev "(async()=>{$A7 const t=await api.getPageTree('Outside Page');await api.updateBlock(t.blocks[0].id,'first line, changed in MiNotes');return 'ok'})()" >/dev/null
+sub "$OF" "s.replace('first line','first line, changed in the other app')"
+wait_js "(async()=>{$A7 return (await api.listPages(1000)).map(p=>p.title).join('|')})()" "Outside Page (edited outside)" 15 \
+  && pass "The outside version became 'Outside Page (edited outside)'" || fail "No conflict copy" "$(ev "$PAGES")"
+[[ "$(blocks_of 'Outside Page (edited outside)')" == *"first line, changed in the other app"* ]] && pass "…with the other app's text" || fail "Conflict copy content" "$(blocks_of 'Outside Page (edited outside)')"
+[[ "$(blocks_of 'Outside Page')" == "first line, changed in MiNotes"* ]] && pass "The page keeps MiNotes' version" || fail "Page content" "$(blocks_of 'Outside Page')"
+waitfor "!!document.querySelector('[data-testid=outside-conflict-banner]')" 5 && pass "A notice explains it, with 'Open it'" || fail "No conflict notice" ""
+"$DC" wshot "d7-conflict-banner" >/dev/null
+wait_file "$OF" 10 "changed in MiNotes" && pass "The file shows MiNotes' version again" || fail "File after conflict" "$(head -8 "$OF")"
+ev "document.querySelector('[data-testid=outside-open-copy]')?.click()" >/dev/null
+waitfor "(window.__MINOTES__.getCurrentPage()||'')==='Outside Page (edited outside)'" 8 && pass "'Open it' opens the copy" || fail "Open copy" "$(ev "window.__MINOTES__.getCurrentPage()")"
+
+step "I drop a new file into a folder of the markdown copy"
+mkdir -p "$MD/Inbox"; printf -- '- dropped note zq7\n  - nested under it\n' >"$MD/Inbox/Dropped Note.md"
+wait_js "(async()=>{$A7 return (await api.listPages(1000)).map(p=>p.title).join('|')})()" "Dropped Note" 15 \
+  && pass "It became a page" || fail "Dropped file not imported" "$(ev "$PAGES")"
+is "…with its lines as blocks" "$(blocks_of 'Dropped Note')" "dropped note zq7 ¦ nested under it"
+is "…in the folder named like the directory" "$(ev "(async()=>{$A7 const t=await api.getPageTree('Dropped Note');const f=(await api.getFolderTree()).folders.find(x=>x.id===t.page.folder_id);return f?f.name:'none'})()")" "Inbox"
+wait_file "$MD/Inbox/Dropped Note.md" 10 "id: " && pass "The file got its page id" || fail "Dropped file not adopted" "$(cat "$MD/Inbox/Dropped Note.md")"
+
+step "A file MiNotes can't read is left alone"
+printf 'binary\000\001\002' >"$MD/Binary.md"; BIN_SUM=$(md5sum <"$MD/Binary.md")
+waitfor "!!document.querySelector('[data-testid=outside-rejected-banner]')" 10 && pass "Reported in a notice" || fail "No notice for the unreadable file" ""
+sleep 3
+is "Not imported" "$(ev "(async()=>{$A7 return String((await api.listPages(1000)).some(p=>p.title==='Binary'))})()")" "false"
+is "Not rewritten" "$(md5sum <"$MD/Binary.md")" "$BIN_SUM"
+
+step "I delete a page's file — the page goes to the Trash"
+rm "$MD/Inbox/Dropped Note.md"
+wait_js "$TRASH7" "Dropped Note" 15 && pass "Dropped Note is in the Trash" || fail "Deleted file's page not trashed" "$(ev "$TRASH7")"
+is "…with its blocks (recoverable)" "$(db outside "select count(*) from blocks b join pages p on p.id=b.page_id where p.title='Dropped Note'")" "2"
+
+step "A read-only window (another MiNotes has the notebook) imports nothing"
+sleep 2.5
+"$DC" down >/dev/null 2>&1
+printf '{"pid":%s,"host":"%s","instance":"other-window","opened_at":"2026-01-01T00:00:00Z"}' "$$" "$(hostname)" >"$OH/.minotes/default.lock.json"
+device outside keep || true
+waitfor "!!document.querySelector('[data-testid=readonly-banner]')" 15 && pass "Opened read-only" || fail "Not read-only" ""
+sub "$OF" "s.replace('added in vim','added while read-only')"
+sleep 5
+is "The edit was not imported by the read-only window" "$(db outside "select count(*) from blocks where content like '%added while read-only%'")" "0"
+grep -q "added while read-only" "$OF" && pass "…and the file was not touched" || fail "Read-only window rewrote the file" "$(tail -2 "$OF")"
+ev "document.querySelector('[data-testid=readonly-banner] button')?.click()" >/dev/null
+wait_js "(async()=>{$A7 return (await api.getPageTree('Outside Page')).blocks.map(b=>b.content).join('|')})()" "added while read-only" 15 \
+  && pass "Taking the notebook over imports the edit made meanwhile" || fail "Edit lost after take-over" "$(blocks_of 'Outside Page')"
 
 # ═══════════════════════════════════════════════
 echo ""

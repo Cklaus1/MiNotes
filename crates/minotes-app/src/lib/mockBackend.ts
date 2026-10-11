@@ -1354,6 +1354,7 @@ const handlers: Record<string, (args: any) => any> = {
   mirror_open_folder: notInBrowser("mirror_open_folder"),
   save_export_file: notInBrowser("save_export_file"),
   git_sync_resolve_deletions: () => 0,
+  outside_edit_set_blocks: () => null,
   // core clip_content: a page, url/tag properties, one block per paragraph.
   clip_content: ({ title, content, url, tags }: { title: string; content: string; url?: string; tags?: string[] }) => {
     const page = createPage(title);

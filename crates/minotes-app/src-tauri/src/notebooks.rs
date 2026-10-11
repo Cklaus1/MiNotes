@@ -1,18 +1,21 @@
 //! Notebooks in the desktop app: the open notebook's session (lock, read-only
 //! mode, notices), the commands behind the sidebar switcher and "Manage
-//! notebooks…", the database file watcher, and the markdown-mirror worker.
+//! notebooks…", the database file watcher, the markdown-mirror worker, and the
+//! mirror-folder watcher that imports edits made outside MiNotes (Phase 4).
 //!
 //! Lock order everywhere: `mirror::FS_LOCK` → `AppState.db` → `current_graph`
 //! → `session` → `virtual_journals`.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use minotes_core::db::Database;
 use minotes_core::mirror::{self, MirrorTarget, FS_LOCK};
 use minotes_core::notebook::{self, LockInfo, LockStatus, Notebook, NotebookInfo};
+use minotes_core::outside::{self, OutsideReport, Scope};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -116,6 +119,8 @@ pub enum MirrorMsg {
     Changed,
     /// Full pass now (startup, notebook switch, "Rebuild markdown copy").
     Full,
+    /// Files in the mirror changed (paths relative to it): import outside edits.
+    Outside(Vec<PathBuf>),
 }
 
 pub struct MirrorWorker {
@@ -162,12 +167,64 @@ fn emit_mirror_status(app: &AppHandle) {
     }
 }
 
-/// One mirror pass for the open notebook. The DB lock is held only while the
-/// pass reads the database; files are written after it is released.
-fn mirror_pass(app: &AppHandle, full: bool) -> Result<Option<mirror::MirrorReport>, String> {
+/// Tell the window what was imported from outside edits (toasts, banner, undo,
+/// refresh of the open page).
+fn emit_outside(app: &AppHandle, report: &OutsideReport) {
+    if !report.is_empty() {
+        let _ = app.emit("outside-edits", report);
+    }
+}
+
+fn outside_or_error(r: minotes_core::error::Result<OutsideReport>) -> OutsideReport {
+    r.unwrap_or_else(|e| OutsideReport { errors: vec![e.to_string()], ..Default::default() })
+}
+
+/// Import outside edits of the files at `paths` (relative to the mirror).
+/// Never in a read-only session: the instance that owns the notebook imports.
+fn outside_pass(app: &AppHandle, paths: Vec<PathBuf>) {
     let state = app.state::<AppState>();
     let _fs = FS_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-    let (target, prepared) = {
+    let report = {
+        let Ok(db) = state.db.lock() else { return };
+        let Ok(s) = state.session.lock() else { return };
+        if s.held_by.is_some() || !s.notebook.mirror_enabled() {
+            return;
+        }
+        let target = MirrorTarget::for_notebook(&s.notebook);
+        drop(s);
+        outside_or_error(outside::import_outside_edits(&db, &target, &Scope::Paths(paths)))
+    };
+    drop(_fs);
+    if !report.touched_pages().is_empty() {
+        if let Some(w) = app.try_state::<MirrorWorker>() {
+            w.send(MirrorMsg::Changed);
+        }
+    }
+    emit_outside(app, &report);
+}
+
+/// One mirror pass for the open notebook. The DB lock is held only while the
+/// pass reads the database (and, on full passes, imports outside edits first);
+/// files are written after it is released.
+fn mirror_pass(app: &AppHandle, full: bool) -> Result<Option<mirror::MirrorReport>, String> {
+    let r = mirror_pass_inner(app, full);
+    if let Ok(Some(rep)) = &r {
+        emit_outside(app, &rep.outside);
+        // Files the guard refused to overwrite: someone edited them — import now.
+        if !rep.guarded.is_empty() {
+            if let Some(w) = app.try_state::<MirrorWorker>() {
+                w.send(MirrorMsg::Outside(rep.guarded.iter().map(PathBuf::from).collect()));
+            }
+        }
+    }
+    follow_session_with_watch(app);
+    r
+}
+
+fn mirror_pass_inner(app: &AppHandle, full: bool) -> Result<Option<mirror::MirrorReport>, String> {
+    let state = app.state::<AppState>();
+    let _fs = FS_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let (target, prepared, outside_report) = {
         let db = state.db.lock().map_err(|e| e.to_string())?;
         let (nb, ro) = {
             let s = state.session.lock().map_err(|e| e.to_string())?;
@@ -178,15 +235,23 @@ fn mirror_pass(app: &AppHandle, full: bool) -> Result<Option<mirror::MirrorRepor
             return Ok(None);
         }
         let target = MirrorTarget::for_notebook(&nb);
+        // Startup / switch / rebuild: catch edits made while the app was closed.
+        let outside_report = if full {
+            outside_or_error(outside::import_outside_edits(&db, &target, &Scope::All))
+        } else {
+            OutsideReport::default()
+        };
         match mirror::prepare(&db, &target, full) {
-            Ok(p) => (target, p),
+            Ok(p) => (target, p, outside_report),
             Err(e) => {
                 mirror::record_error(&target, &e.to_string());
                 return Err(e.to_string());
             }
         }
     };
-    mirror::apply(&target, prepared).map(Some).map_err(|e| e.to_string())
+    let mut rep = mirror::apply(&target, prepared).map_err(|e| e.to_string())?;
+    rep.outside = outside_report;
+    Ok(Some(rep))
 }
 
 fn checkpoint_if_needed(app: &AppHandle) {
@@ -206,6 +271,7 @@ fn checkpoint_if_needed(app: &AppHandle) {
 
 pub fn start_mirror_worker(app: &AppHandle) -> MirrorWorker {
     let (tx, rx) = mpsc::channel::<MirrorMsg>();
+    app.manage(start_mirror_watch(app));
     let handle = app.clone();
     std::thread::spawn(move || {
         let mut due: Option<Instant> = None; // incremental pass due at
@@ -240,6 +306,10 @@ pub fn start_mirror_worker(app: &AppHandle) -> MirrorWorker {
                 Some(MirrorMsg::Full) => {
                     full = true;
                     due = Some(Instant::now());
+                    continue;
+                }
+                Some(MirrorMsg::Outside(paths)) => {
+                    outside_pass(&handle, paths);
                     continue;
                 }
                 None => {}
@@ -372,6 +442,138 @@ pub fn start_db_watch(app: &AppHandle) -> DbWatch {
         }
     });
     DbWatch { watcher: Mutex::new(watcher), dir: Mutex::new(None) }
+}
+
+// ── Mirror folder watcher (edits made outside MiNotes, Phase 4) ──
+
+/// Quiet period after the last change in the mirror folder before importing.
+const OUTSIDE_DEBOUNCE: Duration = Duration::from_millis(700);
+/// …but never wait longer than this while changes keep coming.
+const OUTSIDE_MAX_WAIT: Duration = Duration::from_millis(3000);
+
+/// Watches the open notebook's markdown mirror (recursively). Changed paths go
+/// to the mirror worker, which tells the mirror's own writes apart by hash
+/// (`outside::import_outside_edits`) — timestamps are never trusted. Dot paths
+/// (`.git`, `.minotes-*`, temp files), `_attachments/` and non-markdown files
+/// are dropped here already. Nothing is watched in a read-only session.
+pub struct MirrorWatch {
+    watcher: Mutex<Option<notify::RecommendedWatcher>>,
+    dir: Arc<Mutex<Option<PathBuf>>>,
+}
+
+impl MirrorWatch {
+    fn set(&self, want: Option<PathBuf>) {
+        use notify::{RecursiveMode, Watcher};
+        let (Ok(mut w), Ok(mut cur)) = (self.watcher.lock(), self.dir.lock()) else { return };
+        let Some(w) = w.as_mut() else { return };
+        if *cur == want {
+            return;
+        }
+        if let Some(old) = cur.take() {
+            let _ = w.unwatch(&old);
+        }
+        if let Some(dir) = want {
+            match w.watch(&dir, RecursiveMode::Recursive) {
+                Ok(()) => *cur = Some(dir),
+                Err(e) => eprintln!("[minotes-outside] cannot watch {}: {e}", dir.display()),
+            }
+        }
+    }
+}
+
+/// Point the watcher at the open notebook's mirror (or at nothing when the
+/// session is read-only / the mirror is off / not written yet).
+fn follow_session_with_watch(app: &AppHandle) {
+    let Some(w) = app.try_state::<MirrorWatch>() else { return };
+    let Some(state) = app.try_state::<AppState>() else { return };
+    let want = match state.session.lock() {
+        Ok(s) if s.held_by.is_none() && s.notebook.mirror_enabled() => Some(s.notebook.mirror_dir()),
+        Ok(_) => None,
+        Err(_) => return,
+    };
+    w.set(want.filter(|d| d.is_dir()));
+}
+
+fn start_mirror_watch(app: &AppHandle) -> MirrorWatch {
+    use notify::{Config, Watcher};
+    let (tx, rx) = mpsc::channel::<notify::Result<notify::Event>>();
+    let watcher = notify::RecommendedWatcher::new(tx, Config::default()).ok();
+    let dir: Arc<Mutex<Option<PathBuf>>> = Arc::new(Mutex::new(None));
+    let cur = dir.clone();
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        let mut pending: BTreeSet<PathBuf> = BTreeSet::new();
+        let mut first: Option<Instant> = None;
+        let mut last = Instant::now();
+        loop {
+            let res = match first {
+                Some(f) => {
+                    let until = (last + OUTSIDE_DEBOUNCE).min(f + OUTSIDE_MAX_WAIT);
+                    match rx.recv_timeout(until.saturating_duration_since(Instant::now())) {
+                        Ok(r) => Some(r),
+                        Err(RecvTimeoutError::Timeout) => None,
+                        Err(RecvTimeoutError::Disconnected) => break,
+                    }
+                }
+                None => match rx.recv() {
+                    Ok(r) => Some(r),
+                    Err(_) => break,
+                },
+            };
+            match res {
+                Some(Ok(event)) => {
+                    if matches!(event.kind, notify::EventKind::Access(_)) {
+                        continue;
+                    }
+                    let Some(root) = cur.lock().ok().and_then(|d| d.clone()) else { continue };
+                    for p in &event.paths {
+                        let Ok(rel) = p.strip_prefix(&root) else { continue };
+                        if rel.as_os_str().is_empty() || outside::is_ignored(rel) {
+                            continue;
+                        }
+                        pending.insert(rel.to_path_buf());
+                        last = Instant::now();
+                        first.get_or_insert(last);
+                    }
+                }
+                Some(Err(_)) => {}
+                None => {
+                    first = None;
+                    let paths: Vec<PathBuf> = std::mem::take(&mut pending).into_iter().collect();
+                    if !paths.is_empty() {
+                        if let Some(w) = handle.try_state::<MirrorWorker>() {
+                            w.send(MirrorMsg::Outside(paths));
+                        }
+                    }
+                }
+            }
+        }
+    });
+    MirrorWatch { watcher: Mutex::new(watcher), dir }
+}
+
+/// Undo / redo of one outside-edit import: make the page's blocks exactly
+/// `blocks` (see `outside::set_page_blocks`). `park_title`: blocks not in the
+/// snapshot go to a Trash page named after it (redo) instead of being deleted
+/// (undo, where they are the import's own new blocks). `cleanup_page_id`: the
+/// "removed outside" Trash page, deleted once empty. Returns a new such page.
+#[tauri::command]
+pub fn outside_edit_set_blocks(
+    state: State<'_, AppState>,
+    page_id: String,
+    blocks: Vec<minotes_core::models::RestoreBlock>,
+    park_title: Option<String>,
+    cleanup_page_id: Option<String>,
+) -> Result<Option<String>, String> {
+    let pid = uuid::Uuid::parse_str(&page_id).map_err(|e| e.to_string())?;
+    let cleanup = match cleanup_page_id {
+        Some(c) => Some(uuid::Uuid::parse_str(&c).map_err(|e| e.to_string())?),
+        None => None,
+    };
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    outside::set_page_blocks(&db, &pid, &blocks, park_title.as_deref(), cleanup.as_ref())
+        .map(|p| p.map(|u| u.to_string()))
+        .map_err(|e| e.to_string())
 }
 
 // ── Switching ──

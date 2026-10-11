@@ -378,6 +378,10 @@ pub struct PendingImport {
     pub removed_page_ids: Vec<Uuid>,
     /// Folders whose `.minotes-folder.json` was deleted in that range.
     pub removed_folder_ids: Vec<Uuid>,
+    /// Files the pull changed (None: no earlier import to compare with — all).
+    /// The markdown mirror re-baselines them after the import, so they are not
+    /// mistaken for outside edits.
+    pub changed_paths: Option<Vec<String>>,
 }
 
 // ── Public API ──
@@ -590,8 +594,10 @@ pub fn pending_import(sync_dir: &Path) -> Result<Option<PendingImport>> {
     }
     let mut removed_page_ids = Vec::new();
     let mut removed_folder_ids = Vec::new();
+    let mut changed_paths = None;
     if let Some(old) = st.imported_head.as_deref() {
         if git_cmd::commit_exists(sync_dir, old) {
+            changed_paths = Some(git_cmd::changed_files_between(sync_dir, old, &head)?);
             for path in git_cmd::deleted_files_between(sync_dir, old, &head)? {
                 let p = Path::new(&path);
                 let hidden_dir = p
@@ -622,7 +628,7 @@ pub fn pending_import(sync_dir: &Path) -> Result<Option<PendingImport>> {
             }
         }
     }
-    Ok(Some(PendingImport { head, removed_page_ids, removed_folder_ids }))
+    Ok(Some(PendingImport { head, removed_page_ids, removed_folder_ids, changed_paths }))
 }
 
 /// Phase 3b (DB): import files → DB. Pages edited locally after `protect_after`
@@ -707,6 +713,10 @@ where
     if let Some(pending) = pending_import(sync_dir)? {
         let db = lock_db()?;
         let r = apply_import(&db, sync_dir, &pending, Some(export.export_time))?;
+        // What the pull wrote into the mirror is not an outside edit.
+        if let Err(e) = crate::outside::adopt_pulled_files(&db, target, pending.changed_paths.as_deref()) {
+            eprintln!("[minotes-sync] could not re-baseline pulled files: {e}");
+        }
         pages_imported = (r.pages_created.len() + r.pages_updated.len() + r.pages_deleted.len()) as u32;
         import_errors = r.errors.clone();
     }

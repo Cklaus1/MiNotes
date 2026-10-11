@@ -771,6 +771,43 @@ export interface HeldDeletions {
 export const gitSyncResolveDeletions = (action: "trash" | "keep") =>
   invoke<number>("git_sync_resolve_deletions", { action });
 
+// ── Outside edits of the markdown copy (PRD-notebooks Phase 4) ──
+
+export interface OutsidePageRef { page_id: string; title: string; path: string }
+export interface OutsideImportedPage extends OutsidePageRef {
+  blocks_created: number;
+  blocks_updated: number;
+  blocks_removed: number;
+  /** Trash page holding the blocks whose lines were removed in the file. */
+  removed_page_id: string | null;
+  before: RestoreBlock[];
+  after: RestoreBlock[];
+}
+export interface OutsideConflictCopy {
+  page_id: string | null;
+  title: string;
+  copy_id: string;
+  copy_title: string;
+  path: string;
+}
+/** Event "outside-edits": what the app imported from edits made in another program. */
+export interface OutsideReport {
+  imported: OutsideImportedPage[];
+  created: OutsidePageRef[];
+  conflicts: OutsideConflictCopy[];
+  trashed: OutsidePageRef[];
+  /** Deleted files whose pages the mass-delete guard kept (files written again). */
+  kept: OutsidePageRef[];
+  /** Deleted files whose pages were edited here since (files written again). */
+  restored: OutsidePageRef[];
+  rejected: { path: string; reason: string }[];
+  errors: string[];
+}
+
+/** Undo/redo one outside-edit import: set the page's blocks to a snapshot. */
+export const outsideEditSetBlocks = (pageId: string, blocks: RestoreBlock[], parkTitle?: string, cleanupPageId?: string | null) =>
+  invoke<string | null>("outside_edit_set_blocks", { pageId, blocks, parkTitle: parkTitle ?? null, cleanupPageId: cleanupPageId ?? null });
+
 export const gitAvailable = () =>
   invoke<boolean>("git_available");
 

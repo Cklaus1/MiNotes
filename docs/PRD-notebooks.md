@@ -134,6 +134,23 @@ risk is the main reason Phase 3 is its own phase.
   the page to trash (subject to the existing mass-delete guard).
 - Files MiNotes cannot parse are left untouched and reported, never rewritten.
 
+Built (`minotes-core/src/outside.rs`, watcher in `src-tauri/src/notebooks.rs`):
+- The hashes live in the mirror state (`.minotes/mirror-state.json`, or
+  `~/.minotes/mirror-state-<name>.json` for legacy notebooks), per page with the
+  page fingerprint at the time. Every mirror write — incremental, full, and the
+  pruner — refuses to overwrite or move a page file whose hash changed.
+- Removed lines go to a Trash page "<title> (removed outside <time>)" (block ids
+  kept); the app gets before/after snapshots and pushes one undo step per file.
+- Watcher: `notify`, recursive on the mirror, 0.7 s debounce; dot paths,
+  `_attachments/`, temp files and non-`.md` files are dropped; directories and
+  removals widen the check to a full scan (moves vs. deletions). Full passes
+  (startup, switch, rebuild, git sync) scan everything first, so edits made while
+  the app was closed are imported too. Git sync re-baselines the files a pull
+  changed. A read-only session neither watches nor imports.
+- Not covered: folder renames/deletions made outside (pages follow their files,
+  but folders are not renamed or trashed); undo restores blocks, not a title or
+  folder the edit changed; archived pages' files are not imported.
+
 ## 5. Migration
 
 - Existing graphs in `~/.minotes/<name>.db` keep working in place as "legacy

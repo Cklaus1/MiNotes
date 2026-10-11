@@ -13,8 +13,8 @@ function restoreRoots(blocks: RestoreBlock[]): string[] {
  * "recently deleted/edited" bookkeeping for them is stale and the next fetched
  * tree must win (PageView listens).
  */
-function notifyTouched(action: { blockId: string; restore?: RestoreBlock[] }) {
-  const ids = [action.blockId, ...(action.restore ?? []).map(b => b.id)];
+function notifyTouched(action: { blockId: string; restore?: RestoreBlock[]; before?: RestoreBlock[]; after?: RestoreBlock[] }) {
+  const ids = [action.blockId, ...[...(action.restore ?? []), ...(action.before ?? []), ...(action.after ?? [])].map(b => b.id)];
   window.dispatchEvent(new CustomEvent("minotes-undo-applied", { detail: { ids } }));
 }
 
@@ -56,6 +56,11 @@ export async function executeUndo(): Promise<boolean> {
     case 'reparent':
       await api.reparentBlock(action.blockId, action.oldParentId ?? undefined);
       break;
+    case 'outside-import':
+      // Blocks the import added are dropped; removed ones come back from the Trash.
+      await api.outsideEditSetBlocks(action.pageId, action.before ?? [], undefined, action.parkedPageId);
+      action.parkedPageId = null;
+      break;
   }
   return true;
 }
@@ -86,6 +91,10 @@ export async function executeRedo(): Promise<boolean> {
       break;
     case 'reparent':
       await api.reparentBlock(action.blockId, action.newParentId ?? undefined);
+      break;
+    case 'outside-import':
+      // Removed lines go to the Trash again (never a hard delete).
+      action.parkedPageId = await api.outsideEditSetBlocks(action.pageId, action.after ?? [], action.pageTitle ?? "Page");
       break;
   }
   return true;

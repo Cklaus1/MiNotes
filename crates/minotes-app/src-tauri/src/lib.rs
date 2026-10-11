@@ -1744,6 +1744,7 @@ pub fn run() {
             notebooks::mirror_rebuild,
             notebooks::mirror_open_folder,
             notebooks::git_sync_resolve_deletions,
+            notebooks::outside_edit_set_blocks,
             // ── Import / attachments ──
             import_commands::store_attachment,
             import_commands::store_dropped_files,

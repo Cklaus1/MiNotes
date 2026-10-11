@@ -134,13 +134,29 @@ pub(crate) fn scan_markdown_tree(root: &Path) -> Scan {
 }
 
 /// A parsed `.md` file ready to import.
-struct ImportFile {
-    rel: PathBuf,
-    stem: String,
-    folder: Vec<String>,
-    content: String,
-    fm: Frontmatter,
-    mtime: Option<std::time::SystemTime>,
+pub(crate) struct ImportFile {
+    pub(crate) rel: PathBuf,
+    pub(crate) stem: String,
+    pub(crate) folder: Vec<String>,
+    pub(crate) content: String,
+    pub(crate) fm: Frontmatter,
+    pub(crate) mtime: Option<std::time::SystemTime>,
+}
+
+impl ImportFile {
+    /// Parse a file's text (already read) found at `rel` under a mirror / sync dir.
+    pub(crate) fn from_text(rel: &Path, text: &str) -> ImportFile {
+        let content = text.strip_prefix('\u{feff}').unwrap_or(text);
+        // ── Import / attachments: relative mirror links → attachment: refs ──
+        let content = crate::repo::attachments::unrewrite_mirror_links(content);
+        let fm = parse_frontmatter(&content);
+        let stem = rel.file_stem().and_then(|s| s.to_str()).unwrap_or("Untitled").to_string();
+        let folder = rel
+            .parent()
+            .map(|p| p.components().map(|c| c.as_os_str().to_string_lossy().to_string()).collect())
+            .unwrap_or_default();
+        ImportFile { rel: rel.to_path_buf(), stem, folder, content, fm, mtime: None }
+    }
 }
 
 /// Is this a conflict copy written by `git_cmd::auto_resolve_conflicts`?
@@ -153,7 +169,7 @@ pub(crate) fn is_conflict_copy_name(rel: &Path) -> bool {
 
 /// Mass-deletion guard: refuse to trash more than 20 pages, or more than half of
 /// all pages, in one pass unless forced. A single page is always allowed.
-fn deletion_allowed(n: usize, total: usize, force: bool) -> bool {
+pub(crate) fn deletion_allowed(n: usize, total: usize, force: bool) -> bool {
     force || n <= 1 || (n <= 20 && n * 2 <= total)
 }
 
@@ -359,7 +375,7 @@ impl Database {
             let snapshot = result.clone();
             let seen_snapshot = seen.clone();
             self.conn.execute_batch("SAVEPOINT minotes_sync_page")?;
-            match self.sync_page(f, folder_id, actor, result, &mut seen, &protected) {
+            match self.sync_page(f, folder_id, actor, result, &mut seen, &protected, None) {
                 Ok(()) => self.conn.execute_batch("RELEASE minotes_sync_page")?,
                 Err(e) => {
                     self.conn
@@ -408,7 +424,7 @@ impl Database {
         Ok(seen.into_iter().filter(|id| !failed.contains(id)).chain(present_folders).collect())
     }
 
-    fn ensure_folder_path(
+    pub(crate) fn ensure_folder_path(
         &self,
         components: &[String],
         actor: &str,
@@ -570,7 +586,7 @@ impl Database {
     }
 
     /// Is this folder trashed, directly or through an ancestor?
-    fn is_folder_trashed(&self, id: &Uuid) -> Result<bool> {
+    pub(crate) fn is_folder_trashed(&self, id: &Uuid) -> Result<bool> {
         Ok(self.conn.query_row(
             &format!(
                 "WITH RECURSIVE {} SELECT EXISTS(SELECT 1 FROM trashed_tree WHERE id = ?1)",
@@ -750,7 +766,7 @@ impl Database {
         Ok(out)
     }
 
-    fn unique_page_title(&self, title: &str) -> Result<String> {
+    pub(crate) fn unique_page_title(&self, title: &str) -> Result<String> {
         for n in 2..1000 {
             let candidate = format!("{title} ({n})");
             if self.get_page_by_title(&candidate)?.is_none() {
@@ -793,7 +809,10 @@ impl Database {
         Ok(changed)
     }
 
-    fn sync_page(
+    /// Import one parsed file into its page (by frontmatter id, else by title),
+    /// or create the page. `removed`: see [`reconcile_page_blocks`](Self::reconcile_page_blocks).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn sync_page(
         &self,
         file: &ImportFile,
         folder_id: Option<Uuid>,
@@ -801,6 +820,7 @@ impl Database {
         result: &mut SyncResult,
         seen_page_ids: &mut HashSet<Uuid>,
         protected: &HashSet<Uuid>,
+        removed: Option<&mut Vec<Uuid>>,
     ) -> Result<()> {
         let fm = &file.fm;
         // Title comes from frontmatter (lossless); the filename is only a fallback
@@ -860,7 +880,7 @@ impl Database {
                 meta_changed |= self.remove_dropped_fm_properties(&existing.id, &fm.props, actor)?;
             }
 
-            let blocks_changed = self.reconcile_page_blocks(&existing.id, &new_blocks, actor, result)?;
+            let blocks_changed = self.reconcile_page_blocks(&existing.id, &new_blocks, actor, result, removed)?;
             if blocks_changed {
                 self.conn.execute(
                     "UPDATE pages SET updated_at = ?1 WHERE id = ?2",
@@ -894,7 +914,7 @@ impl Database {
                 self.move_page_to_folder(&page.id, Some(&fid), actor)?;
             }
             self.apply_fm_properties(&page.id, &fm.props, actor, result, &file.rel.display().to_string())?;
-            self.reconcile_page_blocks(&page.id, &new_blocks, actor, result)?;
+            self.reconcile_page_blocks(&page.id, &new_blocks, actor, result, None)?;
             result.pages_created.push(title);
         }
 
@@ -910,12 +930,17 @@ impl Database {
     /// (and blocks that moved here from another page are re-homed), and only THEN
     /// are removed blocks deleted — so a delete cascade can never reach a block the
     /// file still keeps.
+    ///
+    /// `removed`: instead of deleting the blocks the file dropped, leave them in
+    /// place and collect the top-most of them (each still carries its subtree of
+    /// dropped blocks) for the caller to move somewhere recoverable.
     fn reconcile_page_blocks(
         &self,
         page_id: &Uuid,
         parsed: &[ParsedBlock],
         actor: &str,
         result: &mut SyncResult,
+        mut removed: Option<&mut Vec<Uuid>>,
     ) -> Result<bool> {
         let existing_blocks = self.get_page_blocks(page_id)?;
         let existing_by_id: HashMap<Uuid, &crate::models::Block> =
@@ -1024,7 +1049,18 @@ impl Database {
         //    Every kept block has already been re-parented away from them.
         for b in &existing_blocks {
             if !seen_ids.contains(&b.id) {
-                if self.get_block(&b.id)?.map(|x| x.page_id == *page_id).unwrap_or(false) {
+                let still_here = self.get_block(&b.id)?.map(|x| x.page_id == *page_id).unwrap_or(false);
+                if let Some(sink) = removed.as_deref_mut() {
+                    // Top-most dropped blocks only: a dropped block under another
+                    // dropped block travels with its parent.
+                    let parent_dropped = b
+                        .parent_id
+                        .map(|p| existing_by_id.contains_key(&p) && !seen_ids.contains(&p))
+                        .unwrap_or(false);
+                    if still_here && !parent_dropped {
+                        sink.push(b.id);
+                    }
+                } else if still_here {
                     self.delete_block(&b.id, actor)?;
                 }
                 changed = true;
@@ -1278,7 +1314,7 @@ pub(crate) fn parse_markdown_blocks(lines: &[&str]) -> Vec<ParsedBlock> {
     out
 }
 
-fn strip_frontmatter(content: &str) -> Vec<&str> {
+pub(crate) fn strip_frontmatter(content: &str) -> Vec<&str> {
     let content = content.strip_prefix('\u{feff}').unwrap_or(content);
     let lines: Vec<&str> = content.lines().collect();
     if lines.first().map(|l| l.trim()) == Some("---") {
@@ -1371,7 +1407,14 @@ pub(crate) fn rewrite_as_conflict_copy(content: &str, fallback_title: &str, host
         .clone()
         .filter(|t| !t.trim().is_empty())
         .unwrap_or_else(|| fallback_title.to_string());
-    let title = format!("{base} (conflict from {host})");
+    rewrite_as_separate_page(content, &format!("{base} (conflict from {host})"))
+}
+
+/// Rewrite a page file as a SEPARATE page titled `title`: fresh page id, fresh
+/// block ids, journal flag dropped, properties kept. The conflict-copy policy
+/// shared by git sync and outside edits of the markdown mirror.
+pub(crate) fn rewrite_as_separate_page(content: &str, title: &str) -> String {
+    let fm = parse_frontmatter(content);
     let mut out = String::new();
     out.push_str("---\n");
     out.push_str(&format!("id: {}\n", Uuid::now_v7()));
@@ -1392,7 +1435,7 @@ pub(crate) fn rewrite_as_conflict_copy(content: &str, fallback_title: &str, host
 /// Replace a line's block id marker with a FRESH id. The new id is written into
 /// the file, so every device that imports this copy agrees on its block ids (and
 /// re-exports byte-identical files), while never colliding with the original's.
-fn refresh_marker(line: &str) -> String {
+pub(crate) fn refresh_marker(line: &str) -> String {
     if let Some(start) = line.rfind("<!-- id:") {
         let after = &line[start + "<!-- id:".len()..];
         if let Some(end) = after.find("-->") {

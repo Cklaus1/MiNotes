@@ -1,7 +1,7 @@
 import type { RestoreBlock } from './api';
 
 interface UndoAction {
-  type: 'create' | 'delete' | 'update' | 'merge' | 'reparent';
+  type: 'create' | 'delete' | 'update' | 'merge' | 'reparent' | 'outside-import';
   blockId: string;
   pageId: string;
   oldContent?: string;
@@ -20,6 +20,16 @@ interface UndoAction {
    * restored block; redo re-homes them again before deleting it.
    */
   movedChildren?: { id: string; fromParentId: string; fromPosition: number; toParentId: string; toPosition: number }[];
+  /**
+   * 'outside-import': a file of the markdown copy edited in another program was
+   * imported into the page. Undo sets the page's blocks back to `before`; redo
+   * to `after`. `parkedPageId` is the Trash page holding blocks whose lines the
+   * file removed (removed once empty); `pageTitle` names the next one on redo.
+   */
+  before?: RestoreBlock[];
+  after?: RestoreBlock[];
+  parkedPageId?: string | null;
+  pageTitle?: string;
   timestamp: number;
 }
 
@@ -35,6 +45,8 @@ class UndoStack {
   }
 
   canUndo(): boolean { return this.undoStack.length > 0; }
+  /** The action the next undo would take (not removed). */
+  peekUndo(): UndoAction | undefined { return this.undoStack[this.undoStack.length - 1]; }
   canRedo(): boolean { return this.redoStack.length > 0; }
 
   popUndo(): UndoAction | undefined {

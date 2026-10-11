@@ -13,7 +13,9 @@
 //! only pages/folders/whiteboards whose fingerprint or path moved since the last
 //! pass are rendered and written, and only files the mirror itself wrote are
 //! pruned. The per-page content hash recorded here is what outside-edit
-//! detection (Phase 4) will compare against.
+//! detection (Phase 4, [`crate::outside`]) compares against: a page file that no
+//! longer has the hash the mirror wrote is never overwritten or pruned — it is
+//! left for the outside-edit import.
 //!
 //! Callers serialise passes with [`FS_LOCK`] (git sync holds it for a whole
 //! cycle, so a pull never races a mirror write).
@@ -69,8 +71,13 @@ pub struct PageEntry {
     pub path: String,
     /// sha256 of the file content the mirror wrote.
     pub hash: String,
-    /// Fingerprint of the page in the DB when it was written.
+    /// Fingerprint of the page in the DB when it was written (or when an
+    /// outside edit of the file was imported — file and page agreed then).
     pub fp: String,
+    /// Re-render the file on the next pass even if the fingerprint is unchanged
+    /// (an outside edit was imported: the file still lacks block id markers).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub rewrite: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -105,6 +112,16 @@ pub struct MirrorState {
     /// Set when the last pass failed; cleared by the next good one.
     #[serde(default)]
     pub last_error: Option<String>,
+    /// Files the outside-edit import could not read (relative path → hash of
+    /// the bytes reported), so each bad version is reported once.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub rejected: BTreeMap<String, String>,
+}
+
+/// Does `st` describe the mirror at `dir` well enough to tell our files from
+/// files changed by someone else?
+pub(crate) fn state_usable(st: &MirrorState, dir: &Path) -> bool {
+    st.version == STATE_VERSION && st.dir.as_deref() == Some(dir.display().to_string().as_str()) && st.last_full_at.is_some()
 }
 
 pub fn load_state(path: &Path) -> MirrorState {
@@ -114,7 +131,7 @@ pub fn load_state(path: &Path) -> MirrorState {
         .unwrap_or_default()
 }
 
-fn save_state(path: &Path, st: &MirrorState) -> Result<()> {
+pub(crate) fn save_state(path: &Path, st: &MirrorState) -> Result<()> {
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
     }
@@ -175,6 +192,13 @@ pub struct MirrorReport {
     /// Attachments over the git-sync size limit (kept out of git).
     #[serde(default)]
     pub large_attachments: Vec<String>,
+    /// Page files NOT rewritten because they were changed outside MiNotes since
+    /// the mirror wrote them (relative paths) — left for the outside-edit import.
+    #[serde(default)]
+    pub guarded: Vec<String>,
+    /// What [`run`] imported from outside edits before writing.
+    #[serde(default)]
+    pub outside: crate::outside::OutsideReport,
 }
 
 fn rel_str(p: &Path) -> String {
@@ -188,7 +212,7 @@ fn short_hash(s: &str) -> String {
 /// A per-page fingerprint of everything that shows in its markdown file: title,
 /// folder, journal flag/date, blocks (count, last change, total length, layout)
 /// and page properties. Cheap: one indexed pass over blocks.
-fn page_fingerprints(db: &Database) -> Result<HashMap<Uuid, String>> {
+pub(crate) fn page_fingerprints(db: &Database) -> Result<HashMap<Uuid, String>> {
     let mut stmt = db.conn.prepare(
         "SELECT p.id,
                 p.title || char(31) || IFNULL(p.folder_id,'') || char(31) || p.is_journal || char(31)
@@ -240,6 +264,8 @@ enum Expect {
 struct TrashOp {
     rel: PathBuf,
     expect: Expect,
+    /// Page files: the hash the mirror wrote. A file edited since is left alone.
+    hash: Option<String>,
 }
 
 /// The incremental work rendered from the database.
@@ -255,11 +281,21 @@ pub struct IncrementalPlan {
     pages_rendered: usize,
     /// Attachments the rewritten pages link to.
     copies: Vec<export::AttachmentCopy>,
+    /// Previous entry of each page rewritten at the same path: its file is not
+    /// overwritten if it changed since (outside edit), and the entry is kept.
+    guard: HashMap<Uuid, PageEntry>,
 }
 
 /// A pass rendered from the database, ready to be written by [`apply`].
 pub enum Prepared {
-    Full { export: PreparedExport, state: MirrorState, fps: HashMap<Uuid, String>, prepare_ms: u128 },
+    Full {
+        export: PreparedExport,
+        state: MirrorState,
+        fps: HashMap<Uuid, String>,
+        /// The previous pass's page entries (kept for pages the guard skips).
+        old_pages: BTreeMap<Uuid, PageEntry>,
+        prepare_ms: u128,
+    },
     Incremental { plan: IncrementalPlan, prepare_ms: u128 },
 }
 
@@ -286,9 +322,22 @@ pub fn prepare(db: &Database, target: &MirrorTarget, force_full: bool) -> Result
         && old.last_full_at.is_some()
         && target.dir.is_dir();
     if force_full || !usable {
-        let export = db.prepare_export(&target.dir, true, &target.skip)?;
+        let mut export = db.prepare_export(&target.dir, true, &target.skip)?;
         let fps = page_fingerprints(db)?;
+        // Outside-edit guard: only with a state that describes this dir.
+        let same_dir = old.version == STATE_VERSION && old.dir.as_deref() == Some(dir_s.as_str());
+        if same_dir {
+            for (id, rel, _) in &export.pages {
+                if let Some(e) = old.pages.get(id).filter(|e| e.path == rel_str(rel)) {
+                    export.guard.insert(*id, e.hash.clone());
+                }
+            }
+        }
+        let old_pages = if same_dir { old.pages.clone() } else { BTreeMap::new() };
         let mut state = MirrorState { version: STATE_VERSION, dir: Some(dir_s), ..Default::default() };
+        if same_dir {
+            state.rejected = old.rejected.clone();
+        }
         let referenced: HashSet<String> = export
             .sidecars
             .iter()
@@ -304,7 +353,7 @@ pub fn prepare(db: &Database, target: &MirrorTarget, force_full: bool) -> Result
             state.folders.insert(f.id, FolderEntry { path: rel_str(rel), fp: folder_fp(f) });
         }
         state.last_written_at = old.last_written_at;
-        return Ok(Prepared::Full { export, state, fps, prepare_ms: t0.elapsed().as_millis() });
+        return Ok(Prepared::Full { export, state, fps, old_pages, prepare_ms: t0.elapsed().as_millis() });
     }
     let plan = prepare_incremental(db, target, old)?;
     Ok(Prepared::Incremental { plan, prepare_ms: t0.elapsed().as_millis() })
@@ -321,8 +370,10 @@ fn prepare_incremental(db: &Database, target: &MirrorTarget, old: MirrorState) -
         dir: old.dir.clone(),
         last_written_at: old.last_written_at.clone(),
         last_full_at: old.last_full_at.clone(),
+        rejected: old.rejected.clone(),
         ..Default::default()
     };
+    let mut guard: HashMap<Uuid, PageEntry> = HashMap::new();
     let mut writes: Vec<(PathBuf, String, Option<Uuid>)> = Vec::new();
     let mut trash: Vec<TrashOp> = Vec::new();
     let mut remove_dirs: Vec<PathBuf> = Vec::new();
@@ -358,7 +409,11 @@ fn prepare_incremental(db: &Database, target: &MirrorTarget, old: MirrorState) -
                 manifest_add.push(f.id);
             }
             if let Some(p) = prev.filter(|p| p.path != entry.path) {
-                trash.push(TrashOp { rel: PathBuf::from(&p.path).join(FOLDER_MARKER), expect: Expect::Folder(f.id) });
+                trash.push(TrashOp {
+                    rel: PathBuf::from(&p.path).join(FOLDER_MARKER),
+                    expect: Expect::Folder(f.id),
+                    hash: None,
+                });
                 remove_dirs.push(PathBuf::from(&p.path));
             }
         }
@@ -370,7 +425,7 @@ fn prepare_incremental(db: &Database, target: &MirrorTarget, old: MirrorState) -
         }
         let gone = !known_folders.contains(id) || trashed_folders.contains(id);
         if gone {
-            trash.push(TrashOp { rel: PathBuf::from(&prev.path).join(FOLDER_MARKER), expect: Expect::Folder(*id) });
+            trash.push(TrashOp { rel: PathBuf::from(&prev.path).join(FOLDER_MARKER), expect: Expect::Folder(*id), hash: None });
             remove_dirs.push(PathBuf::from(&prev.path));
         }
         // Archived / held back: the full pass leaves such files alone too.
@@ -392,7 +447,7 @@ fn prepare_incremental(db: &Database, target: &MirrorTarget, old: MirrorState) -
         let fp = fps.get(&page.id).cloned().unwrap_or_default();
         let path = rel_str(rel);
         match old.pages.get(&page.id) {
-            Some(prev) if prev.path == path && prev.fp == fp => {
+            Some(prev) if prev.path == path && prev.fp == fp && !prev.rewrite => {
                 state.pages.insert(page.id, prev.clone());
             }
             prev => {
@@ -401,8 +456,11 @@ fn prepare_incremental(db: &Database, target: &MirrorTarget, old: MirrorState) -
                 copies.extend(att);
                 pages_rendered += 1;
                 changed_has_boards |= md.contains("{{whiteboard:");
+                if let Some(p) = prev.filter(|p| p.path == path) {
+                    guard.insert(page.id, p.clone());
+                }
                 if let Some(p) = prev.filter(|p| p.path != path) {
-                    trash.push(TrashOp { rel: PathBuf::from(&p.path), expect: Expect::Page(page.id) });
+                    trash.push(TrashOp { rel: PathBuf::from(&p.path), expect: Expect::Page(page.id), hash: Some(p.hash.clone()) });
                     if let Some(parent) = Path::new(&p.path).parent().filter(|d| !d.as_os_str().is_empty()) {
                         remove_dirs.push(parent.to_path_buf());
                     }
@@ -410,7 +468,7 @@ fn prepare_incremental(db: &Database, target: &MirrorTarget, old: MirrorState) -
                 if prev.is_none() {
                     manifest_add.push(page.id);
                 }
-                state.pages.insert(page.id, PageEntry { path, hash: content_hash(&md), fp });
+                state.pages.insert(page.id, PageEntry { path, hash: content_hash(&md), fp, rewrite: false });
                 writes.push((rel.clone(), md, Some(page.id)));
             }
         }
@@ -424,7 +482,7 @@ fn prepare_incremental(db: &Database, target: &MirrorTarget, old: MirrorState) -
         let still_there = fps.contains_key(id) && !trashed_pages.contains(id);
         if !still_there {
             // Trashed or permanently deleted.
-            trash.push(TrashOp { rel: PathBuf::from(&prev.path), expect: Expect::Page(*id) });
+            trash.push(TrashOp { rel: PathBuf::from(&prev.path), expect: Expect::Page(*id), hash: Some(prev.hash.clone()) });
         }
         // Archived / held back: leave the file (as the full pass does).
     }
@@ -461,6 +519,7 @@ fn prepare_incremental(db: &Database, target: &MirrorTarget, old: MirrorState) -
                 trash.push(TrashOp {
                     rel: Path::new(WHITEBOARD_DIR).join(format!("{id}.json")),
                     expect: Expect::Board(id.clone(), times.get(id).cloned()),
+                    hash: None,
                 });
             }
         }
@@ -469,13 +528,18 @@ fn prepare_incremental(db: &Database, target: &MirrorTarget, old: MirrorState) -
     }
 
     let known_pages: HashSet<Uuid> = fps.keys().copied().collect();
-    Ok(IncrementalPlan { writes, known_pages, trash, remove_dirs, manifest_add, state, pages_rendered, copies })
+    Ok(IncrementalPlan { writes, known_pages, trash, remove_dirs, manifest_add, state, pages_rendered, copies, guard })
 }
 
 /// Does `rel` still hold what the prune expects (never trash someone else's file)?
 fn holds_expected(root: &Path, op: &TrashOp) -> bool {
     let abs = root.join(&op.rel);
     let Ok(text) = fs::read_to_string(&abs) else { return false };
+    if let Some(h) = &op.hash {
+        if content_hash(&text) != *h {
+            return false; // edited outside since we wrote it: the outside-edit import decides
+        }
+    }
     match &op.expect {
         Expect::Page(id) => crate::repo::sync::parse_frontmatter_id(&text) == Some(*id),
         Expect::Folder(id) => serde_json::from_str::<FolderMarker>(&text).map(|m| m.id == *id).unwrap_or(false),
@@ -498,12 +562,18 @@ pub fn apply(target: &MirrorTarget, prepared: Prepared) -> Result<MirrorReport> 
     let dir = &target.dir;
     let res = (|| -> Result<MirrorReport> {
         match prepared {
-            Prepared::Full { export, mut state, fps, prepare_ms } => {
+            Prepared::Full { export, mut state, fps, old_pages, prepare_ms } => {
                 let pages_rendered = export.pages.len();
                 let rep = export::apply_export(dir, export)?;
                 for (id, rel, hash) in &rep.page_files {
                     let fp = fps.get(id).cloned().unwrap_or_default();
-                    state.pages.insert(*id, PageEntry { path: rel_str(rel), hash: hash.clone(), fp });
+                    state.pages.insert(*id, PageEntry { path: rel_str(rel), hash: hash.clone(), fp, rewrite: false });
+                }
+                // Not overwritten (edited outside): keep what we knew about the file.
+                for (id, _) in &rep.guarded {
+                    if let Some(e) = old_pages.get(id) {
+                        state.pages.insert(*id, e.clone());
+                    }
                 }
                 let stamp = now();
                 state.last_pass_at = Some(stamp.clone());
@@ -524,6 +594,8 @@ pub fn apply(target: &MirrorTarget, prepared: Prepared) -> Result<MirrorReport> 
                     apply_ms: 0,
                     written_paths: vec![],
                     large_attachments: rep.large_attachments,
+                    guarded: rep.guarded.iter().map(|(_, r)| rel_str(r)).collect(),
+                    outside: Default::default(),
                 })
             }
             Prepared::Incremental { plan, prepare_ms } => {
@@ -556,6 +628,16 @@ pub fn apply(target: &MirrorTarget, prepared: Prepared) -> Result<MirrorReport> 
                             // Not imported yet: leave it; retry this page next pass.
                             state.pages.remove(id);
                             continue;
+                        }
+                        if let Some(prev) = plan.guard.get(id) {
+                            if export::edited_outside(&abs, &prev.hash, content) {
+                                // Edited outside MiNotes since we wrote it: never
+                                // overwrite; the outside-edit import takes it from here.
+                                eprintln!("[minotes-mirror] not overwriting {} (edited outside MiNotes)", rel.display());
+                                state.pages.insert(*id, prev.clone());
+                                report.guarded.push(rel_str(rel));
+                                continue;
+                            }
                         }
                     }
                     if write_if_changed(&abs, content)? {
@@ -613,7 +695,13 @@ pub fn apply(target: &MirrorTarget, prepared: Prepared) -> Result<MirrorReport> 
 }
 
 /// Prepare and apply in one go (the caller holds the DB for the whole pass).
+/// Outside edits of the mirror are imported first (see [`crate::outside`]), so a
+/// pass never writes over them.
 pub fn run(db: &Database, target: &MirrorTarget, force_full: bool) -> Result<MirrorReport> {
+    let outside = match crate::outside::import_outside_edits(db, target, &crate::outside::Scope::All) {
+        Ok(r) => r,
+        Err(e) => crate::outside::OutsideReport { errors: vec![e.to_string()], ..Default::default() },
+    };
     let prepared = match prepare(db, target, force_full) {
         Ok(p) => p,
         Err(e) => {
@@ -621,7 +709,9 @@ pub fn run(db: &Database, target: &MirrorTarget, force_full: bool) -> Result<Mir
             return Err(e);
         }
     };
-    apply(target, prepared)
+    let mut report = apply(target, prepared)?;
+    report.outside = outside;
+    Ok(report)
 }
 
 #[cfg(test)]
@@ -789,9 +879,19 @@ mod tests {
         run(&db, &target, false).unwrap(); // full
         assert_eq!(fs::read_to_string(target.dir.join("Shared.md")).unwrap(), foreign);
         db.create_block(&p.id, "local", None, None, "user").unwrap();
-        run(&db, &target, false).unwrap(); // incremental
+        apply(&target, prepare(&db, &target, false).unwrap()).unwrap(); // incremental, no import
         assert_eq!(fs::read_to_string(target.dir.join("Shared.md")).unwrap(), foreign);
         assert!(!load_state(target.state_path.as_ref().unwrap()).pages.contains_key(&p.id), "retried next pass");
+        // `run` imports outside files first: the foreign page arrives as a page of
+        // its own (the title is taken), and only then does "Shared" get its file.
+        let fid = crate::repo::sync::parse_frontmatter_id(&foreign).unwrap();
+        let r = run(&db, &target, false).unwrap();
+        assert_eq!(r.outside.created.len(), 1);
+        let other = db.get_page(&fid).unwrap().expect("imported with its id");
+        assert_eq!(other.title, "Shared (2)");
+        assert_eq!(db.get_page_blocks(&fid).unwrap()[0].content, "from the other device");
+        assert!(fs::read_to_string(target.dir.join("Shared (2).md")).unwrap().contains("from the other device"));
+        assert!(fs::read_to_string(target.dir.join("Shared.md")).unwrap().contains("local"));
     }
 
     #[test]

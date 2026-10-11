@@ -3,12 +3,53 @@ import * as api from "../lib/api";
 import { showToast } from "../lib/toast";
 import { errorMessage } from "../lib/errors";
 import { NOTEBOOKS_CHANGED, NOTEBOOK_SWITCHED } from "../lib/notebooks";
+import { OUTSIDE_EDITS } from "../lib/outsideEdits";
 import "./notebooks.css";
 
 interface Props {
   /** Deletions from another device that git sync held back (from the last sync). */
   heldDeletions: api.HeldDeletions | null;
   onResolveHeld: (action: "trash" | "keep") => void;
+  /** Open a page (the "(edited outside)" copy of a conflict). */
+  onOpenPage?: (id: string) => void;
+}
+
+/** A notice about edits made to the markdown copy in another app. */
+interface OutsideNotice {
+  key: string;
+  kind: "conflict" | "kept" | "rejected" | "error";
+  text: string;
+  openId?: string;
+}
+
+let noticeSeq = 0;
+
+function outsideNotices(r: api.OutsideReport): OutsideNotice[] {
+  const out: OutsideNotice[] = [];
+  const key = () => `outside-${++noticeSeq}`;
+  for (const c of r.conflicts) {
+    out.push({
+      key: key(),
+      kind: "conflict",
+      text: c.page_id
+        ? `“${c.title}” was changed both here and in another app (${c.path}). Both are kept: the other version is now the page “${c.copy_title}”.`
+        : `${c.path} was edited in another app, but its page is gone here. The edited version was kept as “${c.copy_title}”.`,
+      openId: c.copy_id,
+    });
+  }
+  if (r.kept.length) {
+    const n = r.kept.length;
+    out.push({
+      key: key(),
+      kind: "kept",
+      text: `${n} files were deleted from the markdown copy at once. That is a lot, so MiNotes kept the pages and wrote their files again — delete the pages here if you meant it.`,
+    });
+  }
+  for (const x of r.rejected) {
+    out.push({ key: key(), kind: "rejected", text: `${x.path} in the markdown copy can't be read (${x.reason}). It was left untouched and is not updated from here until it is fixed or deleted.` });
+  }
+  for (const e of r.errors) out.push({ key: key(), kind: "error", text: `Couldn't import an edit made in another app: ${e}` });
+  return out;
 }
 
 const dismissKey = (kind: string, key: string) => `minotes-notebook-banner-${kind}@${key}`;
@@ -23,8 +64,9 @@ function isDismissed(kind: string, key: string): boolean {
  * the cloud-folder warning, conflicted database copies made by a file-sync
  * service, and deletions from another device that sync is holding for the user.
  */
-export default function NotebookBanner({ heldDeletions, onResolveHeld }: Props) {
+export default function NotebookBanner({ heldDeletions, onResolveHeld, onOpenPage }: Props) {
   const [session, setSession] = useState<api.NotebookSession | null>(null);
+  const [notices, setNotices] = useState<OutsideNotice[]>([]);
   const [, force] = useState(0);
   const [review, setReview] = useState(false);
 
@@ -34,11 +76,18 @@ export default function NotebookBanner({ heldDeletions, onResolveHeld }: Props) 
 
   useEffect(() => {
     load();
+    const onSwitch = () => { setNotices([]); load(); };
+    const onOutside = (e: Event) => {
+      const r = (e as CustomEvent<api.OutsideReport>).detail;
+      if (r) setNotices(prev => [...prev, ...outsideNotices(r)].slice(-6));
+    };
     window.addEventListener(NOTEBOOKS_CHANGED, load);
-    window.addEventListener(NOTEBOOK_SWITCHED, load);
+    window.addEventListener(NOTEBOOK_SWITCHED, onSwitch);
+    window.addEventListener(OUTSIDE_EDITS, onOutside);
     return () => {
       window.removeEventListener(NOTEBOOKS_CHANGED, load);
-      window.removeEventListener(NOTEBOOK_SWITCHED, load);
+      window.removeEventListener(NOTEBOOK_SWITCHED, onSwitch);
+      window.removeEventListener(OUTSIDE_EDITS, onOutside);
     };
   }, [load]);
 
@@ -128,6 +177,19 @@ export default function NotebookBanner({ heldDeletions, onResolveHeld }: Props) 
             Move to trash
           </button>
           <button className="btn btn-sm" onClick={() => onResolveHeld("keep")} data-testid="held-keep">Keep them</button>
+        </div>
+      </div>,
+    );
+  }
+  for (const n of notices) {
+    banners.push(
+      <div key={n.key} className={`nb-banner ${n.kind === "conflict" ? "info" : "warn"}`} role="status" data-testid={`outside-${n.kind}-banner`}>
+        <span>{n.text}</span>
+        <div className="nb-banner-actions">
+          {n.openId && onOpenPage && (
+            <button className="btn btn-sm" onClick={() => onOpenPage(n.openId!)} data-testid="outside-open-copy">Open it</button>
+          )}
+          <button className="btn btn-sm" onClick={() => setNotices(prev => prev.filter(x => x.key !== n.key))}>Dismiss</button>
         </div>
       </div>,
     );
