@@ -205,6 +205,55 @@ pub fn validate_publish_dir(output_dir: &str, allowed_roots: &[PathBuf]) -> Resu
     Err("Output directory must be a folder inside your home directory".into())
 }
 
+// ── Notebook folders ──
+
+/// Validate a folder the frontend wants a notebook created in / opened from /
+/// moved to. Absolute, no `..`, not an existing non-directory. Inside the home dir
+/// (or, on WSL, a Windows profile) it must not be in a hidden top-level dir
+/// (`~/.ssh`, `~/.minotes`, `~/.config`, …) or `AppData`; outside it only
+/// removable/extra drives are accepted (`/media`, `/mnt`, `/run/media`,
+/// `/Volumes`). Returns the canonical (possibly not yet existing) path.
+pub fn validate_notebook_dir(dir: &str, home_roots: &[PathBuf]) -> Result<PathBuf, String> {
+    let trimmed = dir.trim();
+    if trimmed.is_empty() || trimmed.contains('\0') {
+        return Err("Choose a folder for the notebook".into());
+    }
+    let p = Path::new(trimmed);
+    if !p.is_absolute() {
+        return Err("The notebook folder must be an absolute path".into());
+    }
+    if p.components().any(|c| matches!(c, Component::ParentDir)) {
+        return Err("The notebook folder must not contain '..'".into());
+    }
+    let canon = canonicalize_creatable(p)?;
+    if canon.exists() && !canon.is_dir() {
+        return Err("That path exists and is not a folder".into());
+    }
+    for root in home_roots {
+        let Ok(root) = std::fs::canonicalize(root) else { continue };
+        let Ok(rel) = canon.strip_prefix(&root) else { continue };
+        let Some(Component::Normal(first)) = rel.components().next() else {
+            return Err("Choose a folder inside your home folder, not the home folder itself".into());
+        };
+        let first = first.to_string_lossy();
+        if first.starts_with('.') || first.eq_ignore_ascii_case("AppData") {
+            return Err(format!("Refusing to use the hidden/system folder '{first}'"));
+        }
+        return Ok(canon);
+    }
+    const DRIVES: &[&str] = &["/media/", "/mnt/", "/run/media/", "/Volumes/"];
+    let s = canon.to_string_lossy();
+    if DRIVES.iter().any(|d| s.starts_with(d)) && canon.components().count() > 3 {
+        return Ok(canon);
+    }
+    #[cfg(windows)]
+    {
+        return Ok(canon);
+    }
+    #[allow(unreachable_code)]
+    Err("Choose a folder in your home folder or on an external drive".into())
+}
+
 // ── Outbound URL / IP policy (SSRF) ──
 
 /// True if the address is anything other than a globally routable unicast address.
@@ -300,6 +349,26 @@ impl reqwest::dns::Resolve for SafeResolver {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn notebook_dir_rules() {
+        let home = tempfile_dir();
+        let roots = vec![home.clone()];
+        let ok = validate_notebook_dir(&home.join("MiNotes/Work").to_string_lossy(), &roots).unwrap();
+        assert!(ok.ends_with("MiNotes/Work"));
+        assert!(validate_notebook_dir(&home.join(".ssh/x").to_string_lossy(), &roots).is_err());
+        assert!(validate_notebook_dir(&home.to_string_lossy(), &roots).is_err());
+        assert!(validate_notebook_dir("relative/dir", &roots).is_err());
+        assert!(validate_notebook_dir(&format!("{}/a/../b", home.display()), &roots).is_err());
+        assert!(validate_notebook_dir("/etc/minotes", &roots).is_err());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    fn tempfile_dir() -> PathBuf {
+        let d = std::env::temp_dir().join(format!("minotes-sec-{}-{}", std::process::id(), chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
     use super::*;
 
     #[test]

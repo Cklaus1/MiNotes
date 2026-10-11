@@ -1,9 +1,9 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use tauri::Emitter;
 
 use minotes_core::db::Database;
-use minotes_core::models::{Block, Card, CssSnippet, Folder, GraphInfo, Highlight, Page, PageTree, Plugin, Property, RestoreBlock, SrsStats, SyncStatus, Template, VersionInfo};
+use minotes_core::models::{Block, BlockWithPage, Card, CssSnippet, Folder, GraphInfo, Highlight, Page, PageTree, Plugin, Property, RestoreBlock, SrsStats, SyncStatus, Template, VersionInfo};
 use minotes_core::repo::graph::GraphStats;
 use minotes_core::repo::graphs;
 use minotes_core::repo::archive::ArchiveItem;
@@ -12,11 +12,45 @@ use minotes_core::sync_manager::{self, GitSyncResult, GitSyncStatus};
 use serde::Serialize;
 use tauri::State;
 
+mod notebooks;
 mod security;
+// ── Import / attachments ──
+mod import_commands;
+// ── End import ──
 
-struct AppState {
-    db: Mutex<Database>,
-    current_graph: Mutex<String>,
+pub(crate) struct AppState {
+    pub(crate) db: Mutex<Database>,
+    /// Key of the open notebook (legacy graph name, or a folder notebook's id).
+    pub(crate) current_graph: Mutex<String>,
+    /// The open notebook: location, lock / read-only state, startup notice.
+    pub(crate) session: Mutex<notebooks::Session>,
+    /// Journal pages shown but not yet written ("virtual"): date -> the id the
+    /// frontend was given. `get_journal` hands out the same id for the same date,
+    /// and the first write (`create_block`, `create_page` by title) materialises
+    /// the page under that id. Lock order: `db` before this.
+    pub(crate) virtual_journals: Mutex<HashMap<chrono::NaiveDate, uuid::Uuid>>,
+}
+
+/// The date of a virtual journal id handed out by `get_journal`, if it is one.
+fn virtual_journal_date(state: &AppState, id: &uuid::Uuid) -> Option<chrono::NaiveDate> {
+    let v = state.virtual_journals.lock().ok()?;
+    v.iter().find(|(_, vid)| *vid == id).map(|(d, _)| *d)
+}
+
+fn virtual_journal_tree(id: uuid::Uuid, d: chrono::NaiveDate) -> PageTree {
+    let now = chrono::Utc::now();
+    let page = minotes_core::models::Page {
+        id,
+        title: minotes_core::repo::pages::journal_title(d),
+        icon: None,
+        folder_id: None,
+        position: 0.0,
+        is_journal: true,
+        journal_date: Some(d),
+        created_at: now,
+        updated_at: now,
+    };
+    PageTree { page, blocks: vec![] }
 }
 
 fn base_dir() -> PathBuf {
@@ -24,10 +58,6 @@ fn base_dir() -> PathBuf {
     let dir = home.join(".minotes");
     std::fs::create_dir_all(&dir).ok();
     dir
-}
-
-fn db_path() -> PathBuf {
-    base_dir().join(format!("{}.db", active_graph_name()))
 }
 
 // Bug #16: the active graph selection must survive restarts. Persist the name to a
@@ -45,7 +75,7 @@ fn active_graph_name() -> String {
         .unwrap_or_else(|| "default".to_string())
 }
 
-fn set_active_graph_name(name: &str) {
+pub(crate) fn set_active_graph_name(name: &str) {
     let _ = std::fs::write(active_graph_file(), name);
 }
 
@@ -59,6 +89,9 @@ struct Link {
     from_block: String,
     to_page: Option<String>,
     link_type: String,
+    /// The source block with its page title, so the backlinks panel needs no
+    /// per-link `get_block` round trip.
+    block: Option<BlockWithPage>,
 }
 
 // ── Tauri Commands ──
@@ -74,7 +107,20 @@ fn get_page_tree(state: State<'_, AppState>, title_or_id: String) -> Result<Page
     let db = state.db.lock().map_err(|e| e.to_string())?;
 
     let page = if let Ok(uuid) = uuid::Uuid::parse_str(&title_or_id) {
-        db.get_page(&uuid).map_err(|e| e.to_string())?
+        let p = db.get_page(&uuid).map_err(|e| e.to_string())?;
+        if p.is_none() {
+            // A journal shown but not written yet: still openable by its id.
+            if let Some(d) = virtual_journal_date(&state, &uuid) {
+                return Ok(match db.find_journal(d).map_err(|e| e.to_string())? {
+                    Some(p) => {
+                        let blocks = db.get_page_blocks(&p.id).map_err(|e| e.to_string())?;
+                        PageTree { page: p, blocks }
+                    }
+                    None => virtual_journal_tree(uuid, d),
+                });
+            }
+        }
+        p
     } else {
         db.get_page_by_title(&title_or_id).map_err(|e| e.to_string())?
     };
@@ -87,12 +133,21 @@ fn get_page_tree(state: State<'_, AppState>, title_or_id: String) -> Result<Page
 #[tauri::command]
 fn create_page(state: State<'_, AppState>, title: String) -> Result<Page, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
-    // Auto-detect journal pages by title format "Journal/YYYY-MM-DD"
-    if let Some(date_str) = title.strip_prefix("Journal/") {
-        if let Ok(date) = chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
-            return db.create_page(&title, None, true, Some(date), "user")
-                .map_err(|e| e.to_string());
-        }
+    // Auto-detect journal pages by title format "Journal/YYYY-MM-DD". A journal
+    // already shown as virtual keeps the id the frontend holds.
+    if let Some(date) = minotes_core::repo::pages::journal_date_of(&title) {
+        let id = state
+            .virtual_journals
+            .lock()
+            .map_err(|e| e.to_string())?
+            .get(&date)
+            .copied()
+            .unwrap_or_else(uuid::Uuid::now_v7);
+        let page = db
+            .create_page_with_id(id, &title, None, true, Some(date), "user")
+            .map_err(|e| e.to_string())?;
+        state.virtual_journals.lock().map_err(|e| e.to_string())?.remove(&date);
+        return Ok(page);
     }
     db.create_page(&title, None, false, None, "user")
         .map_err(|e| e.to_string())
@@ -130,6 +185,19 @@ fn create_block(
         .map(|p| uuid::Uuid::parse_str(p))
         .transpose()
         .map_err(|e| e.to_string())?;
+    // First write to a virtual journal: create the page and the block atomically.
+    if db.get_page(&page_uuid).map_err(|e| e.to_string())?.is_none() {
+        if let Some(d) = virtual_journal_date(&state, &page_uuid) {
+            let block = db
+                .tx(|| {
+                    let page = db.get_or_create_journal(d, Some(page_uuid), "user")?;
+                    db.create_block(&page.id, &content, parent_uuid.as_ref(), None, "user")
+                })
+                .map_err(|e| e.to_string())?;
+            state.virtual_journals.lock().map_err(|e| e.to_string())?.remove(&d);
+            return Ok(block);
+        }
+    }
     db.create_block(&page_uuid, &content, parent_uuid.as_ref(), None, "user")
         .map_err(|e| e.to_string())
 }
@@ -159,14 +227,15 @@ fn search_blocks(state: State<'_, AppState>, query: String, limit: Option<i64>) 
 fn get_backlinks(state: State<'_, AppState>, page_id: String) -> Result<Vec<Link>, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
     let uuid = uuid::Uuid::parse_str(&page_id).map_err(|e| e.to_string())?;
-    let links = db.get_backlinks(&uuid).map_err(|e| e.to_string())?;
+    let links = db.get_backlink_blocks(&uuid).map_err(|e| e.to_string())?;
     Ok(links
         .into_iter()
-        .map(|l| Link {
+        .map(|(l, b)| Link {
             id: l.id.to_string(),
             from_block: l.from_block.to_string(),
             to_page: l.to_page.map(|p| p.to_string()),
             link_type: l.link_type,
+            block: Some(b),
         })
         .collect())
 }
@@ -230,37 +299,39 @@ fn run_query(state: State<'_, AppState>, sql: String) -> Result<serde_json::Valu
     db.run_query(&sql).map_err(|e| e.to_string())
 }
 
+/// Today's journal is created on read (it's where the app opens). Other dates
+/// are "soft": an existing journal is returned, otherwise a virtual page whose id
+/// stays the same for that date and that the first write materialises.
 #[tauri::command]
 fn get_journal(state: State<'_, AppState>, date: Option<String>) -> Result<PageTree, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
+    let today = chrono::Local::now().date_naive();
     let d = match date {
         Some(ref s) => chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
             .map_err(|e| format!("Invalid date: {e}"))?,
-        None => chrono::Local::now().date_naive(),
+        None => today,
     };
-    let title = format!("Journal/{}", d);
-    match db.get_page_by_title(&title).map_err(|e| e.to_string())? {
+    let existing = db.find_journal(d).map_err(|e| e.to_string())?;
+    let page = match existing {
+        Some(p) => Some(p),
+        // A notebook open read-only (another instance has it) can't create it.
+        None if d == today && !db.is_read_only() => {
+            let id = state.virtual_journals.lock().map_err(|e| e.to_string())?.get(&d).copied();
+            let p = db.get_or_create_journal(d, id, "user").map_err(|e| e.to_string())?;
+            state.virtual_journals.lock().map_err(|e| e.to_string())?.remove(&d);
+            Some(p)
+        }
+        None => None,
+    };
+    match page {
         Some(p) => {
             let blocks = db.get_page_blocks(&p.id).map_err(|e| e.to_string())?;
             Ok(PageTree { page: p, blocks })
         }
         None => {
-            // Return a virtual page — don't persist until user writes content.
-            // The page will be created by create_block when the first block is added.
-            let virtual_id = uuid::Uuid::now_v7();
-            let now = chrono::Utc::now();
-            let page = minotes_core::models::Page {
-                id: virtual_id,
-                title: title.clone(),
-                icon: None,
-                folder_id: None,
-                position: 0.0,
-                is_journal: true,
-                journal_date: Some(d),
-                created_at: now,
-                updated_at: now,
-            };
-            Ok(PageTree { page, blocks: vec![] })
+            let mut v = state.virtual_journals.lock().map_err(|e| e.to_string())?;
+            let id = *v.entry(d).or_insert_with(uuid::Uuid::now_v7);
+            Ok(virtual_journal_tree(id, d))
         }
     }
 }
@@ -397,6 +468,12 @@ fn create_card(state: State<'_, AppState>, block_id: String, card_type: String) 
     let db = state.db.lock().map_err(|e| e.to_string())?;
     let uuid = uuid::Uuid::parse_str(&block_id).map_err(|e| e.to_string())?;
     db.create_card(&uuid, &card_type, "user").map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_cards(state: State<'_, AppState>) -> Result<Vec<Card>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.list_cards().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -552,7 +629,7 @@ fn publish_roots() -> Vec<PathBuf> {
 
 /// On WSL, the Windows user profile that owns a Downloads folder (same heuristic the
 /// PNG export uses). None elsewhere.
-fn wsl_windows_profile() -> Option<PathBuf> {
+pub(crate) fn wsl_windows_profile() -> Option<PathBuf> {
     let version = std::fs::read_to_string("/proc/version").ok()?;
     if !version.to_lowercase().contains("microsoft") {
         return None;
@@ -685,22 +762,20 @@ fn list_graphs() -> Result<Vec<GraphInfo>, String> {
 }
 
 #[tauri::command]
-fn switch_graph(state: State<'_, AppState>, name: String) -> Result<bool, String> {
+fn switch_graph(app: tauri::AppHandle, state: State<'_, AppState>, name: String) -> Result<bool, String> {
     // SECURITY: same validation as create_graph — `../../x` must not open/migrate an
-    // arbitrary .db outside the data dir.
+    // arbitrary .db outside the data dir. (Folder notebook keys are registry ids.)
     security::validate_graph_name(&name)?;
-    let dir = base_dir();
-    let new_path = dir.join(format!("{name}.db"));
-    if !new_path.exists() {
-        return Err(format!("Graph '{name}' does not exist"));
+    let nb = minotes_core::notebook::resolve(&name).map_err(|e| e.to_string())?;
+    if !nb.available() {
+        return Err(if nb.is_folder() {
+            format!("Notebook \u{201c}{}\u{201d} is unavailable: its folder was not found", nb.name)
+        } else {
+            format!("Graph '{name}' does not exist")
+        });
     }
-    let new_db = Database::open(&new_path).map_err(|e| e.to_string())?;
-    let mut db = state.db.lock().map_err(|e| e.to_string())?;
-    *db = new_db;
-    let mut current = state.current_graph.lock().map_err(|e| e.to_string())?;
-    *current = name.clone();
-    // Bug #16: persist the selection so it survives a restart.
-    set_active_graph_name(&name);
+    // Bug #16: switch_to persists the selection so it survives a restart.
+    notebooks::switch_to(&app, &state, nb, false)?;
     Ok(true)
 }
 
@@ -959,6 +1034,33 @@ fn save_png_to_downloads(filename: String, data: Vec<u8>) -> Result<String, Stri
     write_png(downloads, &filename, &data)
 }
 
+/// Save an export (SVG, Markdown, …) where the user chooses: a native "Save as"
+/// dialog, then the bytes are written to exactly that path. Nothing is written
+/// without the user picking the file, so the webview can't choose a location
+/// itself. Returns the saved path, or None if the dialog was cancelled.
+#[tauri::command(async)]
+fn save_export_file(app: tauri::AppHandle, filename: String, data: Vec<u8>) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    const MAX_EXPORT_BYTES: usize = 100 * 1024 * 1024;
+    if data.len() > MAX_EXPORT_BYTES {
+        return Err("Export too large".into());
+    }
+    // Only a plain file name is used as the suggestion (no directories).
+    let suggested = std::path::Path::new(&filename)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .filter(|n| !n.is_empty() && !n.starts_with('.'))
+        .unwrap_or_else(|| "export".to_string());
+    let mut dialog = app.dialog().file().set_file_name(&suggested);
+    if let Some(home) = dirs_next() {
+        dialog = dialog.set_directory(home);
+    }
+    let Some(chosen) = dialog.blocking_save_file() else { return Ok(None) };
+    let path = chosen.into_path().map_err(|e| e.to_string())?;
+    std::fs::write(&path, &data).map_err(|e| format!("Could not save {}: {e}", path.display()))?;
+    Ok(Some(path.to_string_lossy().to_string()))
+}
+
 fn find_linux_downloads() -> PathBuf {
     let home = dirs_next().unwrap_or_else(|| PathBuf::from("."));
     let dl = home.join("Downloads");
@@ -1155,10 +1257,22 @@ async fn fetch_og_inner(url: &str) -> std::result::Result<OgMetadata, Box<dyn st
 // ── Feature 9: Get single block by ID ──
 
 #[tauri::command]
-fn get_block(state: State<'_, AppState>, id: String) -> Result<Option<Block>, String> {
+fn get_block(state: State<'_, AppState>, id: String) -> Result<Option<BlockWithPage>, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
     let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
-    db.get_block(&uuid).map_err(|e| e.to_string())
+    Ok(db.get_blocks_with_pages(&[uuid]).map_err(|e| e.to_string())?.pop())
+}
+
+/// Several blocks (each with its page title) in one call; unknown ids skipped.
+#[tauri::command]
+fn get_blocks(state: State<'_, AppState>, ids: Vec<String>) -> Result<Vec<BlockWithPage>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let uuids = ids
+        .iter()
+        .map(|i| uuid::Uuid::parse_str(i))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    db.get_blocks_with_pages(&uuids).map_err(|e| e.to_string())
 }
 
 // ── Archive ──
@@ -1234,11 +1348,7 @@ fn restore_from_trash(state: State<'_, AppState>, id: String, item_type: String)
 fn permanently_delete(state: State<'_, AppState>, id: String, item_type: String) -> Result<(), String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
     let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
-    if item_type == "folder" {
-        db.permanently_delete_folder(&uuid, "user").map_err(|e| e.to_string())
-    } else {
-        db.permanently_delete_page(&uuid, "user").map_err(|e| e.to_string())
-    }
+    db.delete_from_trash(&uuid, &item_type, "user").map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1293,6 +1403,7 @@ fn git_available() -> bool {
 
 #[tauri::command(async)]
 fn git_sync_enable(state: State<'_, AppState>) -> Result<GitSyncStatus, String> {
+    refuse_read_only(&state)?;
     let graph = current_graph_name(&state)?;
     sync_manager::enable_sync_with(&graph, || lock_db_for_graph(&state, &graph))
         .map_err(|e| e.to_string())
@@ -1304,8 +1415,16 @@ fn git_sync_disable(state: State<'_, AppState>) -> Result<(), String> {
     sync_manager::disable_sync(&graph).map_err(|e| e.to_string())
 }
 
+fn refuse_read_only(state: &AppState) -> Result<(), String> {
+    if state.session.lock().map_err(|e| e.to_string())?.held_by.is_some() {
+        return Err("This notebook is open read-only in this window (another MiNotes window has it open)".into());
+    }
+    Ok(())
+}
+
 #[tauri::command(async)]
 fn git_sync(state: State<'_, AppState>) -> Result<GitSyncResult, String> {
+    refuse_read_only(&state)?;
     let graph = current_graph_name(&state)?;
     // Export (DB lock) → pull/push (no lock) → import only if the pull brought
     // remote commits (DB lock; pages edited during the network phase are kept).
@@ -1393,91 +1512,95 @@ fn restore_blocks(state: State<'_, AppState>, blocks: Vec<RestoreBlock>) -> Resu
     db.restore_blocks(&blocks, "user").map_err(|e| e.to_string())
 }
 
+// ── AI platform ──
+// Commands (settings, keychain, model catalogue, streaming Ask) live in
+// ai_commands.rs; the logic is in minotes-core `ai`.
+mod ai_commands;
+// ── End AI platform ──
+
+// ── Perf: batched block properties ──
+/// Properties of many entities in one call (opening a page used to make one
+/// `get_properties` call per block). Only entities that have properties appear
+/// in the map; invalid ids are skipped.
+#[tauri::command]
+fn get_properties_batch(
+    state: State<'_, AppState>,
+    entity_ids: Vec<String>,
+) -> Result<HashMap<String, Vec<Property>>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let mut out = HashMap::new();
+    for id in entity_ids {
+        let Ok(uuid) = uuid::Uuid::parse_str(&id) else { continue };
+        let props = db.get_properties(&uuid).map_err(|e| e.to_string())?;
+        if !props.is_empty() {
+            out.insert(id, props);
+        }
+    }
+    Ok(out)
+}
+// ── End perf ──
+/// The notebook to open at startup: the active one, unless its folder is
+/// missing — then the default legacy notebook, with a notice (never an empty
+/// replacement in the missing folder's place).
+fn startup_notebook() -> (minotes_core::notebook::Notebook, Option<String>) {
+    use minotes_core::notebook::{self, Notebook};
+    let key = active_graph_name();
+    match notebook::resolve(&key) {
+        Ok(nb) if !nb.is_folder() || nb.available() => (nb, None),
+        Ok(nb) => (
+            Notebook::legacy("default"),
+            Some(format!(
+                "Notebook \u{201c}{}\u{201d} is unavailable \u{2014} its folder {} was not found (unplugged drive or moved folder?). Use \u{201c}Locate\u{2026}\u{201d} in the notebook menu.",
+                nb.name,
+                nb.root().map(|r| r.display().to_string()).unwrap_or_default()
+            )),
+        ),
+        Err(_) => (Notebook::legacy("default"), None),
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let path = db_path();
-    let db = Database::open(&path).expect("Failed to open database");
+    let (nb, notice) = startup_notebook();
+    let (db, held_by) = notebooks::open_for_session(&nb, false).expect("Failed to open database");
+    let startup_db_path = nb.db_path();
+    let startup_key = nb.key.clone();
+    minotes_core::notebook::touch_last_opened(&nb);
 
-    tauri::Builder::default()
-        .setup(|app| {
-            let app_handle = app.handle().clone();
-            let watch_dir = base_dir();
-            std::thread::spawn(move || {
-                use notify::{Config, RecursiveMode, Watcher};
-                let (tx, rx) = std::sync::mpsc::channel();
-                let mut watcher = match notify::RecommendedWatcher::new(tx, Config::default()) {
-                    Ok(w) => w,
-                    Err(_) => return,
-                };
-                if watcher.watch(&watch_dir, RecursiveMode::NonRecursive).is_err() {
-                    return;
-                }
-                // Bug #16: track whichever graph is active (read from AppState on
-                // every event), and only react to THAT graph's `<name>.db` /
-                // `<name>.db-wal` — other graphs' files are ignored.
-                //
-                // Debounce: a sync or import touches the WAL many times in quick
-                // succession, and emitting per touch produced a storm of full UI
-                // refreshes. Coalesce on the trailing edge (flush once writes go
-                // quiet for DEBOUNCE), but never hold a burst longer than MAX_WAIT
-                // so continuous activity still refreshes the UI at least ~1/s.
-                use tauri::Manager;
-                const DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(250);
-                const MAX_WAIT: std::time::Duration = std::time::Duration::from_millis(1000);
-                let mut pending_since: Option<std::time::Instant> = None;
-                loop {
-                    let res = match pending_since {
-                        Some(since) => {
-                            let elapsed = since.elapsed();
-                            if elapsed >= MAX_WAIT {
-                                pending_since = None;
-                                let _ = app_handle.emit("db-changed", ());
-                                continue;
-                            }
-                            let wait = DEBOUNCE.min(MAX_WAIT - elapsed);
-                            match rx.recv_timeout(wait) {
-                                Ok(res) => Some(res),
-                                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                                    // Quiet period (or max wait) elapsed — flush.
-                                    pending_since = None;
-                                    let _ = app_handle.emit("db-changed", ());
-                                    continue;
-                                }
-                                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
-                            }
-                        }
-                        None => match rx.recv() {
-                            Ok(res) => Some(res),
-                            Err(_) => break,
-                        },
-                    };
-
-                    if let Some(Ok(event)) = res {
-                        let active = app_handle
-                            .try_state::<AppState>()
-                            .and_then(|s| s.current_graph.lock().ok().map(|g| g.clone()))
-                            .unwrap_or_else(active_graph_name);
-                        let db_name = format!("{active}.db");
-                        let wal_name = format!("{active}.db-wal");
-                        let touched = event.paths.iter().any(|p| {
-                            p.file_name()
-                                .and_then(|n| n.to_str())
-                                .map(|n| n == db_name || n == wal_name)
-                                .unwrap_or(false)
-                        });
-                        if touched && pending_since.is_none() {
-                            pending_since = Some(std::time::Instant::now());
-                        }
-                    }
-                }
-            });
+    let app = tauri::Builder::default()
+        .setup(move |app| {
+            use tauri::Manager;
+            let handle = app.handle().clone();
+            let watch = notebooks::start_db_watch(&handle);
+            watch.watch(&startup_db_path);
+            app.manage(watch);
+            let worker = notebooks::start_mirror_worker(&handle);
+            // A full pass at startup: the copy is current from the first second.
+            worker.send(notebooks::MirrorMsg::Full);
+            app.manage(worker);
             Ok(())
         })
+        // ── Import / attachments ──
+        .register_asynchronous_uri_scheme_protocol("attachment", |ctx, request, responder| {
+            let app = ctx.app_handle().clone();
+            std::thread::spawn(move || responder.respond(import_commands::serve(&app, &request)));
+        })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) = event {
+                import_commands::remember_drop(tauri::Manager::app_handle(window), paths.clone());
+            }
+        })
+        .manage(import_commands::DroppedFiles::default())
+        .manage(import_commands::ImportState::default())
+        // ── End import ──
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(AppState {
             db: Mutex::new(db),
-            current_graph: Mutex::new(active_graph_name()),
+            current_graph: Mutex::new(startup_key),
+            session: Mutex::new(notebooks::Session { notebook: nb, held_by, notice }),
+            virtual_journals: Mutex::new(HashMap::new()),
         })
         .invoke_handler(tauri::generate_handler![
             list_pages,
@@ -1509,6 +1632,7 @@ pub fn run() {
             get_inherited_properties,
             delete_property,
             create_card,
+            list_cards,
             get_due_cards,
             review_card,
             get_srs_stats,
@@ -1557,12 +1681,14 @@ pub fn run() {
             update_css_snippet,
             undo,
             save_png_to_downloads,
+            save_export_file,
             reorder_block,
             paste_image_wsl,
             read_file_base64,
             read_pdf_file,
             fetch_og_metadata,
             get_block,
+            get_blocks,
             archive_page,
             unarchive_page,
             archive_folder,
@@ -1587,7 +1713,57 @@ pub fn run() {
             save_whiteboard,
             gc_whiteboards,
             restore_blocks,
+            // ── AI platform ──
+            ai_commands::ai_get_status,
+            ai_commands::ai_save_settings,
+            ai_commands::ai_set_api_key,
+            ai_commands::ai_clear_api_key,
+            ai_commands::ai_list_models,
+            ai_commands::ai_ask,
+            ai_commands::ai_cancel,
+            ai_commands::ai_reset_conversation,
+            ai_commands::ai_list_runs,
+            // ── End AI platform ──
+            // ── Perf ──
+            get_properties_batch,
+            // ── End perf ──
+            // ── Notebooks ──
+            notebooks::list_notebooks,
+            notebooks::get_notebook_session,
+            notebooks::dismiss_notebook_notice,
+            notebooks::default_notebook_location,
+            notebooks::create_notebook,
+            notebooks::open_notebook_folder,
+            notebooks::locate_notebook,
+            notebooks::rename_notebook,
+            notebooks::delete_notebook,
+            notebooks::forget_notebook,
+            notebooks::take_over_notebook,
+            notebooks::move_notebook_to_folder,
+            notebooks::mirror_status,
+            notebooks::mirror_rebuild,
+            notebooks::mirror_open_folder,
+            notebooks::git_sync_resolve_deletions,
+            // ── Import / attachments ──
+            import_commands::store_attachment,
+            import_commands::store_dropped_files,
+            import_commands::open_attachment,
+            import_commands::get_attachment,
+            import_commands::import_detect,
+            import_commands::import_scan,
+            import_commands::import_preview,
+            import_commands::import_run,
+            import_commands::import_cancel,
+            import_commands::import_discard,
+            import_commands::import_undo,
+            import_commands::import_runs,
+            // ── End import ──
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+    app.run(|handle, event| {
+        if let tauri::RunEvent::Exit = event {
+            notebooks::shutdown(handle);
+        }
+    });
 }
