@@ -1,385 +1,196 @@
-# MiNotes Editor & UX Improvements PRD
-
-## Overview
-
-A collection of high-impact editor and UX features drawn from the top 100 Obsidian plugins analysis. These are features that should be native to MiNotes — not plugins — because they are core to the daily note-taking experience. Organized by priority tier.
-
----
-
-## High Priority
-
-### 1. Recent Files in Sidebar
-
-**What**: A "Recent" section at the top of the sidebar showing the last 5-8 pages you visited, ordered by last-opened time.
-
-**Why**: Users constantly switch between a handful of pages. Scrolling through the full page list or using search for pages you were just on is friction. The #20 Obsidian plugin (962K downloads).
-
-**Design**:
-```
-── Recent ──
-  📄 Design Doc                    2m ago
-  📅 2026-03-24                    5m ago
-  📄 Sprint Review                15m ago
-  📄 Research Notes               1h ago
-  📄 Project Alpha                3h ago
-```
-
-**Implementation**:
-- Track `lastOpenedAt` per page in a lightweight store (localStorage or in-memory with persistence)
-- Not the same as `updated_at` — opening a page without editing still updates recency
-- Show top 5-8, configurable in settings
-- Click navigates to page; right-click removes from recent
-- Collapsible section header
-
-**Files to modify**:
-- `Sidebar.tsx` — add Recent section above Favorites
-- `App.tsx` — track page opens in a recency list
-- `settings.ts` — add `recentFilesCount` setting
-
----
-
-### 2. Table Editor — WYSIWYG Tables
-
-**What**: Create and edit tables visually — click to add rows/columns, Tab to navigate cells, resize columns by dragging. No raw markdown pipe syntax.
-
-**Why**: Tables in markdown are painful. The #5 Obsidian plugin (2.7M downloads). Essential for meeting notes, comparisons, project tracking.
-
-**Design**:
-```
-┌──────────────────────────────────────────┐
-│  + Add Column                            │
-├──────────┬──────────┬──────────┬────┤
-│ Feature  │ Status   │ Owner    │  + │
-├──────────┼──────────┼──────────┤    │
-│ Search   │ ✅ Done  │ Alice    │    │
-│ Sync     │ 🔄 WIP  │ Bob      │    │
-│ Export   │ ⏳ Todo  │ Charlie  │    │
-├──────────┴──────────┴──────────┤    │
-│  + Add Row                     │    │
-└──────────────────────────────────────┘
-```
-
-**Interactions**:
-- `/table` slash command creates a 3x3 table
-- Tab / Shift+Tab to navigate cells
-- Click column/row headers to select entire column/row
-- Right-click cell → Insert row above/below, Insert column left/right, Delete row/column
-- Drag column borders to resize
-- Supports markdown formatting inside cells (bold, links, code)
-
-**Implementation**:
-- TipTap already has `Table`, `TableRow`, `TableCell`, `TableHeader` extensions loaded
-- Need: toolbar buttons for table operations, Tab key handling in cells, visual resize handles
-- Create `TableToolbar.tsx` — appears when cursor is in a table
-- Add `/table` to slash commands
-- CSS for table styling (borders, cell padding, header row)
-
-**Files to modify**:
-- `slashCommands.ts` — add `/table` command
-- New `TableToolbar.tsx` — contextual toolbar for table operations
-- `useBlockEditor.ts` — handle Tab key in table context
-- `styles.css` — table styles
-- `editor.css` — ProseMirror table styles
-
----
-
-### 3. Dynamic Templates with Variables
-
-**What**: Templates that insert dynamic content when applied — current date, page title, cursor placement, custom variables.
-
-**Why**: The #2 Obsidian plugin (3.9M downloads). Users create the same structures repeatedly (meeting notes, project pages, weekly reviews). Static templates exist; dynamic ones save real time.
-
-**Design**:
-
-Template definition:
-```markdown
----
-template: true
-name: Meeting Notes
----
-
-# {{title}}
-
-**Date**: {{date:YYYY-MM-DD}}
-**Attendees**: {{cursor}}
-
-## Agenda
-
--
-
-## Discussion
-
--
-
-## Action Items
-
-- [ ] {{input:Assignee}}:
-```
-
-**Variable types**:
-| Variable | Description | Example Output |
-|----------|-------------|---------------|
-| `{{title}}` | Current page title | "Sprint Review" |
-| `{{date}}` | Today's date (ISO) | "2026-03-24" |
-| `{{date:format}}` | Formatted date | "March 24, 2026" |
-| `{{time}}` | Current time | "14:30" |
-| `{{cursor}}` | Place cursor here after insertion | (cursor position) |
-| `{{input:Label}}` | Prompt user for value | Shows input dialog |
-| `{{yesterday}}` | Yesterday's date | "2026-03-23" |
-| `{{tomorrow}}` | Tomorrow's date | "2026-03-25" |
-
-**Implementation**:
-- Extend existing template system (we have `create_template`, `apply_template`)
-- Add variable parser: regex `\{\{(\w+)(?::([^}]+))?\}\}`
-- On apply: replace variables, collect `{{input:*}}` prompts, set cursor at `{{cursor}}`
-- Template picker: `/template` slash command or Ctrl+T
-
-**Files to modify**:
-- New `templateEngine.ts` — variable parsing and substitution
-- `slashCommands.ts` — add `/template` command
-- Existing template API — no backend changes needed (variables resolved client-side)
-- `App.tsx` — template picker dialog
-
----
-
-### 4. Multi-Color Text Highlighting
-
-**What**: Highlight text in multiple colors — yellow, blue, green, red, purple. Not just the single default highlight.
-
-**Why**: The #29 Obsidian plugin (610K downloads). Users highlight for different purposes — important (red), question (blue), idea (green), reference (yellow).
-
-**Design**:
-- Bubble toolbar gets a highlight dropdown: 🟡 🔵 🟢 🔴 🟣
-- Clicking a color applies `==text==` with a color class
-- Markdown format: `==highlighted text=={.highlight-blue}` or use mark syntax
-
-**Implementation**:
-- TipTap `Highlight` extension already supports `color` attribute
-- Extend `Highlight.configure({ multicolor: true })`
-- Update `BubbleToolbar.tsx` — replace single H button with color picker
-- CSS for each highlight color
-- Markdown serialization: `==text==` for yellow (default), extended syntax for colors
-
-**Files to modify**:
-- `useBlockEditor.ts` — configure Highlight with multicolor
-- `BubbleToolbar.tsx` — highlight color picker
-- `styles.css` — `.highlight-yellow`, `.highlight-blue`, etc.
-- `editor.css` — ProseMirror highlight styles
-
----
-
-### 5. Outline / TOC Panel
-
-**What**: A panel showing the heading structure of the current page as a clickable table of contents. Clicking a heading scrolls to it.
-
-**Why**: The #77 Obsidian plugin (264K downloads). Essential for long pages — meeting notes, design docs, research. Helps users understand page structure at a glance.
-
-**Design**:
-```
-── Outline ──
-  # Sprint Review
-    ## Agenda
-    ## Demo Items
-    ## Discussion
-      ### Technical Debt
-      ### Timeline
-    ## Action Items
-```
-
-**Implementation**:
-- Parse blocks for heading content (`# `, `## `, `### `)
-- Render as an indented list in the right sidebar
-- Click → scroll to that block (using `data-block-id`)
-- Updates live as user edits headings
-- Show in right sidebar panel (collapsible)
-
-**Files to modify**:
-- New `OutlinePanel.tsx` — heading tree with click-to-scroll
-- `PageView.tsx` — extract heading structure from blocks
-- `App.tsx` — add outline to right sidebar
-- `styles.css` — outline panel styles
-
----
-
-## Medium Priority
-
-### 6. Kanban View for Pages
-
-**What**: View a page as a kanban board where top-level blocks are columns and their children are cards. Drag cards between columns.
-
-**Why**: The #8 Obsidian plugin (2.2M downloads). Project management inside notes — no need for a separate tool.
-
-**Design**:
-```
-Page: "Project Board"
-View: [Blocks] [Kanban]
-
-┌─ Backlog ────┐  ┌─ In Progress ─┐  ┌─ Done ────────┐
-│ Search UI    │  │ Git Sync      │  │ Whiteboard    │
-│ Templates   │  │ Encryption    │  │ Bubble Menu   │
-│              │  │               │  │ URL Paste     │
-│              │  │               │  │ Hover Preview │
-└──────────────┘  └───────────────┘  └───────────────┘
-```
-
-**Implementation**:
-- Top-level blocks = kanban columns (their `content` = column title)
-- Child blocks = cards within the column
-- Drag card between columns = `reparent_block` to new parent
-- Toggle between block view and kanban view per page
-- Store view preference as page property (`view:: kanban`)
-
-**Files to modify**:
-- New `KanbanView.tsx` — kanban board renderer
-- `PageView.tsx` — view mode toggle (blocks vs kanban)
-- `api.ts` — use existing `reparent_block` for card moves
-- `styles.css` — kanban board and card styles
-
----
-
-### 7. Inline Dataview Queries — Live Rendering
-
-**What**: Write queries inside blocks that render live results. Like Obsidian Dataview but simpler.
-
-**Why**: The #3 Obsidian plugin (3.8M downloads). Users want to see "all pages tagged #project" or "all TODOs across my notes" rendered inline.
-
-**Design**:
-
-Block content:
-```
-```query
-pages where tags contains "project"
-sort updated desc
-limit 10
-```​
-```
-
-Renders as:
-```
-── Query Results (3 pages) ──
-📄 Project Alpha         Updated 2h ago
-📄 Project Board         Updated 1d ago
-📄 Sprint Review         Updated 3d ago
-```
-
-**Query types**:
-- `pages where ...` — list pages matching filter
-- `blocks where ...` — list blocks matching content/property filter
-- `tasks where ...` — list TODO/DOING/DONE items across pages
-- `tags` — list all tags with counts
-
-**Implementation**:
-- Detect code blocks with language `query` or `dataview`
-- Parse simple query syntax (already have `run_query` backend command)
-- Render results inline below the code block
-- Results update on page refresh (not real-time)
-- Extend existing `QueryPanel` logic for inline use
-
-**Files to modify**:
-- `BlockItem.tsx` — detect query blocks, render results inline
-- New `InlineQuery.tsx` — query parser and result renderer
-- Extend backend `run_query` if needed for new filter types
-
----
-
-### 8. Periodic Notes (Weekly / Monthly)
-
-**What**: Alongside daily journal pages, support weekly and monthly review pages with templates.
-
-**Why**: The #30 Obsidian plugin (609K downloads). Weekly reviews, monthly goals, quarterly planning — all follow the same pattern as daily journals but at different cadences.
-
-**Design**:
-```
-── Journals ──
-  📅 2026-03-24              (daily)
-  📅 2026-03-23
-  📅 Week 13 (Mar 24-30)     (weekly)
-  📅 March 2026              (monthly)
-```
-
-**Implementation**:
-- `journal_type` field: `daily`, `weekly`, `monthly`
-- Weekly: `YYYY-Www` format (ISO week), auto-created on first day of week
-- Monthly: `YYYY-MM` format, auto-created on first day of month
-- Each type has its own template (configurable)
-- Navigation: "← Prev Week" / "Next Week →" in journal header
-- Sidebar groups by type
-
-**Files to modify**:
-- Backend: extend `get_journal` to accept `type` parameter
-- `PageView.tsx` — periodic navigation buttons
-- `Sidebar.tsx` — group journals by period
-- `settings.ts` — weekly/monthly templates configuration
-
----
-
-### 9. Natural Language Dates
-
-**What**: Type "next Tuesday" or "in 3 days" in a block and it resolves to an actual date. Rendered as a clickable date chip.
-
-**Why**: The #41 Obsidian plugin (475K downloads). Useful for task deadlines, meeting scheduling, journal references.
-
-**Design**:
-- Type `@next tuesday` or `@march 30` → resolves to `2026-03-31`
-- Rendered as: `📅 Mar 31, 2026` (clickable chip → opens that journal day)
-- Trigger: `@` followed by date-like text
-- Also works in properties: `deadline:: next friday` → `deadline:: 2026-03-27`
-
-**Implementation**:
-- Use `chrono` on backend or a lightweight date parser
-- TipTap suggestion plugin triggered by `@`
-- Date suggestion dropdown showing parsed interpretation
-- Stores as ISO date string, renders as formatted chip
-
-**Files to modify**:
-- New `DateSuggestion.ts` — TipTap suggestion plugin for `@`
-- New `DateNode.ts` — inline node for rendered dates
-- New `dateParser.ts` — natural language → date resolution
-- `useBlockEditor.ts` — add DateSuggestion extension
-
----
-
-### 10. URL Auto-Title Fetch
-
-**What**: When pasting a bare URL (no selection), automatically fetch the page title and create `[Page Title](url)` instead of `[url](url)`.
-
-**Why**: Combined with the existing URL-to-link paste, this completes the "smart paste" experience. The #59 Obsidian plugin (343K downloads).
-
-**Design**:
-- Paste `https://github.com/anthropics/claude-code`
-- Immediately shows: `[https://github.com/anthropics/claude-code](https://github.com/anthropics/claude-code)`
-- After 1-2 seconds (async fetch): updates to `[claude-code - GitHub](https://github.com/anthropics/claude-code)`
-- If fetch fails: keeps the URL as the link text
-
-**Implementation**:
-- Backend Tauri command: `fetch_url_title(url) → Option<String>`
-- Uses `reqwest` with 3-second timeout, parses `<title>` from HTML
-- Frontend: paste inserts `[url](url)` immediately, then async-replaces link text
-- Mock backend: returns URL hostname as title
-
-**Files to modify**:
-- Backend: new `fetch_url_title` command
-- `useBlockEditor.ts` — async title fetch after URL paste
-- `api.ts` — add `fetchUrlTitle` function
-- `mockBackend.ts` — mock title fetcher
-
----
-
-## Implementation Priority
-
-| # | Feature | Effort | Impact | Dependencies |
-|---|---------|--------|--------|-------------|
-| 1 | Recent Files | Small | High | None |
-| 2 | Table Editor | Medium | High | TipTap Table (already loaded) |
-| 3 | Dynamic Templates | Medium | High | Existing template system |
-| 4 | Multi-Color Highlight | Small | Medium | TipTap Highlight (already loaded) |
-| 5 | Outline/TOC Panel | Small | Medium | Right sidebar (exists) |
-| 6 | Kanban View | Large | High | Block tree system |
-| 7 | Inline Queries | Medium | High | Existing query engine |
-| 8 | Periodic Notes | Medium | Medium | Journal system |
-| 9 | Natural Language Dates | Medium | Medium | Date parser |
-| 10 | URL Auto-Title | Small | Medium | Backend HTTP fetch |
-
-**Recommended build order**: 1 → 4 → 5 → 10 → 2 → 3 → 7 → 8 → 6 → 9
-
-Start with the quick wins (Recent Files, Highlight Colors, Outline, URL Title) to deliver visible improvements fast, then tackle the heavier features (Tables, Templates, Queries, Kanban).
+# PRD: Editor & UX Improvements
+
+Status: ~45% built · Revised 2026-10-10 · Owner: Chris Klaus
+
+> **What changed in this revision.** The March 2026 version was ten features
+> picked from Obsidian plugin download counts, each with a file-by-file plan. Since
+> then, Kanban and the outline shipped, tables were built (in the `feat-tc`
+> worktree, about to merge), and three specs landed that change the plan:
+> plugins (`PRD-plugin-architecture.md`) give us a sandboxed home for renderers
+> like Mermaid and math; import (`PRD-import.md`) adds an attachment store; and the
+> AI platform (`PRD-ai-assistant.md`) provides one opt-in model layer. This
+> revision: (1) adds a status per item, checked against the code; (2) re-ranks
+> the list for what users expect from an outliner in 2026, adding three missing
+> basics (attachments in blocks, find & replace, word count) and deciding build
+> next / later / plugin / cut for each item; (3) adds **Where AI helps**; (4) drops
+> stale implementation detail. Kanban moves out — it has its own spec
+> (`PRD-kanban.md`).
+>
+> "~45%" counts the ten original items, with tables done once `feat-tc` merges.
+
+## 1. Goal
+
+Make daily writing in MiNotes feel complete: the things users of Logseq,
+Obsidian, Notion or Tana reach for in their first week should exist, work in the
+outliner model (blocks with `parent_id` + `position`), and save as plain
+markdown that still reads correctly without MiNotes.
+
+**Principles**
+- **Portable storage.** Every feature saves as readable markdown in block
+  content. If markdown has no syntax for something (table column widths, highlight
+  colours), we either pick one plain convention or don't build it.
+- **Exact things stay deterministic.** Dates, queries, titles and replacements
+  are computed by code. AI only drafts content the user reviews (see §5).
+- **Core vs plugin.** Core covers what nearly every user needs and anything that
+  touches the block tree or storage. Renderers for specialist content (diagrams,
+  math, charts) are plugins, using the code-fence renderer extension point.
+
+## 2. Status of the original items
+
+Checked against `main` and the `feat-tc` / `ux-int` worktrees on 2026-10-10. Paths
+are under `crates/minotes-app/src/`.
+
+| # | Item | Status | Where | Gap |
+|---|---|---|---|---|
+| 1 | Recent pages in sidebar | **Partial** | `lib/recentFiles.ts` tracks opens (`App.tsx`); shown only in the search/command palette (`components/SearchPanel.tsx`) | Not in the sidebar |
+| 2 | WYSIWYG tables | **Done** (in `feat-tc`, unmerged) | `editor/tables.ts` (GFM round-trip serializer that escapes `\|` and keeps alignment), `editor/TableToolbar.tsx`, `/table` in `editor/slashCommands.ts`, Tab/Shift-Tab cell navigation | Pasting a markdown/TSV table doesn't produce one table block; no column widths |
+| 3 | Dynamic templates | **Partial** | `lib/builtinTemplates.ts`, template slash items in `editor/slashCommands.ts`; backend `create_template`/`apply_template` | Only `{{date}}` and `{{time}}`; no `{{title}}`, `{{cursor}}`, date formats, `{{input:}}` |
+| 4 | Multi-colour highlight | **Not started** | One highlight toggle in `editor/BubbleToolbar.tsx` | — |
+| 5 | Outline / TOC | **Done** (differently) | `components/TableOfContents.tsx`, toggled overlay from the page header in `PageView.tsx` | Spec asked for a right-sidebar panel; overlay is enough (§3) |
+| 6 | Kanban view | **Done** | `components/kanban/`; polish in `ux-int` | Tracked in `PRD-kanban.md` — removed from this spec |
+| 7 | Live queries in blocks | **Not started** | `components/QueryPanel.tsx` is a separate panel running raw SQL (`run_query`) | No inline, live, safe query |
+| 8 | Weekly / monthly notes | **Not started** | Daily journal only (`get_journal`) | — |
+| 9 | Natural-language dates | **Not started** | — | — |
+| 10 | URL auto-title on paste | **Partial** | Paste into an empty block makes a link-preview card that fetches the title (`fetch_og_metadata`, `components/BlockItem.tsx`); paste over selected text wraps it as a link (`editor/useBlockEditor.ts`) | Pasting a URL into text still inserts `[url](url)` |
+
+Also merging soon from `ux-int`: code-block language labels
+(`editor/codeLanguage.ts`) and an empty-page hint. From `feat-tc`: creating
+flashcards from a block (`/flashcard`, context menu).
+
+## 3. Priorities
+
+Ranked by how much each item's absence hurts a user in their first week (S/M/L = rough effort).
+
+### Build next
+
+| Rank | Item | Effort | Why now | Scope |
+|---|---|---|---|---|
+| 1 | **Finish tables** (#2) | S | Nearly done; merging is cheap | Merge `feat-tc`. Pasting a GFM/TSV/CSV table, or cells copied from a spreadsheet, creates one table block. Column widths: **cut**, because markdown can't store them. |
+| 2 | **Images and files in blocks** (new) | M | Pasted images are stored today as data URLs inside block content. That bloats the DB, git sync and the markdown mirror, and non-image files can't be added at all. Every competitor supports this. | Built on the attachment store in `PRD-import.md` §5 (`attachment:` references, `attachment://` protocol). Paste or drop images and files; resize an image (width saved as a plain attribute); click an image to open it full size; convert existing data-URL images on first edit or in a one-off migration. Ships with import Phase 1. |
+| 3 | **Find & replace in a page** (new) | S–M | Ctrl+F in the webview can't see text inside unfocused editors, and there's no replace. Users expect this in any editor. | Ctrl+F searches the open page across all blocks, highlights matches and steps through them. Replace / Replace all with match case and whole word, as a single undo step. Searching across pages stays in global search. |
+| 4 | **Recent pages in the sidebar** (#1) | S | The data already exists | Build it as the "Quick Access" section in `PRD-sidebar-navigation.md` (pinned + recent combined). Don't add a separate Recent section. |
+| 5 | **URL title on inline paste** (#10) | S | Most of it is built | Paste a URL into text → insert `[url](url)` immediately, then replace the text with the fetched title (reuse `fetch_og_metadata`, 3 s timeout, keep the URL if it fails). Typing in the block before the title arrives cancels the replacement. A setting turns off URL fetching, because each fetch tells that site the URL was opened. |
+| 6 | **Templates v2** (#3) | M | Templates are needed for periodic notes (below) and for AI drafting (§5) | Add `{{title}}`, `{{cursor}}`, `{{date:FORMAT}}`, `{{date:+7d}}` / `{{yesterday}}` / `{{tomorrow}}`, plus user templates saved as pages tagged `template`. `{{input:Label}}` comes later. |
+| 7 | **Live queries** (#7) | L | The #3 Obsidian plugin. Also the base for "queries in plain English" (§5). | **First-party**, not a plugin: a small read-only query language in core, not raw SQL. Covers pages/blocks/tasks filtered by tag, property, path, date and status, with sort and limit. Written in a ```` ```query ```` fence; results render below it, with a live refresh. Runs in the CLI too (`minotes query`). The plugin "inline query" extension point (plugins Phase 4) renders custom views over this same engine. `QueryPanel` stays as the raw-SQL tool for power users. |
+
+### Later
+
+- **Natural-language dates** (#9), M. A `@` picker using a deterministic parser
+  (chrono-node or similar): "next fri", "in 3 days", "mar 30". It shows what the
+  phrase resolved to before inserting, stores an ISO date and renders it as a
+  chip that opens that day's journal. It works in properties too. No AI (§5).
+- **Weekly / monthly notes** (#8), M. Pages titled `2026-W41` and `2026-10`,
+  each created from a template (needs Templates v2), with prev/next navigation in
+  the journal header. Wait until users ask for it; daily journals with
+  templates cover most cases.
+- **Word count**, S. Words and characters for the page, or for the selection when
+  there is one, in the page footer. Quick to build, so it can go into any release.
+- **Block references polish**, S–M. Inserting with `((`, "Copy block reference" and
+  zooming into a block already work. Still missing: a reference-count badge on
+  referenced blocks, and embeds (a live, editable copy of a block elsewhere).
+  Build embeds once users ask for them.
+- **Multi-colour highlight** (#4), S. Low value, and markdown has no standard
+  syntax for colours. If built, use four fixed colours, keep `==text==` for the
+  default colour, and choose one plain convention for the others.
+
+### Make a plugin
+
+Each of these is a code-fence renderer from plugins Phase 1, and the data stays
+readable as a fenced code block:
+- **Mermaid / diagrams.** Already planned as an example plugin
+  (`PRD-plugin-architecture.md` §9).
+- **Math (KaTeX).** Inline `$…$` needs editor support, so v1 is block math in a
+  ```` ```math ```` fence. If plugins Phase 1 slips past Q1 2027, consider building
+  block math into core (open question 2).
+- **"Insert TOC as blocks"** command, for people who want a static TOC in the
+  page.
+
+### Cut
+
+- **Outline as a right-sidebar panel** (#5). The overlay works. Revisit only if
+  the right sidebar becomes the home for page context (backlinks, outline,
+  properties).
+- **Table column resizing.** Widths can't be saved in markdown.
+- **Focus / zen mode.** Zooming into a block plus collapsing the sidebar covers
+  most of it. Reconsider if users ask.
+- **Kanban** (#6). Shipped; it lives in `PRD-kanban.md`.
+
+## 4. Requirements that apply to every item
+
+- Everything saves into block content as markdown. Round-trip tests (parse →
+  serialize → parse) are required for each new syntax (tables, images, query
+  fences, date chips).
+- Use the slash-command approach that already works: insert markdown text and let
+  the sync path render it. Building content through TipTap commands loses
+  formatting in the blur→save cycle (see `CLAUDE.md`).
+- Each feature gets a `window.__MINOTES__` hook and a user journey in
+  `tests/user-journey-test.sh`. Anything that uses IPC (attachments, URL fetch)
+  also gets checked in the real desktop app with the desktop-check skill.
+- Mock backend parity: `mockBackend.ts` gets a handler for every new command.
+
+## 5. Where AI helps
+
+All AI features run through the AI platform (`PRD-ai-assistant.md`): the user
+configures a provider (their own key for a cloud model, or a local model), and
+every feature is **off by default**. Nothing is sent except what the user starts
+an action on. Every AI result is shown as a preview before it is inserted and can
+be undone in one step. General writing help (rewrite, continue, summarise a
+selection) is the platform's "AI in the editor" surface and isn't specified here.
+
+The test for including an idea: a modern LLM must do clearly better than
+deterministic code, and the result must be something the user reviews anyway.
+Anything that has to be exact and happens silently (dates, titles, find &
+replace, saving) stays deterministic.
+
+### Kept
+
+| Idea | User value | Why AI and not code | Priority |
+|---|---|---|---|
+| **Paste as clean outline.** Turn a pasted email thread, web article or meeting transcript into tidy nested blocks | High. Pasting is how most outside content gets into notes, and today it arrives as one wall of text or a messy HTML conversion | HTML→markdown keeps the clutter (signatures, quoted replies, nav text, cookie banners) and can't recover structure from plain text. Deciding what is content and how it nests is judgement. | **P1.** A separate action (paste chip "Clean up with AI", or Ctrl+Shift+Alt+V). Normal paste never calls AI. The preview shows the proposed blocks next to the original. |
+| **Queries in plain English** ("open tasks tagged #launch due this week") compiled to the query language | Medium–high. People want queries but won't learn a syntax | Turning intent into a formal query is translation, which LLMs do well. The deterministic engine still produces the results, so they are exact. | **P2**, after live queries (#7). The generated query is written into the fence where the user can see and edit it. The model gets the query grammar and property/tag names only, not note content. |
+| **Draft from a template instruction** ("weekly review for Project X") | Medium. Gets past the blank page in reviews and project kick-offs | Static templates can't fill in what happened in Project X this week. A model can draft it from the pages the user points it at. | **P2**, after Templates v2. Entry point in the template picker. Reading context is explicitly scoped (this project or these pages), and the draft is inserted as ordinary blocks. Writing quality comes from the writing assistant. |
+| **Table from unstructured text** ("Alice 30 Berlin, Bob 41 Oslo…" or a pasted list of specs) | Low–medium | Delimited text (TSV/CSV/GFM) is handled by code in rank 1. AI is only for text without delimiters, where finding the columns needs judgement. | **P3.** An explicit "Make table with AI" action. The preview shows the table before it's inserted. |
+| **Summary of a pasted link** | Low–medium, mainly for reading lists | The title comes from deterministic code (rank 5). A summary can't. | **P3.** Only when asked, from the link card's menu. The page text is fetched locally and sent to the configured model. Never runs automatically on paste. |
+
+### Rejected
+
+- **Natural-language dates via an LLM.** A deterministic parser handles "next
+  friday" and "in 3 days" exactly, instantly and offline. A wrong date that gets
+  inserted without notice is worse than no feature. Vague phrases ("after the
+  offsite") can't be resolved without information the model doesn't have either.
+- **Page titles via an LLM.** The page's `<title>` / Open Graph tags are the
+  correct answer. Generating a title adds cost and a chance of hallucination for
+  no benefit.
+- **"Smart" find & replace.** Replace must be exact and predictable. Changing many
+  places at once by meaning belongs to the writing assistant, with a preview.
+- **AI ranking of recent pages, AI highlight colours, AI-picked table layout.**
+  Little value; deterministic behaviour is easier to understand.
+- **Running AI automatically on paste or save.** It would send content without
+  the user asking, which breaks private-by-default.
+
+## 6. Success measures
+
+- Ranks 1–5 are built and covered by user journeys. No data-URL images remain in
+  new content after attachments ship.
+- Live queries: a query over a 10k-block notebook renders in under 200 ms (scale
+  tool in desktop-check).
+- AI features: share of previews accepted vs. dismissed, tracked locally and never
+  sent anywhere. If paste cleanup is accepted less than half the time, rework it
+  or cut it.
+
+## 7. Open questions for the owner
+
+1. **Query language:** design our own small DSL, or adopt an existing syntax
+   (Logseq's simple queries, or a Dataview subset) so imported notes keep working?
+   Adopting one helps import (`PRD-import.md`) but ties us to its quirks.
+2. **Math:** wait for the plugin, or build block math into core now? Math is
+   common among students and researchers and the KaTeX cost is small.
+3. **Attachment migration:** convert existing data-URL images in one migration
+   pass, or lazily on edit? A migration touches every page's sync history once.
+4. **Spellcheck:** WebKitGTK spellcheck depends on the system's enchant/hunspell
+   setup. Should we ship dictionaries and a language setting, or accept whatever
+   the platform provides? Needs a desktop-check on Linux first.
+5. **URL fetching:** keep fetching titles and previews on by default (convenient),
+   or make it opt-in to match AI's private-by-default stance?
+6. **Highlight colours:** worth a non-standard markdown convention, or drop it for
+   good?

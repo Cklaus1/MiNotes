@@ -1,436 +1,170 @@
 # MiNotes Kanban Board PRD
 
+Status: 85% built · Revised 2026-10-10 · Owner: Chris Klaus
+
+> **What changed in this revision.** The spec now describes the board as built:
+> a full-screen **canvas mode** (beside Graph / Mindmap / Draw / Pages), not a
+> page-header toggle, with no `view::` page property. Columns are now *sections*
+> (headings or blocks with children) rather than "every top-level block", with a
+> virtual "No section" column for loose blocks (from the `ux-int` worktree, merging
+> soon). A status column was added to the feature list, stale CSS and file-size
+> estimates were removed, the remaining work was re-prioritised (any-block boards
+> and property badges kept; image export, virtualisation and several shortcuts
+> cut), and a "Where AI helps" section was added.
+
 ## Overview
 
-A kanban board view for any block subtree in MiNotes. Any block with children can be viewed as a kanban board — the block's children become columns and their children become cards. Works at any level: a full page, a zoomed-in section, or any parent block. Same data, different view. Toggle between Block View and Kanban View with one click.
+A kanban board for any page. Same data, different view: a page's sections become
+columns and the blocks under them become cards. Dragging a card moves the real
+block, so the outline and the board are always the same document. Open it with
+the **Kanban** button in the sidebar mode bar or `Ctrl+Shift+K`.
 
-Built with **@atlaskit/pragmatic-drag-and-drop** for drag-and-drop — the same library powering Trello and Jira. ~4.7 kB gzipped, framework-agnostic core, React 19 compatible.
+Drag-and-drop uses **@atlaskit/pragmatic-drag-and-drop** (+ `-hitbox`,
+`-auto-scroll`): small, React-19 compatible, maintained by Atlassian.
 
-## Problem Statement
+## Problem
 
-Outliner-style block views are great for writing but poor for project management. Users tracking tasks, sprints, or workflows need a spatial board — not a nested list. The Kanban plugin is #8 on Obsidian (2.2M downloads), showing strong demand.
+Outlines are good for writing and poor for tracking work. Users with tasks,
+sprints or pipelines want a spatial board; the Obsidian Kanban plugin (2M+
+downloads) shows the demand. MiNotes already has the hierarchy — the board is a view.
 
-MiNotes already has the data: blocks with parent/child relationships form a natural column-card hierarchy. The missing piece is the visualization.
+## How a page maps to a board (as built)
 
-## Architecture: Any-Block Kanban
-
-The kanban view works at **any level of the block tree**, not just the page level:
-
-```
-Page: "My Project"
-├── Block: "Notes"                    ← regular block (no kanban here)
-│   └── Block: "some notes..."
-├── Block: "Sprint Board"             ← zoom in → kanban view available
-│   ├── Block: "Backlog"              → Column 1
-│   │   ├── Block: "Search UI"       → Card
-│   │   └── Block: "Templates"       → Card
-│   ├── Block: "In Progress"          → Column 2
-│   │   └── Block: "Git Sync"        → Card
-│   └── Block: "Done"                 → Column 3
-│       └── Block: "Whiteboard"       → Card
-└── Block: "Roadmap"                  ← zoom in → another kanban
-    ├── Block: "Q1"                   → Column
-    │   └── Block: "Foundation"       → Card
-    └── Block: "Q2"                   → Column
-        └── Block: "Launch"           → Card
-```
-
-- **Page level**: top-level blocks are columns → works like a full-page kanban
-- **Zoomed in**: zoom into "Sprint Board" → its children are columns
-- **Multiple boards per page**: "Sprint Board" and "Roadmap" are independent kanbans
-- Uses the **existing zoom-in feature** — no new navigation needed
-- View preference is stored per block context (page ID + optional zoomed block ID)
-
-## Goals
-
-1. Any block with children can be viewed as a kanban — no special page type needed
-2. Same data, different view — edits in blocks or kanban stay in sync
-3. Drag cards between columns (reparent) and reorder within columns
-4. Add new cards and columns inline without switching to block view
-5. Visual: card colors from block properties, TODO/DOING/DONE badges
-6. Persist view preference per page
-
-## Non-Goals
-
-- Swimlanes or multi-level nesting (v1 = flat cards in columns)
-- WIP limits or workflow automation (future)
-- Real-time collaborative kanban (future)
-- Custom card templates (future)
-- Filtering/grouping cards by property (future — see query engine PRD)
-
-## Library Choice: pragmatic-drag-and-drop
-
-### Why Not Build From Scratch
-
-The whiteboard uses a custom Canvas API because drawing is highly specialized. Kanban drag-and-drop is a solved problem with standard semantics (drag card → drop on column/between cards). Using a library avoids reimplementing drop zone detection, hit testing, scroll-during-drag, keyboard accessibility, and mobile touch support.
-
-### Why pragmatic-drag-and-drop Over Alternatives
-
-| Capability | pragmatic-drag-and-drop | @dnd-kit | @hello-pangea/dnd |
-|-----------|------------------------|----------|-------------------|
-| Bundle size | ~4.7 kB gzipped | ~12 kB | ~30 kB |
-| React 19 | Yes (framework-agnostic core) | v6 no; v0.x pre-release | No |
-| Maintenance | Atlassian (Trello, Jira) | Single maintainer | Stale |
-| TypeScript | First-class | First-class | Yes |
-| Kanban example | First-class (it's Trello's lib) | Community examples | Community examples |
-| Touch support | Native HTML5 DnD | Custom pointer events | Custom pointer events |
-| Keyboard DnD | Addon package available | Built-in | Built-in |
-
-**Trade-off**: pragmatic-drag-and-drop is lower-level than dnd-kit's sortable preset — requires ~150-300 lines of custom wiring for drop indicators and reorder logic. But MiNotes gets full control over the UI, consistent with how the mindmap and whiteboard are built.
-
-### Packages Needed
+Source: `crates/minotes-app/src/components/kanban/kanbanModel.ts` (ux-int).
 
 ```
-@atlaskit/pragmatic-drag-and-drop        # Core draggable/droppable
-@atlaskit/pragmatic-drag-and-drop-hitbox  # Closest-edge detection for reorder
+Page: "Sprint 12"
+├── # Sprint 12                 ← skipped: leading H1 that repeats the title
+├── Remember to demo on Friday  ← loose block → card in "No section"
+├── ## Backlog                  ← heading → column
+│   ├── TODO Search UI          ← card (badge "TODO", text "Search UI")
+│   └── Templates               ← card
+├── In progress                 ← block with children → column
+│   └── DOING Git sync          ← card
+└── ## Done                     ← heading (even when empty) → column
 ```
 
-Optional (Phase 2+):
-```
-@atlaskit/pragmatic-drag-and-drop-react-drop-indicator  # Styled drop lines
-@atlaskit/pragmatic-drag-and-drop-auto-scroll           # Scroll while dragging
-```
-
-## Data Model
-
-No new data structures needed. Kanban reads from the existing block tree relative to a **root context** (page root or zoomed-in block):
-
-```
-Root context (page or zoomed block)
-├── Block: "Backlog"              → Column 1
-│   ├── Block: "Search UI"       → Card
-│   ├── Block: "Templates"       → Card
-│   └── Block: "Dark mode"       → Card
-├── Block: "In Progress"          → Column 2
-│   ├── Block: "Git Sync"        → Card
-│   └── Block: "Encryption"      → Card
-└── Block: "Done"                 → Column 3
-    ├── Block: "Whiteboard"       → Card
-    └── Block: "Bubble Menu"      → Card
-```
-
-### Block-to-Kanban Mapping
-
-| Block Field | Kanban Element |
-|-------------|---------------|
-| Direct child of root `content` | Column title |
-| Direct child of root `id` | Column ID |
-| Grandchild block `content` | Card text (markdown stripped to plain text) |
-| Grandchild block `id` | Card ID |
-| Grandchild block `parent_id` | Which column the card belongs to |
-| Grandchild block `position` | Card order within column |
-| Block property `todo` | TODO/DOING/DONE badge on card |
-| Page property `view` | `"kanban"` to remember view preference |
-| Page property `kanban_root` | Zoomed block ID (if not page-level) |
-
-### Card Display
-
-Cards show a condensed view of block content:
-
-```
-┌──────────────────────┐
-│ DOING                │  ← TODO state badge (if present)
-│ Implement Git Sync   │  ← First line of content (plain text)
-│ 3 sub-blocks         │  ← Child count (if card has children)
-└──────────────────────┘
-```
-
-### API Operations
-
-All operations use existing backend APIs — no new Tauri commands needed:
-
-| Kanban Action | API Call |
-|--------------|----------|
-| Move card to another column | `moveBlock(cardId, newColumnId, position)` |
-| Reorder card within column | `reorderBlock(cardId, columnId, newPosition)` |
-| Add new card | `createBlock(pageId, "", columnId)` |
-| Add new column | `createBlock(pageId, "New Column", null)` |
-| Edit card text | `updateBlock(cardId, newContent)` |
-| Edit column title | `updateBlock(columnId, newTitle)` |
-| Delete card | `deleteBlock(cardId)` |
-| Delete column | `deleteBlock(columnId)` (cascades to cards) |
-| Persist view mode | `setProperty(pageId, "page", "view", "kanban")` |
-
-## UI Design
-
-### View Toggle
-
-Kanban toggle lives in the **canvas mode bar** alongside Graph/Mindmap/Draw. This keeps it consistent with other view modes and avoids cluttering the page header.
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│ ← Notes    [Graph] [Mindmap] [Draw] [Kanban]                │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│  ┌─ Backlog ─────┐  ┌─ In Progress ──┐  ┌─ Done ────────┐  │
-│  │ ...           │  │ ...            │  │ ...           │  │
-```
-
-- Accessed via canvas mode switcher (same as Graph/Mindmap/Draw)
-- Kanban edits real block data (unlike read-only Graph)
-- Keyboard shortcut: `Ctrl+Shift+K` to toggle
-- When zoomed into a block, kanban shows that block's children as columns
-- View preference persisted in localStorage (keyed by pageId + zoomedBlockId)
-
-### Board Layout
-
-```
-┌─ Backlog ──────┐  ┌─ In Progress ──┐  ┌─ Done ──────────┐  ┌─ + ─┐
-│ ┌────────────┐ │  │ ┌────────────┐ │  │ ┌────────────┐  │  │     │
-│ │ Search UI  │ │  │ │ DOING      │ │  │ │ DONE       │  │  │ Add │
-│ └────────────┘ │  │ │ Git Sync   │ │  │ │ Whiteboard │  │  │ col │
-│ ┌────────────┐ │  │ │ 2 sub-blks │ │  │ └────────────┘  │  │     │
-│ │ Templates  │ │  │ └────────────┘ │  │ ┌────────────┐  │  └─────┘
-│ └────────────┘ │  │ ┌────────────┐ │  │ │ DONE       │  │
-│ ┌────────────┐ │  │ │ Encryption │ │  │ │ Bubble Menu│  │
-│ │ Dark mode  │ │  │ └────────────┘ │  │ └────────────┘  │
-│ └────────────┘ │  │                │  │                  │
-│                │  │                │  │                  │
-│  + Add card    │  │  + Add card    │  │  + Add card      │
-└────────────────┘  └────────────────┘  └──────────────────┘
-```
-
-- Columns scroll horizontally if they overflow
-- Cards scroll vertically within each column
-- Column width: 280px fixed
-- Card gap: 8px
-- Column header: editable inline (click to edit)
-- "+" button at bottom of each column adds a new card
-- "+" column at the end adds a new column
-
-### Drag Interactions
-
-| Action | Behavior |
-|--------|----------|
-| Drag card within column | Blue drop indicator line appears between cards |
-| Drag card to another column | Column highlights, drop indicator shows position |
-| Drag card over empty column | Column shows "Drop here" placeholder |
-| Drag column header | Reorder columns (reorder top-level blocks) |
-
-### Card Interactions
-
-| Action | Behavior |
-|--------|----------|
-| Click card | Opens card in a side panel or inline editor |
-| Double-click card | Edit card text inline |
-| Right-click card | Context menu: Edit, Duplicate, Delete, Move to... |
-| Click "+" | Creates empty card at bottom, focuses for editing |
-| `Enter` in card editor | Save and create next card below |
-| `Escape` in card editor | Save and close editor |
-
-### Color Coding
-
-Cards inherit color from TODO state:
-
-| State | Card Style |
-|-------|-----------|
-| (none) | Default card (subtle border) |
-| TODO | Left border: blue (#89b4fa) |
-| DOING | Left border: yellow (#f9e2af) |
-| DONE | Left border: green (#a6e3a1), strikethrough text |
-
-### Empty State
-
-When a page has no blocks, the kanban view shows:
-
-```
-┌──────────────────────────────────┐
-│                                  │
-│  This page is empty.             │
-│  Add your first column to start  │
-│  a kanban board.                 │
-│                                  │
-│        [+ Add Column]            │
-│                                  │
-└──────────────────────────────────┘
-```
-
-## Implementation Phases
-
-### Phase 1: Core Board (MVP)
-
-**Scope**: Read-only kanban view with drag-and-drop between columns.
-
-**New files**:
-- `src/components/KanbanView.tsx` — board renderer (~400 lines)
-- `src/components/KanbanCard.tsx` — card component (~80 lines)
-- `src/components/KanbanColumn.tsx` — column component (~120 lines)
-
-**Modified files**:
-- `src/components/PageView.tsx` — view mode toggle (Blocks / Kanban)
-- `src/styles.css` — kanban styles (~150 lines)
-- `package.json` — add pragmatic-drag-and-drop deps
-
-**Features**:
-- [x] Render top-level blocks as columns, children as cards
-- [x] Drag cards between columns (`moveBlock`)
-- [x] Reorder cards within a column (`reorderBlock`)
-- [x] TODO/DOING/DONE colored badges on cards
-- [x] View toggle in page header (Blocks / Kanban)
-- [x] Persist view preference as page property
-- [x] Child count badge on cards with grandchildren
-- [x] Horizontal scroll for many columns
-
-**Effort**: Medium (2-3 days)
-
-### Phase 2: Editing
-
-**Scope**: Full CRUD from the kanban view.
-
-**Features**:
-- [ ] Inline edit card text (click to edit, Enter to save)
-- [ ] Inline edit column title
-- [ ] Add new card (+ button at bottom of column)
-- [ ] Add new column (+ button at end)
-- [ ] Delete card (context menu or keyboard)
-- [ ] Delete column with confirmation (cascades to cards)
-- [ ] Drag to reorder columns
-
-**Effort**: Medium (1-2 days)
-
-### Phase 3: Polish
-
-**Scope**: Smooth animations, keyboard nav, advanced interactions.
-
-**Features**:
-- [ ] Auto-scroll during drag (pragmatic-drag-and-drop-auto-scroll)
-- [ ] Keyboard navigation (arrow keys between cards/columns, Enter to edit)
-- [ ] Card click → side panel with full block editor (TipTap)
-- [ ] Column collapse (click header to minimize)
-- [ ] Card count in column header ("Backlog (3)")
-- [ ] Drag column to reorder
-- [ ] Card search/filter
-
-**Effort**: Medium (2 days)
-
-### Phase 4: Integration
-
-**Scope**: Deep integration with MiNotes features.
-
-**Features**:
-- [ ] Wiki-links in cards rendered as clickable links
-- [ ] Card properties (tags, dates) shown as badges
-- [ ] "Move to..." submenu in context menu (lists columns)
-- [ ] Keyboard shortcut `Ctrl+Shift+K` to toggle view
-- [ ] Export board as markdown table or image
-
-**Effort**: Low-Medium (1-2 days)
-
-## Styling
-
-### CSS Variables (Catppuccin Mocha theme)
-
-```css
-.kanban-board {
-  display: flex;
-  gap: 12px;
-  padding: 16px;
-  overflow-x: auto;
-  height: 100%;
-  align-items: flex-start;
-}
-
-.kanban-column {
-  width: 280px;
-  min-width: 280px;
-  background: var(--bg-secondary);
-  border-radius: 10px;
-  border: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
-  max-height: calc(100vh - 120px);
-}
-
-.kanban-column-header {
-  padding: 12px 14px;
-  font-weight: 600;
-  font-size: 14px;
-  color: var(--text-primary);
-  border-bottom: 1px solid var(--border);
-  cursor: grab;
-}
-
-.kanban-column-body {
-  padding: 8px;
-  overflow-y: auto;
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.kanban-card {
-  background: var(--bg-primary);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 10px 12px;
-  cursor: grab;
-  font-size: 13px;
-  line-height: 1.4;
-  color: var(--text-primary);
-  transition: box-shadow 0.15s, border-color 0.15s;
-}
-
-.kanban-card:hover {
-  border-color: var(--accent);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
-}
-
-.kanban-card.dragging {
-  opacity: 0.5;
-}
-
-.kanban-card[data-todo="TODO"] { border-left: 3px solid #89b4fa; }
-.kanban-card[data-todo="DOING"] { border-left: 3px solid #f9e2af; }
-.kanban-card[data-todo="DONE"] { border-left: 3px solid #a6e3a1; }
-.kanban-card[data-todo="DONE"] .kanban-card-text { text-decoration: line-through; color: var(--text-muted); }
-
-.kanban-drop-indicator {
-  height: 2px;
-  background: var(--accent);
-  border-radius: 1px;
-  margin: -4px 0;
-}
-
-.kanban-add-card {
-  padding: 8px;
-  text-align: center;
-  color: var(--text-muted);
-  cursor: pointer;
-  border-radius: 6px;
-  font-size: 12px;
-}
-
-.kanban-add-card:hover {
-  background: var(--bg-surface);
-  color: var(--text-secondary);
-}
-```
-
-## Keyboard Shortcuts
-
-| Key | Action |
-|-----|--------|
-| `Ctrl+Shift+K` | Toggle Blocks ↔ Kanban view |
-| `Arrow Left/Right` | Move focus between columns |
-| `Arrow Up/Down` | Move focus between cards |
-| `Enter` | Edit focused card |
-| `Escape` | Close card editor / deselect |
-| `n` | New card in focused column |
-| `N` | New column |
-| `Delete` | Delete focused card (with confirmation) |
-
-## Performance
-
-- Lazy render cards outside viewport (virtual scroll for 100+ cards per column)
-- Debounce API calls during rapid drag operations (save final position only)
-- Optimistic updates — move card in UI immediately, sync to backend async
-- Use `React.memo` on KanbanCard to prevent re-renders during drag
-
-## Migration / Compatibility
-
-- No database changes needed
-- Existing pages work as kanban boards immediately (top-level blocks = columns)
-- Users who never use kanban view are unaffected — default view stays "Blocks"
-- Block changes in kanban view are visible in block view and vice versa
-- Kanban view preference stored as page property — syncs with Git sync feature
+| Rule | Behaviour |
+|---|---|
+| Column | A top-level block that is a markdown heading **or** has children |
+| Card | A child of a column; card order = block `position` |
+| "No section" | Virtual leading column for other non-empty top-level blocks; shown only when it has cards. Dropping a card here moves it to the page's top level |
+| Sticky columns | A block once shown as a column stays a column for that page even after its last card moves out (so it doesn't flip into a card mid-session). Stored in localStorage `kanban-columns-<pageId>` |
+| Skipped | A leading H1 equal to the page title (unless it has children); `---` dividers |
+| Card text | First line, markdown stripped; the TODO/DOING/DONE keyword is shown as a badge and removed from the text (stored content keeps it) |
+| New column | Created as `## New Column`, so an empty column is still a column |
+
+All writes go through existing APIs (`moveBlock`, `reorderBlock`, `createBlock`,
+`updateBlock`, `deleteBlock`, `snapshotSubtrees`/`restoreBlocks`). No schema change.
+
+**Why this beats the original rule** ("every top-level block is a column"): real
+pages mix a title, a few notes and some sections. The section rule turns such a
+page into a sensible board without restructuring it first.
+
+## Features and status
+
+Paths are under `crates/minotes-app/src/components/`. "ux-int" = in the UX worktree, merging soon.
+
+| Feature | Status | Where |
+|---|---|---|
+| Board as canvas mode; mode-bar button; `Ctrl+Shift+K` toggle | Done | `CanvasMode.tsx`, `App.tsx`, `Sidebar.tsx` |
+| Sections → columns, "No section" column, title-H1 skip | Done (ux-int) | `kanban/kanbanModel.ts` |
+| Drag cards between / within columns, drop indicator, auto-scroll | Done | `kanban/KanbanView.tsx`, `KanbanCard.tsx` |
+| Drag to reorder columns | Done | `KanbanView.tsx` (`columnDragId`) |
+| TODO/DOING/DONE badge, coloured left border, keyword stripped from text | Done (strip: ux-int) | `KanbanCard.tsx` |
+| Cycle TODO state from card menu | Done | `KanbanCard.tsx` |
+| Sub-block count on card | Done | `KanbanCard.tsx` |
+| Inline edit card (double-click / Enter); add card; edit column title | Done | `KanbanCard.tsx`, `KanbanColumn.tsx` |
+| Add / delete column (confirm, cascades) | Done | `KanbanView.tsx` |
+| Delete card with Undo toast (restores original ids, so refs survive) | Done | `KanbanView.tsx` |
+| Card context menu with "Move to…" column list | Done | `KanbanCard.tsx` |
+| Card count in column header; collapse column | Done | `KanbanColumn.tsx` |
+| Card filter (`Ctrl+F` or `/`) | Done | `KanbanView.tsx` |
+| Keyboard: arrows between cards/columns, Enter edit, `n` new card, Esc | Done | `KanbanView.tsx` |
+| Card detail side panel | Partial — plain textarea + read-only sub-block list, not the TipTap editor | `KanbanView.tsx` (`SidePanelEditor`) |
+| Wikilinks on cards | Partial — shown as chips; clicking opens the side panel, not the page | `KanbanCard.tsx` |
+| Export | Partial — "Copy as Table" (markdown table to clipboard); no image export | `KanbanView.tsx` |
+| Column colours | Partial — per device (localStorage `kanban-colors-<pageId>`), lost on sync | `KanbanView.tsx` |
+| Property badges on cards (tags, dates, assignee) | Not started | — |
+| Any-block boards (board of a zoomed block; several boards per page) | Not started — board always uses the whole page | `CanvasMode.tsx` |
+| Remember "this page opens as a board" | Not started (no `view::` property) | — |
+
+### Obsolete parts of the previous spec
+
+- **Page-header Blocks/Kanban toggle and `view::kanban` / `kanban_root` page
+  properties** — replaced by canvas mode. The board is a lens you switch to, like
+  the mind map; not a stored page type.
+- **"Top-level block = column, grandchild = card"** — replaced by the section rule above.
+- **Click card → open panel; double-click → edit** — built as: click focuses,
+  double-click/Enter edits, menu opens details.
+- **Shortcuts `N` (new column) and `Delete` (delete card)** — not built, dropped
+  (menu and the "+ Add column" button cover them; a single-key delete is risky).
+- **Virtual scrolling for 100+ cards; debounced drag writes** — dropped until a
+  real page shows a problem; a drop already writes once.
+- **The CSS block and per-file line estimates** — removed; the code is the reference.
+
+## Remaining work, prioritised
+
+**Next (worth doing)**
+
+1. **Column colours in the document.** Store as a block property on the column
+   (`color:: blue`), not localStorage, so they sync, export and survive a device
+   change. Same for sticky columns: a heading is already durable, so prefer making
+   "+ Add column" and "turn card into column" produce a heading and drop the
+   localStorage sticky set once nothing depends on it. Small; fixes silent data loss.
+2. **Property badges on cards.** Show up to three chips from block properties and
+   inline tags/dates (`#tag`, `due::`, `SCHEDULED`), using the existing tag/date
+   extractors. This is what makes a board useful for real tracking. Medium.
+3. **Wikilink chips navigate** (click opens the page; Shift+click opens in the
+   right sidebar, like everywhere else). Small; current behaviour is surprising.
+4. **Side panel uses the real block editor** (TipTap, with children editable) so
+   card details aren't a second-class textarea. Medium; reuse `BlockItem`.
+
+**Later**
+
+5. **Board of a zoomed block.** When the outline is zoomed into a block, Kanban
+   uses that block as the root. Gives "several boards per page" for free via zoom,
+   without a page-type concept. Medium.
+6. **Open as board by default** — only if users ask; a per-page `view:: kanban`
+   property read on open. Keep it opt-in.
+
+**Cut**
+
+- Image/PNG export (copy-as-table and the markdown mirror cover sharing).
+- Swimlanes, WIP limits, automation rules (out of scope for a notes app).
+
+**Becomes a plugin extension point**
+
+- Alternative board layouts (timeline, gallery, calendar-of-cards) belong to the
+  **Page view** extension point in `PRD-plugin-architecture.md` §4 (Phase 3).
+  Kanban stays built in (principle 5: built-ins stay built in); its section→column
+  model (`kanbanModel.ts`) is a good reference for the read-only block-tree API
+  that extension point will need.
+- Card actions like "Send to Todoist/Linear" use the **block context-menu item**
+  extension point; the card menu should host those items too.
+
+## Where AI helps
+
+All ideas run through the AI platform (`PRD-ai-assistant.md`): off by default,
+user-chosen provider (cloud key or local model), only the current page is sent,
+every change previewed and undoable as one step.
+
+| Idea | Verdict | Why |
+|---|---|---|
+| **Turn a messy page into a board** — propose sections and which loose blocks go under each, shown as a preview board; accept applies it as moves (+ new headings) in one undo step | **Keep — P1** | The section rule can't group untitled loose notes by meaning; an LLM can. High value at the moment a user first opens Kanban on a real page. Privacy: one page's text |
+| **Summarise a column** ("what's in Doing?", "what got done this week?") into a block the user can insert | **Keep — P2** | Good for standups/status notes; output is a draft the user places. Cheap and safe |
+| **Suggest a column for a new card** in "No section" | **Reject for now** | With 3–6 columns the user already knows; a TODO state or keyword rule does it more predictably. Revisit as part of "messy page → board" |
+| **Draft card text** | **Reject** | Cards are one-liners the user is already typing; the general AI writing actions in the editor cover any real need |
+| Auto-moving cards between columns on their own | **Reject** | Boards must be predictable; nothing moves without the user |
+
+## Open questions for the owner
+
+1. Is "headings or blocks-with-children are columns" the right default, or should
+   a page with *no* headings fall back to "every top-level block is a column"?
+2. Column colours: OK to write a `color::` property onto the column block (visible
+   in the outline), or prefer a hidden page-level map?
+3. Should the board remember being open per page (`view:: kanban`), or always open
+   explicitly? (Recommendation: explicit, until users ask.)
+4. Zoomed-block boards — needed for v1.x, or is one board per page enough?
+5. Should AI "page → board" also be offered in the outline (e.g. "Organise into
+   sections"), since the result is useful without Kanban too?

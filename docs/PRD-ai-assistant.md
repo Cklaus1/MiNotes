@@ -1,238 +1,194 @@
-# MiNotes AI Assistant PRD
+# PRD: AI in MiNotes
 
-## Overview
+Status: ~15% built (rule-based stand-ins only) · Owner: Chris Klaus · Revised 2026-10-10
 
-An AI-powered assistant layer that transforms MiNotes from a passive note store into an active knowledge partner. The AI reviews notes, auto-organizes them, surfaces connections, and helps users think better — all while respecting local-first privacy. Every AI feature is opt-in, configurable, and works with either local models (ONNX) or cloud APIs (Anthropic, OpenAI).
+> **What changed in this revision.** The original (May 2026) planned a local
+> ONNX embedding model + HNSW index for tags/links/search, with a cloud LLM only for
+> writing help. Since then frontier models became far more capable and much cheaper
+> (e.g. Claude Haiku 5.5 at $0.10 / $0.50 per million tokens in/out; 1M-token
+> context across the current Claude line), and good local models run on a laptop.
+> That changes the design: one **AI platform** that every feature uses, built around
+> a capable model with tools over the notebook ("agentic retrieval") instead of a
+> bespoke ML stack, and **preview-and-undo for every change**. Cloud models are
+> reached through **OpenRouter** (decided 2026-10-10), so users pick any model with
+> one key. The rule-based
+> features that exist today stay as the offline / AI-off fallback.
 
-## Problem Statement
+## 1. Status of what exists
 
-MiNotes is a well-architected knowledge management app with strong primitives: bidirectional linking, properties, tags, journaling, graph visualization, and git sync. But it is **passive** — the user must manually tag, link, organize, and discover. This is the fundamental friction of every KM app:
+| Feature | Status | Where |
+|---|---|---|
+| Tag suggestions | Partial — regex `#tag` extraction, shown as chips | `lib/tagExtractor.ts`, `PageView.tsx` |
+| Link suggestions | Partial — title/keyword overlap (made stricter Oct 2026) | `lib/linkSuggestions.ts` |
+| TODO extraction | Done (rule-based) — count, "All TODOs" page, sidebar badge | `todoExtractor.ts`, `repo/ai_suggestions.rs` |
+| AI toggles in Settings | Done — autoTag / linkSuggestions / todoExtraction | `lib/settings.ts`, `SettingsPanel.tsx` |
+| Orphan count | Partial — computed, not shown | `repo/graph.rs` |
+| Any model, embeddings, semantic search, chat, writing help, digests | Not started | — |
 
-1. **Tagging is tedious** — Users write notes, forget to add tags, never revisit organized content
-2. **Links are forgotten** — Users don't remember to create `[[wikilinks]]` to related pages
-3. **Knowledge is siloed** — Connections between notes exist but are invisible without manual exploration
-4. **TODOs get lost** — Tasks created in notes are never revisited or surfaced
-5. **Daily notes are empty** — Journaling feels like staring at a blank page
-6. **Search is literal** — "Find that note about the project timeline" fails if the words "project" and "timeline" don't appear together
+## 2. Problem
 
-Users don't want another app that stores their notes. They want an app that **helps them think**.
+Notes pile up faster than people organise or revisit them. Keyword search fails
+when you don't remember the words; links and tags don't get added; tasks buried in
+meeting notes are forgotten; a blank daily page goes unused. And increasingly
+people want their AI assistant (Claude, a coding agent) to use their notes — today
+that means copy-paste.
 
-## Design Principles
+## 3. Principles
 
-1. **Local-first, privacy-first** — All AI runs locally by default. Cloud is opt-in. No data leaves the machine unless the user explicitly enables it.
-2. **Assist, don't replace** — AI suggests, user approves. Every auto-generated tag, link, or property is marked as AI-suggested and requires confirmation.
-3. **Incremental value** — Each AI feature works independently. Users can enable just "auto-tagging" without enabling "semantic search."
-4. **Transparent** — Users always know when AI is involved. Suggestions are labeled "AI suggested."
-5. **Configurable** — Users choose their model (local vs cloud), set API keys, and control what AI touches.
+1. **Off until the user turns it on; private by default.** No note content leaves
+   the device unless the user picked a cloud provider for that notebook. A local
+   model is a first-class option, not a downgrade path.
+2. **Nothing changes without consent.** The AI proposes; the user sees a preview
+   (diff for edits, list for bulk changes) and applies. Every applied change is one
+   undo step and is attributed to "AI" in the event log.
+3. **Answers cite sources.** Anything the AI says about your notes links to the
+   blocks it came from; no citation, no claim.
+4. **Scoped access.** AI reads only what the user allowed (whole notebook, chosen
+   Projects, or the current page). Encrypted notebooks: AI off unless explicitly
+   enabled for that notebook, and then local models are recommended.
+5. **Cost is visible and capped.** Per-run token/cost shown; monthly cap; no
+   background spend the user didn't schedule.
+6. **Rules where rules are better.** Exact things (dates, counts, TODO syntax,
+   merges) stay deterministic; AI is for judgment and language.
 
-## Architecture
+## 4. The AI platform (shared by every feature and spec)
 
-### Two-Tier AI Model
+### 4.1 Providers
 
-| Tier | What | How | Cost |
-|------|------|-----|------|
-| **Tier 1: Local** | Embeddings, auto-tagging, link suggestions, TODO extraction | ONNX Runtime (Rust), local models | $0 |
-| **Tier 2: Cloud** | Summarization, writing assistance, knowledge graph analysis, weekly digests | Anthropic/OpenAI via API | Per-token |
+| Provider | How | Notes |
+|---|---|---|
+| **OpenRouter** — the cloud provider | User's own OpenRouter API key, stored in the OS keychain | One key for many models. The model list comes from OpenRouter's catalogue (filtered to models that support tools), chosen per task class; the newest Claude Opus is preselected as the recommended default, and the user decides the cost/quality trade. Notes go to OpenRouter and to the model's provider — the settings notice names both. |
+| **Local** | Any OpenAI-compatible local server (Ollama, LM Studio, llama.cpp) | Nothing leaves the device; quality depends on the model; features that need tool use check capability and degrade (e.g. no agent actions) rather than fail. |
+| Direct provider APIs (e.g. Anthropic) | Later, if users need provider-specific features or want to skip the intermediary — same provider interface, or a plugin (`PRD-plugin-architecture.md` "AI provider" extension point) | |
 
-### Infrastructure Changes
+- Calls are made from the **Rust backend**, never the webview (keys stay out of the
+  page; the CSP stays closed). OpenRouter and local servers share one
+  OpenAI-compatible client; requests stream; long notebook context uses prompt
+  caching where the model supports it.
+- Every call goes through one `ai::run(task, scope, input)` function that enforces
+  scope, budget, logging and the provider choice. Features never call a provider
+  directly.
 
-**Database migration** — Add tables:
-- `embeddings` — `(block_id, vector, model_name, version, created_at)`
-- `ai_suggestions` — `(id, page_id, suggestion_type, payload JSON, status, created_at)` — stores pending AI suggestions for user review
-- `ai_config` — `(key, value)` — user preferences for AI features
+### 4.2 Tools over the notebook (agentic retrieval)
 
-**New Rust modules** in `minotes-core`:
-- `embedding.rs` — ONNX Runtime inference for text embeddings (all-MiniLM-L6-v2, ~80MB)
-- `ai_suggest.rs` — Orchestrates local + cloud AI suggestions
-- `ai_config.rs` — Configuration management for AI features
-- `hnsw_index.rs` — HNSW vector index for semantic search (using `hnsw-rs` crate)
+Instead of an embedding index as the only route to "find relevant notes", the model
+gets read-only tools backed by core: `search(query)` (FTS5), `get_page(id|title)`,
+`get_blocks(ids)`, `backlinks(page)`, `list_pages(filter)`, `get_properties`,
+`todos(filter)`, `recent(days)`. It searches iteratively, the way a person would.
+For small notebooks the whole scope fits in context and is cached.
 
-**New Tauri commands** in `minotes-app`:
-- `generate_embedding(content)` — Generate vector embedding for a block
-- `search_semantic(query, limit)` — Semantic search using HNSW index
-- `get_ai_suggestions(page_id)` — List AI suggestions for a page
-- `approve_suggestion(suggestion_id)` — User approves an AI suggestion
-- `reject_suggestion(suggestion_id)` — User rejects (trains future suggestions)
-- `run_ai_analysis()` — Trigger full knowledge base analysis
-- `get_ai_config()` / `set_ai_config()` — AI settings
+**Optional semantic index** (Phase 2): a small local embedding model (runs on CPU,
+no network) indexing blocks incrementally, exposed as one more tool
+`semantic_search(query)`. Built only if evals show agentic search misses too much.
 
-**Frontend components**:
-- `AISuggestionPanel.tsx` — Review AI suggestions (tags, links, properties)
-- `SemanticSearchBar.tsx` — Search bar with keyword + semantic toggle
-- `AIConfigPanel.tsx` — Settings for AI features (model selection, API keys)
-- `KnowledgeDigest.tsx` — Weekly digest view
+**Write tools** never write: `propose_edit`, `propose_new_page`, `propose_move`,
+`propose_property`, `propose_link` return a **proposal** the user reviews. Applying
+a proposal calls the normal core APIs (transactions, undo, link sync).
 
-## Features
+### 4.3 Data
 
-### Phase 1: Auto-Organization (Local, No API Key Required)
+- `ai_runs`: task, scope, provider/model, input/output token counts, cost estimate,
+  started/finished, outcome — the user can see what was sent and when (content
+  itself is not logged unless the user enables "keep transcripts").
+- `ai_proposals`: pending proposals with their diff/payload, status, run id.
+- Settings per notebook: provider, models per task class, scope, monthly cap,
+  feature toggles. Keys only in the keychain.
 
-#### F1: Auto-Tagging
-When a page is saved, generate tags from its content using the local embedding model + a lightweight classifier.
+## 5. Features
 
-**How it works:**
-1. On block save, compute embedding for the page's full content
-2. Compare against a curated tag taxonomy (stored as embeddings)
-3. Suggest tags with confidence scores (e.g., `#rust` 92%, `#systems` 78%)
-4. Tags appear in a sidebar panel: "AI suggests: #rust #sqlite #tauri"
-5. User clicks to accept/reject each tag
+Ranked by user value.
 
-**Taxonomy:** Pre-built with ~200 common tags across domains (tech, science, personal, work, health, finance). Users can add custom tags.
+| # | Feature | What the user gets | Phase |
+|---|---|---|---|
+| 1 | **Ask your notes** | A chat panel: questions answered from your notes with block citations ("What did we decide about pricing?"). Follow-ups keep context; "open source" jumps to the block. | 1 |
+| 2 | **Natural-language search** in the Ctrl+K palette | "the meeting about pricing last week" finds it even without those words; results are ranked pages/blocks, not a chat. Falls back to FTS instantly while the AI result streams in. | 1 |
+| 3 | **AI in the editor** | Select text or a block → rewrite / shorten / expand / fix grammar / translate / explain / continue; `/ai <instruction>` in an empty block drafts content (uses page and linked pages as context). Always shown as a diff to accept. | 1 |
+| 4 | **Organise (review queue)** | Proposed tags, links (`[[…]]` where a page is mentioned), Project for unfiled pages, duplicate pages to merge, orphans to connect — reviewed as a batch with accept/reject per item. Replaces the regex/overlap heuristics when AI is on. | 2 |
+| 5 | **Tasks from notes** | Finds action items written as prose ("Sam to send the deck by Friday"), proposes TODO blocks with owner and due date. Counting and the TODO syntax stay rule-based. | 2 |
+| 6 | **Daily brief / weekly review** | Opt-in, scheduled locally: open tasks, what changed, things you wrote about but didn't follow up, notes worth resurfacing — written into the journal as a normal page section (editable, deletable). | 2 |
+| 7 | **Agent actions** | "Turn my reading notes from this month into a summary page", "file every page about Acme under the Acme project and link them" — the model plans, produces a set of proposals, the user reviews the whole change set, applies it as **one** undo step. Scoped and budgeted. | 3 |
+| 8 | **Cleanup on paste / import** | Pasted email, web page or meeting transcript → clean outline blocks; Evernote/HTML imports tidied (`PRD-import.md`). Preview before insert. | 2 |
 
-**User Stories:**
-- US-1: As a user, I want tags to be auto-suggested when I save a note, so I don't have to think about organization
-- US-2: As a user, I want to see confidence scores for suggested tags, so I know how reliable they are
-- US-3: As a user, I can add my own tags to the taxonomy, so the AI learns my categorization style
+**AI hooks in other specs** use this platform rather than their own integration:
+kanban (board from a messy page), mindmap (map from a document), sidebar
+(natural-language jump, file unfiled pages), editor (plain-English queries,
+instruction-driven templates), git sync (explain a conflict, propose a merged
+block), import (cleanup). Each spec's "Where AI helps" section owns the UX; this
+spec owns the plumbing, consent and cost rules.
 
-#### F2: Smart Link Suggestions
-When editing a page, suggest relevant `[[wikilinks]]` to other pages in the knowledge base.
+### Non-goals
 
-**How it works:**
-1. On save, compute embedding for the current page
-2. Compare against all other page embeddings in the HNSW index
-3. Show top-3 most similar pages as "Suggested links" in the editor
-4. User clicks to insert a wikilink
+- Silent background edits or auto-applied changes.
+- Training on user notes; sending notes anywhere except the provider the user chose.
+- Multi-user collaboration features.
+- Voice, OCR and image understanding (later — the current models accept images, so
+  OCR of pasted images is a cheap Phase 3 candidate).
 
-**User Stories:**
-- US-1: As a user, I want the app to suggest related pages I should link to, so my knowledge graph stays connected
-- US-2: As a user, I want link suggestions while I'm writing, so I can create connections in the moment
+## 6. UX
 
-#### F3: TODO Extraction
-Scan note content for action items and surface them in a unified TODO view.
+- **Settings → AI**: provider (OpenRouter key / local endpoint / off), model per task
+  class (interactive, bulk, agent), scope, monthly cap and spend so far, per-feature
+  toggles, "keep transcripts", data notice in plain words ("Your notes in *Work*
+  are sent to OpenRouter and Anthropic when you use AI features" — naming the selected model's provider).
+- **First use**: an explicit setup screen — nothing is enabled implicitly.
+- **AI panel** (right side): Ask, the review queue (proposals with diffs, bulk
+  accept/reject), recent runs with cost.
+- Proposals and AI-written text are visually marked until accepted; accepted AI
+  edits are normal content (no permanent badge), with "AI" attribution in history.
+- Offline / no provider: AI entry points show a short explanation and the rule-based
+  features keep working.
 
-**How it works:**
-1. On save, run a lightweight NLP model (or cloud LLM for complex cases) to extract TODOs from block content
-2. Recognize patterns: `- [ ]`, "TODO:", "Action:", "Follow up:", imperative sentences
-3. Surface extracted TODOs in a sidebar panel and a global TODO view
-4. TODOs are clickable links back to their source note
+## 7. Phases
 
-**User Stories:**
-- US-1: As a user, I want all my TODOs from all notes to appear in one place, so I never lose track of actions
-- US-2: As a user, I want the app to recognize TODOs even when I don't use `- [ ]` syntax
-- US-3: As a user, I can mark a TODO as done from the global view, and it updates the source note
+1. **Platform + Ask + palette search + editor AI**: provider layer (OpenRouter + local),
+   keychain, `ai::run`, read tools, proposals + review UI, cost meter and cap,
+   settings, mock provider for tests.
+2. **Organise, tasks, daily brief, paste cleanup**; semantic index only
+   if evals require it.
+3. **Agent actions**, OCR of pasted images, more providers via plugins.
 
-### Phase 2: Knowledge Intelligence (Local + Cloud)
+## 8. Quality and testing
 
-#### F4: Semantic Search
-Search by meaning, not just keywords. "Find that note about the project timeline" matches content even if those exact words aren't used.
+- **Eval sets** before shipping each feature: golden notebooks (fixtures) with
+  questions and expected cited blocks (Ask), queries with expected pages (search),
+  pages with expected tags/links/tasks (Organise), edit instructions with rubric
+  grading (editor). Track accuracy, citation precision, refusal/"don't know" rate,
+  cost and latency per model. Re-run on every prompt or model change.
+- **Deterministic tests** with a recorded/mocked provider: scope enforcement (a
+  question about a Project outside scope must not see its blocks), proposals never
+  writing without apply, undo of a multi-edit apply, budget cap stops a run, keys
+  never reach the webview, AI off in encrypted notebooks by default.
+- Desktop journeys (desktop-check skill) for the panel, review queue and editor flow
+  against the mock provider; one opt-in live run against a real key.
 
-**How it works:**
-1. All page embeddings are indexed in an HNSW graph
-2. User types a natural language query
-3. Query is embedded (local model), then nearest-neighbor search finds semantically similar pages
-4. Results are ranked by similarity score, shown alongside FTS results
-5. Toggle between "Keywords" and "Meaning" search modes
+## 9. Success metrics
 
-**User Stories:**
-- US-1: As a user, I can search by meaning, not just exact words
-- US-2: As a user, I want semantic results ranked alongside keyword results, so I get the best of both
+- ≥ 25% of active users enable AI within 3 months of release; ≥ 50% of those use it
+  weekly.
+- Ask: ≥ 85% of eval answers correct with valid citations; users open a cited source
+  in ≥ 30% of sessions.
+- Organise: ≥ 60% proposal acceptance; links per page +30% for AI users.
+- Zero incidents of content sent outside the configured scope/provider.
+- Median interactive latency (first token) < 2 s on the default cloud model.
 
-#### F5: Connection Discovery
-Periodically scan the knowledge base for unlinked but semantically related pages.
-
-**How it works:**
-1. Nightly (or on-demand), compare all page embeddings against each other
-2. Find pairs with high similarity that don't have wikilinks between them
-3. Surface as "Possible connections" in the AI panel: "These 2 pages seem related — link them?"
-4. One-click to create a bidirectional link
-
-**User Stories:**
-- US-1: As a user, I want the app to find connections I missed between my notes
-- US-2: As a user, I get a weekly "discovery report" of new connections found
-
-#### F6: Knowledge Digest
-Weekly summary of what was created, connected, and changed.
-
-**How it works:**
-1. Aggregate events from the past week: pages created, links added, TODOs completed
-2. Generate a natural language summary using a cloud LLM
-3. Show in a digest view: "This week you wrote 5 notes, created 12 new links, and completed 3 TODOs. Your most-connected note was 'Q4 Planning'."
-
-**User Stories:**
-- US-1: As a user, I get a weekly summary of my note-taking activity
-- US-2: As a user, the digest surfaces insights like "You've been writing a lot about Rust this week"
-
-### Phase 3: Writing Assistance (Cloud LLM)
-
-#### F7: AI Writing Assistant
-In-editor tools for summarizing, expanding, rewriting, and translating.
-
-**How it works:**
-- Slash commands: `/ai-summarize`, `/ai-expand`, `/ai-rewrite`, `/ai-translate`, `/ai-complete`
-- Selected text → right-click → "AI" menu
-- Summarize a page into bullet points
-- Expand a bullet point into a paragraph
-- Rewrite for clarity or tone
-- Translate to another language
-- Complete a sentence (inline autocomplete)
-
-**User Stories:**
-- US-1: As a user, I can highlight text and ask AI to summarize/expand/rewrite it
-- US-2: As a user, I can use AI to complete sentences while I'm writing
-
-#### F8: Daily Note Assistant
-Make journaling effortless with AI-generated prompts and auto-structure.
-
-**How it works:**
-1. When opening today's daily note, AI suggests:
-   - **Prompts** based on recent notes: "You were working on the sync protocol last week — any updates?"
-   - **Structure** from templates: "Today's note includes: morning thoughts, meetings, TODOs, tomorrow's focus"
-   - **Recall** from past entries: "On this date last year, you wrote about..."
-2. After writing, AI suggests:
-   - Tags for the day's entry
-   - TODOs extracted from the journal
-   - Links to pages mentioned
-
-**User Stories:**
-- US-1: As a user, opening my daily note shows AI-generated prompts based on what I've been working on
-- US-2: As a user, my daily note auto-suggests structure so it doesn't feel like a blank page
-- US-3: As a user, the AI connects my daily entries to my project notes automatically
-
-#### F9: Orphan Detection & Graph Health
-Identify pages that are disconnected from the knowledge graph.
-
-**How it works:**
-1. Analyze the link graph to find:
-   - **Orphan pages** — no incoming or outgoing links
-   - **Weakly connected** — only 1 link
-   - **Hub pages** — many links but few incoming (potential knowledge anchors)
-2. For orphan pages, suggest links using semantic similarity
-3. Visual indicator in the sidebar: "3 unlinked notes"
-4. One-click "link all orphans" (applies top semantic suggestion for each)
-
-**User Stories:**
-- US-1: As a user, I can see which notes are disconnected from my knowledge graph
-- US-2: As a user, the app suggests links to reconnect orphaned notes
-
-## Non-Goals
-
-- Real-time AI collaboration (not a team product)
-- AI-generated content without user initiation (no auto-writing)
-- Voice input / transcription (out of scope)
-- Image recognition / OCR (future)
-- Replacing the existing FTS5 search (semantic search is complementary)
-
-## Phased Rollout
-
-| Phase | Features | Tech | Timeline |
-|-------|----------|------|----------|
-| **Phase 1** | Auto-tagging, Link suggestions, TODO extraction | ONNX local models | 4-6 weeks |
-| **Phase 2** | Semantic search, Connection discovery, Knowledge digest | HNSW index + cloud LLM | 4-6 weeks |
-| **Phase 3** | Writing assistant, Daily note assistant, Orphan detection | Cloud LLM | 4-6 weeks |
-
-## Success Metrics
-
-- **Adoption**: % of users who enable at least one AI feature
-- **Engagement**: % of AI suggestions that are accepted (target: >60%)
-- **Retention**: Daily note open rate (target: +20% with AI prompts)
-- **Graph health**: Average links per page (target: +30% with auto-linking)
-- **Search quality**: Semantic search click-through rate vs. keyword search
-
-## Risks & Mitigations
+## 10. Risks
 
 | Risk | Mitigation |
-|------|-----------|
-| Local models are slow on old hardware | Fallback to cloud; cache embeddings; progressive indexing |
-| Cloud API costs spiral | Per-feature opt-in; usage caps; local-first defaults |
-| AI suggestions are wrong/annoying | Always user-approved; reject feedback loop; confidence scores |
-| Privacy concerns | Local-by-default; no data leaves machine without explicit consent |
-| Embedding drift as KB grows | Incremental indexing; periodic re-indexing; model versioning |
+|---|---|
+| Wrong answers presented confidently | Citations required; "not found in your notes" is an accepted answer; evals gate releases. |
+| Privacy expectations violated | Off by default, per-notebook provider choice, scope, plain-language notice, run log, local option, encrypted notebooks excluded by default. |
+| Cost surprises | Per-run cost, monthly cap, no unscheduled background runs, user-chosen models per task class. |
+| Prompt injection from note content (a pasted web page telling the model to do something) | Notes are data: tools are read-only, writes are proposals the user approves, no network tools for the model in v1. |
+| Local models too weak for tool use | Capability check per feature; degrade to Ask-only or retrieval + single answer. |
+| Provider/model changes | One provider layer; model per task class configurable; evals rerun on change. |
+
+## 11. Open questions
+
+1. Default model per task class for new users — the newest Claude Opus everywhere,
+   or suggest a cheaper model for bulk work at setup?
+2. Should MiNotes offer a hosted key (paid AI plan) later, or stay bring-your-own-key?
+3. An MCP server so outside agents (Claude, coding agents) can use your notes —
+   wanted at all? Not planned.
+4. Keep transcripts by default (useful for "why did it say that?") or off (privacy)?
+5. Should the rule-based tag/link heuristics stay visible when AI is on, or be
+   replaced entirely?
