@@ -238,6 +238,10 @@ echo "$S" | grep -qi "Theme" && echo "$S" | grep -qi "Dark\|Light" && pass "Them
 step "I can see Advanced section"
 echo "$S" | grep -qi "Advanced" && pass "Advanced section available" || fail "No Advanced section in settings" ""
 
+step "AI Assistant is its own section, visible while Advanced stays collapsed"
+R=$(ev "(()=>{const sec=document.querySelector('.settings-section[data-section=ai]');if(!sec)return 'missing';const title=sec.querySelector('.settings-section-title')?.textContent;const nested=!!sec.parentElement.closest('.settings-section');const adv=document.querySelector('.settings-advanced-content');return [title,nested,sec.querySelectorAll('.settings-toggle input').length,adv?'open':'collapsed'].join('|')})()" | tr -d '"')
+[[ "$R" == "AI Assistant|false|3|collapsed" ]] && pass "AI Assistant section: own header, 3 toggles, not under Advanced" || fail "AI Assistant section layout" "$R"
+
 step "I can see all keyboard shortcuts"
 SHORTCUTS=0
 for key in "Ctrl+K" "Ctrl+J" "Ctrl+N" "Ctrl+G" "Tab" "Esc"; do
@@ -342,9 +346,44 @@ journey "11. I want to see my knowledge graph"
 # ═══════════════════════════════════════════════
 
 step "Graph view opens"
+# The shortcut is ignored while the editor has focus.
+ev "document.activeElement?.blur()" > /dev/null 2>&1; sleep 0.3
 press "Control+g"; sleep 2
 S=$(snap)
 echo "$S" | grep -qi "graph\|canvas" && pass "Graph renders" || fail "No graph" "Graph didn't load"
+G_OPEN=$(ev "!!document.querySelector('.graph-view canvas')" | tr -d '"')
+[[ "$G_OPEN" == "true" ]] && pass "Graph canvas is on screen" || fail "Graph canvas missing" "$G_OPEN"
+
+step "Every node (and its label) is fitted inside the viewport"
+# The graph is a canvas: it publishes what it shows as data-* attributes.
+G_SET="(v)=>{const c=document.querySelector('.graph-hide-unlinked');if(!c)return 'no toggle';if(c.checked!==v)c.click();return 'ok'}"
+G_STAT="(()=>{const c=document.querySelector('.graph-view canvas');return c?c.dataset.nodes+':'+c.dataset.inView:'no canvas'})()"
+ev "($G_SET)(false)" > /dev/null 2>&1; sleep 1
+G_ALL=$(ev "$G_STAT" | tr -d '"')
+G_N=${G_ALL%%:*}; G_IN=${G_ALL##*:}
+[[ "$G_N" -ge 2 && "$G_IN" == "$G_N" ]] 2>/dev/null && pass "All $G_N nodes are inside the viewport" || fail "Graph nodes clipped" "nodes:inView=$G_ALL"
+G_CANVAS=$(ev "(()=>{const v=document.querySelector('.graph-view').getBoundingClientRect(),c=document.querySelector('.graph-view canvas').getBoundingClientRect();return c.height>100&&c.bottom<=v.bottom+1&&c.right<=v.right+1})()" | tr -d '"')
+[[ "$G_CANVAS" == "true" ]] && pass "Canvas ends at the view's edge (nothing drawn off-screen)" || fail "Canvas overflows the graph view" "$G_CANVAS"
+
+step "I hide unlinked pages to see only the connected ones"
+G_UNLINKED=$(ev "(async()=>{const api=await import('/src/lib/api.ts');const d=await api.getGraphData();const l=new Set();for(const e of d.edges){if(e.source!==e.target){l.add(e.source);l.add(e.target)}}return d.nodes.filter(n=>!l.has(n.id)).length})()" | tr -d '"')
+ev "($G_SET)(true)" > /dev/null 2>&1; sleep 1
+G_HID=$(ev "$G_STAT" | tr -d '"')
+G_HN=${G_HID%%:*}; G_HIN=${G_HID##*:}
+[[ "$G_UNLINKED" -ge 1 && "$G_HN" == "$((G_N - G_UNLINKED))" && "$G_HN" -lt "$G_N" ]] 2>/dev/null && pass "Hide unlinked reduces the graph ($G_N → $G_HN nodes)" || fail "Hide unlinked didn't reduce the graph" "all=$G_N unlinked=$G_UNLINKED shown=$G_HN"
+[[ "$G_HIN" == "$G_HN" ]] && pass "Remaining nodes are all inside the viewport" || fail "Nodes clipped after hiding unlinked" "$G_HID"
+G_LABEL=$(ev "document.querySelector('.graph-toolbar')?.textContent || ''" | tr -d '"')
+echo "$G_LABEL" | grep -q "$G_UNLINKED unlinked hidden" && pass "Toolbar says how many are hidden" || fail "No hidden count in toolbar" "$G_LABEL"
+G_PERSIST=$(ev "localStorage.getItem('minotes-graph-hide-unlinked')" | tr -d '"')
+[[ "$G_PERSIST" == "1" ]] && pass "Choice is remembered" || fail "Hide-unlinked choice not persisted" "$G_PERSIST"
+
+step "Fit button brings everything back into view"
+ev "($G_SET)(false)" > /dev/null 2>&1; sleep 1
+ev "document.querySelector('.graph-fit-btn')?.click()" > /dev/null 2>&1; sleep 0.5
+G_FIT=$(ev "$G_STAT" | tr -d '"')
+[[ "$G_FIT" == "$G_N:$G_N" ]] && pass "Fit shows all $G_N nodes" || fail "Fit didn't show every node" "$G_FIT"
+# Leave no saved choice behind: later runs get the default again.
+ev "localStorage.removeItem('minotes-graph-hide-unlinked')" > /dev/null 2>&1
 
 step "I can close the graph"
 press "Escape"; sleep 1
@@ -664,6 +703,10 @@ step "Code block renders with syntax highlighting"
 H=$(ev "document.querySelectorAll('.ProseMirror')[0]?.innerHTML")
 echo "$H" | grep -qi "<pre\|<code\|hljs\|code-block" && pass "Code block renders" || fail "No code block" "${H:0:60}"
 
+step "The code block is labelled with a clean language name, not a raw class"
+R=$(ev "(()=>{const pre=document.querySelectorAll('.ProseMirror')[0]?.querySelector('pre');if(!pre)return 'no pre';return pre.getAttribute('data-language-label')+'|'+getComputedStyle(pre,'::before').content+'|'+getComputedStyle(pre.querySelector('code'),'::before').content})()" | tr -d '"\\')
+[[ "$R" == "JavaScript|JavaScript|none" ]] && pass "Code label reads 'JavaScript'" || fail "Code label wrong" "$R"
+
 step "I create an inline code mention"
 api "setBlockContent(1, 'Run \`npm run test\` to verify')" > /dev/null; sleep 2
 H=$(ev "document.querySelectorAll('.ProseMirror')[1]?.innerHTML")
@@ -688,10 +731,36 @@ step "Empty page still has an editable block"
 R=$(api "getBlockCount()" | tr -d '"')
 [[ "$R" -ge 1 ]] 2>/dev/null && pass "Empty page has starter block" || fail "No blocks on empty page" "$R"
 
+step "The empty page tells me how to start (placeholder hint, before I focus anything)"
+ev "document.activeElement?.blur()" > /dev/null 2>&1; sleep 0.3
+R=$(ev "(()=>{const p=document.querySelector('.block-list .ProseMirror p.is-editor-empty');return p?getComputedStyle(p,'::before').content:'no empty block'})()")
+[[ "$R" == *"Type to start writing"* && "$R" == *"/ for commands"* ]] && pass "Empty page shows a start-writing hint" || fail "No placeholder on empty page" "$R"
+
 step "I can still use search from an empty page"
 api "openSearch()" > /dev/null; sleep 1
 S=$(snap)
 echo "$S" | grep -qi "Search" && pass "Search works on empty page" || fail "Search broken" "Can't search"
+
+step "Searching for something that doesn't exist offers to create that page"
+type_query() { ev "(()=>{const i=document.querySelector('.command-palette-input');if(!i)return 'no input';Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(i,'$1');i.dispatchEvent(new Event('input',{bubbles:true}));return 'typed'})()" > /dev/null; sleep 1; }
+type_query "Zebra Crossing Plan"
+R=$(ev "(()=>{const c=document.querySelector('.command-palette-create');return (document.querySelector('.command-palette-empty')?.textContent||'')+'|'+(c?c.textContent:'none')+'|'+(c?.classList.contains('selected'))})()" | tr -d '"')
+[[ "$R" == "No results"*"|"*"Create page"*"Zebra Crossing Plan"*"|true" ]] && pass "No results → 'Create page' offered and selected" || fail "No create-page action" "$R"
+
+step "No create action for an existing title or in command mode"
+type_query "project alpha"
+R1=$(ev "document.querySelectorAll('.command-palette-create').length" | tr -d '"')
+type_query ">zebra"
+R2=$(ev "document.querySelectorAll('.command-palette-create').length" | tr -d '"')
+[[ "$R1" == "0" && "$R2" == "0" ]] && pass "Create action hidden for existing page / command mode" || fail "Create action shown wrongly" "existing=$R1 command=$R2"
+
+step "I click it — the page is created and opened"
+type_query "Zebra Crossing Plan"
+ev "document.querySelector('.command-palette-create')?.click()" > /dev/null 2>&1; sleep 2
+R=$(api "getCurrentPage()" | tr -d '"')
+OPEN=$(ev "!!document.querySelector('.command-palette')")
+[[ "$R" == "Zebra Crossing Plan" && "$OPEN" == "false" ]] && pass "Page created from search and opened" || fail "Create from search failed" "page=$R paletteOpen=$OPEN"
+api "openSearch()" > /dev/null; sleep 1
 api "closePanel()" > /dev/null; sleep 0.5
 
 step "I can still navigate away"
@@ -1072,6 +1141,31 @@ WB_BLOCK_ID=$(ev "(()=>{
 })()" | tr -d '"')
 [[ "$WB_BLOCK_ID" != "none" ]] && pass "Whiteboard is a real block (id: ${WB_BLOCK_ID:0:12}...)" || fail "Can't find block" ""
 
+step "I open Draw from the sidebar just to peek, and close it without drawing"
+api "navigateTo('Research Notes')" > /dev/null; sleep 2
+PEEK_BEFORE=$(api "getBlockCount()" | tr -d '"')
+ev "[...document.querySelectorAll('.stats-mode-btn')].find(b=>b.textContent.includes('Draw'))?.click()" > /dev/null 2>&1; sleep 1.5
+PEEK_ID=$(api "getOpenWhiteboardId()" | tr -d '"')
+TOOLBAR=$(ev "!!document.querySelector('.whiteboard-toolbar')")
+[[ "$PEEK_ID" == wb-* && "$TOOLBAR" == "true" ]] && pass "Draw opens a new blank whiteboard ($PEEK_ID)" || fail "Draw didn't open" "id=$PEEK_ID toolbar=$TOOLBAR"
+api "closePanel()" > /dev/null; sleep 1.5
+api "navigateTo('Research Notes')" > /dev/null; sleep 2
+PEEK_AFTER=$(api "getBlockCount()" | tr -d '"')
+STORED=$(ev "(async()=>{const api=await import('/src/lib/api.ts');const t=await api.getPageTree('Research Notes');return t.blocks.filter(b=>b.content.includes('$PEEK_ID')).length})()" | tr -d '"')
+[[ "$PEEK_AFTER" == "$PEEK_BEFORE" && "$STORED" == "0" ]] && pass "Peeking at Draw leaves no whiteboard block behind ($PEEK_BEFORE blocks)" || fail "Empty whiteboard block left behind" "$PEEK_BEFORE → $PEEK_AFTER, stored=$STORED"
+
+step "Once the new board has content, its block is added to the page"
+ev "[...document.querySelectorAll('.stats-mode-btn')].find(b=>b.textContent.includes('Draw'))?.click()" > /dev/null 2>&1; sleep 1.5
+NEW_ID=$(api "getOpenWhiteboardId()" | tr -d '"')
+# A camera-only save (no content) must not create the block; the first real stroke does.
+ev "(async()=>{const wb=await import('/src/lib/whiteboardUtils.ts');await wb.persistWhiteboard('$NEW_ID',{notes:[],lines:[],camera:{x:5,y:5,zoom:1},nextNoteId:1});return 'ok'})()" > /dev/null; sleep 1
+EMPTY_SAVE=$(ev "(async()=>{const api=await import('/src/lib/api.ts');const t=await api.getPageTree('Research Notes');return t.blocks.filter(b=>b.content.includes('$NEW_ID')).length})()" | tr -d '"')
+ev "(async()=>{const wb=await import('/src/lib/whiteboardUtils.ts');await wb.persistWhiteboard('$NEW_ID',{notes:[],lines:[{points:[{x:10,y:10},{x:120,y:90}],color:'#89b4fa',width:2}],camera:{x:0,y:0,zoom:1},nextNoteId:1});return 'ok'})()" > /dev/null; sleep 1
+api "closePanel()" > /dev/null; sleep 1.5
+DRAWN=$(ev "(async()=>{const api=await import('/src/lib/api.ts');const t=await api.getPageTree('Research Notes');return t.blocks.filter(b=>b.content==='{{whiteboard:$NEW_ID}}').length})()" | tr -d '"')
+DRAWN_COUNT=$(api "getBlockCount()" | tr -d '"')
+[[ "$EMPTY_SAVE" == "0" && "$DRAWN" == "1" && "$DRAWN_COUNT" -eq $((PEEK_BEFORE+1)) ]] 2>/dev/null && pass "Block created on first content, exactly once ($PEEK_BEFORE → $DRAWN_COUNT)" || fail "Whiteboard block not created on content" "emptySave=$EMPTY_SAVE drawn=$DRAWN count=$DRAWN_COUNT"
+
 ss "32-whiteboard-keyboard-shortcut"
 
 # ═══════════════════════════════════════════════
@@ -1146,6 +1240,31 @@ echo "$NODE_CHECK" | grep -qi "clicked" && pass "Nodes are interactive ($NODE_CH
 step "Close mind map"
 press "Escape"; sleep 0.5
 press "Escape"; sleep 1
+
+step "A page whose first block repeats its title shows the title once"
+# Project Alpha starts with '# Project Alpha' and has TODO/DOING/DONE tasks.
+api "navigateTo('Project Alpha')" > /dev/null; sleep 2
+ev "document.activeElement?.blur()" > /dev/null 2>&1; sleep 0.3
+press "Control+m"; sleep 2
+for i in 1 2 3 4 5 6; do
+  NODE_COUNT=$(ev "document.querySelectorAll('.mm-node').length" | tr -d '"')
+  [[ "$NODE_COUNT" -ge 4 ]] 2>/dev/null && break
+  sleep 1
+done
+MM_LABELS="[...document.querySelectorAll('.mm-node .mm-label')].map(e=>e.textContent.trim())"
+TITLE_NODES=$(ev "$MM_LABELS.filter(t=>t==='Project Alpha').length" | tr -d '"')
+[[ "$TITLE_NODES" == "1" ]] && pass "Exactly one node carries the page title" || fail "Page title node count wrong" "$TITLE_NODES (of $NODE_COUNT nodes)"
+
+step "Task nodes show a status icon instead of the raw keyword"
+MM_TASKS=$(ev "(()=>{const n=[...document.querySelectorAll('.mm-node[data-todo]')];return n.length+':'+n.filter(e=>e.querySelector('.mm-check')).length+':'+n.filter(e=>/^(TODO|DOING|DONE) /.test(e.querySelector('.mm-label').textContent.trim())).length})()" | tr -d '"')
+[[ "$MM_TASKS" == "3:3:0" ]] && pass "3 task nodes, each with an icon and no keyword in the label" || fail "Task node labels wrong" "tasks:icons:keywords=$MM_TASKS"
+
+step "Long node text is ellipsized, with the full text in a tooltip"
+MM_TIP=$(ev "(()=>{const n=[...document.querySelectorAll('.mm-node')].find(e=>e.textContent.includes('This is a sample'));if(!n)return 'no node';const l=n.querySelector('.mm-label');const cs=getComputedStyle(l);return (n.title==='This is a sample project page with nested blocks.')+':'+(cs.webkitLineClamp||cs.getPropertyValue('-webkit-line-clamp'))+':'+(n.offsetWidth<=222)})()" | tr -d '"')
+[[ "$MM_TIP" == "true:2:true" ]] && pass "Node has a full-text tooltip and a 2-line clamp" || fail "Node truncation wrong" "tooltip:clamp:width=$MM_TIP"
+press "Escape"; sleep 0.5
+press "Escape"; sleep 1
+api "navigateTo('Getting Started')" > /dev/null; sleep 2
 
 ss "33-mindmap"
 
@@ -1407,8 +1526,20 @@ step "I see cards in columns (child blocks)"
 # Getting Started is flat, so every card count must match the page's actual
 # column-children (0 here); the nested-card tests use a dedicated board below.
 CARD_COUNT=$(ev "document.querySelectorAll('.kanban-card').length" | tr -d '"')
-EXPECTED_CARDS=$(ev "(async()=>{const api=await import('/src/lib/api.ts');const t=await api.getPageTree('Getting Started');const cols=new Set(t.blocks.filter(b=>!b.parent_id&&b.content.trim()!=='---').map(b=>b.id));return t.blocks.filter(b=>b.parent_id&&cols.has(b.parent_id)&&b.content.trim()!=='---').length})()" | tr -d '"')
-[[ -n "$CARD_COUNT" && "$CARD_COUNT" == "$EXPECTED_CARDS" ]] && pass "Cards rendered match child blocks ($CARD_COUNT)" || fail "Card count wrong" "rendered=$CARD_COUNT expected=$EXPECTED_CARDS"
+# Columns are section blocks (a heading, or a block with children). Top-level
+# blocks that are neither are cards in the leading "No section" column.
+KB_SHAPE="(async()=>{const api=await import('/src/lib/api.ts');const t=await api.getPageTree('Getting Started');const ok=b=>b.content.trim()!=='---';const parents=new Set(t.blocks.filter(b=>b.parent_id&&ok(b)).map(b=>b.parent_id));const top=t.blocks.filter(b=>!b.parent_id&&ok(b));const isCol=b=>parents.has(b.id)||/^#{1,6}\\s+\\S/.test(b.content.trim());const cols=new Set(top.filter(isCol).map(b=>b.id));const loose=top.filter(b=>!isCol(b)&&b.content.trim()!=='').length;const dom=[...document.querySelectorAll('.kanban-column:not(.kanban-column-unsorted)')].map(c=>c.dataset.columnId);return {cards:loose+t.blocks.filter(b=>b.parent_id&&cols.has(b.parent_id)&&ok(b)).length,loose,badCols:dom.filter(id=>!cols.has(id)).length}})()"
+EXPECTED_CARDS=$(ev "$KB_SHAPE.then(r=>r.cards)" | tr -d '"')
+[[ -n "$CARD_COUNT" && "$CARD_COUNT" == "$EXPECTED_CARDS" ]] && pass "Cards rendered match the page's blocks ($CARD_COUNT)" || fail "Card count wrong" "rendered=$CARD_COUNT expected=$EXPECTED_CARDS"
+
+step "Plain paragraphs are cards under 'No section', not empty columns"
+BAD_COLS=$(ev "$KB_SHAPE.then(r=>r.badCols)" | tr -d '"')
+[[ "$BAD_COLS" == "0" ]] && pass "Every column is a heading or a block with children" || fail "Non-section blocks rendered as columns" "$BAD_COLS"
+UNSORTED=$(ev "$KB_SHAPE.then(r=>{const u=document.querySelectorAll('.kanban-column-unsorted');const first=document.querySelector('.kanban-column');return r.loose+':'+u.length+':'+(u[0]?u[0].querySelectorAll('.kanban-card').length:0)+':'+(u[0]?u[0]===first:'-')+':'+(u[0]?u[0].querySelector('.kanban-column-title').textContent:'')})" | tr -d '"')
+LOOSE=${UNSORTED%%:*}
+[[ "$LOOSE" -ge 1 && "$UNSORTED" == "$LOOSE:1:$LOOSE:true:No section" ]] 2>/dev/null && pass "$LOOSE top-level paragraphs are cards in the leading 'No section' column" || fail "'No section' column wrong" "loose:cols:cards:first:title=$UNSORTED"
+EMPTY_PARA_COLS=$(ev "[...document.querySelectorAll('.kanban-column')].filter(c=>!c.querySelector('.kanban-card')&&!c.classList.contains('kanban-column-unsorted')&&/^This is a block/.test(c.querySelector('.kanban-column-title').textContent)).length" | tr -d '"')
+[[ "$EMPTY_PARA_COLS" == "0" ]] && pass "No empty paragraph columns" || fail "Paragraph rendered as an empty column" "$EMPTY_PARA_COLS"
 
 ss "36-kanban-board"
 
@@ -1421,6 +1552,10 @@ OLD_COL_COUNT=$(ev "document.querySelectorAll('.kanban-column').length" | tr -d 
 ev "document.querySelector('.kanban-add-column')?.click()" > /dev/null 2>&1; sleep 2
 NEW_COL_COUNT=$(ev "document.querySelectorAll('.kanban-column').length" | tr -d '"')
 [[ "$NEW_COL_COUNT" -gt "$OLD_COL_COUNT" ]] 2>/dev/null && pass "New column added ($OLD_COL_COUNT → $NEW_COL_COUNT)" || fail "Column not added" "$OLD_COL_COUNT → $NEW_COL_COUNT"
+# The new column is stored as a heading block (so it stays a column while empty)
+# and its title is shown without the markdown marker, with a tooltip.
+NEW_COL=$(ev "(async()=>{const api=await import('/src/lib/api.ts');const c=[...document.querySelectorAll('.kanban-column')].pop();const t=c.querySelector('.kanban-column-title');const b=(await api.getPageTree('Getting Started')).blocks.find(b=>b.id===c.dataset.columnId);return t.textContent+'|'+t.title+'|'+(b?b.content:'no block')})()" | tr -d '"')
+[[ "$NEW_COL" == "New Column|New Column|## New Column" ]] && pass "New column is a heading block, shown as 'New Column' with a tooltip" || fail "New column wrong" "$NEW_COL"
 
 step "I set a color on a column via the color button"
 # Click the color dot button (●) — it's the first kanban-col-btn in the first column header
@@ -1460,7 +1595,7 @@ KB_SEED=$(ev "(async()=>{
   const s2 = await api.createBlock(p.id, 'Patch auth', bug.id);
   await api.setProperty(bug.id, 'block', 'priority', 'high');
   await api.createBlock(p.id, 'Review PR', doing.id);
-  await api.createBlock(p.id, 'Ship v1', done.id);
+  await api.createBlock(p.id, 'DONE Ship v1', done.id);
   window.__KB = { page: p.id, todo: todo.id, bug: bug.id, bugPos: bug.position, subs: [s1.id, s2.id] };
   return 'seeded';
 })()" | tr -d '"')
@@ -1475,6 +1610,10 @@ COL_COUNT=$(ev "document.querySelectorAll('.kanban-column').length" | tr -d '"')
 [[ "$KB_SEED" == "seeded" && "$COL_COUNT" == "3" && "$CARD_COUNT" == "4" ]] && pass "Board shows 3 columns and 4 cards (sub-items are not cards)" || fail "Kanban board seed wrong" "seed=$KB_SEED cols=$COL_COUNT cards=$CARD_COUNT"
 SUBCOUNT=$(ev "(()=>{const t=[...document.querySelectorAll('.kanban-card-text')].find(e=>e.textContent==='Fix login bug');return t?.closest('.kanban-card')?.querySelector('.kanban-sub-count')?.textContent||'none'})()" | tr -d '"')
 [[ "$SUBCOUNT" == "2 sub-blocks" ]] && pass "Card shows its 2 sub-items" || fail "Card sub-item count wrong" "$SUBCOUNT"
+
+step "A task card shows its state as a badge, not twice"
+TASK_CARD=$(ev "(()=>{const t=[...document.querySelectorAll('.kanban-card-text')];const c=t.find(e=>e.textContent==='Ship v1')?.closest('.kanban-card');return (c?.querySelector('.kanban-todo-badge')?.textContent||'no badge')+':'+(c?.dataset.todo||'')+':'+t.filter(e=>/^(TODO|DOING|DONE) /.test(e.textContent)).length})()" | tr -d '"')
+[[ "$TASK_CARD" == "DONE:DONE:0" ]] && pass "'DONE Ship v1' shows a DONE badge and the text 'Ship v1'" || fail "Task card shows the keyword twice" "badge:state:keyword-texts=$TASK_CARD"
 
 step "Cards in a colored column get a matching border"
 ev "(()=>{for(const b of document.querySelectorAll('.kanban-column-header .kanban-col-btn')){if(b.textContent.trim()==='●'){b.click();return 'clicked'}}return 'none'})()" > /dev/null 2>&1; sleep 0.5
@@ -1555,7 +1694,7 @@ ev "(()=>{window.__copiedMd=null;Object.defineProperty(navigator.clipboard,'writ
 ev "document.querySelector('.kanban-toolbar-btn')?.click()" > /dev/null 2>&1; sleep 1
 TOAST=$(ev "document.querySelector('.kanban-toast')?.textContent || ''" | tr -d '"')
 echo "$TOAST" | grep -q "Copied board as markdown table" && pass "Export toast confirms copy" || fail "No export toast" "$TOAST"
-COPIED=$(ev "(()=>{const m=window.__copiedMd||'';return [m.startsWith('# Kanban Journey'),m.includes('| Todo | Doing | Done |'),m.includes('| Write spec | Review PR | Ship v1 |'),m.includes('| Fix login bug |  |  |')].join(',')})()" | tr -d '"')
+COPIED=$(ev "(()=>{const m=window.__copiedMd||'';return [m.startsWith('# Kanban Journey'),m.includes('| Todo | Doing | Done |'),m.includes('| Write spec | Review PR | DONE Ship v1 |'),m.includes('| Fix login bug |  |  |')].join(',')})()" | tr -d '"')
 [[ "$COPIED" == "true,true,true,true" ]] && pass "Copied markdown table has the board's columns and cards" || fail "Copied markdown wrong" "$COPIED"
 
 HAS_CARDS=$(ev "document.querySelectorAll('.kanban-card').length" | tr -d '"')
@@ -1904,6 +2043,15 @@ api "navigateTo('Rust Programming')" > /dev/null; sleep 2
 HAS_AI_LINKS=$(ev "document.querySelectorAll('.ai-link-chip').length" | tr -d '"')
 [[ "$HAS_AI_LINKS" -ge 1 ]] 2>/dev/null && pass "AI link suggestions visible ($HAS_AI_LINKS links)" || fail "No AI link suggestions" "count=$HAS_AI_LINKS"
 
+step "Pages that merely exist are not suggested (no shared distinctive words)"
+# 'Bulk page NN' shares only the generic word 'page' with this text and has no content;
+# 'Quarterly Budget' shares nothing. Neither may be suggested; 'Tauri' is mentioned by name.
+ev "(async()=>{const api=await import('/src/lib/api.ts');for(const t of ['Bulk page 01','Bulk page 02','Bulk page 03','Bulk page 04','Quarterly Budget','Tauri'])await api.createPage(t);const p=await api.createPage('Relevance Check');await api.createBlock(p.id,'This is a sample page with nested blocks. Built with Tauri, in bulk.');return 'ok'})()" > /dev/null
+api "navigateTo('Relevance Check')" > /dev/null; sleep 2
+CHIPS=$(ev "[...document.querySelectorAll('.ai-link-chip')].map(c=>c.textContent.replace(/\+x\$/,'')).join(',')" | tr -d '"')
+[[ "$CHIPS" == "[[Tauri]]" ]] && pass "Only the page mentioned by name is suggested ($CHIPS)" || fail "Noisy link suggestions" "$CHIPS"
+api "navigateTo('Rust Programming')" > /dev/null; sleep 2
+
 step "Clicking a suggested link inserts it into the current page"
 # Bug #28: the + button INSERTS the wiki-link as a new block rather than
 # navigating away. Assert the insert, and that we stayed put.
@@ -2048,12 +2196,13 @@ ev "window.__MINOTES__.mergeWithPrevious(3)" > /dev/null; sleep 1
 R=$(api "getBlockContent(2)")
 [[ "$R" == '"prev block\n[[A Page]] #tag **b**"' ]] && pass "Merge keeps [[link]] #tag **bold**" || fail "Merge lost content" "$R"
 
-step "A second Enter while the first is in flight is a no-op"
+step "A second Enter while the first is still being saved splits too, in order"
 IDX=$(ev "window.__MINOTES__.getBlocks().findIndex(b=>b.content==='alpha beta gamma')" | tr -d '"')
 RAPID=$(ev "(()=>{const M=window.__MINOTES__;return M.splitBlockAt($IDX,5)+','+M.splitBlockAt($IDX,2)})()" | tr -d '"')
-sleep 1
-A=$(api "getBlockContent($IDX)" | tr -d '"'); B=$(api "getBlockContent($((IDX+1)))" | tr -d '"')
-[[ "$RAPID" == "true,false" && "$A" == "alpha" && "$B" == "beta gamma" ]] && pass "Rapid Enter loses no text" || fail "Rapid Enter lost text" "ret=$RAPID [$A] [$B]"
+sleep 1.5
+A=$(api "getBlockContent($IDX)" | tr -d '"'); B=$(api "getBlockContent($((IDX+1)))" | tr -d '"'); C=$(api "getBlockContent($((IDX+2)))" | tr -d '"')
+RAPID_BE=$(ev "(async()=>{const api=await import('/src/lib/api.ts');const t=await api.getPageTree('Editor Integrity');const c=t.blocks.map(b=>b.content);const i=c.indexOf('al');return c.slice(i,i+3).join('|')})()" | tr -d '"')
+[[ "$RAPID" == "true,true" && "$A" == "al" && "$B" == "pha" && "$C" == "beta gamma" && "$RAPID_BE" == "al|pha|beta gamma" ]] && pass "Rapid Enter loses no text and keeps order" || fail "Rapid Enter lost text" "ret=$RAPID [$A] [$B] [$C] be=$RAPID_BE"
 
 step "Ctrl+Enter keeps text typed since the last save"
 TI=$(ev "window.__MINOTES__.getBlocks().findIndex(b=>b.content==='plain task')" | tr -d '"')
@@ -2171,6 +2320,407 @@ GD_AFTER=$(ev "$GD_SIG" | tr -d '"')
 ss "52-group-delete-undo"
 
 # ═══════════════════════════════════════════════
+journey "53. I make a table and a flashcard from the UI"
+# /table inserts a real pipe table that survives save + reload; the table
+# toolbar's structure commands change the stored markdown; right-click →
+# Make flashcard puts the block in review; Remove flashcard takes it out.
+# ═══════════════════════════════════════════════
+
+TC_TREE="(async()=>{const api=await import('/src/lib/api.ts');const t=await api.getPageTree('Table Cards');return JSON.stringify(t.blocks.map(b=>b.content))})()"
+TC_BLOCK0="(async()=>{const api=await import('/src/lib/api.ts');const t=await api.getPageTree('Table Cards');return t.blocks[0].content})()"
+# Put the cursor at the end of the first body cell of block 0's table.
+TC_CURSOR="(()=>{const pm=document.querySelectorAll('.ProseMirror')[0];const td=pm&&pm.querySelector('td p');if(!td)return 'no-cell';pm.focus();const r=document.createRange();r.selectNodeContents(td);r.collapse(false);const s=getSelection();s.removeAllRanges();s.addRange(r);return 'ok'})()"
+
+step "I make a page with an empty block and a question with an answer underneath"
+ev "(async()=>{const api=await import('/src/lib/api.ts');const p=await api.createPage('Table Cards');await api.createBlock(p.id,'');const q=await api.createBlock(p.id,'What is the capital of France?');await api.createBlock(p.id,'Paris',q.id);return 'ok'})()" > /dev/null
+api "navigateTo('Table Cards')" > /dev/null; sleep 2
+N=$(api "getBlockCount()" | tr -d '"')
+[[ "$N" == "3" ]] && pass "Table Cards page shows 3 blocks" || fail "Table Cards page wrong" "$N blocks"
+
+step "I type /table and pick Table from the slash menu"
+api "focusBlock(0)" > /dev/null; sleep 0.5
+api "typeInBlock(0, '/table')" > /dev/null; sleep 1
+PICK=$(ev "(()=>{const it=[...document.querySelectorAll('.slash-menu-item')].find(e=>e.querySelector('.slash-menu-item-title')?.textContent==='Table');if(!it)return 'no-item';it.click();return 'ok'})()" | tr -d '"')
+sleep 1.5
+STORED=$(ev "$TC_BLOCK0")
+[[ "$PICK" == "ok" && "$STORED" == '"|  |  |  |\n| --- | --- | --- |\n|  |  |  |\n|  |  |  |"' ]] && pass "/table stored a 3x3 markdown table with a header row" || fail "/table did not store a table" "pick=$PICK stored=$STORED"
+TH=$(ev "document.querySelectorAll('.ProseMirror')[0]?.querySelectorAll('table th').length" | tr -d '"')
+TD=$(ev "document.querySelectorAll('.ProseMirror')[0]?.querySelectorAll('table td').length" | tr -d '"')
+[[ "$TH" == "3" && "$TD" == "6" ]] && pass "The block renders as a table (3 header + 6 body cells)" || fail "Table not rendered" "th=$TH td=$TD"
+TB=$(ev "!!document.querySelector('.table-toolbar')" | tr -d '"')
+[[ "$TB" == "true" ]] && pass "Table toolbar shows while the cursor is in the table" || fail "No table toolbar" "$TB"
+
+step "I fill the header with Tab between cells (one cell has a | in it) and leave the block"
+api "typeInBlock(0, 'Name')" > /dev/null; sleep 0.2
+ev "document.querySelectorAll('.ProseMirror')[0].dispatchEvent(new KeyboardEvent('keydown',{key:'Tab',bubbles:true,cancelable:true}))" > /dev/null; sleep 0.3
+ev "document.execCommand('insertText',false,'a|b')" > /dev/null; sleep 0.3
+ev "document.activeElement?.blur()" > /dev/null; sleep 1
+STORED=$(ev "$TC_BLOCK0")
+[[ "$STORED" == '"| Name | a\\|b |  |\n| --- | --- | --- |\n|  |  |  |\n|  |  |  |"' ]] && pass "Header cells saved; the | is escaped so the row keeps 3 cells" || fail "Cell edit not saved as markdown" "$STORED"
+
+step "I leave the page and come back — it is still a table"
+api "navigateTo('Getting Started')" > /dev/null; sleep 1.5
+api "navigateTo('Table Cards')" > /dev/null; sleep 2
+CELLS=$(ev "[...(document.querySelectorAll('.ProseMirror')[0]?.querySelectorAll('table th')||[])].map(c=>c.textContent).join(',')" | tr -d '"')
+[[ "$CELLS" == "Name,a|b," ]] && pass "Table re-renders after reload with its header text" || fail "Table lost after reload" "$CELLS"
+
+step "I add a row below and a column to the right from the table toolbar"
+ev "$TC_CURSOR" > /dev/null; sleep 0.3
+R1=$(api "tableAction(0, 'addRowAfter')" | tr -d '"'); sleep 0.8
+LINES=$(ev "(async()=>{const api=await import('/src/lib/api.ts');const t=await api.getPageTree('Table Cards');return t.blocks[0].content.split('\n').length})()" | tr -d '"')
+[[ "$R1" == "true" && "$LINES" == "5" ]] && pass "Add row persisted (header + delimiter + 3 rows)" || fail "Add row not persisted" "ret=$R1 lines=$LINES"
+ev "$TC_CURSOR" > /dev/null; sleep 0.3
+R2=$(api "tableAction(0, 'addColumnAfter')" | tr -d '"'); sleep 0.8
+HEAD=$(ev "(async()=>{const api=await import('/src/lib/api.ts');const t=await api.getPageTree('Table Cards');return t.blocks[0].content.split('\n')[1]})()" | tr -d '"')
+[[ "$R2" == "true" && "$HEAD" == "| --- | --- | --- | --- |" ]] && pass "Add column persisted (4 columns)" || fail "Add column not persisted" "ret=$R2 delim=$HEAD"
+
+step "I delete that column and row again"
+ev "$TC_CURSOR" > /dev/null; sleep 0.3
+api "tableAction(0, 'deleteColumn')" > /dev/null; sleep 0.8
+ev "$TC_CURSOR" > /dev/null; sleep 0.3
+api "tableAction(0, 'deleteRow')" > /dev/null; sleep 0.8
+SHAPE=$(ev "(async()=>{const api=await import('/src/lib/api.ts');const t=await api.getPageTree('Table Cards');const l=t.blocks[0].content.split('\n');return l.length+'x'+l[1].split('---').length})()" | tr -d '"')
+[[ "$SHAPE" == "4x4" ]] && pass "Delete column + row persisted (3 columns, 2 body rows)" || fail "Delete column/row wrong" "$SHAPE"
+ss "53-table"
+
+step "I right-click the question and choose Make flashcard"
+QID=$(ev "(async()=>{const api=await import('/src/lib/api.ts');const t=await api.getPageTree('Table Cards');return t.blocks.find(b=>b.content==='What is the capital of France?').id})()" | tr -d '"')
+QI=$(ev "window.__MINOTES__.getBlocks().findIndex(b=>b.content==='What is the capital of France?')" | tr -d '"')
+TC_MENU="(()=>{const b=document.querySelectorAll('.block')[$QI];const pm=b.querySelector('.ProseMirror');const r=pm.getBoundingClientRect();pm.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true,clientX:r.left+20,clientY:r.top+8}));return 'ok'})()"
+ev "$TC_MENU" > /dev/null; sleep 0.5
+LABEL=$(ev "document.querySelector('.block-context-menu [data-action=flashcard]')?.firstChild?.textContent" | tr -d '"')
+ev "document.querySelector('.block-context-menu [data-action=flashcard]')?.click()" > /dev/null; sleep 1
+DUE=$(ev "(async()=>{const api=await import('/src/lib/api.ts');const d=await api.getDueCards(100);return d.some(c=>c.block_id==='$QID')})()" | tr -d '"')
+[[ "$LABEL" == "Make flashcard" && "$DUE" == "true" ]] && pass "Make flashcard → the block is in the due cards" || fail "Make flashcard failed" "label=$LABEL due=$DUE"
+IND=$(ev "!!document.querySelectorAll('.block')[$QI]?.querySelector('.flashcard-indicator')" | tr -d '"')
+[[ "$IND" == "true" ]] && pass "Card indicator shows on the block" || fail "No card indicator" "$IND"
+BADGE=$(ev "document.querySelector('.sidebar-review-badge')?.textContent" | tr -d '"')
+echo "$BADGE" | grep -q "Review.*due" && pass "Sidebar offers Review ($BADGE)" || fail "No review entry in sidebar" "$BADGE"
+
+step "I review it: the children are the answer, and rating it takes it off the due list"
+ev "document.querySelector('.sidebar-review-badge')?.click()" > /dev/null; sleep 1.5
+ev "(()=>{const b=document.querySelector('.review-show-btn');if(b)b.click();return 'ok'})()" > /dev/null; sleep 0.8
+BACK=$(ev "document.querySelector('.review-card-back')?.textContent" | tr -d '"')
+FRONT=$(ev "document.querySelector('.review-card-front')?.textContent" | tr -d '"')
+ss "53-review"
+[[ "$FRONT" == *"capital of France"* && "$BACK" == *"Paris"* ]] && pass "Review shows question front and child-block answer" || fail "Review front/back wrong" "front=$FRONT back=$BACK"
+# Rate the card for THIS block (other due cards may come first on a shared DB).
+ev "(async()=>{const api=await import('/src/lib/api.ts');const d=await api.getDueCards(100);const c=d.find(c=>c.block_id==='$QID');if(c&&document.querySelector('.review-card-front')?.textContent.includes('capital of France')){document.querySelector('.review-btn-good').click();return 'ui'}if(c){await api.reviewCard(c.id,'good');return 'api'}return 'none'})()" > /dev/null; sleep 1
+DUE=$(ev "(async()=>{const api=await import('/src/lib/api.ts');const d=await api.getDueCards(100);return d.some(c=>c.block_id==='$QID')})()" | tr -d '"')
+[[ "$DUE" == "false" ]] && pass "Rated card is no longer due" || fail "Rated card still due" "$DUE"
+api "closePanel()" > /dev/null; sleep 0.5
+
+step "I right-click it again and choose Remove flashcard"
+ev "$TC_MENU" > /dev/null; sleep 0.5
+LABEL=$(ev "document.querySelector('.block-context-menu [data-action=flashcard]')?.firstChild?.textContent" | tr -d '"')
+ev "document.querySelector('.block-context-menu [data-action=flashcard]')?.click()" > /dev/null; sleep 1
+GONE=$(ev "(async()=>{const api=await import('/src/lib/api.ts');const c=await api.listCards();return !c.some(c=>c.block_id==='$QID')})()" | tr -d '"')
+IND=$(ev "!!document.querySelectorAll('.block')[$QI]?.querySelector('.flashcard-indicator')" | tr -d '"')
+[[ "$LABEL" == "Remove flashcard" && "$GONE" == "true" && "$IND" == "false" ]] && pass "Remove flashcard deletes the card and its indicator" || fail "Remove flashcard failed" "label=$LABEL gone=$GONE indicator=$IND"
+
+step "I make it a card again with /flashcard"
+AI=$(ev "window.__MINOTES__.getBlocks().findIndex(b=>b.content==='Paris')" | tr -d '"')
+api "focusBlock($AI)" > /dev/null; sleep 0.5
+api "typeInBlock($AI, ' /flashcard')" > /dev/null; sleep 1
+ev "(()=>{const it=[...document.querySelectorAll('.slash-menu-item')].find(e=>e.querySelector('.slash-menu-item-title')?.textContent==='Flashcard');if(!it)return 'no-item';it.click();return 'ok'})()" > /dev/null; sleep 1.5
+SC=$(ev "(async()=>{const api=await import('/src/lib/api.ts');const t=await api.getPageTree('Table Cards');const b=t.blocks.find(b=>b.content.startsWith('Paris'));const c=await api.listCards();return (b?b.content:'?')+'|'+c.some(c=>b&&c.block_id===b.id)})()" | tr -d '"')
+[[ "$SC" == "Paris|true" ]] && pass "/flashcard makes a card and leaves the text clean" || fail "/flashcard failed" "$SC"
+
+# ═══════════════════════════════════════════════
+journey "55. Keyboard-only writing: fast typing, indent/outdent, Escape, redo, menus"
+# Keydowns go into the block's ProseMirror (pressKeyInBlock), so the editor's own
+# key handlers run — the same path as the real key. Text goes in with
+# execCommand('insertText') on whatever has focus, exactly where a typed key lands.
+# ═══════════════════════════════════════════════
+
+KB_BE="(async()=>{const api=await import('/src/lib/api.ts');const t=await api.getPageTree('Keyboard Only');const byId=new Map(t.blocks.map(b=>[b.id,b]));return t.blocks.map(b=>b.content+'<'+(b.parent_id?byId.get(b.parent_id).content:'-')).join(',')})()"
+KB_TREE="window.__MINOTES__.getBlockTree().map(b=>b.content+':'+b.depth).join(',')"
+
+step "Typing straight through Enter (no pause at all) puts every line in its own block, in order"
+ev "(async()=>{const api=await import('/src/lib/api.ts');const p=await api.createPage('Keyboard Only');await api.createBlock(p.id,'');return 'ok'})()" > /dev/null
+api "navigateTo('Keyboard Only')" > /dev/null; sleep 2
+api "focusBlock(0)" > /dev/null; sleep 0.5
+ev "(()=>{const ins=t=>document.execCommand('insertText',false,t);const enter=()=>document.activeElement.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}));ins('one');enter();ins('two');enter();ins('three');enter();ins('four');return 'ok'})()" > /dev/null
+sleep 1.5; ev "document.activeElement?.blur()" > /dev/null; sleep 1
+UI=$(ev "window.__MINOTES__.getBlocks().map(b=>b.content).join('|')" | tr -d '"')
+BE=$(ev "(async()=>{const api=await import('/src/lib/api.ts');const t=await api.getPageTree('Keyboard Only');return t.blocks.map(b=>b.content).join('|')})()" | tr -d '"')
+[[ "$UI" == "one|two|three|four" ]] && pass "Zero-delay typing through Enter: one|two|three|four" || fail "Keys after Enter misplaced" "$UI"
+[[ "$BE" == "one|two|three|four" ]] && pass "Zero-delay typing persisted in order" || fail "Fast-typed blocks persisted wrong" "$BE"
+
+step "Tab indents under the previous block; Shift+Tab outdents to directly after the parent"
+api "pressKeyInBlock(1, 'Tab')" > /dev/null; sleep 0.8
+api "pressKeyInBlock(2, 'Tab')" > /dev/null; sleep 0.8
+T1=$(ev "$KB_TREE" | tr -d '"')
+[[ "$T1" == "one:0,two:1,three:1,four:0" ]] && pass "Tab indents (tree: $T1)" || fail "Tab did not indent" "$T1"
+api "pressKeyInBlock(1, 'Tab', {shift:true})" > /dev/null; sleep 0.1
+FI=$(api "getFocusedBlockIndex()" | tr -d '"')
+sleep 1
+T2=$(ev "$KB_TREE" | tr -d '"')
+B2=$(ev "$KB_BE" | tr -d '"')
+[[ "$T2" == "one:0,three:1,two:0,four:0" && "$B2" == "one<-,three<one,two<-,four<-" ]] && pass "Shift+Tab outdents 'two' to right after its parent" || fail "Shift+Tab outdent wrong" "ui=$T2 be=$B2"
+[[ "$FI" == "2" ]] && pass "Caret stays in the outdented block" || fail "Focus jumped after Shift+Tab" "focused=$FI"
+POS_OK=$(ev "(async()=>{const api=await import('/src/lib/api.ts');const t=await api.getPageTree('Keyboard Only');const g=new Map();for(const b of t.blocks){const k=b.parent_id||'-';const l=g.get(k)||[];l.push(b.position);g.set(k,l)}return [...g.values()].every(l=>new Set(l).size===l.length)})()" | tr -d '"')
+[[ "$POS_OK" == "true" ]] && pass "No two siblings share a position" || fail "Duplicate sibling positions" "$POS_OK"
+
+step "Escape leaves editing and keeps the block selected; arrows move the selection, Enter edits"
+api "pressKeyInBlock(1, 'Escape')" > /dev/null; sleep 0.4
+FI=$(api "getFocusedBlockIndex()" | tr -d '"'); SEL=$(ev "JSON.stringify(window.__MINOTES__.getSelectedIndices())" | tr -d '"\\')
+T3=$(ev "$KB_TREE" | tr -d '"')
+[[ "$FI" == "-1" && "$SEL" == "[1]" && "$T3" == "$T2" ]] && pass "Escape: not editing, block 1 selected, tree unchanged" || fail "Escape did not just close editing" "focus=$FI sel=$SEL tree=$T3"
+ev "document.body.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true,cancelable:true}))" > /dev/null; sleep 0.3
+SEL=$(ev "JSON.stringify(window.__MINOTES__.getSelectedIndices())" | tr -d '"\\')
+ev "document.body.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}))" > /dev/null; sleep 0.4
+FI=$(api "getFocusedBlockIndex()" | tr -d '"')
+[[ "$SEL" == "[2]" && "$FI" == "2" ]] && pass "ArrowDown moved the selection, Enter edits it" || fail "Selection keyboard navigation broken" "sel=$SEL focus=$FI"
+
+step "Ctrl+Shift+Z and Ctrl+Y redo what Ctrl+Z undid (same block id)"
+ev "document.activeElement?.blur()" > /dev/null; sleep 0.5
+KB_IDS="(async()=>{const api=await import('/src/lib/api.ts');const t=await api.getPageTree('Keyboard Only');return t.blocks.map(b=>b.id+'='+b.content).join(',')})()"
+ID0=$(ev "$KB_IDS" | tr -d '"')
+ev "document.body.dispatchEvent(new KeyboardEvent('keydown',{key:'z',ctrlKey:true,bubbles:true,cancelable:true}))" > /dev/null; sleep 1.5
+U1=$(ev "$KB_IDS" | tr -d '"')
+ev "document.body.dispatchEvent(new KeyboardEvent('keydown',{key:'Z',ctrlKey:true,shiftKey:true,bubbles:true,cancelable:true}))" > /dev/null; sleep 1.5
+R1=$(ev "$KB_IDS" | tr -d '"')
+[[ "$U1" != "$ID0" && "$R1" == "$ID0" ]] && pass "Ctrl+Shift+Z redid the undone Enter exactly" || fail "Redo did not restore" "before=$ID0 undo=$U1 redo=$R1"
+ev "document.body.dispatchEvent(new KeyboardEvent('keydown',{key:'z',ctrlKey:true,bubbles:true,cancelable:true}))" > /dev/null; sleep 1.5
+ev "document.body.dispatchEvent(new KeyboardEvent('keydown',{key:'y',ctrlKey:true,bubbles:true,cancelable:true}))" > /dev/null; sleep 1.5
+R2=$(ev "$KB_IDS" | tr -d '"')
+[[ "$R2" == "$ID0" ]] && pass "Ctrl+Y redoes too" || fail "Ctrl+Y redo failed" "$R2"
+UI_R=$(ev "window.__MINOTES__.getBlocks().map(b=>b.content).join('|')" | tr -d '"')
+[[ "$UI_R" == "one|three|two|four" ]] && pass "Redone block is rendered" || fail "Redo not rendered" "$UI_R"
+
+step "Escape closes the / menu and the [[ menu, and the cursor stays in the block"
+api "focusBlock(3)" > /dev/null; sleep 0.4
+ev "(async()=>{for(const ch of ' /'){document.execCommand('insertText',false,ch);await new Promise(r=>setTimeout(r,30))}return 'ok'})()" > /dev/null; sleep 0.6
+OPEN=$(ev "!!document.querySelector('.slash-menu')" | tr -d '"')
+api "pressKeyInBlock(3, 'Escape', {focus:false})" > /dev/null; sleep 0.5
+AFTER=$(ev "!!document.querySelector('.slash-menu')" | tr -d '"'); FI=$(api "getFocusedBlockIndex()" | tr -d '"')
+[[ "$OPEN" == "true" && "$AFTER" == "false" && "$FI" == "3" ]] && pass "Escape closed the slash menu, still editing" || fail "Slash menu Escape" "open=$OPEN after=$AFTER focus=$FI"
+ev "(async()=>{for(const ch of ' [['){document.execCommand('insertText',false,ch);await new Promise(r=>setTimeout(r,30))}return 'ok'})()" > /dev/null; sleep 0.8
+OPEN=$(ev "!!document.querySelector('.tippy-box')" | tr -d '"')
+api "pressKeyInBlock(3, 'Escape', {focus:false})" > /dev/null; sleep 0.5
+AFTER=$(ev "!!document.querySelector('.tippy-box')" | tr -d '"'); FI=$(api "getFocusedBlockIndex()" | tr -d '"')
+[[ "$OPEN" == "true" && "$AFTER" == "false" && "$FI" == "3" ]] && pass "Escape closed the [[ menu, still editing" || fail "[[ menu Escape" "open=$OPEN after=$AFTER focus=$FI"
+
+step "Typing '- [ ] ' / '* [x] ' makes a task item"
+ev "(async()=>{const M=window.__MINOTES__;const api=await import('/src/lib/api.ts');const p=await api.createPage('Task Syntax');for(let i=0;i<3;i++)await api.createBlock(p.id,'');return 'ok'})()" > /dev/null
+api "navigateTo('Task Syntax')" > /dev/null; sleep 2
+ev "(async()=>{const M=window.__MINOTES__;const s=ms=>new Promise(r=>setTimeout(r,ms));for(const [i,t] of [[0,'- [ ] call bob'],[1,'* [x] shipped'],[2,'[] plain']]){M.focusBlock(i);await s(150);for(const ch of t){document.execCommand('insertText',false,ch);await s(10)}}document.activeElement?.blur();return 'ok'})()" > /dev/null; sleep 1.5
+TS=$(ev "(async()=>{const api=await import('/src/lib/api.ts');const t=await api.getPageTree('Task Syntax');return t.blocks.map(b=>b.content).join('|')})()" | tr -d '"')
+[[ "$TS" == "- [ ] call bob|- [x] shipped|- [ ] plain" ]] && pass "Task syntax converts (stored: $TS)" || fail "Task syntax not converted" "$TS"
+
+step "A new page puts the cursor in its first block"
+ev "document.activeElement?.blur()" > /dev/null
+ev "window.__MINOTES__.createPage('Fresh Page Focus')" > /dev/null; sleep 2
+FI=$(api "getFocusedBlockIndex()" | tr -d '"'); CP=$(api "getCurrentPage()" | tr -d '"')
+[[ "$CP" == "Fresh Page Focus" && "$FI" == "0" ]] && pass "New page: caret in the first block" || fail "New page not focused" "page=$CP focus=$FI"
+
+step "Following a block reference opens its page and lands on the block"
+REF=$(ev "(async()=>{const api=await import('/src/lib/api.ts');const p=await api.createPage('Ref Target Page');for(const c of ['r1','r2','the referenced block'])await api.createBlock(p.id,c);const t=await api.getPageTree('Ref Target Page');return t.blocks[2].id})()" | tr -d '"')
+api "navigateTo('Keyboard Only')" > /dev/null; sleep 1.5
+api "openBlockRef('$REF')" > /dev/null; sleep 2
+CP=$(api "getCurrentPage()" | tr -d '"'); FI=$(api "getFocusedBlockIndex()" | tr -d '"')
+[[ "$CP" == "Ref Target Page" && "$FI" == "2" ]] && pass "Block ref opened its page with the caret in the block" || fail "Block ref navigation" "page=$CP focus=$FI"
+
+step "Escape that closes the search palette puts the cursor back in the block"
+api "focusBlock(1)" > /dev/null; sleep 0.4
+ev "document.activeElement.dispatchEvent(new KeyboardEvent('keydown',{key:'k',ctrlKey:true,bubbles:true,cancelable:true}))" > /dev/null; sleep 0.8
+TAG=$(ev "document.activeElement.tagName" | tr -d '"')
+ev "document.activeElement.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}))" > /dev/null; sleep 0.8
+FI=$(api "getFocusedBlockIndex()" | tr -d '"')
+[[ "$TAG" == "INPUT" && "$FI" == "1" ]] && pass "Focus restored to the block after closing search" || fail "Focus lost after closing search" "search=$TAG focus=$FI"
+
+ss "55-keyboard-only"
+
+journey "56. The app shell does what I ask — palette, deletes, renames, Escape"
+# Palette commands open their panel; deleting the open page leaves it (Undo +
+# Ctrl+Z bring it back); right-click/⋮ never navigate; a taken title or project
+# name is refused with a visible reason; stray spaces never make a new page;
+# Escape closes kanban / All Pages; a future journal day keeps its navigation.
+# ═══════════════════════════════════════════════
+SH_PAL="(async(cmd,list)=>{const T=window.__MINOTES__;T.closePanel();T.openSearch();await new Promise(r=>setTimeout(r,300));const i=document.querySelector('.command-palette-input');const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;set.call(i,'>'+cmd);i.dispatchEvent(new Event('input',{bubbles:true}));await new Promise(r=>setTimeout(r,300));const items=[...document.querySelectorAll('.command-palette-item')].map(e=>e.textContent);if(list)return items.join(',');i.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));await new Promise(r=>setTimeout(r,500));return 'ran'})"
+SH_FILL="(sel,val,key)=>{const i=document.querySelector(sel);if(!i)return 'no-input';i.focus();const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;set.call(i,val);i.dispatchEvent(new Event('input',{bubbles:true}));if(key)i.dispatchEvent(new KeyboardEvent('keydown',{key,bubbles:true}));return 'ok'}"
+SH_ROW="(t)=>[...document.querySelectorAll('.sidebar .page-item')].find(e=>e.textContent.trim().replace(/⋮$/,'').trim()===t)"
+
+step "Palette: '>sql' + Enter opens the SQL panel, '>settings' opens Settings"
+ev "($SH_PAL)('sql')" > /dev/null; sleep 0.5
+Q=$(api "isPanelOpen('query')" | tr -d '"')
+ev "($SH_PAL)('settings')" > /dev/null; sleep 0.5
+S1=$(api "isPanelOpen('settings')" | tr -d '"')
+[[ "$Q" == "true" && "$S1" == "true" ]] && pass "Palette commands open their panel" || fail "Palette command opened nothing" "query=$Q settings=$S1"
+
+step "Settings reaches Sync and CSS snippets; the × has a name; the shortcut list is complete"
+R=$(ev "(()=>{const t=document.querySelector('.settings-slide-panel')?.textContent||'';const x=document.querySelector('.settings-close-btn')?.getAttribute('aria-label');return [t.includes('Sync & version history'),t.includes('CSS snippets'),!!x,['Ctrl+Shift+K','Alt+→','Ctrl+1','Ctrl+Shift+C','Ctrl+P','Ctrl+A'].every(k=>t.includes(k))].join('|')})()" | tr -d '"')
+[[ "$R" == "true|true|true|true" ]] && pass "Settings: Sync + CSS entry points, labelled ×, full shortcut list" || fail "Settings entry points / shortcuts" "$R"
+ev "[...document.querySelectorAll('.settings-slide-panel button')].find(b=>b.textContent.includes('Sync & version history'))?.click()" > /dev/null; sleep 0.8
+R=$(ev "!!document.querySelector('.sync-panel')" | tr -d '"')
+[[ "$R" == "true" ]] && pass "Settings → Sync & version history opens the Sync panel" || fail "Sync panel not reachable from Settings" "$R"
+api "closePanel()" > /dev/null; sleep 0.3
+
+step "The palette no longer offers dead commands (Plugins, Export Markdown)"
+R=$(ev "($SH_PAL)('',true)" | tr -d '"')
+api "closePanel()" > /dev/null
+[[ "$R" == *"Settings"* && "$R" != *"Manage Plugins"* && "$R" != *"Export Markdown"* ]] && pass "No Plugins / Export Markdown commands" || fail "Dead palette commands still listed" "$R"
+
+step "Right-click and ⋮ on another page's row don't navigate there"
+ev "(async()=>{const api=await import('/src/lib/api.ts');await api.createPage('Shell Doomed');await api.createPage('Shell Other');return 'ok'})()" > /dev/null
+api "refreshSidebar()" > /dev/null; sleep 1
+api "navigateTo('Shell Doomed')" > /dev/null; sleep 1.5
+ev "(()=>{const row=($SH_ROW)('Shell Other');if(!row)return 'no-row';const o={bubbles:true,button:2,clientX:20,clientY:20};row.dispatchEvent(new MouseEvent('mousedown',o));row.dispatchEvent(new MouseEvent('mouseup',o));row.dispatchEvent(new MouseEvent('contextmenu',o));return 'ok'})()" > /dev/null; sleep 0.6
+press "Escape"; sleep 0.3
+ev "(()=>{const b=($SH_ROW)('Shell Other')?.querySelector('.page-more-btn');if(!b)return 'no-btn';const o={bubbles:true,button:0};b.dispatchEvent(new MouseEvent('mousedown',o));b.dispatchEvent(new MouseEvent('mouseup',o));b.click();return 'ok'})()" > /dev/null; sleep 0.6
+R=$(api "getCurrentPage()" | tr -d '"')
+MENU=$(ev "!!document.querySelector('.sidebar-context-menu')" | tr -d '"')
+press "Escape"; sleep 0.3
+[[ "$R" == "Shell Doomed" && "$MENU" == "true" ]] && pass "Menu opens, page stays 'Shell Doomed'" || fail "Row menu navigated" "page=$R menu=$MENU"
+
+step "Deleting the open page from its menu leaves it, with an Undo toast"
+ev "(()=>{const row=($SH_ROW)('Shell Doomed');row.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,clientX:20,clientY:20}));return 'ok'})()" > /dev/null; sleep 0.5
+ev "[...document.querySelectorAll('.sidebar-context-menu-item')].find(b=>b.textContent.includes('Delete'))?.click()" > /dev/null; sleep 2
+R=$(api "getCurrentPage()" | tr -d '"')
+T=$(ev "[...document.querySelectorAll('.minotes-toast')].map(t=>t.textContent).join(' / ')" | tr -d '"')
+[[ "$R" != "Shell Doomed" && "$R" != "null" && "$T" == *"Shell Doomed"*"Trash"*"Undo"* ]] && pass "Left the deleted page (now on '$R'), toast offers Undo" || fail "Deleted page still open / no toast" "page=$R toast=$T"
+
+step "Ctrl+Z brings the page back"
+press "Control+z"; sleep 2
+R=$(ev "(async()=>{const api=await import('/src/lib/api.ts');const t=await api.listTrash();return t.some(x=>x.title==='Shell Doomed')+'|'+window.__MINOTES__.getCurrentPage()})()" | tr -d '"')
+[[ "$R" == "false|Shell Doomed" ]] && pass "Ctrl+Z restored and reopened the deleted page" || fail "Ctrl+Z didn't undo the page delete" "$R"
+
+step "Renaming the page to a taken title shows why and keeps the old title"
+ev "document.querySelector('.page-view h2.page-title-editable')?.click()" > /dev/null; sleep 0.4
+ev "($SH_FILL)('.page-title-input','Shell Other','Enter')" > /dev/null; sleep 1.5
+R=$(ev "(()=>[window.__MINOTES__.getCurrentPage(),[...document.querySelectorAll('.main div')].some(d=>/Couldn.t rename/.test(d.textContent||'')&&d.children.length===0)].join('|'))()" | tr -d '"')
+[[ "$R" == "Shell Doomed|true" ]] && pass "Rename refused with a visible reason; title unchanged" || fail "Rename to taken title" "$R"
+
+step "A link with a stray space opens the existing page instead of creating one"
+api "navigateTo('Shell Other ')" > /dev/null; sleep 2
+R=$(ev "(async()=>{const api=await import('/src/lib/api.ts');const p=await api.listPages(1000);return window.__MINOTES__.getCurrentPage()+'|'+p.filter(x=>x.title.startsWith('Shell Other')).length})()" | tr -d '"')
+[[ "$R" == "Shell Other|1" ]] && pass "'Shell Other ' opened 'Shell Other', no duplicate page" || fail "Trailing-space title" "$R"
+
+step "A second project with the same name is refused inline"
+for n in 1 2; do
+  ev "document.querySelector('.sidebar-new-project')?.click()" > /dev/null; sleep 0.4
+  ev "($SH_FILL)('input[placeholder^=\"Project name\"]','Shell Dup','Enter')" > /dev/null; sleep 1.2
+done
+R=$(ev "(async()=>{const api=await import('/src/lib/api.ts');const t=await api.getFolderTree();return t.folders.filter(f=>f.name==='Shell Dup').length+'|'+(document.querySelector('.inline-field-error')?.textContent||'')})()" | tr -d '"')
+press "Escape"; sleep 0.3
+[[ "$R" == "1|"*"already exists"* ]] && pass "Duplicate project name refused with a message" || fail "Duplicate project" "$R"
+
+step "Escape closes Kanban and All Pages"
+api "navigateTo('Shell Other')" > /dev/null; sleep 1
+ev "document.querySelector('.stats-mode-btn[title^=Kanban]')?.click()" > /dev/null; sleep 1
+K1=$(ev "!!document.querySelector('.canvas-layer')" | tr -d '"')
+ev "document.activeElement?.blur()" > /dev/null
+press "Escape"; sleep 0.8
+K2=$(ev "!!document.querySelector('.canvas-layer')" | tr -d '"')
+ev "document.querySelector('.stats-mode-btn[title=\"All Pages\"]')?.click()" > /dev/null; sleep 1
+A1=$(ev "!!document.querySelector('.canvas-layer')" | tr -d '"')
+press "Escape"; sleep 0.8
+A2=$(ev "!!document.querySelector('.canvas-layer')" | tr -d '"')
+[[ "$K1|$K2|$A1|$A2" == "true|false|true|false" ]] && pass "Escape closes Kanban and All Pages" || fail "Escape didn't close" "kanban $K1→$K2 pages $A1→$A2"
+
+step "Ctrl+J works with the cursor in a block"
+api "focusBlock(0)" > /dev/null; sleep 0.5
+press "Control+j"; sleep 1.5
+R=$(api "getCurrentPage()" | tr -d '"')
+[[ "$R" == Journal/* ]] && pass "Ctrl+J from the editor opened the journal" || fail "Ctrl+J from editor" "$R"
+
+step "A future journal day keeps Prev / Today / Next"
+api "openJournal('2099-01-01')" > /dev/null; sleep 1.5
+R=$(ev "document.querySelectorAll('.pending-journal .journal-nav button').length" | tr -d '"')
+ev "[...document.querySelectorAll('.pending-journal .journal-nav button')].find(b=>b.textContent==='Today')?.click()" > /dev/null; sleep 1.5
+R2=$(api "getCurrentPage()" | tr -d '"')
+[[ "$R" == "3" && "$R2" == Journal/* ]] && pass "Future day shows navigation; Today returns to today's journal" || fail "Future journal navigation" "buttons=$R page=$R2"
+
+ss "56-app-shell"
+
+journey "57. Ask your notes — I turn on AI and get answers that cite my notes"
+# Browser mode: lib/aiMock.ts stands in for the backend (fake OpenRouter
+# catalogue, scripted answers with [[cite:<block-id>]] markers, one invented id
+# that must be stripped). The real provider/tool loop is covered by
+# `cargo test -p minotes-core ai::` and the desktop check (local mock server).
+# ═══════════════════════════════════════════════
+
+if [[ "$BACKEND" == "desktop" ]]; then
+  step "Skipped on the desktop backend (needs an AI provider; see desktop-check notes)"
+else
+# Set a textarea/input value the way React sees typing.
+ai_type() { ev "(()=>{const el=document.querySelector('$1');if(!el)return 'missing';const P=el.tagName==='TEXTAREA'?HTMLTextAreaElement:HTMLInputElement;Object.getOwnPropertyDescriptor(P.prototype,'value').set.call(el,'$2');el.dispatchEvent(new Event('input',{bubbles:true}));return 'ok'})()" > /dev/null; }
+ai_click() { ev "(()=>{const el=document.querySelector('$1');if(!el)return 'missing';el.click();return 'ok'})()" | tr -d '"'; }
+ai_wait_answers() { for _ in $(seq 1 40); do N=$(ev "document.querySelectorAll('[data-testid=ai-answer]').length" | tr -d '"'); [[ "$N" -ge "$1" ]] 2>/dev/null && return 0; sleep 0.25; done; return 1; }
+
+step "Open the Ask panel from the launcher — AI is off until I set it up"
+api "closePanel()" > /dev/null
+api "navigateTo('Getting Started')" > /dev/null; sleep 1
+ai_click "[data-testid=ai-launcher]" > /dev/null; sleep 1
+NC=$(ev "!!document.querySelector('[data-testid=ask-panel] [data-testid=ai-not-configured]')" | tr -d '"')
+[[ "$NC" == "true" ]] && pass "Ask panel shows a 'not configured' state" || fail "No not-configured state" "$NC"
+
+step "'Set up AI' opens AI settings with a plain-language data notice"
+ai_click "[data-testid=ai-setup]" > /dev/null; sleep 1
+NOTICE=$(ev "document.querySelector('[data-testid=ai-data-notice]')?.textContent" | tr -d '"')
+[[ "$NOTICE" == *"no note content leaves this device"* ]] && pass "Settings open; off = nothing leaves the device" || fail "AI settings/notice missing" "$NOTICE"
+
+step "Choose OpenRouter, store a key, keep the recommended model"
+ai_click "[data-testid=ai-provider-openrouter]" > /dev/null; sleep 1
+ai_type "[data-testid=ai-key-input]" "sk-or-test-key"
+ev "(()=>{const b=[...document.querySelectorAll('[data-testid=ai-settings] button')].find(b=>b.textContent==='Save key');b?.click();return !!b})()" > /dev/null; sleep 1
+KEY=$(ev "document.querySelector('[data-testid=ai-key-status]')?.textContent" | tr -d '"')
+LEAK=$(ev "document.body.innerHTML.includes('sk-or-test-key')" | tr -d '"')
+[[ "$KEY" == *"keychain"* && "$LEAK" == "false" ]] && pass "Key stored; never shown in the page" || fail "Key handling" "status=$KEY leak=$LEAK"
+MODEL=$(ev "document.querySelector('[data-testid=ai-model-interactive]')?.value" | tr -d '"')
+OPTS=$(ev "[...document.querySelectorAll('[data-testid=ai-model-interactive] option')].map(o=>o.textContent).join(' | ')" | tr -d '"')
+[[ "$MODEL" == anthropic/claude-opus* && "$OPTS" == *"per M"* ]] && pass "Newest Claude Opus preselected; prices shown ($MODEL)" || fail "Model preselection" "$MODEL / $OPTS"
+NOTICE=$(ev "document.querySelector('[data-testid=ai-data-notice]')?.textContent" | tr -d '"')
+[[ "$NOTICE" == *"sent to OpenRouter and Anthropic"* ]] && pass "Notice names OpenRouter and the model provider" || fail "Notice wrong" "$NOTICE"
+ai_click "[data-testid=ai-save]" > /dev/null; sleep 1
+SAVED=$(ev "document.querySelector('[data-testid=ai-settings] .ai-saved')?.textContent" | tr -d '"')
+[[ "$SAVED" == *"AI is ready"* ]] && pass "Settings saved; AI ready" || fail "Save failed" "$SAVED"
+ss "57-ai-settings"
+ai_click "[data-testid=ai-settings] .settings-close-btn" > /dev/null; sleep 1
+
+step "Ask a question — the answer streams in with citations"
+ai_type "[data-testid=ai-input]" "What does the architecture use?"
+ai_click "[data-testid=ai-send]" > /dev/null
+ai_wait_answers 1 && pass "An answer arrives" || fail "No answer" "timeout"
+ANS=$(ev "document.querySelector('[data-testid=ai-answer]')?.innerText" | tr -d '"')
+CITES=$(ev "document.querySelectorAll('[data-testid=ai-answer] [data-testid=ai-cite]').length" | tr -d '"')
+[[ "$ANS" == *"architecture"* && "$CITES" -ge 1 ]] 2>/dev/null && pass "Answer quotes my notes with $CITES citation chip(s)" || fail "Answer/citations" "cites=$CITES ans=$ANS"
+[[ "$ANS" != *"[[cite"* && "$ANS" != *"mock-invented-id"* ]] && pass "No raw or invented citation ids shown" || fail "Raw citation leaked" "$ANS"
+META=$(ev "document.querySelector('[data-testid=ai-cost]')?.textContent" | tr -d '"')
+[[ "$META" == *'$'* && "$META" == *"invalid citation removed"* ]] && pass "Run cost shown; invented citation stripped ($META)" || fail "Cost/strip info" "$META"
+ss "57-ask-answer"
+
+step "Clicking a source opens the cited page"
+SRC=$(ev "document.querySelector('[data-testid=ai-source] .ai-source-title')?.textContent" | tr -d '"')
+ai_click "[data-testid=ai-source]" > /dev/null; sleep 2
+CUR=$(api "getCurrentPage()" | tr -d '"')
+[[ -n "$SRC" && "$CUR" == "$SRC" ]] && pass "Citation navigates to '$CUR'" || fail "Citation navigation" "source=$SRC current=$CUR"
+
+step "A follow-up stays in the same conversation"
+ai_type "[data-testid=ai-input]" "And what about CRDT sync?"
+ai_click "[data-testid=ai-send]" > /dev/null
+ai_wait_answers 2 && pass "Follow-up answered in the same thread" || fail "No follow-up answer" "timeout"
+ANS2=$(ev "[...document.querySelectorAll('[data-testid=ai-answer]')][1]?.innerText" | tr -d '"')
+[[ "$ANS2" == *"CRDT"* ]] && pass "Follow-up cites the CRDT note" || fail "Follow-up answer" "$ANS2"
+
+step "A question my notes can't answer says so"
+ai_type "[data-testid=ai-input]" "zebra quokka flibbertigibbet?"
+ai_click "[data-testid=ai-send]" > /dev/null
+ai_wait_answers 3
+ANS3=$(ev "[...document.querySelectorAll('[data-testid=ai-answer]')][2]?.innerText" | tr -d '"')
+[[ "$ANS3" == *"couldn't find that in your notes"* ]] && pass "No citation → 'I couldn't find that in your notes'" || fail "Not-found answer" "$ANS3"
+
+step "Ctrl+Shift+A toggles the panel"
+press "Escape" > /dev/null; sleep 0.5
+CLOSED=$(ev "!!document.querySelector('[data-testid=ask-panel]')" | tr -d '"')
+ev "window.dispatchEvent(new KeyboardEvent('keydown',{key:'A',ctrlKey:true,shiftKey:true,bubbles:true}))" > /dev/null; sleep 0.5
+REOPEN=$(ev "!!document.querySelector('[data-testid=ask-panel]')" | tr -d '"')
+[[ "$CLOSED" == "false" && "$REOPEN" == "true" ]] && pass "Escape closes; Ctrl+Shift+A reopens (conversation kept: $(ev "document.querySelectorAll('[data-testid=ai-answer]').length" | tr -d '"') answers)" || fail "Panel toggle" "closed=$CLOSED reopen=$REOPEN"
+ev "window.dispatchEvent(new KeyboardEvent('keydown',{key:'A',ctrlKey:true,shiftKey:true,bubbles:true}))" > /dev/null; sleep 0.3
+fi
+
+# ═══════════════════════════════════════════════
 journey "50. Rust backend — count_pending_todos works"
 # ═══════════════════════════════════════════════
 
@@ -2189,6 +2739,328 @@ ss "47-ai-link-suggestions"
 ss "48-ai-todo-extraction"
 ss "49-ai-settings"
 ss "50-ai-rust-backend"
+
+# ═══════════════════════════════════════════════
+journey "54. My notes stay findable and consistent (search, journal, trash, links)"
+# Data-layer rules the mock must share with the real backend (parity.sh).
+# ═══════════════════════════════════════════════
+A54="const api=await import('/src/lib/api.ts');"
+
+step "Search finds word prefixes, all words in any order, and quoted phrases exactly"
+R=$(ev "(async()=>{$A54 const p=await api.createPage('Search54 Page');await api.createBlock(p.id,'the zqalphabet54 soup');await api.createBlock(p.id,'東京都の天気 zq54');const n=async q=>(await api.search(q,50)).filter(b=>b.content.includes('54')).length;return [await n('zqalpha'),await n('soup zqalphabet54'),await n('\\\"soup zqalphabet54\\\"'),await n('京都'),await n('zqalphabet54 (\\\"*:-')].join(',')})()" | tr -d '"')
+[[ "$R" == "1,1,0,1,1" ]] && pass "Search: prefix, AND, exact phrase, CJK substring, punctuation-safe ($R)" || fail "Search semantics" "$R"
+
+step "A past day's journal can be written to on first open"
+R=$(ev "(async()=>{$A54 const a=await api.getJournal('2001-02-03');const b=await api.getJournal('2001-02-03');await api.createBlock(a.page.id,'first entry 54');const t=await api.getPageTree('Journal/2001-02-03');return [a.page.id===b.page.id,t.page.id===a.page.id,t.blocks.map(x=>x.content).join('|')].join(',')})()" | tr -d '"')
+[[ "$R" == "true,true,first entry 54" ]] && pass "Virtual journal: same id twice, first block materialises it ($R)" || fail "Past journal write" "$R"
+
+step "Deleting a page frees its title; restoring it while taken renames it"
+R=$(ev "(async()=>{$A54 const old=await api.createPage('Reuse54');await api.addFavorite(old.id);await api.trashPage(old.id);const fresh=await api.createPage('Reuse54');const shown=(await api.listTrash()).some(t=>t.title==='Reuse54');await api.restoreFromTrash(old.id,'page');const back=(await api.getPageTree(old.id)).page.title;const fav=(await api.listFavorites()).some(f=>f.id===old.id);return [fresh.id!==old.id,shown,back,fav].join(',')})()" | tr -d '"')
+[[ "$R" == "true,true,Reuse54 (restored),true" ]] && pass "Trash title reuse + restore rename + favourite kept ($R)" || fail "Trash title rules" "$R"
+
+step "Backlinks: one per block, with the source block, and trashed pages drop out"
+R=$(ev "(async()=>{$A54 const t=await api.createPage('Target54');const s=await api.createPage('Source54');const b=await api.createBlock(s.id,'see [[Target54]] and [[Target54]] again');const l=await api.getBacklinks(t.id);const g=await api.getBlock(b.id);await api.trashPage(s.id);const after=(await api.getBacklinks(t.id)).length;const un=(await api.getUnlinkedReferences(t.id)).length;return [l.length,l[0]&&l[0].block&&l[0].block.page_title,g&&g.page_title,after,un].join(',')})()" | tr -d '"')
+[[ "$R" == "1,Source54,Source54,0,0" ]] && pass "Backlinks deduped, batched, hidden when trashed; getBlock has page title ($R)" || fail "Backlinks" "$R"
+
+step "Blank titles and duplicate renames are refused with a readable message"
+R=$(ev "(async()=>{$A54 const e=async f=>{try{await f();return 'ok'}catch(x){return String(x&&x.message||x)}};const a=await api.createPage('Dup54 A');await api.createPage('Dup54 B');return [await e(()=>api.createPage('   ')),await e(()=>api.renamePage(a.id,'Dup54 B'))].join('|')})()" | tr -d '"')
+[[ "$R" == *"cannot be empty"*"|A page titled 'Dup54 B' already exists"* ]] && pass "Validation messages ($R)" || fail "Validation" "$R"
+
+ss "54-data-consistency"
+
+# ═══════════════════════════════════════════════
+journey "58. Names stay tidy, properties are checked, and the mind map starts from nothing"
+# Titles/folder names are trimmed and single-line; set_property validates key,
+# entity and value type (same rules in mock and Rust). Mind map: first node on
+# an empty page, delete with Undo, collapse that survives reopen, exports with labels.
+# ═══════════════════════════════════════════════
+A58="const api=await import('/src/lib/api.ts');const e=async f=>{try{await f();return 'ok'}catch(x){return String(x&&x.message||x)}};"
+
+step "Page titles and folder names are trimmed, newlines become spaces, blanks are refused"
+R=$(ev "(async()=>{$A58 const p=(await api.createPage('  Pad58 one\\nline  ')).title;const r=(await api.renamePage((await api.getPageTree('Pad58 one line')).page.id,'\\n Pad58 renamed ')).title;const fo=await api.createFolder('  F58\\r\\nX ');const f=fo.name;const g=(await api.renameFolder(fo.id,' F58 Y ')).name;return [p,r,f,g,await e(()=>api.createFolder('  ')),await e(()=>api.renameFolder(fo.id,'\\n'))].join('|')})()" | tr -d '"')
+[[ "$R" == "Pad58 one line|Pad58 renamed|F58 X|F58 Y|"*"Folder name cannot be empty|"*"Folder name cannot be empty" ]] && pass "Names normalised; blank folder names refused ($R)" || fail "Name normalisation" "$R"
+
+step "set_property checks the key, the entity and the value type"
+R=$(ev "(async()=>{$A58 const p=await api.createPage('Props58');const b=await api.createBlock(p.id,'blk58');const ghost='01890000-0000-7000-8000-000000000058';const r=[await e(()=>api.setProperty(p.id,'page','  ','v')),await e(()=>api.setProperty(ghost,'block','k','v')),await e(()=>api.setProperty(b.id,'page','k','v')),await e(()=>api.setProperty(p.id,'banana','k','v')),await e(()=>api.setProperty(p.id,'page','n','not-a-number','number')),await e(()=>api.setProperty(p.id,'page','x','v','made-up')),await e(()=>api.setProperty(p.id,'page',' rating ','4.5','number'))];const keys=(await api.getProperties(p.id)).map(x=>x.key+'='+x.value_type).join(',');return r.join('|')+'|'+keys})()" | tr -d '"')
+[[ "$R" == *"key cannot be empty|"*"Not found: Block"*"is a block, not a page|"*"Unknown entity type 'banana'"*"not a valid number"*"Unknown property value type 'made-up'"*"|ok|rating=number" ]] && pass "Bad keys/entities/values refused; good one stored trimmed ($R)" || fail "Property validation" "$R"
+
+step "An empty page's mind map offers a way to add the first node"
+ev "(async()=>{$A58 await api.createPage('Empty58');return 1})()" > /dev/null
+api "navigateTo('Empty58')" > /dev/null; sleep 2
+ev "document.activeElement?.blur()" > /dev/null 2>&1; sleep 0.3
+press "Control+m"; sleep 2
+HINT=$(ev "document.querySelector('.mm-empty-hint')?.textContent||'none'" | tr -d '"')
+[[ "$HINT" == *"Add first node"* ]] && pass "Empty map shows '+ Add first node'" || fail "No empty-map affordance" "$HINT"
+MM_TYPE="(v)=>{const i=document.querySelector('.mm-node-input');if(!i)return 'no input';Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(i,v);i.dispatchEvent(new Event('input',{bubbles:true}));i.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));return 'typed'}"
+ev "(()=>{const b=document.querySelector('.mm-empty-hint button');b&&b.click();return !!b})()" > /dev/null; sleep 1.5
+ev "($MM_TYPE)('First58')" > /dev/null; sleep 2
+R=$(ev "(async()=>{$A58 const t=await api.getPageTree('Empty58');return t.blocks.filter(b=>!b.parent_id&&b.content.trim()).map(b=>b.content).join(',')+'|'+[...document.querySelectorAll('.mm-node .mm-label')].map(l=>l.textContent.trim()).join(',')})()" | tr -d '"')
+[[ "$R" == "First58|"*"First58"* ]] && pass "First node created from the map and shown ($R)" || fail "First node not created" "$R"
+
+step "Selecting the page node and pressing Tab adds another top-level node"
+ev "document.querySelector('.react-flow__node[data-id=__page_root__]')?.click()" > /dev/null; sleep 0.5
+ev "window.dispatchEvent(new KeyboardEvent('keydown',{key:'Tab',bubbles:true}))" > /dev/null; sleep 1.5
+ev "($MM_TYPE)('Second58')" > /dev/null; sleep 2
+R=$(ev "(async()=>{$A58 const t=await api.getPageTree('Empty58');return t.blocks.filter(b=>!b.parent_id&&b.content.trim()).map(b=>b.content).join(',')})()" | tr -d '"')
+[[ "$R" == "First58,Second58" ]] && pass "Tab on the page node adds a top-level node ($R)" || fail "Tab on root" "$R"
+
+step "Deleting from the right-click menu offers Undo, which restores the branch"
+ev "(async()=>{$A58 const t=await api.getPageTree('Empty58');const s=t.blocks.find(b=>b.content==='Second58');await api.createBlock(t.page.id,'Child58',s.id);window.__MINOTES__.navigateTo('Empty58');return 1})()" > /dev/null; sleep 2
+for i in 1 2 3 4 5 6; do N=$(ev "document.querySelectorAll('.mm-node').length" | tr -d '"'); [[ "$N" -ge 4 ]] 2>/dev/null && break; sleep 1; done
+ev "(()=>{const n=[...document.querySelectorAll('.react-flow__node')].find(e=>e.textContent.includes('Second58'));if(!n)return 'none';const r=n.getBoundingClientRect();n.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true,clientX:r.x+5,clientY:r.y+5}));return 'menu'})()" > /dev/null; sleep 0.5
+ev "(()=>{const b=[...document.querySelectorAll('.mindmap-context-menu button')].find(x=>x.textContent==='Delete');b&&b.click();return !!b})()" > /dev/null; sleep 1.5
+TOAST=$(ev "document.querySelector('.minotes-toast-undo')?.textContent||'none'" | tr -d '"')
+GONE=$(ev "(async()=>{$A58 const t=await api.getPageTree('Empty58');return t.blocks.map(b=>b.content).sort().join(',')})()" | tr -d '"')
+[[ "$TOAST" == *"Deleted"*"Second58"*"1 child node"*"Undo"* && "$GONE" == "First58" ]] && pass "Deleted with an Undo toast ($TOAST)" || fail "Delete feedback" "toast=$TOAST left=$GONE"
+ev "document.querySelector('.minotes-toast-undo .minotes-toast-undo-btn')?.click()" > /dev/null; sleep 2
+BACK=$(ev "(async()=>{$A58 const t=await api.getPageTree('Empty58');const s=t.blocks.find(b=>b.content==='Second58');const c=t.blocks.find(b=>b.content==='Child58');return !!s+','+(!!c&&c.parent_id===s.id)})()" | tr -d '"')
+[[ "$BACK" == "true,true" ]] && pass "Undo restored the node and its child" || fail "Undo didn't restore" "$BACK"
+
+step "Collapsing a branch is remembered when the map is reopened"
+for i in 1 2 3 4 5 6; do N=$(ev "document.querySelectorAll('.mm-collapse-badge').length" | tr -d '"'); [[ "$N" -ge 1 ]] 2>/dev/null && break; sleep 1; done
+ev "(()=>{const n=[...document.querySelectorAll('.mm-node')].find(e=>e.textContent.includes('Second58'));const b=n&&n.querySelector('.mm-collapse-badge');b&&b.click();return !!b})()" > /dev/null; sleep 1
+C1=$(ev "[...document.querySelectorAll('.mm-node')].find(e=>e.textContent.includes('Second58'))?.querySelector('.mm-collapse-badge')?.textContent||'none'" | tr -d '"')
+press "Escape"; sleep 1
+ev "document.activeElement?.blur()" > /dev/null 2>&1; sleep 0.3
+press "Control+m"; sleep 2
+for i in 1 2 3 4 5; do N=$(ev "document.querySelectorAll('.mm-node').length" | tr -d '"'); [[ "$N" -ge 3 ]] 2>/dev/null && break; sleep 1; done
+C2=$(ev "[...document.querySelectorAll('.mm-node')].find(e=>e.textContent.includes('Second58'))?.querySelector('.mm-collapse-badge')?.textContent||'none'" | tr -d '"')
+CH=$(ev "[...document.querySelectorAll('.mm-node')].some(e=>e.textContent.includes('Child58'))" | tr -d '"')
+[[ "$C1" == "+1" && "$C2" == "+1" && "$CH" == "false" ]] && pass "Branch still collapsed after reopening (+1)" || fail "Collapse not persisted" "before=$C1 after=$C2 childVisible=$CH"
+
+step "SVG and PNG exports contain the node labels"
+# Capture the export instead of saving it: browser downloads go through a blob
+# URL; the desktop app saves through the save_export_file command
+# (intercepted here — it would open a native save dialog — never write to the real Downloads folder from a test).
+ev "(()=>{window.__x58={};const o=URL.createObjectURL.bind(URL);URL.createObjectURL=b=>{window.__x58.blob=b;return o(b)};if(navigator.clipboard)navigator.clipboard.writeText=t=>{window.__x58.text=t;return Promise.resolve()};if(window.__TAURI_INTERNALS__){const f=window.fetch;window.fetch=function(u,opt){if(String(u).endsWith('/save_export_file')||String(u).endsWith('/save_png_to_downloads')){const d=JSON.parse(opt.body).data;const bytes=new Uint8Array(d);if(bytes[0]===0x89)window.__x58.png=d;else window.__x58.text=new TextDecoder().decode(bytes);return Promise.resolve(new Response(JSON.stringify('/captured/export'),{status:200,headers:{'Tauri-Response':'ok','Content-Type':'application/json'}}))}return f.apply(this,arguments)};window.__x58.wrapped=window.fetch!==f}return 1})()" > /dev/null
+# Tauri IPC goes through fetch('ipc://localhost/<cmd>'); only proceed if that hook took.
+WRAP=$(ev "!window.__TAURI_INTERNALS__||window.__x58.wrapped===true" | tr -d '"')
+MM_EXPORT="(w)=>{const m=[...document.querySelectorAll('.mindmap-toolbar .btn-sm')].find(b=>b.textContent.includes('Export'));m&&m.click();setTimeout(()=>{const b=[...document.querySelectorAll('.mindmap-dropdown button')].find(x=>x.textContent.includes(w));b&&b.click()},300);return 1}"
+ev "($MM_EXPORT)('SVG')" > /dev/null; sleep 2
+SVG=$(ev "(async()=>{const x=window.__x58;const t=x.text||(x.blob&&await x.blob.text())||'';return t.startsWith('<svg')+','+t.includes('>First58</text>')+','+t.includes('>Second58</text>')+','+t.includes('Empty58')})()" | tr -d '"')
+[[ "$SVG" == "true,true,true,true" ]] && pass "SVG export has every node label (incl. the page title)" || fail "SVG export lacks labels" "$SVG"
+if [[ "$WRAP" == "true" ]]; then
+  ev "(()=>{window.__x58.blob=null;return 1})()" > /dev/null
+  ev "($MM_EXPORT)('PNG')" > /dev/null; sleep 3
+  PNG=$(ev "(async()=>{const x=window.__x58;const blob=x.png?new Blob([new Uint8Array(x.png)],{type:'image/png'}):x.blob;if(!blob)return 'none';const bm=await createImageBitmap(blob);return blob.type+','+(bm.width>300)+','+(bm.height>150)})()" | tr -d '"')
+  [[ "$PNG" == "image/png,true,true" ]] && pass "PNG export is a real image of the whole map ($PNG)" || fail "PNG export" "$PNG"
+else
+  fail "Could not intercept the desktop PNG save — skipped to protect Downloads" "$WRAP"
+fi
+press "Escape"; sleep 0.5
+press "Escape"; sleep 1
+ss "58-names-props-mindmap"
+
+journey "59. A 1,000-block page opens fast and I can edit deep inside it"
+# Blocks render as static HTML until edited (one live editor, not 1,000), the
+# list renders progressively, and block properties load in one batched call.
+# ═══════════════════════════════════════════════
+
+step "I have a page with 1,000 blocks"
+R=$(ev "(async()=>{const api=await import('/src/lib/api.ts');let p;try{p=(await api.getPageTree('Big58')).page}catch{p=null}if(!p){p=await api.createPage('Big58');for(let i=0;i<1000;i++){await api.createBlock(p.id,(i===0?'big58 start ':'')+'Line '+i+' with **bold** and [[Getting Started]]'+(i%10===0?'\n- a list item':''))}}return (await api.getPageTree('Big58')).blocks.length})()" | tr -d '"')
+[[ "$R" == "1000" ]] && pass "Big58 has 1,000 blocks" || fail "Big page not created" "$R"
+api "navigateTo('Getting Started')" > /dev/null; sleep 2
+
+step "I open it: the first blocks paint quickly and the UI never freezes long"
+R=$(ev "(async()=>{const M=window.__MINOTES__;const t0=performance.now();let first=null,last=t0,stall=0;M.navigateTo('Big58');await new Promise(res=>{const tick=()=>{const n=performance.now();stall=Math.max(stall,n-last);last=n;const el=document.querySelector('.block-list .block .ProseMirror');if(first===null&&el&&el.textContent.includes('big58 start'))first=n-t0;if(document.querySelectorAll('.block-list .block').length>=1000||n-t0>60000)return res();setTimeout(tick,0)};setTimeout(tick,0)});return JSON.stringify({first:Math.round(first),all:Math.round(performance.now()-t0),stall:Math.round(stall),editors:document.querySelectorAll('.block-list .ProseMirror[contenteditable=\"true\"]').length})})()")
+R=$(echo "$R" | sed 's/^"//; s/"$//; s/\\"/"/g')
+FIRST=$(echo "$R" | python3 -c 'import json,sys; print(json.load(sys.stdin)["first"])' 2>/dev/null)
+STALL=$(echo "$R" | python3 -c 'import json,sys; print(json.load(sys.stdin)["stall"])' 2>/dev/null)
+EDS=$(echo "$R" | python3 -c 'import json,sys; print(json.load(sys.stdin)["editors"])' 2>/dev/null)
+[[ -n "$FIRST" && "$FIRST" -lt 3000 ]] 2>/dev/null && pass "First block painted in ${FIRST} ms ($R)" || fail "Big page slow to open" "$R"
+[[ -n "$STALL" && "$STALL" -lt 1500 ]] 2>/dev/null && pass "Longest main-thread stall ${STALL} ms" || fail "Big page froze the UI" "$R"
+[[ -n "$EDS" && "$EDS" -le 2 ]] 2>/dev/null && pass "At most a couple of live editors ($EDS), not one per block" || fail "Too many live editors" "$R"
+
+step "I edit block 900 and it is saved"
+sleep 1
+api "focusBlock(900)" > /dev/null; sleep 0.6
+FI=$(api "getFocusedBlockIndex()" | tr -d '"')
+ev "document.execCommand('insertText',false,' EDIT58')" > /dev/null; sleep 0.3
+ev "document.activeElement?.blur()" > /dev/null; sleep 1.5
+UI=$(api "getBlockContent(900)" | tr -d '"')
+DB=$(ev "(async()=>{const api=await import('/src/lib/api.ts');const t=await api.getPageTree('Big58');return t.blocks.filter(b=>b.content.includes('EDIT58')).map(b=>b.content).join('|')})()" | tr -d '"')
+[[ "$FI" == "900" && "$UI" == *"EDIT58" && "$DB" == *"Line 900 "*"EDIT58"* ]] && pass "Deep edit saved (focused=$FI)" || fail "Deep edit failed" "focused=$FI ui=$UI db=$DB"
+VIS=$(ev "document.querySelectorAll('.block-list .block')[900]?.querySelector('.ProseMirror')?.textContent" | tr -d '"')
+[[ "$VIS" == *"EDIT58"* ]] && pass "The edited block shows the new text" || fail "Edited block not shown" "$VIS"
+
+ss "59-big-page"
+journey "60. I keep work and home apart — notebooks in the sidebar"
+# The switcher in the sidebar header: create, switch, isolation, manage, delete.
+# ═══════════════════════════════════════════════
+A58="const api=await import('/src/lib/api.ts');"
+NB58="Journey58 $(date +%s)"
+setval() { ev "(()=>{const i=document.querySelector('$1');if(!i)return 'no input';const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;set.call(i,'$2');i.dispatchEvent(new Event('input',{bubbles:true}));return 'ok'})()" >/dev/null; }
+api "closePanel()" >/dev/null; sleep 0.5
+HOME_NB=$(ev "(async()=>{$A58 return (await api.getNotebookSession()).key})()" | tr -d '"')
+HOME_NAME=$(ev "(async()=>{$A58 return (await api.getNotebookSession()).name})()" | tr -d '"')
+
+step "The sidebar header shows which notebook is open"
+R=$(ev "document.querySelector('.sidebar-header [data-testid=notebook-switcher]')?.innerText||''" | tr -d '"')
+[[ "$R" == *"$HOME_NAME"* ]] && pass "Notebook name next to MiNotes ($HOME_NAME)" || fail "No notebook name in the sidebar header" "$R"
+
+step "Its menu lists my notebooks with the open one checked, plus New / Open / Manage"
+ev "document.querySelector('[data-testid=notebook-switcher]').click()" >/dev/null; sleep 0.5
+R=$(ev "(()=>{const m=document.querySelector('.nb-menu');if(!m)return 'no menu';const cur=m.querySelector('[aria-checked=true]');return (cur?cur.dataset.notebookKey:'none')+'|'+[...m.querySelectorAll('.nb-menu-action')].map(b=>b.textContent.trim()).join(',')})()" | tr -d '"')
+[[ "$R" == "$HOME_NB|New notebook…,Open notebook…,Manage notebooks…,Import…" ]] && pass "Menu: current checked + actions" || fail "Notebook menu" "$R"
+ss "60-notebook-menu"
+
+step "New notebook… asks for a name and a location, creates it and opens it"
+ev "[...document.querySelectorAll('.nb-menu-action')].find(b=>b.textContent.startsWith('New'))?.click()" >/dev/null; sleep 0.5
+setval "[data-testid=new-notebook-name]" "a/b"
+R=$(ev "(()=>{const d=document.querySelector('[data-testid=new-notebook-dialog]');return d?(d.querySelector('[data-testid=new-notebook-create]').disabled+'|'+d.innerText.includes('no dots or slashes')):'no dialog'})()" | tr -d '"')
+[[ "$R" == "true|true" ]] && pass "Invalid names are refused before creating" || fail "Name validation" "$R"
+setval "[data-testid=new-notebook-name]" "$NB58"
+sleep 0.5
+LOC=$(ev "document.querySelector('[data-testid=new-notebook-location]')?.textContent||''" | tr -d '"')
+[[ "$LOC" == *"MiNotes/$NB58"* ]] && pass "Default location is ~/MiNotes/<name> ($LOC)" || fail "Default location" "$LOC"
+ss "60-new-notebook-dialog"
+ev "document.querySelector('[data-testid=new-notebook-create]').click()" >/dev/null
+for _ in 1 2 3 4 5 6 7 8 9 10; do sleep 0.5; R=$(ev "document.querySelector('[data-testid=notebook-switcher]')?.innerText||''" | tr -d '"'); [[ "$R" == *"$NB58"* ]] && break; done
+[[ "$R" == *"$NB58"* ]] && pass "Switched to the new notebook" || fail "New notebook not opened" "$R"
+sleep 1
+R=$(ev "(async()=>{$A58 const ps=await api.listPages(1000);return ps.filter(p=>!p.is_journal).length+'|'+(window.__MINOTES__.getCurrentPage()||'')})()" | tr -d '"')
+[[ "$R" == 0\|* && "$R" == *"$(date +%Y-%m-%d)"* ]] && pass "It starts empty, on today's journal ($R)" || fail "New notebook content" "$R"
+
+step "What I write here stays here: search, TODO count, trash"
+R=$(ev "(async()=>{$A58 const p=await api.createPage('Secret58 plan');await api.createBlock(p.id,'TODO nb58zz task');await api.createBlock(p.id,'TODO nb58zz second');const gone=await api.createPage('Trash58 page');await api.trashPage(gone.id);return [(await api.search('nb58zz',50)).length,await api.getPendingTodoCount(),(await api.listTrash()).map(t=>t.title).join(';')].join('|')})()" | tr -d '"')
+NB_TODOS=$(echo "$R" | cut -d'|' -f2)
+[[ "$R" == "2|2|Trash58 page" ]] && pass "In the new notebook: search 2, TODOs 2, trash 1 ($R)" || fail "New notebook data" "$R"
+api "navigateTo('Secret58 plan')" >/dev/null; sleep 1
+ev "(async()=>{const u=await import('/src/lib/undoStack.ts');u.undoStack.push({type:'update',blockId:'x',pageId:'y',before:'',after:'',timestamp:Date.now()});return 1})()" >/dev/null
+
+step "I switch back from the menu: my other notebook knows nothing of it"
+ev "document.querySelector('[data-testid=notebook-switcher]').click()" >/dev/null; sleep 0.5
+ev "document.querySelector('.nb-menu [data-notebook-key=\"$HOME_NB\"]')?.click()" >/dev/null
+for _ in 1 2 3 4 5 6 7 8 9 10; do sleep 0.5; R=$(ev "document.querySelector('[data-testid=notebook-switcher]')?.innerText||''" | tr -d '"'); [[ "$R" == *"$HOME_NAME"* ]] && break; done
+[[ "$R" == *"$HOME_NAME"* ]] && pass "Back in $HOME_NAME" || fail "Switch back" "$R"
+sleep 1
+R=$(ev "(async()=>{$A58 const titles=(await api.listPages(1000)).map(p=>p.title);return [(await api.search('nb58zz',50)).length,(await api.listTrash()).some(t=>t.title==='Trash58 page'),titles.includes('Secret58 plan')].join('|')})()" | tr -d '"')
+[[ "$R" == "0|false|false" ]] && pass "Search, trash and pages don't leak across notebooks ($R)" || fail "Notebook isolation" "$R"
+HOME_TODOS=$(ev "(async()=>{$A58 return String(await api.getPendingTodoCount())})()" | tr -d '"')
+BADGE=$(ev "(()=>{const t=document.body.innerText.match(/(\\d+)\\s*TODOs?/);return t?t[1]:'none'})()" | tr -d '"')
+[[ "$BADGE" == "$HOME_TODOS" || ( "$HOME_TODOS" == "0" && "$BADGE" == "none" ) ]] && pass "Sidebar TODO count is this notebook's ($BADGE)" || fail "TODO count leaked" "badge=$BADGE home=$HOME_TODOS other=$NB_TODOS"
+R=$(ev "(async()=>{const u=await import('/src/lib/undoStack.ts');return String(u.undoStack.canUndo())})()" | tr -d '"')
+[[ "$R" == "false" ]] && pass "Undo history was cleared on switch" || fail "Undo survived the switch" "$R"
+R=$(ev "(()=>{try{return String(JSON.parse(localStorage.getItem('minotes-recent-pages')||'[]').some(r=>r.title==='Secret58 plan'))}catch(e){return 'err'}})()" | tr -d '"')
+[[ "$R" == "false" ]] && pass "Recent pages are per notebook" || fail "Recent pages leaked" "$R"
+R=$(ev "String((window.__MINOTES__.getCurrentPage()||'').includes('$(date +%Y-%m-%d)'))" | tr -d '"')
+[[ "$R" == "true" ]] && pass "Switching lands on today's journal" || fail "Switch landing page" "$(api 'getCurrentPage()')"
+
+step "The Graph view shows the notebook as a label, not a second switcher"
+api "closePanel()" >/dev/null; press "Control+g"; sleep 2
+R=$(ev "(()=>{const l=document.querySelector('[data-testid=graph-notebook-label]');return (l?l.textContent:'none')+'|'+!!document.querySelector('.graph-switcher-dropdown,.graph-switcher-btn')})()" | tr -d '"')
+[[ "$R" == "Notebook: $HOME_NAME|false" ]] && pass "Graph view: read-only notebook label ($R)" || fail "Graph view notebook label" "$R"
+api "closePanel()" >/dev/null; sleep 0.5
+
+step "Manage notebooks…: the open one can't be deleted; another needs its name typed"
+ev "document.querySelector('[data-testid=notebook-switcher]').click()" >/dev/null; sleep 0.4
+ev "[...document.querySelectorAll('.nb-menu-action')].find(b=>b.textContent.startsWith('Manage'))?.click()" >/dev/null; sleep 0.6
+OTHER=$(ev "(async()=>{$A58 return (await api.listNotebooks()).find(n=>n.name==='$NB58')?.key||''})()" | tr -d '"')
+R=$(ev "(()=>{const d=document.querySelector('[data-testid=manage-notebooks-dialog]');if(!d)return 'no dialog';const cur=d.querySelector('[data-notebook-key=\"$HOME_NB\"] [data-testid=delete-notebook]');const oth=d.querySelector('[data-notebook-key=\"$OTHER\"] [data-testid=delete-notebook]');return cur.disabled+'|'+oth.disabled})()" | tr -d '"')
+[[ "$R" == "true|false" ]] && pass "Delete refused for the open notebook only" || fail "Manage dialog" "$R"
+ss "60-manage-notebooks"
+ev "document.querySelector('[data-notebook-key=\"$OTHER\"] [data-testid=delete-notebook]').click()" >/dev/null; sleep 0.4
+setval "[data-testid=delete-notebook-typed]" "Journey58"
+R1=$(ev "String(document.querySelector('[data-testid=delete-notebook-go]')?.disabled)" | tr -d '"')
+setval "[data-testid=delete-notebook-typed]" "$NB58"
+R2=$(ev "String(document.querySelector('[data-testid=delete-notebook-go]')?.disabled)" | tr -d '"')
+[[ "$R1|$R2" == "true|false" ]] && pass "Delete needs the exact name typed" || fail "Type-the-name confirmation" "$R1|$R2"
+ev "document.querySelector('[data-testid=delete-notebook-go]').click()" >/dev/null; sleep 1
+R=$(ev "(async()=>{$A58 return String((await api.listNotebooks()).some(n=>n.key==='$OTHER'))})()" | tr -d '"')
+[[ "$R" == "false" ]] && pass "The other notebook is gone from the list" || fail "Delete notebook" "$R"
+press "Escape"; sleep 0.3
+R=$(ev "(async()=>{$A58 try{await api.deleteNotebook('$HOME_NB');return 'deleted!'}catch(e){return String(e).includes('open notebook')?'refused':String(e)}})()" | tr -d '"')
+[[ "$R" == "refused" ]] && pass "The backend refuses deleting the open notebook too" || fail "Delete open notebook" "$R"
+
+step "Settings shows where the markdown copy lives"
+api "openSettings()" >/dev/null; sleep 1
+R=$(ev "(()=>{const s=document.querySelector('[data-testid=notebook-settings]');return s?[s.querySelector('[data-testid=mirror-dir]')?.textContent||'',s.querySelector('[data-testid=mirror-status]')?.textContent||''].join('|'):'none'})()" | tr -d '"')
+[[ "$R" == *"MiNotes_Sync"*"|Up to date"* || "$R" == *"/notes|Up to date"* ]] && pass "Mirror location + status in Settings ($R)" || fail "Mirror status in Settings" "$R"
+ss "60-settings-notebook"
+api "closePanel()" >/dev/null
+
+# ═══════════════════════════════════════════════
+journey "61. I bring my Obsidian vault in — preview, import into a new notebook, undo"
+# File → Import… (notebook menu): pick a source, see the preview, import into a
+# new notebook, read the report, undo it. Then paste an image into a block.
+# ═══════════════════════════════════════════════
+A61="const api=await import('/src/lib/api.ts');"
+api "closePanel()" >/dev/null; sleep 0.3
+HOME61=$(ev "(async()=>{$A61 return (await api.getNotebookSession()).key})()" | tr -d '"')
+if [[ "$BACKEND" == "desktop" ]]; then
+  VAULT61="$DC_STATE/$(cat "$DC_STATE/profile" 2>/dev/null || echo home)/Imports/obsidian-vault"
+  rm -rf "$VAULT61"; mkdir -p "$(dirname "$VAULT61")"; cp -r "$REPO_ROOT/tests/fixtures/import/obsidian-vault" "$VAULT61"
+else
+  VAULT61="/home/demo/Imports/My Vault"
+fi
+
+step "The notebook menu has Import…, and it offers Obsidian, Evernote and markdown"
+ev "document.querySelector('[data-testid=notebook-switcher]').click()" >/dev/null; sleep 0.4
+ev "document.querySelector('[data-testid=menu-import]')?.click()" >/dev/null; sleep 0.6
+R=$(ev "[...document.querySelectorAll('[data-import-source]')].map(b=>b.dataset.importSource).join(',')" | tr -d '"')
+[[ "$R" == "obsidian,evernote,markdown" ]] && pass "Import dialog: three sources" || fail "Import dialog sources" "$R"
+
+step "I pick my vault: it is scanned and I see what will be created"
+ev "window.__MINOTES__.setNextImportPick('$VAULT61')" >/dev/null
+ev "document.querySelector('[data-import-source=obsidian]').click()" >/dev/null
+for _ in $(seq 1 30); do sleep 0.5; R=$(ev "document.querySelector('[data-testid=import-dialog]')?.dataset.step||''" | tr -d '"'); [[ "$R" == "preview" ]] && break; done
+[[ "$R" == "preview" ]] && pass "Scan finished, preview shown" || fail "Scan" "$R $(ev "document.querySelector('[data-testid=import-error]')?.innerText||''")"
+R=$(ev "(()=>{const d=document.querySelector('[data-testid=import-dialog]');return [d.querySelectorAll('.imp-tree li').length>3,d.querySelectorAll('.imp-tab').length,!!d.querySelector('.imp-source'),d.querySelectorAll('[data-testid=import-warnings] li').length>0,/pages/.test(d.querySelector('[data-testid=import-counts]')?.innerText||'')].join('|')})()" | tr -d '"')
+[[ "$R" == "true|3|true|true|true" ]] && pass "Preview: tree, 3 samples beside their source, warnings, counts" || fail "Preview content" "$R"
+ss "61-import-preview"
+
+step "Changing the split option re-renders the samples (one block per note)"
+ev "(()=>{const s=document.querySelector('[data-testid=import-split]');s.closest('details').open=true;const set=Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set;set.call(s,'note');s.dispatchEvent(new Event('change',{bubbles:true}));return 1})()" >/dev/null
+sleep 1.5
+R=$(ev "document.querySelector('[data-testid=import-samples] .imp-blocks')?.children.length||0" | tr -d '"')
+[[ "$R" == "1" ]] && pass "One block per note in the sample" || fail "Split option" "$R"
+ev "(()=>{const s=document.querySelector('[data-testid=import-split]');const set=Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set;set.call(s,'outline');s.dispatchEvent(new Event('change',{bubbles:true}));return 1})()" >/dev/null
+sleep 1
+
+step "Import goes into a NEW notebook by default; I get a report"
+R=$(ev "document.querySelector('[data-testid=import-destination] input[type=radio]')?.checked" | tr -d '"')
+[[ "$R" == "true" ]] && pass "New notebook is the default destination" || fail "Default destination" "$R"
+ev "document.querySelector('[data-testid=import-start]').click()" >/dev/null
+for _ in $(seq 1 60); do sleep 0.5; R=$(ev "document.querySelector('[data-testid=import-dialog]')?.dataset.step||''" | tr -d '"'); [[ "$R" == "report" ]] && break; done
+[[ "$R" == "report" ]] && pass "Import finished" || fail "Import" "$R $(ev "document.querySelector('[data-testid=import-error]')?.innerText||''")"
+ss "61-import-report"
+NB61=$(ev "(async()=>{$A61 return (await api.getNotebookSession()).key})()" | tr -d '"')
+[[ -n "$NB61" && "$NB61" != "$HOME61" ]] && pass "The new notebook is open" || fail "New notebook not opened" "$NB61"
+R=$(ev "(async()=>{$A61 const ps=await api.listPages(1000);const t=ps.map(p=>p.title);const home=await api.getPageTree('Home');return [t.includes('Alpha'),t.some(x=>x.startsWith('Import report')),home.blocks.some(b=>b.content.includes('](attachment:'))].join('|')})()" | tr -d '"')
+[[ "$R" == "true|true|true" ]] && pass "Pages, report page and an attachment image arrived" || fail "Imported content" "$R"
+
+step "The imported page shows the image inline and the link resolves"
+ev "document.querySelector('[data-testid=import-dialog] .btn-primary')?.click()" >/dev/null; sleep 0.5
+api "navigateTo('Home')" >/dev/null; sleep 2
+R=$(ev "(()=>{const img=[...document.querySelectorAll('.block img')].find(i=>i.getAttribute('data-attachment-src'));return img?(img.complete&&img.naturalWidth>0)+'|'+img.getAttribute('src').slice(0,24):'no img'})()" | tr -d '"')
+[[ "$R" == true\|* ]] && pass "Attachment image renders ($R)" || fail "Attachment image" "$R"
+R=$(ev "[...document.querySelectorAll('.block .wiki-link')].some(a=>/Alpha/.test(a.textContent))" | tr -d '"')
+[[ "$R" == "true" ]] && pass "[[Alpha]] is a working page link" || fail "Resolved link" "$R"
+ss "61-imported-page"
+
+step "Undo import removes everything it created"
+RUN61=$(ev "(async()=>{$A61 return (await api.importRuns())[0]?.id||''})()" | tr -d '"')
+api "openImport()" >/dev/null; sleep 0.8
+ev "document.querySelector('[data-testid=import-run-undo]')?.click()" >/dev/null
+for _ in $(seq 1 20); do sleep 0.5; R=$(ev "document.querySelector('[data-testid=import-dialog]')?.dataset.step||''" | tr -d '"'); [[ "$R" == "undone" ]] && break; done
+[[ "$R" == "undone" ]] && pass "Undo import ran ($RUN61)" || fail "Undo import" "$R $(ev "document.querySelector('[data-testid=import-dialog]')?.innerText.slice(0,200)||''")"
+R=$(ev "(async()=>{$A61 return String((await api.listPages(1000)).filter(p=>!p.is_journal).length)})()" | tr -d '"')
+[[ "$R" == "0" ]] && pass "The notebook is empty again" || fail "Pages left after undo" "$R"
+press "Escape"; sleep 0.3
+
+step "I paste an image into a block: it is stored as an attachment, not a data URL"
+ev "(async()=>{$A61 const p=await api.createPage('Paste61');await api.createBlock(p.id,'Screenshot below');return 1})()" >/dev/null
+api "navigateTo('Paste61')" >/dev/null; sleep 1.5
+api "focusBlock(0)" >/dev/null; sleep 0.5
+ev "(()=>{const ed=document.querySelector('.ProseMirror-focused')||document.querySelector('.block .ProseMirror');if(!ed)return 'no editor';const c=document.createElement('canvas');c.width=40;c.height=30;const x=c.getContext('2d');x.fillStyle='#d33';x.fillRect(0,0,40,30);const b64=c.toDataURL('image/png').split(',')[1];const bytes=Uint8Array.from(atob(b64),ch=>ch.charCodeAt(0));const dt=new DataTransfer();dt.items.add(new File([bytes],'shot.png',{type:'image/png'}));ed.dispatchEvent(new ClipboardEvent('paste',{clipboardData:dt,bubbles:true,cancelable:true}));return 'pasted'})()" >/dev/null
+for _ in $(seq 1 10); do sleep 0.5; R=$(ev "(async()=>{$A61 const t=await api.getPageTree('Paste61');return t.blocks.map(b=>b.content).join('\\n')})()" | tr -d '"'); [[ "$R" == *"attachment:"* ]] && break; done
+[[ "$R" == *"](attachment:"* && "$R" != *"data:image"* ]] && pass "Pasted image saved as attachment:<hash>" || fail "Paste image" "$R"
+api "closePanel()" >/dev/null
+
+step "Back to my notebook"
+ev "window.__MINOTES__.switchNotebook('$HOME61')" >/dev/null; sleep 2
+R=$(ev "(async()=>{$A61 return (await api.getNotebookSession()).key})()" | tr -d '"')
+[[ "$R" == "$HOME61" ]] && pass "Home notebook open again" || fail "Switch back" "$R"
 
 # ═══════════════════════════════════════════════
 close_app

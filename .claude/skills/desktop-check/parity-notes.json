@@ -1,0 +1,16 @@
+{
+ "se39": {
+  "rank": 2.0,
+  "tag": "BUG",
+  "right": "neither",
+  "note": "Still SAME-and-wrong until the FRONTEND switches: search_blocks matches block content, so `api.search(blockId, 1)` never finds a block by id. Backend side fixed (fixa): `get_block` now returns the block plus `page_title` (BlockWithPage) and `get_blocks(ids)` batches it. PageView.handleBlockRefClick must call `api.getBlock(blockId)` and navigate with `b.page_title`; ReviewPanel already uses getBlock.",
+  "suspect": true
+ },
+ "ms03": {
+  "rank": 50,
+  "tag": "TEST-FIDELITY GAP (accepted)",
+  "right": "real",
+  "note": "run_query executes SQL against SQLite; the mock has no SQL engine, so it now throws \"run_query (SQL) is not supported in browser mode\" instead of returning a fake result. Browser journeys must not depend on the query panel's results.",
+  "journeys": "No journey asserts on run_query results."
+ }
+}

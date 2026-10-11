@@ -1,0 +1,506 @@
+{
+  "source": "obsidian",
+  "source_label": "Obsidian vault",
+  "source_name": "obsidian-vault",
+  "counts": {
+    "notes": 11,
+    "pages": 14,
+    "journals": 2,
+    "folders": 5,
+    "attachments": 6,
+    "attachment_bytes": 4548,
+    "total_bytes": 6393,
+    "skipped": 0,
+    "reimport": 0
+  },
+  "tree": [
+    {
+      "name": "obsidian-vault",
+      "kind": "project",
+      "children": [
+        {
+          "name": "Archive",
+          "kind": "project",
+          "children": [
+            {
+              "name": "Meeting",
+              "kind": "page",
+              "children": [],
+              "more": 0
+            }
+          ],
+          "more": 0
+        },
+        {
+          "name": "Daily",
+          "kind": "project",
+          "children": [
+            {
+              "name": "Not a date",
+              "kind": "page",
+              "children": [],
+              "more": 0
+            }
+          ],
+          "more": 0
+        },
+        {
+          "name": "Drawings",
+          "kind": "project",
+          "children": [
+            {
+              "name": "Sketch (Excalidraw)",
+              "kind": "page",
+              "children": [],
+              "more": 0
+            }
+          ],
+          "more": 0
+        },
+        {
+          "name": "Projects",
+          "kind": "project",
+          "children": [
+            {
+              "name": "Sub",
+              "kind": "project",
+              "children": [
+                {
+                  "name": "Deep",
+                  "kind": "page",
+                  "children": [],
+                  "more": 0
+                }
+              ],
+              "more": 0
+            },
+            {
+              "name": "Alpha",
+              "kind": "page",
+              "children": [],
+              "more": 0
+            },
+            {
+              "name": "Meeting (2)",
+              "kind": "page",
+              "children": [],
+              "more": 0
+            },
+            {
+              "name": "Renamed by frontmatter",
+              "kind": "page",
+              "children": [],
+              "more": 0
+            }
+          ],
+          "more": 0
+        },
+        {
+          "name": "Beta",
+          "kind": "page",
+          "children": [],
+          "more": 0
+        },
+        {
+          "name": "Board (canvas)",
+          "kind": "page",
+          "children": [],
+          "more": 0
+        },
+        {
+          "name": "Home",
+          "kind": "page",
+          "children": [],
+          "more": 0
+        },
+        {
+          "name": "Journal/2024-01-15",
+          "kind": "journal",
+          "children": [],
+          "more": 0
+        },
+        {
+          "name": "Journal/2024-01-16",
+          "kind": "journal",
+          "children": [],
+          "more": 0
+        },
+        {
+          "name": "Q&A (draft)",
+          "kind": "page",
+          "children": [],
+          "more": 0
+        },
+        {
+          "name": "Unlinked files",
+          "kind": "page",
+          "children": [],
+          "more": 0
+        }
+      ],
+      "more": 0
+    }
+  ],
+  "samples": [
+    {
+      "title": "Home",
+      "source_path": "Home.md",
+      "source": "---\ntags: [moc, \"project/active\"]\naliases:\n  - Start Here\n  - Dashboard\nstatus: active\nrating: 5\ncreated: 2024-01-10\n---\n# Welcome to the vault\n\nThis is the **home** note. It links to [[Alpha]], to [[Projects/Alpha|the alpha project]] and to [[Renamed by frontmatter]].\n\n## Links of every kind\n- Heading link: [[Beta#Section Two]]\n- Block link: [[Beta#^key-point]]\n- Missing block: [[Beta#^nope]]\n- Unresolved: [[Missing Note]]\n- Daily note: [[2024-01-15]]\n- Markdown link to a note: [Deep note](Projects/Sub/Deep.md)\n- Alias link: [[Start Here]]\n- Same-note heading: [[#Links of every kind]]\n- Ambiguous name: [[Meeting]]\n\n## Embeds\n![[Beta]]\n![[diagram.png]]\n![Holiday photo](attachments/photo%20one.jpg)\n![[report.pdf]]\n![[missing-image.png]]\n\n## Tasks and tags\n- [ ] Write the import PRD #todo\n- [x] Build the attachment store #nested/tag\n  - [ ] A nested task\n\n> [!warning] Mind the gap\n> Callouts become quotes with the type in bold.\n\n> [!tip]- Folded tip\n> Still a quote.\n\nText with a %%hidden comment%% inside.\n\n%%\nA multi-line comment\n%%\n\nInline math $e^{i\\pi} + 1 = 0$ and a block:\n\n$$\n\\int_0^1 x\\,dx\n$$\n\n```dataview\nLIST FROM #moc\n```\n\n```tasks\nnot done\n```\n\n```python\nprint(\"[[not a link]]\")\n```\n\n| Col A | Col B |\n|-------|-------|\n| 1     | 2     |\n",
+      "blocks": [
+        {
+          "depth": 0,
+          "content": "# Welcome to the vault"
+        },
+        {
+          "depth": 1,
+          "content": "This is the **home** note. It links to [[Alpha]], to [[Alpha|the alpha project]] and to [[Renamed by frontmatter]]."
+        },
+        {
+          "depth": 1,
+          "content": "## Links of every kind"
+        },
+        {
+          "depth": 2,
+          "content": "Heading link: [[Beta|Beta > Section Two]]"
+        },
+        {
+          "depth": 2,
+          "content": "Block link: ((block reference))"
+        },
+        {
+          "depth": 2,
+          "content": "Missing block: [[Beta|Beta > ^nope]]"
+        },
+        {
+          "depth": 2,
+          "content": "Unresolved: [[Missing Note]]"
+        },
+        {
+          "depth": 2,
+          "content": "Daily note: [[Journal/2024-01-15|2024-01-15]]"
+        },
+        {
+          "depth": 2,
+          "content": "Markdown link to a note: [[Deep|Deep note]]"
+        },
+        {
+          "depth": 2,
+          "content": "Alias link: [[Start Here]]"
+        },
+        {
+          "depth": 2,
+          "content": "Same-note heading: [[Home|Links of every kind]]"
+        },
+        {
+          "depth": 2,
+          "content": "Ambiguous name: [[Meeting]]"
+        },
+        {
+          "depth": 1,
+          "content": "## Embeds"
+        },
+        {
+          "depth": 2,
+          "content": "[[Beta]]"
+        },
+        {
+          "depth": 2,
+          "content": "![diagram.png](attachment:…/diagram.png)"
+        },
+        {
+          "depth": 2,
+          "content": "![Holiday photo](attachment:…/photo%20one.jpg)"
+        },
+        {
+          "depth": 2,
+          "content": "[report.pdf](attachment:…/report.pdf)\n[[missing-image.png]]"
+        },
+        {
+          "depth": 1,
+          "content": "## Tasks and tags"
+        },
+        {
+          "depth": 2,
+          "content": "- [ ] Write the import PRD #todo"
+        },
+        {
+          "depth": 2,
+          "content": "- [x] Build the attachment store #nested/tag"
+        },
+        {
+          "depth": 3,
+          "content": "- [ ] A nested task"
+        },
+        {
+          "depth": 2,
+          "content": "> **Warning** Mind the gap\n> Callouts become quotes with the type in bold."
+        },
+        {
+          "depth": 2,
+          "content": "> **Tip** Folded tip\n> Still a quote."
+        },
+        {
+          "depth": 2,
+          "content": "Text with a <!--hidden comment--> inside."
+        },
+        {
+          "depth": 2,
+          "content": "<!--\nA multi-line comment\n-->"
+        },
+        {
+          "depth": 2,
+          "content": "Inline math $e^{i\\pi} + 1 = 0$ and a block:"
+        },
+        {
+          "depth": 2,
+          "content": "$$\n\\int_0^1 x\\,dx\n$$"
+        },
+        {
+          "depth": 2,
+          "content": "```dataview\nLIST FROM #moc\n```"
+        },
+        {
+          "depth": 2,
+          "content": "```tasks\nnot done\n```"
+        },
+        {
+          "depth": 2,
+          "content": "```python\nprint(\"[[not a link]]\")\n```"
+        },
+        {
+          "depth": 2,
+          "content": "| Col A | Col B |\n|-------|-------|\n| 1     | 2     |"
+        }
+      ]
+    },
+    {
+      "title": "Beta",
+      "source_path": "Beta.md",
+      "source": "# Beta\n\nIntro paragraph.\n\n## Section Two\n\nThe key point of this note. ^key-point\n\n- list item\n",
+      "blocks": [
+        {
+          "depth": 0,
+          "content": "# Beta"
+        },
+        {
+          "depth": 1,
+          "content": "Intro paragraph."
+        },
+        {
+          "depth": 1,
+          "content": "## Section Two"
+        },
+        {
+          "depth": 2,
+          "content": "The key point of this note."
+        },
+        {
+          "depth": 2,
+          "content": "list item"
+        }
+      ]
+    },
+    {
+      "title": "Journal/2024-01-15",
+      "source_path": "Daily/2024-01-15.md",
+      "source": "- Morning: worked on [[Alpha]]\n- Evening: read\n",
+      "blocks": [
+        {
+          "depth": 0,
+          "content": "Morning: worked on [[Alpha]]"
+        },
+        {
+          "depth": 0,
+          "content": "Evening: read"
+        }
+      ]
+    }
+  ],
+  "warnings": [
+    {
+      "category": "ambiguous_link",
+      "label": "links matching several notes with the same name — the closest was used",
+      "count": 1,
+      "notes": [
+        "Home.md"
+      ],
+      "examples": [
+        "Meeting"
+      ]
+    },
+    {
+      "category": "block_link",
+      "label": "links to a block — turned into block references",
+      "count": 1,
+      "notes": [
+        "Home.md"
+      ],
+      "examples": [
+        "Beta#^key-point"
+      ]
+    },
+    {
+      "category": "block_link_unresolved",
+      "label": "links to a block that wasn't found — they link to the page",
+      "count": 1,
+      "notes": [
+        "Home.md"
+      ],
+      "examples": [
+        "Beta#^nope"
+      ]
+    },
+    {
+      "category": "callout",
+      "label": "callouts — kept as quotes with the type in bold",
+      "count": 2,
+      "notes": [
+        "Home.md"
+      ],
+      "examples": [
+        "warning",
+        "tip"
+      ]
+    },
+    {
+      "category": "canvas",
+      "label": "Canvas files — attached, with a page linking to them",
+      "count": 1,
+      "notes": [
+        "Board.canvas"
+      ],
+      "examples": [
+        "Board.canvas"
+      ]
+    },
+    {
+      "category": "comment",
+      "label": "%%comments%% — kept as HTML comments",
+      "count": 2,
+      "notes": [
+        "Home.md"
+      ],
+      "examples": []
+    },
+    {
+      "category": "dataview",
+      "label": "Dataview queries — kept as code",
+      "count": 1,
+      "notes": [
+        "Home.md"
+      ],
+      "examples": []
+    },
+    {
+      "category": "duplicate_title",
+      "label": "notes with the same title — numbered (\"Title (2)\")",
+      "count": 1,
+      "notes": [
+        "Projects/Meeting.md"
+      ],
+      "examples": [
+        "Meeting → Meeting (2)"
+      ]
+    },
+    {
+      "category": "excalidraw",
+      "label": "Excalidraw drawings — attached, with a page linking to them",
+      "count": 1,
+      "notes": [
+        "Drawings/Sketch.excalidraw.md"
+      ],
+      "examples": [
+        "Drawings/Sketch.excalidraw.md"
+      ]
+    },
+    {
+      "category": "heading_link",
+      "label": "links to a heading — they link to the page (heading kept in the link text)",
+      "count": 2,
+      "notes": [
+        "Home.md"
+      ],
+      "examples": [
+        "Beta#Section Two",
+        "Links of every kind"
+      ]
+    },
+    {
+      "category": "math",
+      "label": "math expressions — kept as text",
+      "count": 3,
+      "notes": [
+        "Home.md"
+      ],
+      "examples": []
+    },
+    {
+      "category": "missing_file",
+      "label": "references to files that aren't in the source — kept as text",
+      "count": 1,
+      "notes": [
+        "Home.md"
+      ],
+      "examples": [
+        "missing-image.png"
+      ]
+    },
+    {
+      "category": "note_embed",
+      "label": "embedded notes — shown as links (whole-page embeds aren't supported)",
+      "count": 1,
+      "notes": [
+        "Home.md"
+      ],
+      "examples": [
+        "Beta"
+      ]
+    },
+    {
+      "category": "tasks_query",
+      "label": "Tasks queries — kept as code",
+      "count": 1,
+      "notes": [
+        "Home.md"
+      ],
+      "examples": []
+    },
+    {
+      "category": "title_mapped",
+      "label": "titles with characters MiNotes links can't use — renamed",
+      "count": 1,
+      "notes": [
+        "Q&A [draft].md"
+      ],
+      "examples": [
+        "Q&A [draft] → Q&A (draft)"
+      ]
+    },
+    {
+      "category": "unlinked_file",
+      "label": "files no note links to — attached to the \"Unlinked files\" page",
+      "count": 1,
+      "notes": [],
+      "examples": [
+        "Unreferenced/old-scan.png"
+      ]
+    },
+    {
+      "category": "unresolved_link",
+      "label": "links to notes that aren't in the import — kept as [[links]]",
+      "count": 1,
+      "notes": [
+        "Home.md"
+      ],
+      "examples": [
+        "Missing Note"
+      ]
+    }
+  ],
+  "title_mappings": [
+    [
+      "Q&A [draft]",
+      "Q&A (draft)"
+    ]
+  ]
+}

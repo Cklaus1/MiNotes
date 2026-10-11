@@ -41,7 +41,7 @@ echo "════════════════════════�
 echo "  MiNotes Desktop Journeys (real app, real backend)"
 echo "═══════════════════════════════════════════════"
 
-rm -rf "$STATE"/{persist,devA,devB,remote.git} "$STATE/results.tsv"
+rm -rf "$STATE"/{persist,devA,devB,nbook,remote.git} "$STATE/results.tsv"
 if [[ -z "$DESKTOP_NO_BUILD" ]]; then
   "$DC" up --webdriver --profile persist >/dev/null || { echo "build/launch failed"; exit 1; }
 else
@@ -184,9 +184,10 @@ is "A syncs cleanly" "$(ev "$SYNC")" "ok|conflicts=0"
 REMOTE_FILES=$(git --git-dir="$STATE/remote.git" ls-tree -r --name-only main 2>/dev/null | grep -c '\.md$')
 [[ "$REMOTE_FILES" -ge 2 ]] && pass "Remote received A's pages ($REMOTE_FILES files)" || fail "Remote is empty" "$REMOTE_FILES md files"
 
-step "Device B starts fresh and pulls A's notes"
-device devB keep || true
+step "Device B clones the sync folder, starts fresh and pulls A's notes"
+# Clone first: the app's markdown mirror writes ~/MiNotes_Sync as soon as it starts.
 HOME="$STATE/devB" git clone -q "$STATE/remote.git" "$STATE/devB/MiNotes_Sync" 2>/dev/null
+device devB keep || true
 is "B enables sync" "$(ev "$ENABLE")" "enabled=true"
 ev "$SYNC" >/dev/null
 [[ "$(ev "$PAGES")" == *"Roadmap"* ]] && pass "B sees Roadmap" || fail "B did not receive Roadmap" "$(ev "$PAGES")"
@@ -227,6 +228,229 @@ ALL=$(ev "(async()=>{const api=await import('/src/lib/api.ts');const ps=await ap
 MARKERS=$(grep -rl '^<<<<<<<\|^>>>>>>>' "$STATE/devA/MiNotes_Sync" --include='*.md' 2>/dev/null | wc -l)
 is "No git conflict markers in any note" "$MARKERS" "0"
 fi
+
+# ═══════════════════════════════════════════════
+journey "D5. My notebook lives in a folder I choose"
+# Create it in a picked folder, write, quit, reopen; copy the folder and open the
+# copy; the markdown copy follows edits; switching keeps notebooks apart.
+# ═══════════════════════════════════════════════
+device nbook || true
+NBH="$STATE/nbook"
+A5="const api=await import('/src/lib/api.ts');"
+setval() { ev "(()=>{const i=document.querySelector('$1');if(!i)return 'no input';const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;set.call(i,'$2');i.dispatchEvent(new Event('input',{bubbles:true}));return 'ok'})()" >/dev/null; }
+# wait_file <file> <seconds> <text>: until the file exists and contains text
+wait_file() { local n=$(( ${2:-10} * 4 )); for _ in $(seq 1 $n); do grep -qF -- "$3" "$1" 2>/dev/null && return 0; sleep 0.25; done; return 1; }
+menu() { ev "document.querySelector('[data-testid=notebook-switcher]').click()" >/dev/null; sleep 0.5; }
+menu_action() { menu; ev "[...document.querySelectorAll('.nb-menu-action')].find(b=>b.textContent.startsWith('$1'))?.click()" >/dev/null; sleep 0.6; }
+switcher() { ev "document.querySelector('[data-testid=notebook-switcher]')?.innerText||''"; }
+mjs() { HOME="$NBH" "$REPO_ROOT/target/debug/minotes" "$@" 2>&1; }
+FOLDER="$NBH/Documents/Field Notes"; COPY="$NBH/Documents/Field Notes copy"
+mkdir -p "$NBH/Documents"
+
+step "New notebook… with a folder I pick"
+menu_action "New"
+setval "[data-testid=new-notebook-name]" "Field Notes"
+api "setNextPickedFolder('$NBH/Documents')" >/dev/null
+ev "document.querySelector('[data-testid=new-notebook-choose]').click()" >/dev/null; sleep 0.6
+is "The location is the picked folder + the name" "$(ev "document.querySelector('[data-testid=new-notebook-location]')?.getAttribute('title')||''")" "$FOLDER"
+"$DC" wshot "d5-new-notebook-dialog" >/dev/null
+ev "document.querySelector('[data-testid=new-notebook-create]').click()" >/dev/null
+waitfor "(document.querySelector('[data-testid=notebook-switcher]')?.innerText||'').includes('Field Notes')" 15 \
+  && pass "The new notebook is open" || fail "New notebook not opened" "$(switcher)"
+[[ -f "$FOLDER/notebook.minotes" && -f "$FOLDER/notebook.json" && -d "$FOLDER/notes" && -f "$FOLDER/.minotes/lock.json" ]] \
+  && pass "Folder layout: notebook.minotes, notebook.json, notes/, .minotes/lock.json" || fail "Folder layout" "$(ls -A "$FOLDER" 2>&1 | tr '\n' ' ')"
+KEY=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["id"])' "$FOLDER/notebook.json" 2>/dev/null)
+is "The app remembers it as the active notebook" "$(cat "$NBH/.minotes/active_graph" 2>/dev/null)" "$KEY"
+is "~/.minotes/notebooks.json registers the folder" "$(python3 -c 'import json,sys;print([n["path"] for n in json.load(open(sys.argv[1]))["notebooks"]])' "$NBH/.minotes/notebooks.json" 2>/dev/null)" "['$FOLDER']"
+
+step "I write — the markdown copy appears and follows my edits"
+ev "(async()=>{$A5 const p=await api.createPage('Field Page');await api.createBlock(p.id,'first field note');await api.createBlock(p.id,'TODO collect samples');return 'ok'})()" >/dev/null
+T0=$(date +%s%N)
+wait_file "$FOLDER/notes/Field Page.md" 15 "first field note" \
+  && pass "notes/Field Page.md written ($(( ($(date +%s%N) - T0) / 1000000 )) ms after the write)" || fail "Mirror file missing" "$(ls "$FOLDER/notes" 2>&1)"
+grep -q "^id: " "$FOLDER/notes/Field Page.md" 2>/dev/null && pass "It carries the page id in frontmatter" || fail "No id frontmatter" "$(head -3 "$FOLDER/notes/Field Page.md" 2>&1)"
+ev "(async()=>{$A5 const t=await api.getPageTree('Field Page');await api.updateBlock(t.blocks.find(b=>b.content.startsWith('first')).id,'edited field note');return 'ok'})()" >/dev/null
+T0=$(date +%s%N)
+if wait_file "$FOLDER/notes/Field Page.md" 10 "edited field note"; then
+  MS=$(( ($(date +%s%N) - T0) / 1000000 )); [[ $MS -lt 6000 ]] && pass "An edit reaches the file in ${MS} ms (2 s debounce)" || fail "Mirror too slow" "${MS} ms"
+else fail "Edit never reached the mirror" "$(cat "$FOLDER/notes/Field Page.md" 2>&1 | tail -3)"; fi
+is "No temp files left behind" "$(find "$FOLDER/notes" -name '*.minotes-tmp' | wc -l)" "0"
+
+step "I quit and open the app again"
+"$DC" restart >/dev/null && waitfor "window.__MINOTES__ && !!window.__MINOTES__.navigateTo" 30
+waitfor "(document.querySelector('[data-testid=notebook-switcher]')?.innerText||'').includes('Field Notes')" 15 \
+  && pass "It reopens the folder notebook" || fail "Wrong notebook after restart" "$(switcher)"
+[[ "$(blocks_of 'Field Page')" == *"edited field note"* ]] && pass "My page survived" || fail "Page lost after restart" "$(blocks_of 'Field Page')"
+
+step "I copy the whole folder and open the copy"
+cp -a "$FOLDER" "$COPY"
+api "setNextPickedFolder('$COPY')" >/dev/null
+menu_action "Open"
+waitfor "(document.querySelector('[data-testid=notebook-switcher]')?.innerText||'').includes('Field Notes 2')" 15 \
+  && pass "The copy opens as its own notebook ('Field Notes 2')" || fail "Copy not opened" "$(switcher)"
+COPY_KEY=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["id"])' "$COPY/notebook.json" 2>/dev/null)
+[[ -n "$COPY_KEY" && "$COPY_KEY" != "$KEY" ]] && pass "The copy got its own id" || fail "Copy id" "$COPY_KEY vs $KEY"
+[[ "$(blocks_of 'Field Page')" == *"edited field note"* ]] && pass "The copy has everything (a complete backup)" || fail "Copy content" "$(blocks_of 'Field Page')"
+ev "(async()=>{$A5 const p=await api.createPage('Copy Only');await api.createBlock(p.id,'TODO only in the copy zzq');await api.createBlock(p.id,'TODO another zzq');const t=await api.createPage('Copy Trash');await api.trashPage(t.id);return 'ok'})()" >/dev/null
+wait_file "$COPY/notes/Copy Only.md" 15 "zzq" && pass "The copy's markdown goes to the copy's notes/" || fail "Copy mirror" "$(ls "$COPY/notes" 2>&1)"
+[[ ! -e "$FOLDER/notes/Copy Only.md" ]] && pass "The original folder is untouched" || fail "Copy wrote into the original" ""
+COPY_TODOS=$(ev "(async()=>{$A5 return String(await api.getPendingTodoCount())})()")
+
+step "I switch back from the menu — nothing leaks across notebooks"
+menu; ev "document.querySelector('.nb-menu [data-notebook-key=\"$KEY\"]')?.click()" >/dev/null
+waitfor "(document.querySelector('[data-testid=notebook-switcher]')?.innerText||'').trim().startsWith('Field Notes') && !(document.querySelector('[data-testid=notebook-switcher]')?.innerText||'').includes('Field Notes 2')" 15 \
+  && pass "Back in Field Notes" || fail "Switch back" "$(switcher)"
+is "Search doesn't see the copy's notes" "$(ev "(async()=>{$A5 return String((await api.search('zzq',50)).length)})()")" "0"
+is "TODO count is this notebook's (1, the copy has $COPY_TODOS)" "$(ev "(async()=>{$A5 return String(await api.getPendingTodoCount())})()")" "1"
+is "Trash is this notebook's" "$(ev "(async()=>{$A5 return String((await api.listTrash()).some(t=>t.title==='Copy Trash'))})()")" "false"
+is "Landed on today's journal" "$(ev "String((window.__MINOTES__.getCurrentPage()||'').startsWith('Journal/'))")" "true"
+"$DC" wshot "d5-switcher" >/dev/null
+
+step "The CLI opens it by name or by folder"
+[[ "$(mjs --notebook "Field Notes" page list -f text)" == *"Field Page"* ]] && pass "minotes --notebook 'Field Notes'" || fail "CLI --notebook" "$(mjs --notebook "Field Notes" page list -f text | head -3)"
+is "minotes --graph <folder> searches it" "$(mjs --graph "$FOLDER" search "edited field note" -f json | python3 -c 'import sys,json;print(json.load(sys.stdin)["count"])' 2>/dev/null)" "1"
+
+step "Settings shows where the markdown copy is and that it is current"
+api "openSettings()" >/dev/null; sleep 1.5
+[[ "$(ev "document.querySelector('[data-testid=mirror-dir]')?.getAttribute('title')||''")" == "$FOLDER/notes" ]] && pass "Mirror location in Settings" || fail "Mirror location" "$(ev "document.querySelector('[data-testid=mirror-dir]')?.getAttribute('title')||''")"
+# (The CLI just opened the database, so a pass may still be due: give it its 2 s.)
+waitfor "document.querySelector('[data-testid=mirror-status]')?.textContent==='Up to date'" 10 \
+  && pass "Mirror status: Up to date" || fail "Mirror status" "$(ev "document.querySelector('[data-testid=mirror-status]')?.textContent||''")"
+"$DC" wshot "d5-settings-mirror" >/dev/null
+api "closePanel()" >/dev/null
+
+step "Another MiNotes window has the copy open → I get it read-only"
+printf '{"pid":%s,"host":"%s","instance":"other-window","opened_at":"2026-01-01T00:00:00Z","root":"%s"}' "$(cat "$STATE/xvfb.pid")" "$(hostname)" "$COPY" >"$COPY/.minotes/lock.json"
+ev "window.__MINOTES__.switchNotebook('$COPY_KEY')" >/dev/null
+waitfor "!!document.querySelector('[data-testid=readonly-banner]')" 15 && pass "Read-only banner shown" || fail "No read-only banner" "$(switcher)"
+is "Writes are refused" "$(ev "(async()=>{$A5 try{await api.createPage('Should Fail');return 'written'}catch(e){return 'refused'}})()")" "refused"
+"$DC" wshot "d5-readonly" >/dev/null
+ev "document.querySelector('[data-testid=readonly-banner] button')?.click()" >/dev/null
+waitfor "!document.querySelector('[data-testid=readonly-banner]')" 10 && pass "'Open for editing anyway' takes it over" || fail "Take over" ""
+
+step "A folder that went missing is unavailable — never recreated — and can be located"
+ev "window.__MINOTES__.switchNotebook('$KEY')" >/dev/null; sleep 2
+mv "$COPY" "$COPY (unplugged)"
+is "Listed as unavailable" "$(ev "(async()=>{$A5 return String((await api.listNotebooks()).find(n=>n.key==='$COPY_KEY')?.available)})()")" "false"
+is "Switching to it is refused" "$(ev "(async()=>{$A5 try{await api.switchGraph('$COPY_KEY');return 'opened'}catch(e){return 'refused'}})()")" "refused"
+[[ ! -e "$COPY" ]] && pass "No empty notebook was created in its place" || fail "Missing folder recreated" "$(ls -A "$COPY")"
+ev "(async()=>{$A5 await api.locateNotebook('$COPY_KEY','$COPY (unplugged)');return 'ok'})()" >/dev/null
+is "Locate… finds it again" "$(ev "(async()=>{$A5 return String((await api.listNotebooks()).find(n=>n.key==='$COPY_KEY')?.available)})()")" "true"
+
+step "My old notebook (in app data) moves into a folder of its own"
+ev "window.__MINOTES__.switchNotebook('default')" >/dev/null; sleep 2
+ev "(async()=>{$A5 const p=await api.createPage('Legacy Page');await api.createBlock(p.id,'kept through the move');return 'ok'})()" >/dev/null
+wait_file "$NBH/MiNotes_Sync/Legacy Page.md" 15 "kept through the move" && pass "The legacy notebook's copy is at ~/MiNotes_Sync" || fail "Legacy mirror" "$(ls "$NBH/MiNotes_Sync" 2>&1)"
+R=$(ev "(async()=>{$A5 const s=await api.moveNotebookToFolder('$NBH/MiNotes/Old Default');return s.kind})()")
+is "Moved: it is a folder notebook now" "$R" "folder"
+[[ ! -e "$NBH/.minotes/default.db" && -f "$NBH/MiNotes/Old Default/notebook.minotes" ]] && pass "Old database removed only after the verified copy" || fail "Move files" "$(ls "$NBH/.minotes")"
+[[ -f "$NBH/MiNotes/Old Default/notes/Legacy Page.md" && ! -e "$NBH/MiNotes_Sync" ]] && pass "The markdown copy moved with it" || fail "Mirror not moved" "$(ls "$NBH/MiNotes/Old Default/notes" 2>&1)"
+[[ "$(blocks_of 'Legacy Page')" == "kept through the move" ]] && pass "Content intact after the move" || fail "Content after move" "$(blocks_of 'Legacy Page')"
+
+
+# ═══════════════════════════════════════════════
+journey "D6. I move in from Obsidian and Evernote — then paste a screenshot"
+# Import through the dialog into new notebooks (preview, report, inline image,
+# resolved links, markdown copy with _attachments/), undo, paste an image and
+# see it survive a restart. Fixtures: tests/fixtures/import/.
+# ═══════════════════════════════════════════════
+device import6 || true
+IH="$STATE/import6"
+A6="const api=await import('/src/lib/api.ts');"
+mkdir -p "$IH/Imports"
+cp -r "$REPO_ROOT/tests/fixtures/import/obsidian-vault" "$IH/Imports/Vault"
+cp -r "$REPO_ROOT/tests/fixtures/import/evernote" "$IH/Imports/evernote"
+step6() { ev "document.querySelector('[data-testid=import-dialog]')?.dataset.step||''"; }
+open_import() { ev "document.querySelector('[data-testid=notebook-switcher]').click()" >/dev/null; sleep 0.5; ev "document.querySelector('[data-testid=menu-import]')?.click()" >/dev/null; waitfor "!!document.querySelector('[data-testid=import-dialog]')" 10; }
+HOME6=$(ev "(async()=>{$A6 return (await api.getNotebookSession()).key})()")
+
+step "File → Import… (notebook menu) → Obsidian vault → the scan shows a preview"
+open_import && pass "Import dialog opens from the notebook menu" || fail "Import dialog" "not shown"
+api "setNextImportPick('$IH/Imports/Vault')" >/dev/null
+ev "document.querySelector('[data-import-source=obsidian]').click()" >/dev/null
+waitfor "document.querySelector('[data-testid=import-dialog]')?.dataset.step==='preview'" 30 \
+  && pass "Preview shown" || fail "Scan" "$(step6) $(ev "document.querySelector('[data-testid=import-error]')?.innerText||''")"
+is "Preview counts: 14 pages, 5 Projects, 2 journal days, 6 attachments" "$(ev "[...document.querySelectorAll('[data-testid=import-counts] strong')].slice(0,4).map(s=>s.textContent).join(',')")" "14,5,2,6"
+R=$(ev "(()=>{const d=document.querySelector('[data-testid=import-dialog]');return [d.querySelectorAll('.imp-tab').length,d.querySelector('.imp-source')?.textContent.includes('[[Beta#Section Two]]'),d.querySelector('.imp-blocks')?.textContent.includes('[[Beta|Beta > Section Two]]'),[...d.querySelectorAll('[data-testid=import-warnings] summary')].some(s=>s.textContent.includes('Dataview'))].join('|')})()")
+is "3 samples, source beside conversion, warnings by category" "$R" "3|true|true|true"
+"$DC" wshot "d6-preview" >/dev/null
+
+step "Import into a new notebook (the default) — progress, then the report"
+ev "document.querySelector('[data-testid=import-start]').click()" >/dev/null
+waitfor "document.querySelector('[data-testid=import-dialog]')?.dataset.step==='report'" 60 \
+  && pass "Import finished" || fail "Import" "$(step6) $(ev "document.querySelector('[data-testid=import-error]')?.innerText||''")"
+"$DC" wshot "d6-report" >/dev/null
+NB6=$(ev "(async()=>{$A6 return (await api.getNotebookSession()).key})()")
+VDIR="$IH/MiNotes/Vault"
+[[ "$NB6" != "$HOME6" && -f "$VDIR/notebook.minotes" ]] && pass "A new notebook 'Vault' was created and opened" || fail "New notebook" "$NB6 $(ls "$IH/MiNotes" 2>&1)"
+# (Landing on the notebook may have started today's journal: not an imported page.)
+is "Pages in the new notebook (14 + the report)" "$(sqlite3 "$VDIR/notebook.minotes" "select count(*) from pages where title != 'Journal/$(date +%F)'")" "15"
+is "Attachments stored by hash in the notebook folder" "$(find "$VDIR/attachments" -type f | wc -l | tr -d ' ')" "6"
+ALPHA_ID=$(sqlite3 "$VDIR/notebook.minotes" "select id from pages where title='Alpha'")
+[[ $(sqlite3 "$VDIR/notebook.minotes" "select count(*) from links where to_page='$ALPHA_ID'") -ge 3 ]] && pass "[[Alpha]] links resolved (link rows)" || fail "Links to Alpha" "none"
+ev "document.querySelector('[data-testid=import-open-report]')?.click()" >/dev/null; sleep 2
+[[ "$(api 'getCurrentPage()')" == "Import report"* ]] && pass "The report is a page in the notebook" || fail "Report page" "$(api 'getCurrentPage()')"
+"$DC" wshot "d6-report-page" >/dev/null
+
+step "An imported page shows its image inline (attachment:// under the real CSP)"
+api "navigateTo('Home')" >/dev/null; sleep 2.5
+ev "(()=>{const i=[...document.querySelectorAll('.block img')].find(i=>i.getAttribute('data-attachment-src'));i?.scrollIntoView({block:'center'});return 1})()" >/dev/null; sleep 1
+waitfor "[...document.querySelectorAll('.block img')].some(i=>i.getAttribute('data-attachment-src')&&i.complete&&i.naturalWidth===240)" 10 \
+  && pass "diagram.png renders inline (240 px wide)" || fail "Inline image" "$(ev "[...document.querySelectorAll('.block img')].map(i=>i.src+':'+i.naturalWidth).join(' ')")"
+"$DC" wshot "d6-imported-page" >/dev/null
+ev "[...document.querySelectorAll('.block .wiki-link')].find(a=>a.textContent.trim()==='Alpha')?.click()" >/dev/null; sleep 2
+is "Clicking the resolved [[Alpha]] opens it" "$(api 'getCurrentPage()')" "Alpha"
+"$DC" wshot "d6-resolved-link" >/dev/null
+
+step "The markdown copy carries the attachments with relative links"
+wait_file "$VDIR/notes/Home.md" 15 "](_attachments/" && pass "notes/Home.md links ](_attachments/…)" || fail "Mirror links" "$(grep -m2 attachment "$VDIR/notes/Home.md" 2>&1)"
+[[ $(find "$VDIR/notes/_attachments" -name diagram.png | wc -l) -eq 1 ]] && pass "notes/_attachments/<hash>/diagram.png" || fail "Mirror attachments" "$(ls -R "$VDIR/notes/_attachments" 2>&1 | head)"
+D=$(find "$VDIR/notes/_attachments" -name diagram.png | head -1); [[ -n "$D" ]] && cmp -s "$D" "$IH/Imports/Vault/attachments/diagram.png" && pass "Byte-identical copy" || fail "Mirror copy differs" "$D"
+
+step "Evernote: two .enex files → a new notebook, one Project each, then Undo import"
+open_import
+ev "window.__MINOTES__.setNextImportPick(['$IH/Imports/evernote/Travel.enex','$IH/Imports/evernote/Recipes.enex'])" >/dev/null
+ev "document.querySelector('[data-import-source=evernote]').click()" >/dev/null
+waitfor "document.querySelector('[data-testid=import-dialog]')?.dataset.step==='preview'" 30 && pass "Evernote preview" || fail "Evernote scan" "$(ev "document.querySelector('[data-testid=import-error]')?.innerText||''")"
+"$DC" wshot "d6-evernote-preview" >/dev/null
+ev "document.querySelector('[data-testid=import-start]').click()" >/dev/null
+waitfor "document.querySelector('[data-testid=import-dialog]')?.dataset.step==='report'" 60 && pass "Evernote import finished" || fail "Evernote import" "$(step6)"
+EN=$(ev "(async()=>{$A6 const t=(await api.listPages(1000)).map(p=>p.title);const ph=await api.getPageTree('Trip photos');return [t.includes('Packing list (2)'),t.includes('Pancakes'),ph.blocks.some(b=>b.content.includes('![beach.png](attachment:'))].join('|')})()")
+is "Notes, numbered duplicate title, en-media image as attachment" "$EN" "true|true|true"
+ev "document.querySelector('[data-testid=import-undo]')?.click()" >/dev/null
+waitfor "document.querySelector('[data-testid=import-dialog]')?.dataset.step==='undone'" 20 && pass "Undo import" || fail "Undo" "$(step6) $(ev "document.querySelector('[data-testid=import-dialog]')?.innerText.slice(0,300)||''")"
+"$DC" wshot "d6-undone" >/dev/null
+is "The Evernote notebook is empty again (today's journal aside)" "$(ev "(async()=>{$A6 return String((await api.listPages(1000)).filter(p=>p.title!=='Journal/$(date +%F)').length)})()")" "0"
+ENDIR=$(ls -d "$IH/MiNotes/"*/ | grep -v Vault | head -1)
+is "Its attachment store is empty" "$(find "$ENDIR/attachments" -type f 2>/dev/null | wc -l | tr -d ' ')" "0"
+press_esc() { "$DC" press Escape >/dev/null 2>&1; }; press_esc
+
+step "Undo refuses pages I edited since — and lists them"
+ev "window.__MINOTES__.switchNotebook('$NB6')" >/dev/null; sleep 2
+ev "(async()=>{$A6 const t=await api.getPageTree('Beta');await api.updateBlock(t.blocks[0].id,'# Beta (mine now)');return 1})()" >/dev/null
+open_import; ev "document.querySelector('[data-testid=import-run-undo]')?.click()" >/dev/null
+waitfor "!!document.querySelector('[data-testid=import-undo-refused]')" 10 \
+  && is "Refused, listing the edited page" "$(ev "document.querySelector('[data-testid=import-undo-refused] .imp-chip')?.textContent||''")" "Beta" \
+  || fail "Undo refusal" "$(step6)"
+"$DC" wshot "d6-undo-refused" >/dev/null
+press_esc; sleep 0.5
+
+step "I paste a screenshot into a block: stored as an attachment, still there after a restart"
+ev "(async()=>{$A6 const p=await api.createPage('Pasted Here');await api.createBlock(p.id,'Screenshot:');return 1})()" >/dev/null
+api "navigateTo('Pasted Here')" >/dev/null; sleep 1.5; api "focusBlock(0)" >/dev/null; sleep 0.6
+ev "(()=>{const ed=document.querySelector('.ProseMirror-focused');if(!ed)return 'no editor';const c=document.createElement('canvas');c.width=120;c.height=60;const x=c.getContext('2d');x.fillStyle='#2a7';x.fillRect(0,0,120,60);const b=Uint8Array.from(atob(c.toDataURL('image/png').split(',')[1]),ch=>ch.charCodeAt(0));const dt=new DataTransfer();dt.items.add(new File([b],'screenshot.png',{type:'image/png'}));ed.dispatchEvent(new ClipboardEvent('paste',{clipboardData:dt,bubbles:true,cancelable:true}));return 'ok'})()" >/dev/null
+sleep 2; api "closePanel()" >/dev/null; "$DC" press Escape >/dev/null 2>&1; sleep 1
+PB=$(blocks_of 'Pasted Here')
+[[ "$PB" == *"](attachment:"* && "$PB" != *"data:image"* ]] && pass "Block references attachment:<hash>/screenshot.png" || fail "Paste" "$PB"
+PH=$(echo "$PB" | grep -o 'attachment:[0-9a-f]\{64\}' | head -1 | cut -d: -f2)
+[[ -n "$PH" && -f "$VDIR/attachments/${PH:0:2}/$PH.png" ]] && pass "File stored at attachments/${PH:0:2}/<hash>.png" || fail "Pasted file" "$PH"
+is "attachments row" "$(sqlite3 "$VDIR/notebook.minotes" "select name||':'||mime from attachments where hash='$PH'")" "screenshot.png:image/png"
+"$DC" restart >/dev/null && waitfor "window.__MINOTES__ && !!window.__MINOTES__.navigateTo" 30
+api "navigateTo('Pasted Here')" >/dev/null; sleep 2
+waitfor "[...document.querySelectorAll('.block img')].some(i=>i.complete&&i.naturalWidth===120)" 10 \
+  && pass "The pasted image renders after a restart" || fail "Pasted image after restart" "$(ev "[...document.querySelectorAll('.block img')].map(i=>i.src+':'+i.naturalWidth).join(' ')")"
+"$DC" wshot "d6-pasted-after-restart" >/dev/null
+is "attachment:// serves nothing outside the store" "$(ev "(async()=>{const load=u=>new Promise(r=>{const i=new Image();i.onload=()=>r('loaded');i.onerror=()=>r('refused');i.src=u});const ok=await load('attachment://localhost/$PH');return [ok,await load('attachment://localhost/..%2F..%2Fnotebook.minotes'),await load('attachment://localhost/'+'0'.repeat(64))].join(',')})()")" "loaded,refused,refused"
 
 # ═══════════════════════════════════════════════
 echo ""

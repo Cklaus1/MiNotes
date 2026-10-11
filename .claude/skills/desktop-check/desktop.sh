@@ -65,8 +65,12 @@ record() { printf '%s\t%s\t%s\n' "$1" "$2" "${3:-}" >>"$RESULTS"; }
 stop_app() {
   [ -f "$STATE/wd.sid" ] && { wd quit >/dev/null 2>&1 || true; rm -f "$STATE/wd.sid"; }
   if alive app; then
-    kill "$(cat "$STATE/app.pid")" 2>/dev/null || true
+    # The app runs in its own process group (setsid in launch), so this also
+    # reaches dbus-run-session's children: tauri-driver, WebKitWebDriver, the app.
+    local pg; pg="$(cat "$STATE/app.pid")"
+    kill -TERM -- "-$pg" 2>/dev/null || kill "$pg" 2>/dev/null || true
     for _ in $(seq 1 20); do alive app || break; sleep 0.25; done
+    kill -KILL -- "-$pg" 2>/dev/null || true
   fi
   rm -f "$STATE/app.pid"
   # tauri-driver leaves the app and WebKitWebDriver behind if the session wasn't
@@ -74,6 +78,12 @@ stop_app() {
   for _ in $(seq 1 20); do [ -z "$(win)" ] && break; sleep 0.25; done
   if [ -n "$(win)" ]; then x xdotool search --name '^MiNotes$' 2>/dev/null | head -1 | xargs -r -I{} timeout 5 xdotool windowkill {} 2>/dev/null || true; sleep 1; fi
 }
+
+# Run the app on a private D-Bus session: on this WSL host, connecting to the
+# shared session bus stalls ~25 s per launch (D-Bus default timeout). Opt out with
+# DESKTOP_CHECK_DBUS=0 (e.g. to test the OS keychain, which lives on that bus).
+DBUS_PREFIX=()
+if [ "${DESKTOP_CHECK_DBUS:-1}" = 1 ] && command -v dbus-run-session >/dev/null; then DBUS_PREFIX=(dbus-run-session --); fi
 
 launch() { # $1 = webdriver 0|1
   export WAYLAND_DISPLAY= GDK_BACKEND=x11 LIBGL_ALWAYS_SOFTWARE=1 \
@@ -85,11 +95,11 @@ launch() { # $1 = webdriver 0|1
     TD="$(command -v tauri-driver || echo "$HOME/.cargo/bin/tauri-driver")"
     { [ -x "$TD" ] && command -v WebKitWebDriver >/dev/null; } || {
       echo "webdriver mode needs: apt-get install webkit2gtk-driver && cargo install tauri-driver --locked" >&2; exit 2; }
-    HOME="$APP_HOME" nohup "$TD" --port "$WD_PORT" --native-port "$((WD_PORT + 1))" >"$STATE/app.log" 2>&1 </dev/null &
+    HOME="$APP_HOME" setsid nohup "${DBUS_PREFIX[@]}" "$TD" --port "$WD_PORT" --native-port "$((WD_PORT + 1))" >"$STATE/app.log" 2>&1 </dev/null &
     echo $! >"$STATE/app.pid"; sleep 2
     wd new "$BIN"
   else
-    HOME="$APP_HOME" nohup "$BIN" >"$STATE/app.log" 2>&1 </dev/null &
+    HOME="$APP_HOME" setsid nohup "${DBUS_PREFIX[@]}" "$BIN" >"$STATE/app.log" 2>&1 </dev/null &
     echo $! >"$STATE/app.pid"
   fi
   for _ in $(seq 1 40); do [ -n "$(win)" ] && break; alive app || break; sleep 1; done

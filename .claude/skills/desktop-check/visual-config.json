@@ -1,0 +1,8 @@
+{
+  "default": {"fuzz": "3%", "threshold": 0.02},
+  "views": {
+    "journal-today": {"masks": [[515, 0, 1200, 30, "error banner carries a fresh random page id each run (virtual-journal bug)"]]},
+    "graph": {"masks": [[0, 44, 1200, 800, "force-directed layout differs every run: canvas masked, toolbar + node/edge count still compared"]],
+              "note": "layout-only mode (blur + 1/8, fuzz 15%) still measured 1.1% run-to-run and a blank canvas vs nodes would change < 2%: no usable signal, so the canvas is masked instead"}
+  }
+}

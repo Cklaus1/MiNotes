@@ -70,7 +70,12 @@ PRELUDE = (
 )
 
 
-def run_js(sid, body, timeout_ms=60000):
+import os
+# Per-script WebDriver timeout; long-running checks (parity, scale) can raise it.
+JS_TIMEOUT_MS = int(os.environ.get("DESKTOP_CHECK_JS_TIMEOUT_MS", "60000"))
+
+
+def run_js(sid, body, timeout_ms=JS_TIMEOUT_MS):
     """Run an async function body; returns ('ok', value) or ('error', message)."""
     wrapped = (
         PRELUDE + "(async () => {" + body + "\n})().then("

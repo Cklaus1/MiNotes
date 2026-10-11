@@ -102,21 +102,35 @@ Use the audit numbers to back the visual judgement, not replace it: low contrast
 24 px, clipped text, missing focus rings, number of distinct font sizes, and view
 timings. Treat timings as relative (software rendering under Xvfb is slow).
 
-Other signals worth mining when asked how to make the app better:
+## 4. Signal tools (find what to improve)
 
-- **Journey friction** — count the steps/keystrokes each journey needs; long ones
-  are candidates for shortcuts or defaults.
-- **Mock/real divergences** — every one is a place the product behaves differently
-  from what its own tests believe.
-- **Errors nobody sees** — `$D errors` after a tour: console errors and swallowed
-  rejections are bugs users hit silently.
-- **Dead ends** — views with no way back except a shortcut; panels Escape doesn't close.
-- **Data-shape stress** — rerun the tour after `cli` bulk-creating 5,000 blocks and
-  compare timings.
-- **Docs vs behaviour** — shortcuts listed in Settings/Getting Started that don't
-  do what they say (press each one, check the result).
+Seven re-runnable tools turn "how can MiNotes be better?" into evidence. Each
+writes a markdown report to `$DESKTOP_CHECK_DIR/signals/`, exits 0 unless the
+tool itself breaks (findings are not failures), and takes `--no-build`. Full
+usage and how to read each report: `signals-ux.md` and `signals-data.md`.
 
-## 4. Security probes (webdriver)
+| Tool | Answers | Typical run |
+|---|---|---|
+| `parity.sh` | Where does the browser tests' mock behave differently from the real backend? 235 checks run side by side in the real app; divergences ranked with verdicts kept in `parity-notes.json` (new = UNREVIEWED, fixed = stale). | ~1 min |
+| `friction.sh` | How many actions does each journey cost (static, from the suite) and how many keys/clicks do 8 core tasks take through the real UI? | ~5 min |
+| `silent-errors.sh` | Which actions throw, reject or fail an IPC call — and was the user told? (wraps `ipc://` fetches, console, CSP, resource errors) | ~5 min |
+| `dead-ends.sh` | For every view/panel/menu: does Escape close it, is there a visible close, does click-outside work, do you land back where you were? | ~5 min |
+| `shortcuts.sh` | Does every advertised shortcut do what it says, in neutral state and inside the editor? Which work but are undocumented? | ~5 min |
+| `scale-tour.sh [--sizes S,M,L]` | How do open/typing/search/backlinks/sidebar/graph behave at 2.5k / 7k / 22k blocks? | ~1 h for all sizes |
+| `visual-diff.sh approve\|check\|noise` | Did any view's pixels change vs approved baselines? Clock frozen, animations off, unstable regions masked; threshold 0.02%. | ~5 min |
+
+How to use them well:
+- Run `parity.sh` after any backend or mock change; every new divergence means
+  the browser tests may be passing on behaviour the app doesn't have.
+- **Re-approve visual baselines** (`visual-diff.sh approve`) only after looking at
+  the `check` diffs and agreeing the change is intended.
+- Verify a surprising finding a second way (screenshot, DB query) before reporting
+  it — the tools can misread the app (e.g. a list that expands upward).
+- Treat timings as relative: Xvfb uses software rendering.
+- When reporting, tag each finding BUG / UX IMPROVEMENT / TEST-FIDELITY GAP /
+  PERFORMANCE / HARNESS LIMITATION, with evidence.
+
+## 5. Security probes (webdriver)
 
 Each must hold in the shipped app:
 
@@ -130,7 +144,13 @@ Each must hold in the shipped app:
   (The command returns empty metadata on any failure, so an empty result alone
   proves nothing.)
 - **Never call `save_png_to_downloads`** — on WSL it writes into the real Windows
-  Downloads folder regardless of the scratch HOME.
+  Downloads folder regardless of the scratch HOME. `save_export_file` (mind map
+  exports) opens a native save dialog that blocks the IPC call — intercept it in
+  `fetch` as journey 58 does instead of letting it run.
+- `down` kills the app's whole process group (tauri-driver, WebKitWebDriver,
+  dbus-daemon included). If a run was killed before `down`, check `ps` for stray
+  `tauri-driver`/`WebKitWebDriver` before the next run: a leftover app on the same
+  display receives your keystrokes too (doubled typed text, bogus failures).
 
 ## Limits and gotchas
 
@@ -144,6 +164,9 @@ Each must hold in the shipped app:
 - Xvfb must use Mesa EGL here (the script sets `__EGL_VENDOR_LIBRARY_FILENAMES`;
   the NVIDIA vendor aborts it) and listens on TCP only (WSLg owns `/tmp/.X11-unix`).
   Never use WSLg's `DISPLAY=:0`.
+- Launches run on a private D-Bus session (`dbus-run-session`), which avoids a ~25 s
+  stall on the shared bus here; set `DESKTOP_CHECK_DBUS=0` to test the OS keychain.
+  `DESKTOP_CHECK_JS_TIMEOUT_MS` raises the 60 s per-script WebDriver limit.
 - Don't `pgrep -f`/`pkill -f` a pattern that appears in your own command line; use `$D down`.
 - JS passed on a command line must not contain `'`; put longer scripts in a file
   and pass `"$(cat file.js)"`.

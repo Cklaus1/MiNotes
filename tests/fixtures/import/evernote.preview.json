@@ -1,0 +1,252 @@
+{
+  "source": "evernote",
+  "source_label": "Evernote export",
+  "source_name": "Travel",
+  "counts": {
+    "notes": 7,
+    "pages": 7,
+    "journals": 0,
+    "folders": 1,
+    "attachments": 3,
+    "attachment_bytes": 2107,
+    "total_bytes": 19429,
+    "skipped": 0,
+    "reimport": 0
+  },
+  "tree": [
+    {
+      "name": "Travel",
+      "kind": "project",
+      "children": [
+        {
+          "name": "Travel",
+          "kind": "project",
+          "children": [
+            {
+              "name": "Itinerary",
+              "kind": "page",
+              "children": [],
+              "more": 0
+            },
+            {
+              "name": "Links",
+              "kind": "page",
+              "children": [],
+              "more": 0
+            },
+            {
+              "name": "Packing list",
+              "kind": "page",
+              "children": [],
+              "more": 0
+            },
+            {
+              "name": "Packing list (2)",
+              "kind": "page",
+              "children": [],
+              "more": 0
+            },
+            {
+              "name": "Secret",
+              "kind": "page",
+              "children": [],
+              "more": 0
+            },
+            {
+              "name": "Trip photos",
+              "kind": "page",
+              "children": [],
+              "more": 0
+            },
+            {
+              "name": "Web clip",
+              "kind": "page",
+              "children": [],
+              "more": 0
+            }
+          ],
+          "more": 0
+        }
+      ],
+      "more": 0
+    }
+  ],
+  "samples": [
+    {
+      "title": "Trip photos",
+      "source_path": "Travel.enex#2",
+      "source": "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?><!DOCTYPE en-note SYSTEM \"http://xml.evernote.com/pub/enml2.dtd\"><en-note><div>The beach:</div><div><en-media hash=\"bccb1b453981bd5e017b4ec7cea09681\" type=\"image/png\"/></div><div>Ticket: <en-media hash=\"02ae48ea5e99ae84f9c04d7ecfe8921f\" type=\"application/pdf\"/></div></en-note>",
+      "blocks": [
+        {
+          "depth": 0,
+          "content": "The beach:"
+        },
+        {
+          "depth": 0,
+          "content": "![beach.png](attachment:…/beach.png)"
+        },
+        {
+          "depth": 0,
+          "content": "Ticket: [ticket.pdf](attachment:…/ticket.pdf)"
+        },
+        {
+          "depth": 0,
+          "content": "**Attachments**"
+        },
+        {
+          "depth": 0,
+          "content": "![unreferenced.png](attachment:…/unreferenced.png)"
+        }
+      ]
+    },
+    {
+      "title": "Itinerary",
+      "source_path": "Travel.enex#4",
+      "source": "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?><!DOCTYPE en-note SYSTEM \"http://xml.evernote.com/pub/enml2.dtd\"><en-note><h1>Day one</h1><div>Arrive at <b>noon</b>, check in at <i>the hotel</i>; see <a href=\"https://example.com/hotel\">the hotel site</a>.</div><ul><li>Lunch</li><li>Walk<ul><li>Old town</li></ul></li></ul><ol><li>First</li><li>Second</li></ol><table><tr><th>Time</th><th>What</th></tr><tr><td>09:00</td><td>Breakfast</td></tr><tr><td>12:00</td><td><table><tr><td>Nested</td><td>table</td></tr></table></td></tr></table><div><span style=\"background-color: rgb(255, 250, 165);\">Highlighted text</span> and <span style=\"color:red;font-family:Comic Sans\">styled text</span></div><div><code>inline code</code></div><pre>preformatted\n  block</pre><hr/><blockquote><div>A quote</div></blockquote><h2>Day two</h2><div>Free day &amp; rest&nbsp;time.</div></en-note>",
+      "blocks": [
+        {
+          "depth": 0,
+          "content": "# Day one"
+        },
+        {
+          "depth": 1,
+          "content": "Arrive at **noon**, check in at *the hotel*; see [the hotel site](https://example.com/hotel)."
+        },
+        {
+          "depth": 1,
+          "content": "Lunch"
+        },
+        {
+          "depth": 1,
+          "content": "Walk"
+        },
+        {
+          "depth": 2,
+          "content": "Old town"
+        },
+        {
+          "depth": 1,
+          "content": "1. First"
+        },
+        {
+          "depth": 1,
+          "content": "2. Second"
+        },
+        {
+          "depth": 1,
+          "content": "| Time | What |\n| --- | --- |\n| 09:00 | Breakfast |\n| 12:00 | Nested table |"
+        },
+        {
+          "depth": 1,
+          "content": "==Highlighted text== and styled text\n`inline code`"
+        },
+        {
+          "depth": 1,
+          "content": "```\npreformatted\n  block\n```"
+        },
+        {
+          "depth": 1,
+          "content": "---"
+        },
+        {
+          "depth": 1,
+          "content": "> A quote"
+        },
+        {
+          "depth": 1,
+          "content": "## Day two"
+        },
+        {
+          "depth": 2,
+          "content": "Free day & rest time."
+        }
+      ]
+    },
+    {
+      "title": "Packing list",
+      "source_path": "Travel.enex#1",
+      "source": "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?><!DOCTYPE en-note SYSTEM \"http://xml.evernote.com/pub/enml2.dtd\"><en-note><div>Things to pack:</div><div><en-todo checked=\"true\"/>Passport</div><div><en-todo checked=\"false\"/>Sunscreen</div><div><en-todo/>Charger</div></en-note>",
+      "blocks": [
+        {
+          "depth": 0,
+          "content": "Things to pack:"
+        },
+        {
+          "depth": 0,
+          "content": "- [x] Passport"
+        },
+        {
+          "depth": 0,
+          "content": "- [ ] Sunscreen"
+        },
+        {
+          "depth": 0,
+          "content": "- [ ] Charger"
+        }
+      ]
+    }
+  ],
+  "warnings": [
+    {
+      "category": "duplicate_title",
+      "label": "notes with the same title — numbered (\"Title (2)\")",
+      "count": 1,
+      "notes": [
+        "Travel.enex#7"
+      ],
+      "examples": [
+        "Packing list → Packing list (2)"
+      ]
+    },
+    {
+      "category": "en_crypt",
+      "label": "encrypted Evernote text — kept as an opaque block",
+      "count": 1,
+      "notes": [
+        "Travel.enex#3"
+      ],
+      "examples": []
+    },
+    {
+      "category": "evernote_link_unresolved",
+      "label": "Evernote note links to notes outside the import — kept as text",
+      "count": 1,
+      "notes": [
+        "Travel.enex#6"
+      ],
+      "examples": [
+        "a note elsewhere"
+      ]
+    },
+    {
+      "category": "heavy_clip",
+      "label": "web clips over 200 blocks",
+      "count": 1,
+      "notes": [
+        "Travel.enex#5"
+      ],
+      "examples": [
+        "Web clip (230 blocks)"
+      ]
+    },
+    {
+      "category": "nested_table",
+      "label": "nested tables — flattened",
+      "count": 1,
+      "notes": [
+        "Travel.enex#4"
+      ],
+      "examples": []
+    },
+    {
+      "category": "reminder",
+      "label": "Evernote reminders — kept as properties",
+      "count": 2,
+      "notes": [
+        "Travel.enex#2"
+      ],
+      "examples": []
+    }
+  ],
+  "title_mappings": []
+}
