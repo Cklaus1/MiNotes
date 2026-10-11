@@ -23,9 +23,9 @@ pub fn run_get(db: &Database, date: Option<&str>, actor: &str, fmt: &Format) -> 
         Ok(d) => d,
         Err(e) => { print_error(&e); return 1; }
     };
-    let title = format!("Journal/{}", d);
 
-    match db.get_page_by_title(&title) {
+    // A trashed journal stays in the trash; a fresh page takes the date.
+    match db.find_journal(d) {
         Ok(Some(page)) => {
             let blocks = db.get_page_blocks(&page.id).unwrap_or_default();
             let tree = minotes_core::models::PageTree { page, blocks };
@@ -40,7 +40,7 @@ pub fn run_get(db: &Database, date: Option<&str>, actor: &str, fmt: &Format) -> 
         }
         Ok(None) => {
             // Auto-create journal page
-            match db.create_page(&title, None, true, Some(d), actor) {
+            match db.get_or_create_journal(d, None, actor) {
                 Ok(page) => {
                     let tree = minotes_core::models::PageTree { page, blocks: vec![] };
                     match fmt {
@@ -64,15 +64,10 @@ pub fn run_create(db: &Database, content: &str, date: Option<&str>, actor: &str)
         Ok(d) => d,
         Err(e) => { print_error(&e); return 1; }
     };
-    let title = format!("Journal/{}", d);
 
     // Get or create journal page
-    let page = match db.get_page_by_title(&title) {
-        Ok(Some(p)) => p,
-        Ok(None) => match db.create_page(&title, None, true, Some(d), actor) {
-            Ok(p) => p,
-            Err(e) => { print_error(&e.to_string()); return 1; }
-        },
+    let page = match db.get_or_create_journal(d, None, actor) {
+        Ok(p) => p,
         Err(e) => { print_error(&e.to_string()); return 1; }
     };
 

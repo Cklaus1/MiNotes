@@ -3,6 +3,7 @@ pub mod events;
 pub mod export;
 pub mod folder;
 pub mod graph;
+pub mod import;
 pub mod journal;
 pub mod links;
 pub mod page;

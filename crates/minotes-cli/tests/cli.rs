@@ -247,3 +247,87 @@ fn global_flags_work_after_the_subcommand() {
     assert!(out.status.success());
     assert!(String::from_utf8_lossy(&out.stdout).contains("hello"));
 }
+
+/// A notebook folder made by hand (as the app lays it out) and registered.
+fn make_notebook(h: &TempHome, folder: &str, name: &str, id: &str) -> PathBuf {
+    let root = h.path().join(folder);
+    std::fs::create_dir_all(root.join("notes")).unwrap();
+    std::fs::create_dir_all(root.join(".minotes")).unwrap();
+    let db = root.join("notebook.minotes").to_string_lossy().into_owned();
+    let out = run(h, &["--graph", &db, "--create", "page", "create", &format!("{name} page")]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    std::fs::write(
+        root.join("notebook.json"),
+        format!(r#"{{"name":"{name}","id":"{id}","format_version":1}}"#),
+    )
+    .unwrap();
+    let reg_path = h.path().join(".minotes/notebooks.json");
+    std::fs::create_dir_all(h.path().join(".minotes")).unwrap();
+    let mut reg: serde_json::Value = std::fs::read_to_string(&reg_path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or(serde_json::json!({"notebooks": []}));
+    reg["notebooks"].as_array_mut().unwrap().push(serde_json::json!({
+        "id": id, "name": name, "path": root.to_string_lossy(),
+    }));
+    std::fs::write(&reg_path, reg.to_string()).unwrap();
+    root
+}
+
+fn titles(out: &Output) -> Vec<String> {
+    json(out).as_array().unwrap().iter().map(|p| p["title"].as_str().unwrap().to_string()).collect()
+}
+
+#[test]
+fn graph_accepts_a_notebook_folder_and_notebook_resolves_by_name() {
+    let h = TempHome::new();
+    let work = make_notebook(&h, "MiNotes/Work", "Work", "0195a000-0000-7000-8000-000000000001");
+    make_notebook(&h, "Elsewhere/Home", "Home Notes", "0195a000-0000-7000-8000-000000000002");
+
+    // --graph <folder> opens its notebook.minotes.
+    let out = run(&h, &["--graph", &work.to_string_lossy(), "page", "list"]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(titles(&out), vec!["Work page".to_string()]);
+
+    // --notebook <name> resolves through the registry.
+    let out = run(&h, &["--notebook", "Home Notes", "page", "list"]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(titles(&out), vec!["Home Notes page".to_string()]);
+    let out = run(&h, &["page", "list", "--notebook", "Work"]);
+    assert_eq!(titles(&out), vec!["Work page".to_string()]);
+
+    // Unknown names and plain folders are errors, never a new empty database.
+    let out = run(&h, &["--notebook", "Nope", "page", "list"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("No notebook named"));
+    std::fs::create_dir_all(h.path().join("plain")).unwrap();
+    let out = run(&h, &["--graph", &h.path().join("plain").to_string_lossy(), "page", "list"]);
+    assert!(!out.status.success());
+    assert!(!h.path().join("plain/notebook.minotes").exists());
+
+    // The app's active notebook can be a folder notebook.
+    std::fs::write(h.path().join(".minotes/active_graph"), "0195a000-0000-7000-8000-000000000001").unwrap();
+    let out = run(&h, &["page", "list"]);
+    assert_eq!(titles(&out), vec!["Work page".to_string()]);
+
+    // `notebooks` lists them.
+    let out = run(&h, &["notebooks"]);
+    let v = json(&out);
+    assert_eq!(v["count"], 2);
+}
+
+#[test]
+fn missing_notebook_folder_is_an_error_not_a_new_notebook() {
+    let h = TempHome::new();
+    let root = make_notebook(&h, "Drive/Book", "Book", "0195a000-0000-7000-8000-000000000003");
+    std::fs::rename(h.path().join("Drive"), h.path().join("Unplugged")).unwrap();
+    let out = run(&h, &["--notebook", "Book", "page", "list"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("unavailable"), "{}", String::from_utf8_lossy(&out.stderr));
+    std::fs::write(h.path().join(".minotes/active_graph"), "0195a000-0000-7000-8000-000000000003").unwrap();
+    let out = run(&h, &["page", "list"]);
+    assert!(!out.status.success());
+    assert!(!root.exists(), "the missing folder is not recreated");
+    let v = json(&run(&h, &["notebooks"]));
+    assert_eq!(v["notebooks"][0]["available"], false);
+}
