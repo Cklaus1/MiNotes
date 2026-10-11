@@ -34,7 +34,7 @@ export function ContextMenuPortal({
   // Close on Escape
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") { e.preventDefault(); onClose(); }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
@@ -60,7 +60,25 @@ export function ContextMenuPortal({
       ref: menuRef,
       className: "sidebar-context-menu",
       style: { position: "fixed", top: y, left: x, zIndex: 99999 },
+      role: "menu",
       onClick: (e: any) => e.stopPropagation(),
+      // Keyboard: ↑/↓ (and Home/End) move between items; Tab still works.
+      onKeyDown: (e: any) => {
+        const items = Array.from(
+          menuRef.current?.querySelectorAll<HTMLElement>("button:not([disabled])") ?? [],
+        );
+        if (items.length === 0) return;
+        const i = items.indexOf(document.activeElement as HTMLElement);
+        let next = -1;
+        if (e.key === "ArrowDown") next = i < 0 ? 0 : (i + 1) % items.length;
+        else if (e.key === "ArrowUp") next = i < 0 ? items.length - 1 : (i - 1 + items.length) % items.length;
+        else if (e.key === "Home") next = 0;
+        else if (e.key === "End") next = items.length - 1;
+        if (next >= 0) {
+          e.preventDefault();
+          items[next].focus();
+        }
+      },
     },
     children
   );

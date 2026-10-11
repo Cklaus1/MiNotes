@@ -22,6 +22,8 @@ export interface MiNotesTestApi {
   createPage: (title: string) => Promise<boolean>;
   createBlockInCurrentPage: (content: string) => Promise<boolean>;
   getCurrentPage: () => string | null;
+  /** Id of the whiteboard open in Draw mode (null when Draw isn't open). */
+  getOpenWhiteboardId: () => string | null;
   getBlockCount: () => number;
   isPanelOpen: (name: string) => boolean;
   toggleCheckbox: (blockIndex: number, itemIndex?: number) => boolean;
@@ -38,6 +40,20 @@ export interface MiNotesTestApi {
   /** Multi-select visible blocks fromIndex..toIndex (shift-click selection). */
   selectBlocks: (fromIndex: number, toIndex: number) => number;
   getSelectedCount: () => number;
+  /** Table structure command at the cursor in block N (toolbar path); saves. */
+  tableAction: (blockIndex: number, action: string) => boolean;
+  /** Make (true) / remove (false) block N's flashcard (context-menu path). */
+  setFlashcard: (blockIndex: number, on: boolean) => Promise<boolean>;
+  /** Keydown into block N's editor (same handlers as the real key). */
+  pressKeyInBlock: (blockIndex: number, key: string, mods?: { shift?: boolean; ctrl?: boolean; alt?: boolean; focus?: boolean }) => boolean;
+  /** Visible blocks with depth and parent index. */
+  getBlockTree: () => Array<{ index: number; content: string; depth: number; parentIndex: number; id: string; position: number }>;
+  /** Index of the visible block whose editor has focus, -1 if none. */
+  getFocusedBlockIndex: () => number;
+  /** Indices of selected (highlighted, not editing) blocks. */
+  getSelectedIndices: () => number[];
+  /** Follow a ((block ref)) to its block (block-ref click path). */
+  openBlockRef: (blockId: string) => boolean;
   version: string;
 }
 

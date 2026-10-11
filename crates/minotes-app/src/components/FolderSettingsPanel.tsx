@@ -2,6 +2,8 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import * as api from "../lib/api";
 import type { FolderTree } from "../lib/api";
 import { showUndoToast } from "../lib/toast";
+import { useEscapeToClose } from "../lib/escapeStack";
+import { folderNameConflict } from "../lib/folderNames";
 
 interface Props {
   folderId: string;
@@ -17,6 +19,7 @@ export default function FolderSettingsPanel({ folderId, onClose, onRefresh }: Pr
   const [name, setName] = useState("");
   const [pageCount, setPageCount] = useState(0);
   const [closing, setClosing] = useState(false);
+  const [nameError, setNameError] = useState<string | null>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const nameRef = useRef("");
   const folderRef = useRef<FolderTree | null>(null);
@@ -25,7 +28,8 @@ export default function FolderSettingsPanel({ folderId, onClose, onRefresh }: Pr
     // Save any pending name change before closing
     const trimmed = nameRef.current.trim();
     const currentFolder = folderRef.current;
-    if (currentFolder && trimmed && trimmed !== currentFolder.name) {
+    if (currentFolder && trimmed && trimmed !== currentFolder.name &&
+        !(await folderNameConflict(trimmed, currentFolder.parent_id ?? null, folderId))) {
       await api.renameFolder(folderId, trimmed).catch(() => {});
     }
     // Always refresh sidebar on close (icon/color/name might have changed)
@@ -73,6 +77,8 @@ export default function FolderSettingsPanel({ folderId, onClose, onRefresh }: Pr
     }).catch(() => {});
   }, [folderId]);
 
+  useEscapeToClose(!closing, softClose);
+
   // Keep refs in sync for softClose to read
   nameRef.current = name;
   folderRef.current = folder;
@@ -82,8 +88,17 @@ export default function FolderSettingsPanel({ folderId, onClose, onRefresh }: Pr
   const handleRename = async () => {
     if (closing) return; // softClose handles save
     const trimmed = name.trim();
-    if (trimmed && trimmed !== folder.name) {
-      await api.renameFolder(folderId, trimmed);
+    if (!trimmed) { setName(folder.name); setNameError(null); return; }
+    if (trimmed !== folder.name) {
+      const conflict = await folderNameConflict(trimmed, folder.parent_id ?? null, folderId);
+      if (conflict) { setNameError(conflict); return; }
+      setNameError(null);
+      try {
+        await api.renameFolder(folderId, trimmed);
+      } catch (e) {
+        setNameError(`Couldn't rename: ${typeof e === "string" ? e : (e as Error)?.message ?? e}`);
+        return;
+      }
       setFolder({ ...folder, name: trimmed });
       folderRef.current = { ...folder, name: trimmed };
       refreshSidebar();
@@ -116,7 +131,7 @@ export default function FolderSettingsPanel({ folderId, onClose, onRefresh }: Pr
     <div ref={panelRef} className={`folder-settings-panel ${closing ? "folder-settings-closing" : ""}`}>
       <div className="folder-settings-header">
         <span className="folder-settings-title">Project Settings</span>
-        <button className="settings-close-btn" onClick={softClose}>&times;</button>
+        <button className="settings-close-btn" onClick={softClose} title="Close (Esc)" aria-label="Close project settings">&times;</button>
       </div>
 
       <div className="folder-settings-body">
@@ -125,10 +140,16 @@ export default function FolderSettingsPanel({ folderId, onClose, onRefresh }: Pr
           <input
             className="folder-settings-name-input"
             value={name}
-            onChange={e => setName(e.target.value)}
+            onChange={e => { setName(e.target.value); setNameError(null); }}
             onBlur={handleRename}
             onKeyDown={e => { if (e.key === "Enter") handleRename(); }}
+            aria-label="Project name"
+            aria-invalid={!!nameError}
+            aria-describedby={nameError ? "folder-name-error" : undefined}
           />
+          {nameError && (
+            <div id="folder-name-error" className="inline-field-error" role="alert">{nameError}</div>
+          )}
         </div>
 
         <div className="folder-settings-sep" />

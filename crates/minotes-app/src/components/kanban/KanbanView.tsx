@@ -4,8 +4,9 @@ import { autoScrollForElements } from "@atlaskit/pragmatic-drag-and-drop-auto-sc
 import { extractClosestEdge } from "@atlaskit/pragmatic-drag-and-drop-hitbox/closest-edge";
 import type { Block } from "../../lib/api";
 import * as api from "../../lib/api";
-import { extractLabel } from "../mindmap/blocksToFlow";
+import { extractLabel, extractTaskLabel } from "../mindmap/blocksToFlow";
 import KanbanColumn from "./KanbanColumn";
+import { buildKanbanModel, UNSORTED_ID, UNSORTED_TITLE } from "./kanbanModel";
 
 const COLUMN_COLORS = ["#89b4fa", "#a6e3a1", "#f9e2af", "#f38ba8", "#cba6f7", "#89dceb", "#fab387"];
 
@@ -36,25 +37,51 @@ export default function KanbanView({ pageId, pageTitle, blocks, onRefreshPage }:
     toastTimer.current = setTimeout(() => setToast(null), 5000);
   }, [onRefreshPage]);
 
-  const columns = useMemo(
-    () => blocks
-      .filter((b) => !b.parent_id && b.content.trim() !== "---")
-      .sort((a, b) => a.position - b.position),
-    [blocks],
+  // Blocks the board has shown as columns stay columns (see buildKanbanModel).
+  const [stickyColumnIds, setStickyColumnIds] = useState<Set<string>>(() => {
+    try {
+      return new Set<string>(JSON.parse(localStorage.getItem(`kanban-columns-${pageId}`) ?? "[]"));
+    } catch { return new Set<string>(); }
+  });
+
+  const { columns, unsorted, cardsByColumn, columnOfCard } = useMemo(
+    () => buildKanbanModel(blocks, pageTitle, stickyColumnIds),
+    [blocks, pageTitle, stickyColumnIds],
   );
 
-  const cardsByColumn = useMemo(() => {
-    const map = new Map<string, Block[]>();
-    for (const col of columns) {
-      map.set(
-        col.id,
-        blocks
-          .filter((b) => b.parent_id === col.id && b.content.trim() !== "---")
-          .sort((a, b) => a.position - b.position),
-      );
-    }
-    return map;
-  }, [blocks, columns]);
+  useEffect(() => {
+    if (columns.every((c) => stickyColumnIds.has(c.id))) return;
+    const next = new Set(columns.map((c) => c.id));
+    try { localStorage.setItem(`kanban-columns-${pageId}`, JSON.stringify([...next])); } catch { /* best effort */ }
+    setStickyColumnIds(next);
+  }, [columns, stickyColumnIds, pageId]);
+
+  // What the board renders: the virtual "No section" column (only when it has
+  // cards) followed by the real section columns.
+  const boardColumns = useMemo(() => {
+    const list: { id: string; block: Block | null; title: string }[] = [];
+    if (unsorted.length > 0) list.push({ id: UNSORTED_ID, block: null, title: UNSORTED_TITLE });
+    for (const c of columns) list.push({ id: c.id, block: c, title: extractLabel(c.content, 200) });
+    return list;
+  }, [columns, unsorted]);
+
+  const columnRefs = useMemo(() => boardColumns.map(({ id, title }) => ({ id, title })), [boardColumns]);
+
+  /** Put a card into a column; the "No section" column means the page's top level. */
+  const placeCard = useCallback((cardId: string, fromColumnId: string | null, toColumnId: string, position: number) => {
+    const op = toColumnId === UNSORTED_ID
+      ? api.reorderBlock(cardId, undefined, position)
+      : fromColumnId === toColumnId
+        ? api.reorderBlock(cardId, toColumnId, position)
+        : api.moveBlock(cardId, toColumnId, position);
+    op.then(onRefreshPage).catch(() => onRefreshPage());
+  }, [onRefreshPage]);
+
+  const handleMoveCardTo = useCallback((block: Block, toColumnId: string) => {
+    const cards = cardsByColumn.get(toColumnId) ?? [];
+    const maxPos = cards.reduce((max, c) => Math.max(max, c.position), 0);
+    placeCard(block.id, columnOfCard.get(block.id) ?? null, toColumnId, maxPos + 1);
+  }, [cardsByColumn, columnOfCard, placeCard]);
 
   const subBlockCounts = useMemo(() => {
     const counts = new Map<string, number>();
@@ -83,15 +110,14 @@ export default function KanbanView({ pageId, pageTitle, blocks, onRefreshPage }:
 
   const filteredCardIdsByColumn = useMemo(() => {
     const map = new Map<string, string[]>();
-    for (const col of columns) {
-      const cards = cardsByColumn.get(col.id) ?? [];
+    for (const [colId, cards] of cardsByColumn) {
       const filtered = searchQuery
         ? cards.filter((c) => c.content.toLowerCase().includes(searchQuery.toLowerCase()))
         : cards;
-      map.set(col.id, filtered.map((c) => c.id));
+      map.set(colId, filtered.map((c) => c.id));
     }
     return map;
-  }, [columns, cardsByColumn, searchQuery]);
+  }, [cardsByColumn, searchQuery]);
 
   useEffect(() => {
     const el = boardRef.current;
@@ -159,16 +185,10 @@ export default function KanbanView({ pageId, pageTitle, blocks, onRefreshPage }:
           newPosition = maxPos + 1;
         }
 
-        if (sourceColumnId === targetColumnId) {
-          api.reorderBlock(cardId, targetColumnId, newPosition)
-            .then(onRefreshPage).catch(() => onRefreshPage());
-        } else {
-          api.moveBlock(cardId, targetColumnId, newPosition)
-            .then(onRefreshPage).catch(() => onRefreshPage());
-        }
+        placeCard(cardId, sourceColumnId, targetColumnId, newPosition);
       },
     });
-  }, [cardsByColumn, columns, onRefreshPage]);
+  }, [cardsByColumn, columns, onRefreshPage, placeCard]);
 
   // Delete with undo toast
   // Undo recreates the whole card subtree with its ORIGINAL ids, parents,
@@ -180,7 +200,7 @@ export default function KanbanView({ pageId, pageTitle, blocks, onRefreshPage }:
     api.deleteBlock(block.id).then(() => {
       onRefreshPage();
       showToast(
-        `Deleted "${extractLabel(content)}"`,
+        `Deleted "${extractTaskLabel(content)}"`,
         snapshot ? () => api.restoreBlocks(snapshot) : undefined,
       );
     }).catch(() => {});
@@ -212,12 +232,13 @@ export default function KanbanView({ pageId, pageTitle, blocks, onRefreshPage }:
       if (!focusedCardId) return;
       const card = blocks.find((b) => b.id === focusedCardId);
       if (!card) return;
-      const colIdx = columns.findIndex((c) => c.id === card.parent_id);
+      const cardColumnId = columnOfCard.get(card.id);
+      const colIdx = boardColumns.findIndex((c) => c.id === cardColumnId);
 
       if (e.key === "ArrowDown" || e.key === "ArrowUp") {
         e.preventDefault();
         if (colIdx === -1) return;
-        const colCards = filteredCardIdsByColumn.get(columns[colIdx].id) ?? [];
+        const colCards = filteredCardIdsByColumn.get(boardColumns[colIdx].id) ?? [];
         const idx = colCards.indexOf(focusedCardId);
         const next = e.key === "ArrowDown" ? idx + 1 : idx - 1;
         if (next >= 0 && next < colCards.length) setFocusedCardId(colCards[next]);
@@ -227,10 +248,10 @@ export default function KanbanView({ pageId, pageTitle, blocks, onRefreshPage }:
         e.preventDefault();
         if (colIdx === -1) return;
         const nextColIdx = e.key === "ArrowRight" ? colIdx + 1 : colIdx - 1;
-        if (nextColIdx < 0 || nextColIdx >= columns.length) return;
-        const nextColCards = filteredCardIdsByColumn.get(columns[nextColIdx].id) ?? [];
+        if (nextColIdx < 0 || nextColIdx >= boardColumns.length) return;
+        const nextColCards = filteredCardIdsByColumn.get(boardColumns[nextColIdx].id) ?? [];
         if (nextColCards.length === 0) return;
-        const currentCards = filteredCardIdsByColumn.get(columns[colIdx].id) ?? [];
+        const currentCards = filteredCardIdsByColumn.get(boardColumns[colIdx].id) ?? [];
         const cardIdx = currentCards.indexOf(focusedCardId);
         setFocusedCardId(nextColCards[Math.min(Math.max(cardIdx, 0), nextColCards.length - 1)]);
       }
@@ -242,17 +263,21 @@ export default function KanbanView({ pageId, pageTitle, blocks, onRefreshPage }:
       }
 
       if (e.key === "Escape") {
+        // Handled here (closing the side panel / dropping card focus) — the board
+        // itself only closes on an Escape nothing else used.
+        e.preventDefault();
         if (sidePanelBlockId) setSidePanelBlockId(null);
         else setFocusedCardId(null);
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [focusedCardId, sidePanelBlockId, blocks, columns, filteredCardIdsByColumn, pageId, onRefreshPage]);
+  }, [focusedCardId, sidePanelBlockId, blocks, boardColumns, columnOfCard, filteredCardIdsByColumn, pageId, onRefreshPage]);
 
   const handleAddColumn = useCallback(async () => {
     try {
-      await api.createBlock(pageId, "New Column");
+      // A heading, so the new (still empty) block is a column and not a card.
+      await api.createBlock(pageId, "## New Column");
       onRefreshPage();
       setTimeout(() => {
         boardRef.current?.querySelector(".kanban-add-column")
@@ -272,22 +297,22 @@ export default function KanbanView({ pageId, pageTitle, blocks, onRefreshPage }:
   const handleExport = useCallback(() => {
     const esc = (s: string) => s.replace(/\|/g, "\\|");
     let md = `# ${esc(pageTitle)}\n\n`;
-    md += "| " + columns.map((c) => esc(extractLabel(c.content))).join(" | ") + " |\n";
-    md += "| " + columns.map(() => "---").join(" | ") + " |\n";
-    const maxCards = Math.max(...columns.map((c) => (cardsByColumn.get(c.id) ?? []).length), 1);
+    md += "| " + boardColumns.map((c) => esc(c.title)).join(" | ") + " |\n";
+    md += "| " + boardColumns.map(() => "---").join(" | ") + " |\n";
+    const maxCards = Math.max(...boardColumns.map((c) => (cardsByColumn.get(c.id) ?? []).length), 1);
     for (let i = 0; i < maxCards; i++) {
-      const row = columns.map((c) => {
+      const row = boardColumns.map((c) => {
         const cards = cardsByColumn.get(c.id) ?? [];
         return i < cards.length ? esc(extractLabel(cards[i].content)) : "";
       });
       md += "| " + row.join(" | ") + " |\n";
     }
     navigator.clipboard.writeText(md).then(() => showToast("Copied board as markdown table")).catch(() => {});
-  }, [pageTitle, columns, cardsByColumn, showToast]);
+  }, [pageTitle, boardColumns, cardsByColumn, showToast]);
 
   const sidePanelBlock = sidePanelBlockId ? blocks.find((b) => b.id === sidePanelBlockId) : null;
 
-  if (columns.length === 0) {
+  if (boardColumns.length === 0) {
     return (
       <div className="kanban-empty">
         <p>This page is empty.</p>
@@ -313,12 +338,15 @@ export default function KanbanView({ pageId, pageTitle, blocks, onRefreshPage }:
       </div>
 
       <div className="kanban-board" ref={boardRef} role="region" aria-label="Kanban board">
-        {columns.map((col) => (
+        {boardColumns.map((col) => (
           <KanbanColumn
             key={col.id}
-            column={col}
+            columnId={col.id}
+            column={col.block}
+            title={col.title}
             cards={cardsByColumn.get(col.id) ?? []}
-            allColumns={columns}
+            allColumns={columnRefs}
+            onMoveCard={handleMoveCardTo}
             subBlockCounts={subBlockCounts}
             pageId={pageId}
             focusedCardId={focusedCardId}
@@ -353,7 +381,7 @@ export default function KanbanView({ pageId, pageTitle, blocks, onRefreshPage }:
       {sidePanelBlock && (
         <div className="kanban-side-panel" role="dialog" aria-label="Card details">
           <div className="kanban-side-header">
-            <span className="kanban-side-title">{extractLabel(sidePanelBlock.content)}</span>
+            <span className="kanban-side-title">{extractTaskLabel(sidePanelBlock.content)}</span>
             <button className="kanban-side-close" onClick={() => setSidePanelBlockId(null)} aria-label="Close">x</button>
           </div>
           <div className="kanban-side-body">

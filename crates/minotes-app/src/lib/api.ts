@@ -52,6 +52,11 @@ export interface PageTree {
   blocks: Block[];
 }
 
+/** A block plus the title of its page: enough to show it and navigate to it. */
+export interface BlockWithPage extends Block {
+  page_title: string;
+}
+
 export interface Link {
   id: string;
   from_block: string;
@@ -59,6 +64,8 @@ export interface Link {
   to_block?: string;
   link_type: string;
   created_at: string;
+  /** get_backlinks: the source block with its page title (no per-link getBlock). */
+  block?: BlockWithPage;
 }
 
 export interface Property {
@@ -289,6 +296,10 @@ export const setProperty = (
 export const getProperties = (entityId: string) =>
   invoke<Property[]>("get_properties", { entityId });
 
+/** Properties of many entities in ONE call: id -> properties (ids without any are absent). */
+export const getPropertiesBatch = (entityIds: string[]) =>
+  invoke<Record<string, Property[]>>("get_properties_batch", { entityIds });
+
 export const deleteProperty = (entityId: string, key: string) =>
   invoke<boolean>("delete_property", { entityId, key });
 
@@ -319,6 +330,10 @@ export interface SrsStats {
 
 export const createCard = (blockId: string, cardType: string) =>
   invoke<Card>("create_card", { blockId, cardType });
+
+/** Every card (oldest first): which blocks are flashcards. */
+export const listCards = () =>
+  invoke<Card[]>("list_cards");
 
 export const getDueCards = (limit?: number) =>
   invoke<Card[]>("get_due_cards", { limit: limit ?? 50 });
@@ -450,6 +465,90 @@ export const deleteGraph = (name: string) =>
 export const getCurrentGraph = () =>
   invoke<string>("get_current_graph");
 
+// ── Notebooks (UI word; "graph" in commands) ──
+
+export interface NotebookInfo {
+  /** What switchGraph() takes: a legacy graph name, or a folder notebook's id. */
+  key: string;
+  name: string;
+  /** "legacy" (~/.minotes/<name>.db) or "folder" (a notebook folder). */
+  kind: "legacy" | "folder";
+  /** The notebook folder, or the legacy database file. */
+  path: string;
+  db_path: string;
+  /** The always-current markdown copy. */
+  mirror_dir: string;
+  /** False when the folder is missing (unplugged drive, moved): offer "Locate…". */
+  available: boolean;
+  last_opened: string | null;
+  size_bytes: number;
+  modified_at: string;
+  /** File-sync service the folder seems to be in (Dropbox, iCloud Drive, …). */
+  cloud: string | null;
+}
+
+export interface NotebookSession {
+  key: string;
+  name: string;
+  kind: "legacy" | "folder";
+  path: string;
+  db_path: string;
+  mirror_dir: string;
+  /** Another MiNotes window has this notebook open: nothing can be changed here. */
+  read_only: boolean;
+  held_by: string | null;
+  /** One-off notice (e.g. the last notebook's folder is missing). */
+  notice: string | null;
+  cloud: string | null;
+  conflicted_copies: string[];
+}
+
+export interface MirrorStatus {
+  dir: string;
+  enabled: boolean;
+  last_written_at: string | null;
+  last_pass_at: string | null;
+  last_full_at: string | null;
+  error: string | null;
+  pages: number;
+  /** Changes are waiting for the 2 s quiet period. */
+  pending: boolean;
+  /** The last pass failed: "Markdown copy is behind — retry". */
+  behind: boolean;
+  read_only: boolean;
+}
+
+export const listNotebooks = () => invoke<NotebookInfo[]>("list_notebooks");
+export const getNotebookSession = () => invoke<NotebookSession>("get_notebook_session");
+export const dismissNotebookNotice = () => invoke<void>("dismiss_notebook_notice");
+export const defaultNotebookLocation = (name: string) =>
+  invoke<string>("default_notebook_location", { name });
+/** Create a notebook folder (default ~/MiNotes/<name>). Does not switch to it. */
+export const createNotebook = (name: string, location?: string) =>
+  invoke<NotebookInfo>("create_notebook", { name, location: location ?? null });
+/** Register an existing notebook folder. Does not switch to it. */
+export const openNotebookFolder = (path: string) =>
+  invoke<NotebookInfo>("open_notebook_folder", { path });
+export const locateNotebook = (key: string, path: string) =>
+  invoke<NotebookInfo>("locate_notebook", { key, path });
+export const renameNotebook = (key: string, name: string) =>
+  invoke<NotebookInfo>("rename_notebook", { key, name });
+export const deleteNotebook = (key: string) => invoke<void>("delete_notebook", { key });
+export const forgetNotebook = (key: string) => invoke<void>("forget_notebook", { key });
+export const takeOverNotebook = () => invoke<NotebookSession>("take_over_notebook");
+/** Convert the open ~/.minotes notebook into a folder notebook at `path`. */
+export const moveNotebookToFolder = (path: string) =>
+  invoke<NotebookSession>("move_notebook_to_folder", { path });
+export const mirrorStatus = () => invoke<MirrorStatus>("mirror_status");
+export const mirrorRebuild = () => invoke<MirrorStatus>("mirror_rebuild");
+export const mirrorOpenFolder = () => invoke<void>("mirror_open_folder");
+
+/** Native folder picker (Tauri dialog plugin). Null when cancelled. */
+export const pickFolderNative = (title: string, defaultPath?: string) =>
+  invoke<string | null>("plugin:dialog|open", {
+    options: { directory: true, multiple: false, title, defaultPath: defaultPath || undefined },
+  });
+
 // Web Clipper API (F-021)
 export const clipContent = (
   title: string,
@@ -562,6 +661,10 @@ export const undo = () =>
 export const savePngToDownloads = (filename: string, data: number[]) =>
   invoke<string>("save_png_to_downloads", { filename, data });
 
+/** Desktop only: asks where to save via the OS save dialog. Null if cancelled. */
+export const saveExportFile = (filename: string, data: number[]) =>
+  invoke<string | null>("save_export_file", { filename, data });
+
 // Feature 8: Link Preview — fetch OpenGraph metadata
 export interface OgMetadata {
   title: string;
@@ -574,7 +677,11 @@ export const fetchOgMetadata = (url: string) =>
 
 // Feature 9: Block Transclusion — get single block by ID
 export const getBlock = (id: string) =>
-  invoke<Block | null>("get_block", { id });
+  invoke<BlockWithPage | null>("get_block", { id });
+
+/** Several blocks (with page titles) in ONE call, in input order; unknown ids skipped. */
+export const getBlocks = (ids: string[]) =>
+  invoke<BlockWithPage[]>("get_blocks", { ids });
 
 // Archive
 export const archivePage = (id: string) =>
@@ -639,12 +746,30 @@ export interface GitSyncStatus {
 }
 
 export interface GitSyncResult {
+  /** Git AND the import went through. */
   success: boolean;
   pages_exported: number;
   pages_imported: number;
   conflicts_resolved: number;
   error: string | null;
+  /** Per-file problems importing the other device's changes. */
+  import_errors?: string[];
+  /** Deletions from another device the mass-delete guard held for the user. */
+  held_deletions?: HeldDeletions | null;
+  /** The remote could not be reached. */
+  offline?: boolean;
 }
+
+export interface HeldDeletions {
+  pages: number;
+  folders: number;
+  titles: string[];
+  total_pages: number;
+}
+
+/** "trash": apply the other device's deletions (to trash). "keep": keep the pages. */
+export const gitSyncResolveDeletions = (action: "trash" | "keep") =>
+  invoke<number>("git_sync_resolve_deletions", { action });
 
 export const gitAvailable = () =>
   invoke<boolean>("git_available");
@@ -694,3 +819,229 @@ export async function readPdfFile(path: string): Promise<Uint8Array | null> {
   const buf = await tauriInvoke<ArrayBuffer>("read_pdf_file", { path });
   return new Uint8Array(buf);
 }
+
+// ── AI platform ──
+// Commands in src-tauri/src/ai_commands.rs (logic: minotes-core `ai`); browser
+// mode is served by lib/aiMock.ts. The API key never comes back from the
+// backend — only its status.
+export type AiProviderKind = "off" | "openrouter" | "local";
+
+export interface AiSettings {
+  provider: AiProviderKind;
+  models: { interactive: string | null; bulk: string | null; agent: string | null };
+  scope: { kind: "notebook" | "folders" | "page"; folder_ids: string[] };
+  monthly_cap_usd: number;
+  keep_transcripts: boolean;
+  local: { base_url: string; model: string; supports_tools: boolean };
+  reasoning_effort: "low" | "medium" | "high" | null;
+  max_tool_iterations: number;
+  run_token_budget: number;
+  max_output_tokens: number;
+}
+
+export interface AiKeyStatus { configured: boolean; source: "keychain" | "env" | "none"; keychain_available: boolean }
+
+export interface AiStatus {
+  settings: AiSettings;
+  key: AiKeyStatus;
+  configured: boolean;
+  problem: string | null;
+  spend_this_month_usd: number;
+  data_notice: string;
+  effective_model: string | null;
+  recommended_model: string | null;
+  scope_label: string;
+  catalog_fetched_at: string | null;
+}
+
+/** Prices are USD per token. */
+export interface AiModelInfo {
+  id: string; name: string; created: number; context_length: number | null;
+  prompt_price: number; completion_price: number; cache_read_price: number | null;
+}
+
+export interface AiModelList { models: AiModelInfo[]; recommended: string | null; fetched_at: string | null; error: string | null }
+
+export interface AiCitation { block_id: string; page_id: string; page_title: string; snippet: string }
+
+export interface AiUsage { prompt_tokens: number; completion_tokens: number; cached_tokens: number; cost: number | null }
+
+export interface AiRunOutput {
+  run_id: string;
+  /** Contains only validated `[[cite:<block-id>]]` markers. */
+  answer: string;
+  citations: AiCitation[];
+  stripped_citations: number;
+  outcome: string;
+  notice: string | null;
+  model: string;
+  usage: AiUsage;
+  cost_usd: number;
+  iterations: number;
+  tool_calls: number;
+  spend_this_month_usd: number;
+  cap_usd: number;
+}
+
+export interface AiRunRecord {
+  id: string; task: string; scope: string; provider: string; model: string;
+  input_tokens: number; output_tokens: number; cached_tokens: number; tool_calls: number;
+  cost_usd: number; started_at: string; finished_at: string | null; outcome: string;
+  error: string | null; has_transcript: boolean;
+}
+
+export type AiProgress =
+  | { type: "started"; run_id: string; model: string }
+  | { type: "turn"; n: number }
+  | { type: "delta"; text: string }
+  | { type: "status"; text: string };
+
+export type AiStreamEvent =
+  | { conversation_id: string; kind: "progress"; event: AiProgress }
+  | { conversation_id: string; kind: "done"; result: AiRunOutput }
+  | { conversation_id: string; kind: "error"; message: string; not_configured: boolean };
+
+export const aiGetStatus = () => invoke<AiStatus>("ai_get_status");
+export const aiSaveSettings = (settings: AiSettings) => invoke<AiStatus>("ai_save_settings", { settings });
+export const aiSetApiKey = (key: string) => invoke<AiKeyStatus>("ai_set_api_key", { key });
+export const aiClearApiKey = () => invoke<AiKeyStatus>("ai_clear_api_key");
+export const aiListModels = (refresh = false) => invoke<AiModelList>("ai_list_models", { refresh });
+/** Starts a run; returns the conversation id. Results arrive via onAiEvent. */
+export const aiAsk = (question: string, conversationId: string | null, currentPageId: string | null) =>
+  invoke<string>("ai_ask", { question, conversationId, currentPageId });
+export const aiCancel = (conversationId: string) => invoke<void>("ai_cancel", { conversationId });
+export const aiResetConversation = (conversationId: string) => invoke<void>("ai_reset_conversation", { conversationId });
+export const aiListRuns = (limit = 20) => invoke<AiRunRecord[]>("ai_list_runs", { limit });
+
+/** Subscribe to AI stream events. Returns an unsubscribe function. */
+export async function onAiEvent(cb: (e: AiStreamEvent) => void): Promise<() => void> {
+  if (isTauri) {
+    const { listen } = await import("@tauri-apps/api/event");
+    return listen<AiStreamEvent>("ai://event", (e) => cb(e.payload));
+  }
+  const { aiMockEvents } = await import("./aiMock");
+  const h = (e: Event) => cb((e as CustomEvent<AiStreamEvent>).detail);
+  aiMockEvents.addEventListener("event", h);
+  return () => aiMockEvents.removeEventListener("event", h);
+}
+// ── End AI platform ──
+
+// ── Import / attachments ──
+// Commands in src-tauri/src/import_commands.rs (logic: minotes-core `import`,
+// `repo::attachments`); browser mode is served by lib/importMock.ts.
+import type { Attachment } from "./attachments";
+
+/** Store bytes as an attachment (raw IPC body in the app — no base64). */
+export async function storeAttachment(name: string, mime: string, bytes: Uint8Array): Promise<Attachment> {
+  if (isTauri) {
+    return tauriInvoke<Attachment>("store_attachment", bytes, {
+      headers: { "x-name": encodeURIComponent(name), "x-mime": encodeURIComponent(mime) },
+    });
+  }
+  return invoke<Attachment>("store_attachment", { name, mime, bytes });
+}
+/** Store the files the OS just dropped on the window (desktop only). */
+export const storeDroppedFiles = () => invoke<Attachment[]>("store_dropped_files");
+export const openAttachment = (hash: string) => invoke<void>("open_attachment", { hash });
+export const getAttachment = (hash: string) => invoke<Attachment | null>("get_attachment", { hash });
+
+export type ImportSourceKind = "obsidian" | "markdown" | "evernote";
+export type SplitMode = "outline" | "paragraph" | "note";
+export interface ImportOptions {
+  split: SplitMode;
+  daily_notes: boolean;
+  unlinked_files: boolean;
+  collisions: "keep_both" | "skip";
+  parent_project: string | null;
+  batch_size?: number;
+}
+export interface ImportWarning {
+  category: string;
+  label: string;
+  count: number;
+  notes: string[];
+  examples: string[];
+}
+export interface ImportTreeNode { name: string; kind: "project" | "page" | "journal"; children: ImportTreeNode[]; more: number }
+export interface ImportSample { title: string; source_path: string; source: string; blocks: { depth: number; content: string }[] }
+export interface ImportPreview {
+  source: ImportSourceKind;
+  source_label: string;
+  source_name: string;
+  counts: {
+    notes: number; pages: number; journals: number; folders: number; attachments: number;
+    attachment_bytes: number; total_bytes: number; skipped: number; reimport: number;
+  };
+  tree: ImportTreeNode[];
+  samples: ImportSample[];
+  warnings: ImportWarning[];
+  title_mappings: [string, string][];
+}
+export type ImportDestination =
+  | { kind: "new_notebook"; name?: string | null; location?: string | null }
+  | { kind: "current"; project?: string | null };
+export interface ImportReportWarning { category: string; label: string; count: number; pages: [string, string | null][]; examples: string[] }
+export interface ImportResult {
+  run_id: string;
+  source: string;
+  source_name: string;
+  status: string;
+  pages_created: number;
+  journals_created: number;
+  folders_created: number;
+  blocks_created: number;
+  attachments_created: number;
+  attachments_reused: number;
+  attachment_bytes: number;
+  pages_updated: number;
+  pages_unchanged: number;
+  reimported_copies: number;
+  skipped: number;
+  warnings: ImportReportWarning[];
+  report_page_id: string | null;
+  report_page_title: string | null;
+  duration_ms: number;
+  notebook_key: string | null;
+  notebook_name: string | null;
+}
+export interface ImportUndoReport {
+  run_id: string;
+  undone: boolean;
+  pages_deleted: number;
+  folders_deleted: number;
+  attachments_deleted: number;
+  edited: { id: string; title: string }[];
+  updated_kept: number;
+}
+export interface ImportRun { id: string; source: string; origin: string; source_path: string; started_at: string; finished_at: string | null; status: string; report_page: string | null; pages: number }
+export interface ImportProgress { phase: string; done: number; total: number; current: string }
+
+export const importDetect = (path: string) => invoke<{ kind: ImportSourceKind; name: string }>("import_detect", { path });
+export const importScan = (kind: ImportSourceKind, paths: string[], options: ImportOptions) =>
+  invoke<ImportPreview>("import_scan", { kind, paths, options });
+export const importPreview = (options: ImportOptions, destination: ImportDestination) =>
+  invoke<ImportPreview>("import_preview", { options, destination });
+export const importRun = (destination: ImportDestination, options: ImportOptions) =>
+  invoke<ImportResult>("import_run", { destination, options });
+export const importCancel = () => invoke<void>("import_cancel");
+export const importDiscard = () => invoke<void>("import_discard");
+export const importUndo = (runId: string, keepEdited = false) => invoke<ImportUndoReport>("import_undo", { runId, keepEdited });
+export const importRuns = () => invoke<ImportRun[]>("import_runs");
+
+/** Native file picker for .enex exports. Null when cancelled. */
+export const pickEnexFilesNative = (title: string) =>
+  invoke<string[] | string | null>("plugin:dialog|open", {
+    options: { directory: false, multiple: true, title, filters: [{ name: "Evernote export", extensions: ["enex"] }] },
+  });
+
+/** Subscribe to import progress. Returns an unsubscribe function. */
+export async function onImportProgress(cb: (p: ImportProgress) => void): Promise<() => void> {
+  if (isTauri) {
+    const { listen } = await import("@tauri-apps/api/event");
+    return listen<ImportProgress>("import-progress", (e) => cb(e.payload));
+  }
+  const h = (e: Event) => cb((e as CustomEvent<ImportProgress>).detail);
+  window.addEventListener("minotes-import-progress", h);
+  return () => window.removeEventListener("minotes-import-progress", h);
+}
+// ── End import ──

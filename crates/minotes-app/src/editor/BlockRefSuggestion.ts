@@ -6,6 +6,9 @@ import tippy, { type Instance as TippyInstance } from "tippy.js";
 import { BlockRefMenu } from "./BlockRefMenu";
 import { search } from "../lib/api";
 
+/** Exported so the editor can tell whether this menu is open (e.g. Escape closes it). */
+export const blockRefPluginKey = new PluginKey("blockRefSuggestion");
+
 export const BlockRefSuggestion = Extension.create({
   name: "blockRefSuggestion",
 
@@ -14,6 +17,10 @@ export const BlockRefSuggestion = Extension.create({
       suggestion: {
         char: "((",
         allowSpaces: true,
+        // A finished reference "((id))" (e.g. the caret placed at the end of a block
+        // that ends with one) is not a query: don't pop the menu up over it.
+        allow: ({ state, range }: { state: any; range: { from: number; to: number } }) =>
+          !state.doc.textBetween(range.from, range.to, " ", " ").includes("))"),
         command: ({ editor, range, props }: { editor: any; range: any; props: any }) => {
           const contentPreview = props.content
             ? props.content.length > 40
@@ -102,7 +109,7 @@ export const BlockRefSuggestion = Extension.create({
   addProseMirrorPlugins() {
     return [
       Suggestion({
-        pluginKey: new PluginKey("blockRefSuggestion"),
+        pluginKey: blockRefPluginKey,
         editor: this.editor,
         ...this.options.suggestion,
       }),

@@ -28,6 +28,13 @@
   height: 0;
 }
 
+/* Empty page: its only block is empty — show a starting hint even before focus
+   (the Placeholder extension only supplies text while the editor is focused). */
+.block-list > .block:only-child .block-content .ProseMirror > p.is-editor-empty:only-child::before {
+  content: "Type to start writing, / for commands, [[ to link";
+  opacity: 0.8;
+}
+
 /* Inline formatting */
 .block-content .ProseMirror strong {
   font-weight: 700;
@@ -210,34 +217,61 @@
   background: rgba(137, 180, 250, 0.2);
 }
 
-/* Syntax highlighting (lowlight / highlight.js compatible tokens) */
+/* Syntax highlighting (lowlight / highlight.js compatible tokens). Theme
+   variables, each >= 4.5:1 (WCAG AA) against the code block background
+   (var(--bg-secondary): #181825 dark, #e6e9ef light). */
+:root, [data-theme="dark"] {
+  --syntax-keyword: #cba6f7;   /* 8.6:1 */
+  --syntax-string: #a6e3a1;    /* 11.8:1 */
+  --syntax-comment: #9399b2;   /* 6.2:1 (was #6c7086, 3.6:1) */
+  --syntax-number: #fab387;    /* 9.9:1 */
+  --syntax-function: #89b4fa;  /* 8.3:1 */
+  --syntax-type: #f9e2af;      /* 13.8:1 */
+  --syntax-variable: #f38ba8;  /* 7.6:1 */
+  --syntax-meta: #74c7ec;      /* 9.3:1 */
+  --syntax-tag: #89dceb;       /* 11.3:1 */
+}
+[data-theme="light"] {
+  --syntax-keyword: #7027c9;   /* 6.1:1 (was #cba6f7, 1.7:1) */
+  --syntax-string: #256b17;    /* 5.4:1 */
+  --syntax-comment: #545770;   /* 5.8:1 (was 4.0:1) */
+  --syntax-number: #9a3d00;    /* 5.7:1 (was #fab387, 1.5:1) */
+  --syntax-function: #134bbd;  /* 6.2:1 */
+  --syntax-type: #8a5300;      /* 5.2:1 */
+  --syntax-variable: #b80d32;  /* 5.5:1 */
+  --syntax-meta: #0f6575;      /* 5.5:1 */
+  --syntax-tag: #0b6185;       /* 5.6:1 */
+}
 .block-content .ProseMirror pre .hljs-keyword,
 .block-content .ProseMirror pre .hljs-selector-tag,
-.block-content .ProseMirror pre .hljs-built_in { color: #cba6f7; }
+.block-content .ProseMirror pre .hljs-built_in { color: var(--syntax-keyword); }
 .block-content .ProseMirror pre .hljs-string,
-.block-content .ProseMirror pre .hljs-attr { color: #a6e3a1; }
+.block-content .ProseMirror pre .hljs-attr { color: var(--syntax-string); }
 .block-content .ProseMirror pre .hljs-comment,
-.block-content .ProseMirror pre .hljs-quote { color: #6c7086; font-style: italic; }
+.block-content .ProseMirror pre .hljs-quote { color: var(--syntax-comment); font-style: italic; }
 .block-content .ProseMirror pre .hljs-number,
-.block-content .ProseMirror pre .hljs-literal { color: #fab387; }
+.block-content .ProseMirror pre .hljs-literal { color: var(--syntax-number); }
 .block-content .ProseMirror pre .hljs-function,
-.block-content .ProseMirror pre .hljs-title { color: #89b4fa; }
+.block-content .ProseMirror pre .hljs-title { color: var(--syntax-function); }
 .block-content .ProseMirror pre .hljs-type,
-.block-content .ProseMirror pre .hljs-class { color: #f9e2af; }
-.block-content .ProseMirror pre .hljs-variable { color: #f38ba8; }
-.block-content .ProseMirror pre .hljs-meta { color: #74c7ec; }
-.block-content .ProseMirror pre .hljs-tag { color: #89dceb; }
-.block-content .ProseMirror pre .hljs-name { color: #cba6f7; }
+.block-content .ProseMirror pre .hljs-class { color: var(--syntax-type); }
+.block-content .ProseMirror pre .hljs-variable { color: var(--syntax-variable); }
+.block-content .ProseMirror pre .hljs-meta { color: var(--syntax-meta); }
+.block-content .ProseMirror pre .hljs-tag { color: var(--syntax-tag); }
+.block-content .ProseMirror pre .hljs-name { color: var(--syntax-keyword); }
 
-/* Code block language label */
-.block-content .ProseMirror pre code::before {
-  content: attr(class);
+/* Code block language label — a clean name from data-language-label (set in
+   useBlockEditor); blocks with no language have no attribute and no label. */
+.block-content .ProseMirror pre[data-language-label]::before {
+  content: attr(data-language-label);
   display: block;
-  font-size: 0.7em;
+  font-family: var(--font-interface, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
+  font-size: 11px;
+  line-height: 1.2;
   color: var(--text-muted);
-  margin-bottom: 0.3em;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+  margin-bottom: 6px;
+  letter-spacing: 0.03em;
+  user-select: none;
 }
 
 /* Tables */
@@ -254,6 +288,13 @@
   padding: 6px 10px;
   text-align: left;
   min-width: 60px;
+  position: relative; /* anchors the column-resize handle */
+  vertical-align: top;
+}
+
+.block-content .ProseMirror th > p,
+.block-content .ProseMirror td > p {
+  margin: 0;
 }
 
 .block-content .ProseMirror th {
@@ -380,4 +421,11 @@
 
 .tippy-box {
   max-width: none !important;
+}
+
+/* A block reached through a ((block ref)): flash it so the eye finds it. */
+.block.block-ref-highlight {
+  background: color-mix(in srgb, var(--accent, #6366f1) 18%, transparent);
+  border-radius: 4px;
+  transition: background 0.4s ease-out;
 }

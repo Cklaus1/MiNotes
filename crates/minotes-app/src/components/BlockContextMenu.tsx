@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { TABLE_ACTIONS, type TableAction } from "../editor/tables";
 
 interface Props {
   x: number;
@@ -10,6 +11,10 @@ interface Props {
   onDuplicate: (id: string) => void;
   onCopyRef: (id: string) => void;
   onToggleTodo: (id: string) => void;
+  isFlashcard?: boolean;
+  onToggleFlashcard?: () => void;
+  /** Present when the menu was opened on a table cell. */
+  onTableAction?: (action: TableAction) => void;
 }
 
 export default function BlockContextMenu({
@@ -22,6 +27,9 @@ export default function BlockContextMenu({
   onDuplicate,
   onCopyRef,
   onToggleTodo,
+  isFlashcard = false,
+  onToggleFlashcard,
+  onTableAction,
 }: Props) {
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -32,7 +40,7 @@ export default function BlockContextMenu({
       }
     };
     const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") { e.preventDefault(); onClose(); }
     };
     document.addEventListener("mousedown", handleClickOutside);
     document.addEventListener("keydown", handleEscape);
@@ -87,6 +95,22 @@ export default function BlockContextMenu({
       className="block-context-menu"
       style={{ left: x, top: y }}
     >
+      {onTableAction && (
+        <>
+          {TABLE_ACTIONS.map(({ action, label, danger }) => (
+            <button
+              key={action}
+              className="block-context-menu-item"
+              data-table-action={action}
+              style={danger ? { color: "var(--danger)" } : undefined}
+              onClick={() => { onTableAction(action); onClose(); }}
+            >
+              {label}
+            </button>
+          ))}
+          <div className="block-context-menu-sep" />
+        </>
+      )}
       <button className="block-context-menu-item" onClick={handleCopyRef}>
         Copy block reference
       </button>
@@ -100,6 +124,17 @@ export default function BlockContextMenu({
       <button className="block-context-menu-item" onClick={handleToggleTodo}>
         Toggle TODO
       </button>
+      {onToggleFlashcard && (
+        <button
+          className="block-context-menu-item"
+          data-action="flashcard"
+          title={isFlashcard ? undefined : "This block is the question; its child blocks are the answer"}
+          onClick={() => { onToggleFlashcard(); onClose(); }}
+        >
+          {isFlashcard ? "Remove flashcard" : "Make flashcard"}
+          {!isFlashcard && <span className="block-context-menu-hint">question = this block, answer = children</span>}
+        </button>
+      )}
       <div className="block-context-menu-sep" />
       <button
         className="block-context-menu-item"

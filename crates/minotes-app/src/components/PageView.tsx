@@ -1,29 +1,72 @@
-import { useState, useRef, useCallback, useEffect, useMemo } from "react";
+import { useState, useRef, useCallback, useEffect, useLayoutEffect, useMemo } from "react";
+import { flushSync } from "react-dom";
 import type { Block, PageTree, Property } from "../lib/api";
 import * as api from "../lib/api";
 import { getSettings } from "../lib/settings";
 import { localDateKey } from "../lib/dates";
 import BlockItem from "./BlockItem";
-import type { BlockItemHandle } from "./BlockItem";
+import type { BlockItemHandle, FocusPosition } from "./BlockItem";
 import BacklinksPanel from "./BacklinksPanel";
 import UnlinkedRefsPanel from "./UnlinkedRefsPanel";
 import LinkPreview from "./LinkPreview";
 import { undoStack } from "../lib/undoStack";
+import { executeRedo } from "../lib/undoManager";
 import { registerTestApi } from "../lib/testApi";
 import TableOfContents from "./TableOfContents";
 import { downloadHtml, printPage } from "../lib/exportPage";
 import { extractTags } from "../lib/tagExtractor";
 import { showToast } from "../lib/toast";
+import { suggestLinks, type LinkSuggestion } from "../lib/linkSuggestions";
+import { prefetchBlockProperties } from "../lib/blockProperties";
+import { getSettingsCached } from "../lib/cachedSettings";
 
-// Bug #25: common words excluded from link-suggestion overlap scoring so that
-// stopwords (which pass a naive length>=4 filter) don't drive bogus matches.
-const LINK_STOPWORDS = new Set<string>([
-  "this", "that", "these", "those", "there", "their", "them", "they", "then",
-  "with", "from", "your", "yours", "have", "here", "what", "when", "which",
-  "while", "about", "would", "could", "should", "into", "than", "been", "were",
-  "will", "also", "some", "such", "only", "very", "just", "like", "more", "most",
-  "over", "after", "before", "because", "between", "where", "other", "each",
-]);
+/**
+ * Big pages render progressively: the first INITIAL_RENDER blocks at once, the
+ * rest in slices sized to take ~SLICE_BUDGET_MS each, so the page paints and
+ * reacts to input right away instead of freezing until every block exists.
+ */
+const INITIAL_RENDER = 80;
+const SLICE_BUDGET_MS = 40;
+
+/**
+ * Blocks created by Enter exist locally (with a temporary id) before the backend
+ * has created them, so the new block can take focus within the same keystroke.
+ */
+let tempIdCounter = 0;
+const TEMP_PREFIX = "tmp-";
+const newTempId = () => `${TEMP_PREFIX}${Date.now().toString(36)}-${++tempIdCounter}`;
+const isTempId = (id: string) => id.startsWith(TEMP_PREFIX);
+
+/** Depth-first outline order (siblings by position) — the order the list renders in. */
+function outlineOrder(list: Block[]): Block[] {
+  const ids = new Set(list.map(b => b.id));
+  const kids = new Map<string, Block[]>();
+  for (const b of list) {
+    const key = b.parent_id && ids.has(b.parent_id) ? b.parent_id : "__root__";
+    const arr = kids.get(key) ?? [];
+    arr.push(b);
+    kids.set(key, arr);
+  }
+  const out: Block[] = [];
+  const seen = new Set<string>();
+  const walk = (key: string) => {
+    for (const b of (kids.get(key) ?? []).slice().sort((x, y) => x.position - y.position)) {
+      if (seen.has(b.id)) continue;
+      seen.add(b.id);
+      out.push(b);
+      walk(b.id);
+    }
+  };
+  walk("__root__");
+  // Anything unreachable (cycles) keeps its place at the end rather than vanishing.
+  for (const b of list) if (!seen.has(b.id)) out.push(b);
+  return out;
+}
+
+const propError = (e: unknown) => String((e as any)?.message ?? e);
+
+/** Block to reveal once the page that a ((block ref)) points to has opened. */
+let pendingRevealBlockId: string | null = null;
 
 interface Props {
   pageTree: PageTree;
@@ -45,6 +88,14 @@ export default function PageView({
   const [localBlocks, setLocalBlocks] = useState(pageTree.blocks);
   const blocks = localBlocks;
 
+  // Progressive rendering (see INITIAL_RENDER): how many visible blocks exist in
+  // the DOM. Resets to INITIAL_RENDER on every page change.
+  const [renderState, setRenderState] = useState({ pageId: pageTree.page.id, limit: INITIAL_RENDER });
+  const renderLimit = renderState.pageId === pageTree.page.id ? renderState.limit : INITIAL_RENDER;
+  const renderLimitRef = useRef(renderLimit);
+  renderLimitRef.current = renderLimit;
+  const sliceRef = useRef({ size: 150, startedAt: 0 });
+
   // Optimistic edits not yet confirmed by a fetched tree. A refresh (e.g. the delayed
   // [[link]] refresh, or a sync import) may carry a tree read BEFORE these edits
   // landed; reconciling against these maps keeps it from clobbering them.
@@ -56,6 +107,21 @@ export default function PageView({
     pendingEditsRef.current.set(id, { content, at: Date.now() });
   };
   const reconciledPageIdRef = useRef(pageTree.page.id);
+
+  // Temporary (optimistic) block id -> real id, and real id -> the temp id it was
+  // rendered under (the React key stays the temp id so the editor isn't remounted
+  // and doesn't lose focus or keystrokes when the real id arrives).
+  const idMapRef = useRef<Map<string, string>>(new Map());
+  const renderKeyRef = useRef<Map<string, string>>(new Map());
+  const rid = (id: string) => idMapRef.current.get(id) ?? id;
+  // Structural backend writes run strictly in order, so a write that names a block
+  // created by an earlier Enter runs after that create and can resolve its real id.
+  const opQueueRef = useRef<Promise<unknown>>(Promise.resolve());
+  const enqueue = <T,>(fn: () => Promise<T>): Promise<T> => {
+    const p = opQueueRef.current.then(fn, fn);
+    opQueueRef.current = p.catch(() => {});
+    return p;
+  };
   // Undo/redo rewrote these blocks on the backend: drop their optimistic
   // bookkeeping so the refreshed tree (e.g. a restored, recently merged-away
   // block) isn't masked for PENDING_TTL_MS.
@@ -167,9 +233,7 @@ export default function PageView({
   }, [page.id]);
 
   // AI: Link suggestions
-  const [suggestedLinks, setSuggestedLinks] = useState<
-    Array<{ pageId: string; title: string; score: number; reason: string }>
-  >([]);
+  const [suggestedLinks, setSuggestedLinks] = useState<LinkSuggestion[]>([]);
   const [dismissedLinks, setDismissedLinks] = useState<Set<string>>(new Set());
   // Only the page's text matters here — keyed on a content string (not the blocks
   // array identity, which changes on every optimistic edit) and debounced.
@@ -180,34 +244,13 @@ export default function PageView({
   useEffect(() => { setDismissedLinks(prev => (prev.size ? new Set() : prev)); }, [page.id]);
   useEffect(() => {
     if (!linkSuggestionsEnabled) return;
-    // Simple heuristic: suggest pages whose titles share meaningful words with the
-    // current page content. Bug #25: filter stopwords (so "these"/"that"/"with" don't
-    // drive matches) and score by overlap ratio clamped to 100%.
-    const isMeaningful = (w: string) => w.length >= 4 && !LINK_STOPWORDS.has(w);
-    const contentWords = new Set<string>(
-      pageText.toLowerCase().split(/\s+/).filter(isMeaningful),
-    );
-    const existingTitles = new Set(dismissedLinks);
+    // Relevance rules live in lib/linkSuggestions.ts: a page is suggested only when
+    // its title is mentioned here or it shares distinctive keywords — never just
+    // because it exists.
     let cancelled = false;
     const timer = setTimeout(() => api.listPages(100).then((allPages: api.Page[]) => {
       if (cancelled) return;
-      const scored: Array<{ pageId: string; title: string; score: number }> = [];
-      for (const p of allPages) {
-        if (p.id === page.id) continue;
-        if (existingTitles.has(p.title)) continue;
-        if (pageText.includes(`[[${p.title}]]`)) continue; // already linked here
-        const titleWords = p.title.toLowerCase().split(/\s+/).filter(isMeaningful);
-        if (titleWords.length === 0) continue;
-        const overlap = titleWords.filter((w: string) => contentWords.has(w)).length;
-        if (overlap > 0) {
-          // Ratio of meaningful title words matched, as a percentage (capped at 100).
-          const score = Math.min(100, Math.round((overlap / titleWords.length) * 100));
-          scored.push({ pageId: p.id, title: p.title, score });
-        }
-      }
-      setSuggestedLinks(
-        scored.sort((a, b) => b.score - a.score).slice(0, 3).map((s) => ({ ...s, reason: `${s.score}% match` })),
-      );
+      setSuggestedLinks(suggestLinks(pageText, page.id, allPages, dismissedLinks));
     }).catch(() => {}), 250);
     return () => { cancelled = true; clearTimeout(timer); };
   }, [pageText, page.id, dismissedLinks, linkSuggestionsEnabled]);
@@ -231,6 +274,12 @@ export default function PageView({
   const creatingBlockRef = useRef(false);
 
   
+  // Every block's properties in one call, before the blocks' own effects ask
+  // (layout effects run before passive ones): see lib/blockProperties.ts.
+  useLayoutEffect(() => {
+    prefetchBlockProperties(pageTree.blocks.map(b => b.id));
+  }, [page.id]);
+
   // Load page properties
   useEffect(() => {
     let cancelled = false;
@@ -290,29 +339,86 @@ export default function PageView({
     }
   }, [page.id, blocks.length]);
 
-  // Auto-focus on page open (UX-004)
+  // Auto-focus on page open (UX-004). A brand-new page has no blocks yet (its first
+  // block is created a moment later): focus that block as soon as it appears.
   const prevPageIdRef = useRef<string | null>(null);
+  const awaitingFirstBlockRef = useRef<string | null>(null);
   useEffect(() => {
+    const nothingFocused = () => {
+      const a = document.activeElement;
+      return !a || a === document.body || a === document.documentElement;
+    };
     if (page.id !== prevPageIdRef.current) {
       prevPageIdRef.current = page.id;
-      if (blocks.length > 0 && focusBlockId === null) {
-        const target = page.is_journal ? blocks[blocks.length - 1] : blocks[0];
-        if (target) setFocusBlockId(target.id);
+      awaitingFirstBlockRef.current = null;
+      // On the render where the page changes, localBlocks still hold the PREVIOUS
+      // page's blocks (they're swapped in by the sync effect): use the new tree.
+      const fresh = pageTree.blocks;
+      if (pendingRevealBlockId && fresh.some(b => b.id === pendingRevealBlockId)) {
+        const id = pendingRevealBlockId;
+        pendingRevealBlockId = null;
+        setTimeout(() => revealBlockRef.current(id), 30);
+        return;
       }
+      // The first block is hidden when it's an H1 repeating the page title (see
+      // filteredVisibleBlocks): focus the first block that is actually rendered.
+      const hiddenTitle = (b: Block | undefined) => !!b && !b.parent_id &&
+        b.content.trim().startsWith("# ") && b.content.trim().slice(2).trim() === page.title;
+      const shown = hiddenTitle(fresh[0]) ? fresh.slice(1) : fresh;
+      if (shown.length > 0 && focusBlockId === null) {
+        const target = page.is_journal ? shown[shown.length - 1] : shown[0];
+        if (target) setFocusBlockId(target.id);
+      } else if (fresh.length === 0) {
+        awaitingFirstBlockRef.current = page.id;
+      }
+    } else if (awaitingFirstBlockRef.current === page.id && blocks.length > 0) {
+      awaitingFirstBlockRef.current = null;
+      // Don't steal focus from something the user moved to meanwhile.
+      if (nothingFocused()) setFocusBlockId(blocks[0].id);
     }
   }, [page.id, blocks.length]);
 
-  // Execute focus when focusBlockId changes
+  // Execute focus when focusBlockId changes (optionally at a remembered caret).
+  const focusCaretRef = useRef<{ id: string; pos: FocusPosition } | null>(null);
   useEffect(() => {
     if (focusBlockId !== null) {
+      // Not rendered yet (progressive rendering of a big page): render everything first.
+      if (!blockRefs.current.has(rid(focusBlockId)) && ensureRendered(focusBlockId)) return;
       // Small delay to ensure refs are mounted after render
       const timer = setTimeout(() => {
-        blockRefs.current.get(focusBlockId)?.focus();
+        const caret = focusCaretRef.current?.id === focusBlockId ? focusCaretRef.current.pos : "end";
+        focusCaretRef.current = null;
+        blockRefs.current.get(rid(focusBlockId))?.focus(caret);
         setFocusBlockId(null);
       }, 30);
       return () => clearTimeout(timer);
     }
-  }, [focusBlockId, blocks]);
+  }, [focusBlockId, blocks, renderLimit]);
+  const focusBlockAt = (id: string, pos: FocusPosition) => {
+    focusCaretRef.current = { id, pos };
+    setFocusBlockId(id);
+  };
+
+  // The block whose editor last had focus (its ProseMirror state keeps the caret).
+  const lastEditorBlockIdRef = useRef<string | null>(null);
+  // Escape that closed an overlay holding focus (search palette, a panel...) drops
+  // focus to <body>: put it back in the editor, at the caret it had.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      const t = e.target as HTMLElement | null;
+      if (!t || t === document.body || t.closest?.(".ProseMirror")) return;
+      setTimeout(() => {
+        if (document.contains(t)) return; // the focused thing wasn't closed
+        const a = document.activeElement;
+        if (a && a !== document.body && a !== document.documentElement) return;
+        const id = lastEditorBlockIdRef.current;
+        if (id && localBlocksRef.current.some(b => b.id === id)) blockRefs.current.get(id)?.focus("keep");
+      }, 60);
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
 
   // Link preview on hover (300ms delay) or instant on Ctrl+hover
   useEffect(() => {
@@ -376,24 +482,45 @@ export default function PageView({
     const k = newKey.trim();
     const v = newValue.trim();
     if (!k) return;
-    await api.setProperty(page.id, "page", k, v);
-    const props = await api.getProperties(page.id);
-    setPageProps(props);
+    try {
+      await api.setProperty(page.id, "page", k, v);
+    } catch (e) {
+      // Refused by the backend (invalid key/value): say why, add nothing.
+      showToast(`Property not saved: ${propError(e)}`);
+      return;
+    }
+    const props = await api.getProperties(page.id).catch(() => null);
+    if (props) setPageProps(props);
     setNewKey("");
     setNewValue("");
     setAddingProp(false);
   };
 
+  const savingPropRef = useRef<string | null>(null);
   const handleUpdatePageProp = async (key: string) => {
-    await api.setProperty(page.id, "page", key, editValue.trim());
-    const props = await api.getProperties(page.id);
-    setPageProps(props);
+    // Enter saves and closes the input; the blur that may follow must not save again.
+    if (savingPropRef.current === key) return;
+    savingPropRef.current = key;
+    setTimeout(() => { savingPropRef.current = null; }, 0);
     setEditingProp(null);
+    try {
+      await api.setProperty(page.id, "page", key, editValue.trim());
+    } catch (e) {
+      // Refused: the row keeps its old value.
+      showToast(`Property not saved: ${propError(e)}`);
+      return;
+    }
+    const props = await api.getProperties(page.id).catch(() => null);
+    if (props) setPageProps(props);
   };
 
   const handleDeletePageProp = async (key: string) => {
-    await api.deleteProperty(page.id, key);
-    setPageProps(prev => prev.filter(p => p.key !== key));
+    try {
+      await api.deleteProperty(page.id, key);
+      setPageProps(prev => prev.filter(p => p.key !== key));
+    } catch (e) {
+      showToast(`Property not deleted: ${propError(e)}`);
+    }
   };
 
   const formatDate = (iso: string) => {
@@ -448,83 +575,125 @@ export default function PageView({
     return Array.from({ length: count }, (_, i) => block.position + step * (i + 1));
   };
 
-  // UX-001: Seamless block creation
-  // Bug #21: guard against overlapping Enter handling — two awaited createBlock
-  // calls racing on the same closure would both splice at idx+1 and duplicate blocks.
-  const enterInFlightRef = useRef(false);
-  // Consulted by the editor BEFORE it mutates the doc on Enter, so a rejected Enter
-  // is a true no-op instead of deleting the after-cursor text.
-  const canEnter = useCallback(() => !enterInFlightRef.current, []);
-  const handleEnter = async (blockId: string, contentAfterCursor: string, savedContent?: string) => {
-    if (enterInFlightRef.current) return;
+  // A content save from a block editor. Local state first; a block whose create is
+  // still in flight saves once it exists (in order, through the op queue).
+  const handleBlockUpdate = (id: string, content: string) => {
+    markEdited(id, content);
+    setLocalBlocks(prev => prev.map(b => b.id === id ? { ...b, content } : b));
+    if (isTempId(id) && !idMapRef.current.has(id)) {
+      enqueue(async () => { await onUpdateBlockRef.current(rid(id), content); });
+    } else {
+      onUpdateBlock(rid(id), content);
+    }
+    flashSave();
+  };
+  const onUpdateBlockRef = useRef(onUpdateBlock);
+  onUpdateBlockRef.current = onUpdateBlock;
+
+  // UX-001: Seamless block creation — optimistic. The new block is inserted locally
+  // and focused synchronously, inside the Enter keystroke, so whatever is typed next
+  // lands in it at any typing speed; the backend create runs in the op queue and
+  // its real id replaces the temporary one when it returns.
+  const canEnter = useCallback(() => true, []);
+  const handleEnter = (blockId: string, contentAfterCursor: string, savedContent?: string) => {
     if (savedContent !== undefined) markEdited(blockId, savedContent);
-    // Bug #20: read the freshest block state from the ref, not the captured `blocks`
-    // closure (which may be stale relative to in-flight optimistic edits).
     const current = localBlocksRef.current;
     const idx = current.findIndex(b => b.id === blockId);
     if (idx === -1) return;
     const currentBlock = current[idx];
 
-    // Bug #18: if the block being split has children, the new block must become its
-    // FIRST CHILD so the subtree stays attached. Otherwise it's a sibling at the same
-    // indent level. (Standard outliner split behavior.)
+    // Bug #18: if the block being split has (visible) children, the new block becomes
+    // its FIRST CHILD so the subtree stays attached. Otherwise it's a sibling at the
+    // same indent level, after the block's whole subtree. (Standard outliner split.)
     const childPositions = current.filter(b => b.parent_id === blockId).map(b => b.position);
-    const hasChildren = childPositions.length > 0;
-    const newParentId = hasChildren ? blockId : (currentBlock.parent_id ?? undefined);
-
-    enterInFlightRef.current = true;
-    let newBlock: api.Block;
-    try {
-      newBlock = await api.createBlock(page.id, contentAfterCursor, newParentId);
-      if (hasChildren) {
-        // Place it before the first existing child.
-        const minChildPos = Math.min(...childPositions);
-        const firstPos = minChildPos > 0 ? minChildPos / 2 : minChildPos - 1;
-        newBlock = await api.moveBlock(newBlock.id, blockId, firstPos);
-      } else {
-        // Sibling split: persist the position right after the current block, so a
-        // reload doesn't move the new block to the end of its parent.
-        const pos = positionsAfter(current, currentBlock, 1);
-        if (pos) newBlock = await api.reorderBlock(newBlock.id, newParentId, pos[0]);
-      }
-    } catch (e) {
-      console.error("createBlock failed during Enter, restoring text:", e);
-      // Glue the after-cursor text back onto the current block content so the
-      // user's keystrokes aren't silently dropped.
-      const restored = (savedContent ?? currentBlock.content) +
-        (contentAfterCursor ? "\n" + contentAfterCursor : "");
-      setLocalBlocks(prev => prev.map(b => b.id === blockId ? { ...b, content: restored } : b));
-      try {
-        await api.updateBlock(blockId, restored);
-      } catch {}
-      showToast("Could not create new block — your keystrokes were restored. Check connection.");
-      enterInFlightRef.current = false;
-      return;
+    const asChild = childPositions.length > 0 && !collapsedBlocksRef.current.has(blockId);
+    const parentId = asChild ? blockId : (currentBlock.parent_id ?? undefined);
+    let position: number;
+    if (asChild) {
+      const minChildPos = Math.min(...childPositions);
+      position = minChildPos > 0 ? minChildPos / 2 : minChildPos - 1;
+    } else {
+      position = positionsAfter(current, currentBlock, 1)?.[0] ?? currentBlock.position + 1;
     }
-    undoStack.push({ type: 'create', blockId: newBlock.id, pageId: page.id, newContent: contentAfterCursor, timestamp: Date.now() });
 
-    // Optimistically update local state:
-    // - Update current block's content to the saved before-cursor text
-    // - Insert new block after it (immediately after the parent, before any children)
-    const createdId = newBlock.id;
-    pendingCreatesRef.current.set(createdId, Date.now());
-    setLocalBlocks(prev => {
-      const copy = [...prev];
-      const i = copy.findIndex(b => b.id === blockId);
-      if (i === -1) return prev;
-      if (savedContent !== undefined) {
-        copy[i] = { ...copy[i], content: savedContent };
-      }
-      const newBlockWithParent = { ...newBlock, parent_id: newParentId };
-      copy.splice(i + 1, 0, newBlockWithParent);
-      return copy;
+    const tempId = newTempId();
+    const now = new Date().toISOString();
+    const temp: Block = {
+      id: tempId, page_id: page.id, parent_id: parentId, position, content: contentAfterCursor,
+      format: currentBlock.format, collapsed: false, created_at: now, updated_at: now,
+    };
+    pendingCreatesRef.current.set(tempId, Date.now());
+    flushSync(() => {
+      setLocalBlocks(prev => {
+        const i = prev.findIndex(b => b.id === blockId);
+        if (i === -1) return prev;
+        const copy = [...prev];
+        if (savedContent !== undefined) copy[i] = { ...copy[i], content: savedContent };
+        let at = i + 1;
+        if (!asChild) {
+          // Skip the current block's subtree (outline order: descendants follow it).
+          const inSubtree = new Set([blockId]);
+          while (at < copy.length && copy[at].parent_id && inSubtree.has(copy[at].parent_id!)) {
+            inSubtree.add(copy[at].id);
+            at++;
+          }
+        }
+        copy.splice(at, 0, temp);
+        return copy;
+      });
+      // Progressive rendering: one more block, one more rendered (the new block
+      // must exist now to take focus, even at the edge of the rendered range).
+      setRenderState(st => ({ pageId: page.id, limit: (st.pageId === page.id ? st.limit : INITIAL_RENDER) + 1 }));
     });
+    // Same keystroke: the next key event already goes to the new block.
+    blockRefs.current.get(tempId)?.focus("start");
 
-    // Focus the new block after React renders it (by id — Bug #19).
-    setTimeout(() => {
-      setFocusBlockId(createdId);
-      enterInFlightRef.current = false;
-    }, 30);
+    enqueue(async () => {
+      const realParent = parentId ? rid(parentId) : undefined;
+      let created: api.Block;
+      try {
+        created = await api.createBlock(page.id, contentAfterCursor, realParent);
+        created = asChild
+          ? await api.moveBlock(created.id, realParent!, position)
+          : await api.reorderBlock(created.id, realParent, position);
+      } catch (e) {
+        console.error("createBlock failed during Enter, restoring text:", e);
+        // Glue whatever the new block holds now back onto the split block so the
+        // user's keystrokes aren't silently dropped.
+        const typed = blockRefs.current.get(tempId)?.getMarkdown() ?? contentAfterCursor;
+        const base = blockRefs.current.get(blockId)?.getMarkdown() ?? savedContent ?? currentBlock.content;
+        const restored = base + (typed ? "\n" + typed : "");
+        pendingCreatesRef.current.delete(tempId);
+        markEdited(blockId, restored);
+        setLocalBlocks(prev => prev.filter(b => b.id !== tempId).map(b => b.id === blockId ? { ...b, content: restored } : b));
+        try { await api.updateBlock(rid(blockId), restored); } catch {}
+        showToast("Could not create new block — your keystrokes were restored. Check connection.");
+        return;
+      }
+      resolveTempId(tempId, created.id);
+      undoStack.push({ type: 'create', blockId: created.id, pageId: page.id, newContent: contentAfterCursor, timestamp: Date.now() });
+    });
+  };
+
+  /** The backend created `tempId` as `realId`: swap ids everywhere, keep local state. */
+  const resolveTempId = (tempId: string, realId: string) => {
+    idMapRef.current.set(tempId, realId);
+    renderKeyRef.current.set(realId, tempId);
+    pendingCreatesRef.current.delete(tempId);
+    pendingCreatesRef.current.set(realId, Date.now());
+    const pe = pendingEditsRef.current.get(tempId);
+    if (pe) { pendingEditsRef.current.delete(tempId); pendingEditsRef.current.set(realId, pe); }
+    if (activeBlockIdRef.current === tempId) activeBlockIdRef.current = realId;
+    if (lastEditorBlockIdRef.current === tempId) lastEditorBlockIdRef.current = realId;
+    setLocalBlocks(prev => prev
+      // A refresh that raced the create may already carry the real block: the
+      // local (temp) copy holds the user's latest typing and wins.
+      .filter(b => b.id !== realId || !prev.some(p => p.id === tempId))
+      .map(b => {
+        if (b.id === tempId) return { ...b, id: realId };
+        if (b.parent_id === tempId) return { ...b, parent_id: realId };
+        return b;
+      }));
   };
 
   const handleBackspaceAtStart = async (blockId: string, content: string) => {
@@ -566,9 +735,12 @@ export default function PageView({
       }));
     }
     // Snapshot ONLY the merged block (its children survive, re-homed) before it
-    // goes, so undo can bring it back with its original id.
-    const snapshotP = api.snapshotSubtrees([blockId], current)
-      .then(rs => rs.filter(r => r.id === blockId));
+    // goes, so undo can bring it back with its original id. Taken inside the op
+    // queue (after any pending create resolved), with temp ids mapped to real ones.
+    const snapshotOf = () => {
+      const mapped = current.map(b => ({ ...b, id: rid(b.id), parent_id: b.parent_id ? rid(b.parent_id) : b.parent_id }));
+      return api.snapshotSubtrees([rid(blockId)], mapped).then(rs => rs.filter(r => r.id === rid(blockId)));
+    };
     // Optimistically merge + remove locally so a full page refresh isn't needed
     // (the refresh would discard other in-progress optimistic edits).
     markEdited(prevBlock.id, mergedContent);
@@ -582,28 +754,35 @@ export default function PageView({
       })
       .filter(b => b.id !== blockId));
     setFocusBlockId(prevBlock.id);
-    try {
-      // The editor text (`content`) may be newer than the last saved block content.
-      const restore = (await snapshotP).map(r => (r.id === blockId ? { ...r, content } : r));
-      await api.updateBlock(prevBlock.id, mergedContent);
-      for (const m of movedChildren) await api.moveBlock(m.id, m.toParentId, m.toPosition);
-      await api.deleteBlock(blockId);
-      undoStack.push({ type: 'merge', blockId: prevBlock.id, pageId: page.id, oldContent: prevOldContent, newContent: mergedContent, restore, movedChildren, timestamp: Date.now() });
-    } catch (e) {
-      console.error("Backspace merge failed:", e);
-      showToast("Could not merge blocks — check connection.");
-      onRefreshPage();
-    }
+    await enqueue(async () => {
+      try {
+        // The editor text (`content`) may be newer than the last saved block content.
+        const restore = (await snapshotOf()).map(r => (r.id === rid(blockId) ? { ...r, content } : r));
+        const realMoves = movedChildren.map(m => ({ ...m, id: rid(m.id), fromParentId: rid(m.fromParentId), toParentId: rid(m.toParentId) }));
+        await api.updateBlock(rid(prevBlock.id), mergedContent);
+        for (const m of realMoves) await api.moveBlock(m.id, m.toParentId, m.toPosition);
+        await api.deleteBlock(rid(blockId));
+        undoStack.push({ type: 'merge', blockId: rid(prevBlock.id), pageId: page.id, oldContent: prevOldContent, newContent: mergedContent, restore, movedChildren: realMoves, timestamp: Date.now() });
+      } catch (e) {
+        console.error("Backspace merge failed:", e);
+        showToast("Could not merge blocks — check connection.");
+        onRefreshPage();
+      }
+    });
   };
 
+  // BlockItem is memoized without comparing callbacks, so handlers must read live
+  // state through refs, never the render closure.
   const handleArrowUp = (blockId: string) => {
-    const idx = filteredVisibleBlocks.findIndex(b => b.id === blockId);
-    if (idx > 0) setFocusBlockId(filteredVisibleBlocks[idx - 1].id);
+    const list = visibleRef.current;
+    const idx = list.findIndex(b => b.id === blockId);
+    if (idx > 0) setFocusBlockId(list[idx - 1].id);
   };
 
   const handleArrowDown = (blockId: string) => {
-    const idx = filteredVisibleBlocks.findIndex(b => b.id === blockId);
-    if (idx >= 0 && idx < filteredVisibleBlocks.length - 1) setFocusBlockId(filteredVisibleBlocks[idx + 1].id);
+    const list = visibleRef.current;
+    const idx = list.findIndex(b => b.id === blockId);
+    if (idx >= 0 && idx < list.length - 1) setFocusBlockId(list[idx + 1].id);
   };
 
   // UX-012: Smart paste — split multi-line paste into multiple blocks
@@ -616,43 +795,73 @@ export default function PageView({
     const parentId = block.parent_id ?? undefined;
     // Place the lines right after the current block, in order (not at page end).
     const positions = positionsAfter(current, block, lines.length);
-    let lastId: string | null = null;
-    for (let i = 0; i < lines.length; i++) {
-      let created = await api.createBlock(page.id, lines[i], parentId);
-      if (positions) created = await api.reorderBlock(created.id, parentId, positions[i]);
-      lastId = created.id;
-    }
+    const lastId = await enqueue(async () => {
+      const realParent = parentId ? rid(parentId) : undefined;
+      let last: string | null = null;
+      for (let i = 0; i < lines.length; i++) {
+        let created = await api.createBlock(page.id, lines[i], realParent);
+        if (positions) created = await api.reorderBlock(created.id, realParent, positions[i]);
+        last = created.id;
+      }
+      return last;
+    });
     onRefreshPage();
     if (lastId) setFocusBlockId(lastId);
   };
 
-  // UX-002: Block indent/outdent
-  const handleIndent = async (blockId: string) => {
-    const flatIdx = blocks.findIndex(b => b.id === blockId);
-    if (flatIdx <= 0) return; // Can't indent first block
-
-    const block = blocks[flatIdx];
-    // Find the previous sibling (block with same parent_id, positioned before this one)
-    const prevSibling = blocks.slice(0, flatIdx).reverse()
-      .find(b => b.parent_id === block.parent_id);
-
-    if (!prevSibling) return; // No sibling above to become parent
-
-    // Move block to be child of previous sibling
-    await api.moveBlock(blockId, prevSibling.id, block.position);
-    onRefreshPage();
+  // UX-002: Block indent/outdent. Applied locally first (and the editor refocused
+  // at the same caret in the same keystroke — a moved DOM node loses focus), then
+  // persisted through the op queue.
+  const moveBlockLocally = (blockId: string, parentId: string | undefined, position: number) => {
+    const caret = blockRefs.current.get(blockId)?.getCaret() ?? null;
+    flushSync(() => {
+      setLocalBlocks(prev => outlineOrder(prev.map(b => b.id === blockId ? { ...b, parent_id: parentId, position } : b)));
+    });
+    blockRefs.current.get(blockId)?.focus(caret ?? "end");
   };
 
-  const handleOutdent = async (blockId: string) => {
-    const block = blocks.find(b => b.id === blockId);
+  const handleIndent = (blockId: string) => {
+    const current = localBlocksRef.current;
+    const flatIdx = current.findIndex(b => b.id === blockId);
+    if (flatIdx <= 0) return; // Can't indent first block
+    const block = current[flatIdx];
+    const parentKey = block.parent_id ?? null;
+    // Previous sibling: the nearest earlier block with the same parent.
+    const prevSibling = current.slice(0, flatIdx).reverse().find(b => (b.parent_id ?? null) === parentKey);
+    if (!prevSibling) return; // No sibling above to become parent
+    // Becomes the LAST child of the previous sibling (positions are per parent).
+    const kidPositions = current.filter(b => b.parent_id === prevSibling.id).map(b => b.position);
+    const position = kidPositions.length ? Math.max(...kidPositions) + 1 : 1;
+    if (collapsedBlocksRef.current.has(prevSibling.id)) toggleCollapse(prevSibling.id);
+    moveBlockLocally(blockId, prevSibling.id, position);
+    enqueue(() => api.moveBlock(rid(blockId), rid(prevSibling.id), position))
+      .then(() => onRefreshPage())
+      .catch((e) => { console.error("indent failed:", e); showToast("Could not indent block"); onRefreshPage(); });
+  };
+
+  const handleOutdent = (blockId: string) => {
+    const current = localBlocksRef.current;
+    const block = current.find(b => b.id === blockId);
     if (!block?.parent_id) return; // Already at root level
-
-    const parent = blocks.find(b => b.id === block.parent_id);
+    const parent = current.find(b => b.id === block.parent_id);
     if (!parent) return;
+    // Goes directly after its former parent, among the parent's siblings — strictly
+    // between the parent and the parent's next sibling, so positions stay distinct.
+    const grandParentId = parent.parent_id ?? undefined;
+    const position = positionsAfter(current, parent, 1)?.[0] ?? parent.position + 1;
+    moveBlockLocally(blockId, grandParentId, position);
+    enqueue(() => api.reorderBlock(rid(blockId), grandParentId ? rid(grandParentId) : undefined, position))
+      .then(() => onRefreshPage())
+      .catch((e) => { console.error("outdent failed:", e); showToast("Could not outdent block"); onRefreshPage(); });
+  };
 
-    // Move block to be sibling of parent (same parent as parent)
-    await api.reparentBlock(blockId, parent.parent_id ?? undefined);
-    onRefreshPage();
+  // Escape in a block: leave editing, keep the block selected so the keyboard can
+  // carry on (arrows move the selection, Enter edits, Backspace deletes).
+  const handleEscape = (blockId: string) => {
+    blockRefs.current.get(blockId)?.blur();
+    const idx = visibleRef.current.findIndex(b => b.id === blockId);
+    setSelectedBlockIds(new Set([blockId]));
+    setSelectionAnchor(idx >= 0 ? idx : null);
   };
 
   // UX-015: Block duplicate
@@ -686,31 +895,51 @@ export default function PageView({
     return new Set();
   });
 
-  // Re-read from localStorage when page changes
+  const collapsedBlocksRef = useRef(collapsedBlocks);
+  collapsedBlocksRef.current = collapsedBlocks;
+
+  // Re-read from localStorage when the page changes, and whenever another view
+  // (the mind map shares this entry) or another window changes it.
   useEffect(() => {
-    try {
-      const stored = localStorage.getItem("minotes-collapsed-" + page.id);
-      if (stored) {
-        setCollapsedBlocks(new Set(JSON.parse(stored) as string[]));
-      } else {
+    const key = "minotes-collapsed-" + page.id;
+    const read = () => {
+      try {
+        const stored = localStorage.getItem(key);
+        const next = new Set(stored ? JSON.parse(stored) as string[] : []);
+        setCollapsedBlocks(prev => (prev.size === next.size && [...next].every(id => prev.has(id)) ? prev : next));
+      } catch {
         setCollapsedBlocks(new Set());
       }
-    } catch {
-      setCollapsedBlocks(new Set());
-    }
+    };
+    read();
+    const onChanged = (e: Event) => {
+      const pid = (e as CustomEvent<{ pageId?: string }>).detail?.pageId;
+      if (!pid || pid === page.id) read();
+    };
+    const onStorage = (e: StorageEvent) => { if (e.key === null || e.key === key) read(); };
+    window.addEventListener("minotes-collapse-changed", onChanged);
+    window.addEventListener("storage", onStorage);
+    return () => {
+      window.removeEventListener("minotes-collapse-changed", onChanged);
+      window.removeEventListener("storage", onStorage);
+    };
   }, [page.id]);
 
   const toggleCollapse = (blockId: string) => {
-    setCollapsedBlocks(prev => {
-      const next = new Set(prev);
-      if (next.has(blockId)) {
-        next.delete(blockId);
-      } else {
-        next.add(blockId);
-      }
-      localStorage.setItem("minotes-collapsed-" + page.id, JSON.stringify([...next]));
-      return next;
-    });
+    // Start from the stored entry (kept in step with every toggle): the mind map
+    // may have changed it since we read it. Computed outside the state updater —
+    // updaters must be pure (StrictMode runs them twice).
+    const key = "minotes-collapsed-" + page.id;
+    let prev = collapsedBlocksRef.current;
+    try {
+      const stored = localStorage.getItem(key);
+      if (stored) prev = new Set(JSON.parse(stored) as string[]);
+    } catch {}
+    const next = new Set(prev);
+    if (next.has(blockId)) next.delete(blockId); else next.add(blockId);
+    try { localStorage.setItem(key, JSON.stringify([...next])); } catch {}
+    collapsedBlocksRef.current = next;
+    setCollapsedBlocks(next);
   };
 
   // Drag-to-reorder blocks
@@ -826,11 +1055,28 @@ export default function PageView({
     // never hid children (stale memo).
   }, [blocks, collapsedBlocks]);
 
+  // One stable ref callback per block: a new inline callback on every render made
+  // React detach/re-attach every block's ref AND defeated BlockItem's memo (a
+  // changed ref re-renders the component), so any PageView render re-rendered
+  // every block of the page.
+  const refCallbacksRef = useRef<Map<string, (el: BlockItemHandle | null) => void>>(new Map());
+  const refFor = (id: string) => {
+    let cb = refCallbacksRef.current.get(id);
+    if (!cb) {
+      cb = (el) => { if (el) blockRefs.current.set(id, el); else if (blockRefs.current.get(id)) blockRefs.current.delete(id); };
+      refCallbacksRef.current.set(id, cb);
+    }
+    return cb;
+  };
+
   // Prune refs for blocks that no longer exist (the ref callback adds new ones).
   useEffect(() => {
     const ids = new Set(blocks.map(b => b.id));
     for (const key of Array.from(blockRefs.current.keys())) {
       if (!ids.has(key)) blockRefs.current.delete(key);
+    }
+    for (const key of Array.from(refCallbacksRef.current.keys())) {
+      if (!ids.has(key)) refCallbacksRef.current.delete(key);
     }
   }, [blocks]);
 
@@ -876,20 +1122,66 @@ export default function PageView({
     return crumbs;
   }, []);
 
-  const visibleBlocks = zoomedBlockId
-    ? getDescendants(blocks, zoomedBlockId)
-    : blocks;
+  // Zoom in/out keeps the keyboard where it was: the block that had focus (or the
+  // block we just zoomed out of) gets it back.
+  const zoomTo = (id: string | null, focusId?: string | null) => {
+    const target = focusId ?? zoomedBlockId;
+    const caret = target ? blockRefs.current.get(target)?.getCaret() ?? null : null;
+    setZoomedBlockId(id);
+    if (target) focusBlockAt(target, caret ?? "end");
+  };
 
-  // Filter visible blocks (exclude collapsed children + duplicate H1 title)
-  const filteredVisibleBlocks = visibleBlocks.filter((b, idx) => {
-    if (blockTreeInfo.isHiddenByCollapse(b.id)) return false;
-    // Hide first block if it's an H1 matching the page title (redundant with header)
-    if (idx === 0 && !b.parent_id) {
-      const trimmed = b.content.trim();
-      if (trimmed.startsWith("# ") && trimmed.slice(2).trim() === page.title) return false;
+  // Memoized: PageView re-renders for many reasons (save indicator, active block,
+  // selection) that don't change which blocks are visible.
+  const filteredVisibleBlocks = useMemo(() => {
+    const visibleBlocks = zoomedBlockId
+      ? getDescendants(blocks, zoomedBlockId)
+      : blocks;
+    // Filter visible blocks (exclude collapsed children + duplicate H1 title)
+    return visibleBlocks.filter((b, idx) => {
+      if (blockTreeInfo.isHiddenByCollapse(b.id)) return false;
+      // Hide first block if it's an H1 matching the page title (redundant with header)
+      if (idx === 0 && !b.parent_id) {
+        const trimmed = b.content.trim();
+        if (trimmed.startsWith("# ") && trimmed.slice(2).trim() === page.title) return false;
+      }
+      return true;
+    });
+  }, [blocks, zoomedBlockId, blockTreeInfo, page.title]);
+  const visibleRef = useRef(filteredVisibleBlocks);
+  visibleRef.current = filteredVisibleBlocks;
+
+  // Progressive rendering: after each commit, schedule the next slice until every
+  // visible block is in the DOM; slice size adapts to keep each one ~SLICE_BUDGET_MS.
+  const visibleCount = filteredVisibleBlocks.length;
+  useLayoutEffect(() => {
+    const sl = sliceRef.current;
+    if (sl.startedAt) {
+      const took = performance.now() - sl.startedAt;
+      sl.startedAt = 0;
+      if (took > 0) sl.size = Math.max(25, Math.min(1000, Math.round(sl.size * SLICE_BUDGET_MS / took)));
     }
+  }, [renderLimit]);
+  useEffect(() => {
+    if (renderLimit >= visibleCount) return;
+    const pageId = page.id;
+    const t = setTimeout(() => {
+      sliceRef.current.startedAt = performance.now();
+      setRenderState(prev => ({
+        pageId,
+        limit: (prev.pageId === pageId ? prev.limit : INITIAL_RENDER) + sliceRef.current.size,
+      }));
+    }, 0);
+    return () => clearTimeout(t);
+  }, [renderLimit, visibleCount, page.id]);
+  /** Make sure the block is rendered (big pages render progressively). True if it wasn't. */
+  const ensureRendered = (id: string): boolean => {
+    const idx = visibleRef.current.findIndex(b => b.id === id || b.id === rid(id));
+    if (idx < renderLimitRef.current) return false;
+    const pageId = page.id;
+    setRenderState({ pageId, limit: idx + INITIAL_RENDER });
     return true;
-  });
+  };
 
   // Active path: set via DOM to avoid re-rendering blocks (which steals focus in WebKitGTK)
   useEffect(() => {
@@ -907,8 +1199,15 @@ export default function PageView({
   useEffect(() => {
     registerTestApi({
       typeInBlock: (blockIndex: number, text: string) => {
-        const el = document.querySelectorAll('.ProseMirror')[blockIndex];
+        let el = document.querySelectorAll('.ProseMirror')[blockIndex];
         if (!el) return false;
+        // A block that isn't being edited renders statically: mount its editor first.
+        if (el.classList.contains('block-static')) {
+          const id = el.closest('[data-block-id]')?.getAttribute('data-block-id');
+          if (!id || !blockRefs.current.get(id)?.ensureEditor()) return false;
+          el = document.querySelectorAll('.ProseMirror')[blockIndex];
+          if (!el) return false;
+        }
         (el as HTMLElement).focus();
         document.execCommand('insertText', false, text);
         return true;
@@ -930,10 +1229,45 @@ export default function PageView({
         const ref = block ? blockRefs.current.get(block.id) : null;
         if (!ref) return false;
         ref.focus();
-        const el = document.querySelectorAll('.ProseMirror')[blockIndex];
-        if (el) el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+        // Queried after focus(): a static block's editor was only just mounted.
+        const el = document.querySelector(`[data-block-id="${CSS.escape(block.id)}"] .ProseMirror`);
+        if (el) el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
         return true;
       },
+      // A keydown into block N's editor — ProseMirror runs its key handlers for it,
+      // i.e. the same code path as the real key (Tab, Escape, Enter...).
+      pressKeyInBlock: (blockIndex: number, key: string, mods: { shift?: boolean; ctrl?: boolean; alt?: boolean; focus?: boolean } = {}) => {
+        const block = filteredVisibleBlocks[blockIndex];
+        const ref = block ? blockRefs.current.get(block.id) : null;
+        if (!ref) return false;
+        let el = document.querySelector(`[data-block-id="${CSS.escape(block.id)}"] .ProseMirror`);
+        if (!el) return false;
+        if (mods.focus !== false && !el.contains(document.activeElement)) ref.focus();
+        else ref.ensureEditor();
+        // Re-query: a static block's editor may have just been mounted in its place.
+        el = document.querySelector(`[data-block-id="${CSS.escape(block.id)}"] .ProseMirror`);
+        if (!el) return false;
+        el.dispatchEvent(new KeyboardEvent('keydown', {
+          key, code: key.length === 1 ? `Key${key.toUpperCase()}` : key, bubbles: true, cancelable: true,
+          shiftKey: !!mods.shift, ctrlKey: !!mods.ctrl, altKey: !!mods.alt,
+        }));
+        return true;
+      },
+      // Visible blocks with their nesting (depth) and parent's visible index.
+      getBlockTree: () => filteredVisibleBlocks.map((b, i) => ({
+        index: i, content: b.content, depth: blockTreeInfo.getDepth(b.id),
+        parentIndex: b.parent_id ? filteredVisibleBlocks.findIndex(p => p.id === b.parent_id) : -1,
+        id: b.id, position: b.position,
+      })),
+      // Index of the visible block whose editor has focus (-1: none).
+      getFocusedBlockIndex: () => {
+        const id = (document.activeElement as HTMLElement | null)?.closest?.('.ProseMirror')
+          ?.closest('[data-block-id]')?.getAttribute('data-block-id');
+        return id ? filteredVisibleBlocks.findIndex(b => b.id === id) : -1;
+      },
+      getSelectedIndices: () => filteredVisibleBlocks.map((b, i) => (selectedBlockIds.has(b.id) ? i : -1)).filter(i => i >= 0),
+      // Follow a ((block ref)) — the click handler of a block ref / transclusion.
+      openBlockRef: (blockId: string) => { handleBlockRefClick(blockId); return true; },
       focusBlock: (blockIndex: number) => {
         const block = filteredVisibleBlocks[blockIndex];
         const ref = block ? blockRefs.current.get(block.id) : null;
@@ -978,6 +1312,18 @@ export default function PageView({
         return ids.length;
       },
       getSelectedCount: () => selectedBlockIds.size,
+      // Table structure command at the cursor in block N (toolbar / context-menu path).
+      tableAction: (blockIndex: number, action: string) => {
+        const block = filteredVisibleBlocks[blockIndex];
+        const ref = block ? blockRefs.current.get(block.id) : null;
+        return ref ? ref.tableAction(action as any) : false;
+      },
+      // Make / remove block N's flashcard (context-menu path).
+      setFlashcard: (blockIndex: number, on: boolean) => {
+        const block = filteredVisibleBlocks[blockIndex];
+        const ref = block ? blockRefs.current.get(block.id) : null;
+        return ref ? ref.setFlashcard(on) : Promise.resolve(false);
+      },
       toggleCheckbox: (blockIndex: number, itemIndex: number = 0) => {
         // Get the block and modify its content to toggle the checkbox
         const block = filteredVisibleBlocks[blockIndex];
@@ -1006,6 +1352,15 @@ export default function PageView({
   // UX-006: Zoom keyboard shortcuts
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      // Escape outside any editor/input with nothing selected leaves the zoom.
+      if (e.key === "Escape" && zoomedBlockId && !e.defaultPrevented && selectedCountRef.current === 0) {
+        const t = e.target as HTMLElement | null;
+        if (!t || t === document.body || !t.closest?.("input, textarea, [contenteditable='true'], .ProseMirror, [role='dialog']")) {
+          e.preventDefault();
+          zoomTo(null);
+        }
+        return;
+      }
       if (!e.altKey) return;
       if (e.key === "ArrowRight") {
         const activeEl = document.activeElement?.closest(".block");
@@ -1013,18 +1368,15 @@ export default function PageView({
           const blockId = activeEl.getAttribute("data-block-id");
           if (blockId) {
             e.preventDefault();
-            setZoomedBlockId(blockId);
+            zoomTo(blockId, blockId);
           }
         }
       } else if (e.key === "ArrowLeft") {
         e.preventDefault();
         if (zoomedBlockId) {
           const current = blocks.find(b => b.id === zoomedBlockId);
-          if (current?.parent_id) {
-            setZoomedBlockId(current.parent_id);
-          } else {
-            setZoomedBlockId(null);
-          }
+          const activeId = document.activeElement?.closest(".block")?.getAttribute("data-block-id") ?? null;
+          zoomTo(current?.parent_id ?? null, activeId ?? zoomedBlockId);
         }
       }
     };
@@ -1048,28 +1400,72 @@ export default function PageView({
     setSelectionAnchor(anchor);
   }, [filteredVisibleBlocks, selectionAnchor]);
 
+  // BlockItem keeps the first callbacks it was given (memo ignores them): these
+  // stable wrappers always call the current handler.
+  const shiftClickRef = useRef(handleShiftClick);
+  shiftClickRef.current = handleShiftClick;
+  const handleShiftClickLive = useCallback((id: string) => shiftClickRef.current(id), []);
+  const dragReorderRef = useRef(handleDragReorder);
+  dragReorderRef.current = handleDragReorder;
+  const handleDragReorderLive = useCallback(
+    (dragged: string, target: string, pos: "above" | "below") => dragReorderRef.current(dragged, target, pos), []);
+
   // UX-013: Block ref click handler — navigate to the block's page
+  // Read through a ref: BlockItem (memoized) keeps the first callback it got.
   const handleBlockRefClick = useCallback((blockId: string) => {
-    // Try to find the block in current page first
-    const localBlock = blocks.find(b => b.id === blockId);
-    if (localBlock) {
-      setFocusBlockId(blockId);
+    if (localBlocksRef.current.some(b => b.id === blockId)) {
+      revealBlockRef.current(blockId);
       return;
     }
-    // If not local, try to navigate to the block's page via search
-    api.search(blockId, 1).then(results => {
-      if (results.length > 0) {
-        api.getPageTree(results[0].page_id).then(tree => {
-          onPageLinkClick(tree.page.title);
-        }).catch(() => {});
-      }
-    }).catch(() => {});
-  }, [blocks, filteredVisibleBlocks, onPageLinkClick]);
+    // Another page: look the block up by id (search can't find a block by its id),
+    // open its page, and reveal it once that page has rendered.
+    api.getBlock(blockId).then(async (b) => {
+      if (!b) { showToast("The referenced block no longer exists"); return; }
+      // get_block carries page_title (BlockWithPage); fall back to a tree lookup.
+      const title = (b as any).page_title ?? (await api.getPageTree(b.page_id)).page.title;
+      pendingRevealBlockId = blockId;
+      onPageLinkClickRef.current(title);
+    }).catch((e) => {
+      console.error("block ref navigation failed:", e);
+      showToast("Could not open the referenced block");
+    });
+  }, []);
+
+  // Scroll to a block on this page, expand/unzoom so it's visible, highlight it
+  // briefly and put the caret in it.
+  const revealBlock = (blockId: string) => {
+    const all = localBlocksRef.current;
+    const byId = new Map(all.map(b => [b.id, b]));
+    const ancestors: string[] = [];
+    let pid = byId.get(blockId)?.parent_id ?? null;
+    while (pid) { ancestors.push(pid); pid = byId.get(pid)?.parent_id ?? null; }
+    const collapsedAncestors = ancestors.filter(a => collapsedBlocksRef.current.has(a));
+    collapsedAncestors.forEach(a => toggleCollapse(a));
+    if (zoomedBlockId && zoomedBlockId !== blockId && !ancestors.includes(zoomedBlockId)) setZoomedBlockId(null);
+    ensureRendered(blockId);
+    focusBlockAt(blockId, "end");
+    // Big pages render progressively: wait (briefly) for the block to exist.
+    let tries = 0;
+    const highlight = () => {
+      const el = document.querySelector(`[data-block-id="${CSS.escape(blockId)}"]`) as HTMLElement | null;
+      if (!el) { if (++tries < 40) setTimeout(highlight, 50); return; }
+      el.scrollIntoView({ block: "center" });
+      el.classList.add("block-ref-highlight");
+      setTimeout(() => el.classList.remove("block-ref-highlight"), 1600);
+    };
+    setTimeout(highlight, 60);
+  };
+  const revealBlockRef = useRef(revealBlock);
+  revealBlockRef.current = revealBlock;
+  const onPageLinkClickRef = useRef(onPageLinkClick);
+  onPageLinkClickRef.current = onPageLinkClick;
 
   // UX-013: Batch operations on multi-block selection
   const deleteSelected = useCallback(async () => {
+    // Blocks created by a just-pressed Enter must exist before they can be deleted.
+    await opQueueRef.current;
     const current = localBlocksRef.current;
-    const toDelete = current.filter(b => selectedBlockIds.has(b.id));
+    const toDelete = current.filter(b => selectedBlockIds.has(b.id) || [...selectedBlockIds].some(s => rid(s) === b.id));
     setSelectedBlockIds(new Set());
     setSelectionAnchor(null);
     if (toDelete.length === 0) return;
@@ -1078,7 +1474,7 @@ export default function PageView({
     // restores them all in one call with their original ids and positions.
     let snapshot: api.RestoreBlock[] = [];
     try {
-      snapshot = await api.snapshotSubtrees(toDelete.map(b => b.id), current);
+      snapshot = await api.snapshotSubtrees(toDelete.map(b => rid(b.id)), current);
     } catch (e) {
       console.error("deleteSelected snapshot failed:", e);
     }
@@ -1148,6 +1544,34 @@ export default function PageView({
         setSelectedBlockIds(new Set());
         setSelectionAnchor(null);
       }
+      // Keyboard navigation of the selection (e.g. after Escape left a block):
+      // arrows move it (Shift extends), Enter edits the selected block.
+      if ((e.key === "ArrowUp" || e.key === "ArrowDown") && !e.altKey && !e.ctrlKey && !e.metaKey) {
+        const list = visibleRef.current;
+        const idxs = list.map((b, i) => (selectedBlockIds.has(b.id) ? i : -1)).filter(i => i >= 0);
+        if (idxs.length === 0) return;
+        e.preventDefault();
+        const up = e.key === "ArrowUp";
+        const edge = up ? Math.min(...idxs) : Math.max(...idxs);
+        const next = Math.max(0, Math.min(list.length - 1, edge + (up ? -1 : 1)));
+        if (e.shiftKey) {
+          const anchor = selectionAnchor ?? edge;
+          const lo = Math.min(anchor, next), hi = Math.max(anchor, next);
+          setSelectedBlockIds(new Set(list.slice(lo, hi + 1).map(b => b.id)));
+          setSelectionAnchor(anchor);
+        } else {
+          setSelectedBlockIds(new Set([list[next].id]));
+          setSelectionAnchor(next);
+        }
+        list[next] && document.querySelector(`[data-block-id="${CSS.escape(list[next].id)}"]`)?.scrollIntoView({ block: "nearest" });
+      }
+      if (e.key === "Enter" && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey && selectedBlockIds.size === 1) {
+        e.preventDefault();
+        const [id] = [...selectedBlockIds];
+        setSelectedBlockIds(new Set());
+        setSelectionAnchor(null);
+        blockRefs.current.get(id)?.focus("end");
+      }
     };
     // A plain click into an editor ends the block selection (shift-click extends it).
     const mouseHandler = (e: MouseEvent) => {
@@ -1163,7 +1587,7 @@ export default function PageView({
       window.removeEventListener("keydown", handler);
       window.removeEventListener("mousedown", mouseHandler, true);
     };
-  }, [selectedBlockIds, deleteSelected, copySelected]);
+  }, [selectedBlockIds, selectionAnchor, deleteSelected, copySelected]);
 
   // Global keyboard shortcuts: Cmd/Ctrl+A to select all, Cmd/Ctrl+C to copy page
   useEffect(() => {
@@ -1186,6 +1610,33 @@ export default function PageView({
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, [filteredVisibleBlocks, copyPageToClipboard]);
+
+  const selectedCountRef = useRef(0);
+  selectedCountRef.current = selectedBlockIds.size;
+
+  // Redo (Ctrl+Shift+Z / Ctrl+Y) outside an editor: the block-level undo stack.
+  // Inside an editor the editor's own history redoes text. Capture phase, and the
+  // event stops here so a second (global) redo handler can't apply it twice.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+      const k = e.key.toLowerCase();
+      const isRedo = (k === "z" && e.shiftKey) || (k === "y" && !e.shiftKey);
+      if (!isRedo) return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.isContentEditable || t.tagName === "INPUT" || t.tagName === "TEXTAREA" ||
+          t.closest?.(".ProseMirror, .cm-editor"))) return;
+      e.preventDefault();
+      e.stopPropagation();
+      executeRedo()
+        .then((did) => { if (did) onRefreshPageRef.current(); else showToast("Nothing to redo"); })
+        .catch((err) => { console.error("redo failed:", err); showToast("Redo failed"); onRefreshPageRef.current(); });
+    };
+    window.addEventListener("keydown", handler, true);
+    return () => window.removeEventListener("keydown", handler, true);
+  }, []);
+  const onRefreshPageRef = useRef(onRefreshPage);
+  onRefreshPageRef.current = onRefreshPage;
 
   // Clear multi-block selection when page changes
   useEffect(() => {
@@ -1215,6 +1666,58 @@ export default function PageView({
     }
     setEditingTitle(false);
   };
+
+  // The block list only changes with the blocks, the tree, the selection and the
+  // render limit — not on the many other PageView state changes (save indicator,
+  // active block, suggestions). BlockItem is memoized and ignores callback props,
+  // so the handlers below read live state through refs.
+  const blockListItems = useMemo(() => filteredVisibleBlocks.slice(0, renderLimit).map((block, idx) => (
+    <BlockItem
+      key={renderKeyRef.current.get(block.id) ?? block.id}
+      ref={refFor(block.id)}
+      block={block}
+      depth={blockTreeInfo.getDepth(block.id)}
+      dataBlockId={block.id}
+      selected={selectedBlockIds.has(block.id)}
+      onUpdate={handleBlockUpdate}
+      onDelete={onDeleteBlock}
+      onPageLinkClick={handlePageLinkClick}
+      onBlockRefClick={handleBlockRefClick}
+      onEnter={handleEnter}
+      canEnter={canEnter}
+      onBackspaceAtStart={handleBackspaceAtStart}
+      onArrowUp={handleArrowUp}
+      onArrowDown={handleArrowDown}
+      onPasteMultiline={handlePasteMultiline}
+      onIndent={handleIndent}
+      onOutdent={handleOutdent}
+      onEscape={handleEscape}
+      onDuplicate={handleDuplicate}
+      onToggleCollapse={toggleCollapse}
+      onZoomIn={() => zoomTo(block.id, block.id)}
+      hasChildren={blockTreeInfo.hasChildren(block.id)}
+      isLastSibling={(() => {
+        const next = filteredVisibleBlocks[idx + 1];
+        if (!next) return true;
+        return (next.parent_id ?? null) !== (block.parent_id ?? null);
+      })()}
+      isOnActivePath={false}
+      onFocusBlock={(id) => { lastEditorBlockIdRef.current = id; setActiveBlockId(id); }}
+      onBlurBlock={() => {
+        // Only clear if no other block takes focus within 100ms
+        // Prevents flash when clicking between blocks
+        setTimeout(() => {
+          if (activeBlockIdRef.current === block.id) {
+            setActiveBlockId(null);
+          }
+        }, 100);
+      }}
+      onShiftClick={handleShiftClickLive}
+      onOpenWhiteboard={onOpenWhiteboard}
+      onDragReorder={handleDragReorderLive}
+    />
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  )), [filteredVisibleBlocks, renderLimit, selectedBlockIds, blockTreeInfo]);
 
   return (
     <div className="page-view-wrapper">
@@ -1416,13 +1919,13 @@ export default function PageView({
 
       {zoomedBlockId && (
         <div className="breadcrumb-bar">
-          <span className="breadcrumb-item" onClick={() => setZoomedBlockId(null)}>
+          <span className="breadcrumb-item" onClick={() => zoomTo(null)}>
             {page.title}
           </span>
           {getBreadcrumbs(blocks, zoomedBlockId).map(b => (
             <span key={b.id}>
               <span className="breadcrumb-sep"> &rsaquo; </span>
-              <span className="breadcrumb-item" onClick={() => setZoomedBlockId(b.id)}>
+              <span className="breadcrumb-item" onClick={() => zoomTo(b.id)}>
                 {b.content.slice(0, 30) || "(empty)"}
               </span>
             </span>
@@ -1448,7 +1951,11 @@ export default function PageView({
                     const existing = pageProps.find((p) => p.key === "tags");
                     const currentTags = existing?.value ? existing.value.split(",").map((s) => s.trim()).filter(Boolean) : [];
                     const newTags = [...new Set([...currentTags, tag])].join(",");
-                    api.setProperty(page.id, "page", "tags", newTags);
+                    const before = pageProps;
+                    api.setProperty(page.id, "page", "tags", newTags).catch((e) => {
+                      setPageProps(before);
+                      showToast(`Tag not added: ${propError(e)}`);
+                    });
                     setPageProps((prev) => {
                       const filtered = prev.filter((p) => p.key !== "tags");
                       return [...filtered, { id: "", entity_type: "page", key: "tags", value: newTags, entity_id: page.id, value_type: "string", created_at: "", updated_at: "" }];
@@ -1471,7 +1978,7 @@ export default function PageView({
           </div>
           <div className="ai-link-list">
             {suggestedLinks.map((s) => (
-              <span key={s.pageId} className="ai-link-chip">
+              <span key={s.pageId} className="ai-link-chip" title={`Suggested because it ${s.reason}`}>
                 [[{s.title}]]
                 <span className="ai-link-insert" title="Insert link" onClick={async () => {
                   // Bug #28: "+" should INSERT the wiki-link into this page, not
@@ -1492,58 +1999,8 @@ export default function PageView({
       )}
 
       <div className="content view-content markdown-source-view">
-        <div className={`block-list ${getSettings().fullTreeMode ? 'tree-mode' : ''}`}>
-          {filteredVisibleBlocks.map((block, idx) => (
-            <BlockItem
-              key={block.id}
-              ref={(el) => { if (el) blockRefs.current.set(block.id, el); else blockRefs.current.delete(block.id); }}
-              block={block}
-              depth={blockTreeInfo.getDepth(block.id)}
-              dataBlockId={block.id}
-              selected={selectedBlockIds.has(block.id)}
-              onUpdate={(id, content) => {
-                // Update local state so editor picks up the new content
-                markEdited(id, content);
-                setLocalBlocks(prev => prev.map(b => b.id === id ? { ...b, content } : b));
-                onUpdateBlock(id, content);
-                flashSave();
-              }}
-              onDelete={onDeleteBlock}
-              onPageLinkClick={handlePageLinkClick}
-              onBlockRefClick={handleBlockRefClick}
-              onEnter={handleEnter}
-              canEnter={canEnter}
-              onBackspaceAtStart={handleBackspaceAtStart}
-              onArrowUp={handleArrowUp}
-              onArrowDown={handleArrowDown}
-              onPasteMultiline={handlePasteMultiline}
-              onIndent={handleIndent}
-              onOutdent={handleOutdent}
-              onDuplicate={handleDuplicate}
-              onToggleCollapse={toggleCollapse}
-              onZoomIn={() => setZoomedBlockId(block.id)}
-              hasChildren={blockTreeInfo.hasChildren(block.id)}
-              isLastSibling={(() => {
-                const next = filteredVisibleBlocks[idx + 1];
-                if (!next) return true;
-                return (next.parent_id ?? null) !== (block.parent_id ?? null);
-              })()}
-              isOnActivePath={false}
-              onFocusBlock={setActiveBlockId}
-              onBlurBlock={() => {
-                // Only clear if no other block takes focus within 100ms
-                // Prevents flash when clicking between blocks
-                setTimeout(() => {
-                  if (activeBlockIdRef.current === block.id) {
-                    setActiveBlockId(null);
-                  }
-                }, 100);
-              }}
-              onShiftClick={handleShiftClick}
-              onOpenWhiteboard={onOpenWhiteboard}
-              onDragReorder={handleDragReorder}
-            />
-          ))}
+        <div className={`block-list ${getSettingsCached().fullTreeMode ? 'tree-mode' : ''}`}>
+          {blockListItems}
 
           {!zoomedBlockId && (
             <>

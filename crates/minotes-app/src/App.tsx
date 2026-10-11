@@ -6,10 +6,10 @@ import EmptyState from "./components/EmptyState";
 import SearchPanel from "./components/SearchPanel";
 import QueryPanel from "./components/QueryPanel";
 import ReviewPanel from "./components/ReviewPanel";
-import PluginManager from "./components/PluginManager";
 import CanvasMode, { type CanvasModeType } from "./components/CanvasMode";
-import { generateWhiteboardId } from "./lib/whiteboardUtils";
+import { generateWhiteboardId, hasWhiteboardData } from "./lib/whiteboardUtils";
 import { addRecentPage } from "./lib/recentFiles";
+import { errorMessage, saveErrorMessage } from "./lib/errors";
 import SyncPanel from "./components/SyncPanel";
 import PdfViewer from "./components/PdfViewer";
 import MobileNav from "./components/MobileNav";
@@ -18,16 +18,30 @@ import CssSnippetManager from "./components/CssSnippetManager";
 import SettingsPanel from "./components/SettingsPanel";
 import FolderSettingsPanel from "./components/FolderSettingsPanel";
 import * as api from "./lib/api";
-import { localDateKey } from "./lib/dates";
+import { localDateKey, shiftDateKey } from "./lib/dates";
 import { isTauri } from "./lib/api";
 import { initTheme, toggleTheme } from "./lib/theme";
 import { initTestApi, registerTestApi } from "./lib/testApi";
 import { loadEnabledSnippets } from "./lib/cssLoader";
 import { isOnboardingComplete, markOnboardingComplete, TUTORIAL_BLOCKS } from "./lib/onboarding";
-import { executeUndo, executeRedo } from "./lib/undoManager";
+import { executeUndo } from "./lib/undoManager";
 import { undoStack } from "./lib/undoStack";
-import { showToast } from "./lib/toast";
+import { showToast, showUndoToast } from "./lib/toast";
+import { installBrokenImageHints } from "./lib/brokenImages";
+import { pageAsText } from "./lib/pageText";
+import { pageTitleConflict } from "./lib/pageNames";
+import { getRecentPages } from "./lib/recentFiles";
 import { getSettings } from "./lib/settings";
+import NotebookBanner from "./components/NotebookBanner";
+import { NOTEBOOK_SWITCHED, setNextPickedFolder, switchNotebook } from "./lib/notebooks";
+import { notifyCardsChanged } from "./lib/cards";
+// ── AI platform ──
+import AiMount from "./components/AiMount";
+// ── Import ──
+import ImportMount from "./components/ImportMount";
+import { openImport } from "./lib/importPicks";
+// ── End import ──
+// ── End AI platform ──
 
 export default function App() {
   const [activePage, setActivePage] = useState<api.PageTree | null>(null);
@@ -56,6 +70,10 @@ export default function App() {
   const [syncErrorMsg, setSyncErrorMsg] = useState<string | null>(null);
   const syncingRef = useRef(false);
   const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Deletions from another device that sync's mass-delete guard is holding.
+  const [heldDeletions, setHeldDeletions] = useState<api.HeldDeletions | null>(null);
+  // Key of the open notebook (remounts per-notebook views such as the AI panel).
+  const [notebookKey, setNotebookKey] = useState<string>("");
 
   const refresh = useCallback(async () => {
     try {
@@ -101,8 +119,17 @@ export default function App() {
         // genuinely doesn't exist — don't fabricate one).
         const looksLikeUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(titleOrId);
         if (looksLikeUuid) throw notFound;
-        const created = await api.createPage(titleOrId);
-        tree = await api.getPageTree(created.id);
+        // A mistyped link ("[[Project Alpha ]]") means the page without the stray
+        // whitespace — open that one, and never create a title with edge spaces.
+        const title = titleOrId.trim();
+        if (!title) throw notFound;
+        if (title !== titleOrId) {
+          try { tree = await api.getPageTree(title); } catch { /* create below */ }
+        }
+        if (!tree) {
+          const created = await api.createPage(title);
+          tree = await api.getPageTree(created.id);
+        }
       }
       console.log("[openPage] got tree:", tree.page.title, "blocks:", tree.blocks.length);
       if (stale()) return; // superseded by a later navigation
@@ -111,13 +138,46 @@ export default function App() {
       addRecentPage(tree.page.id, tree.page.title);
     } catch (e: any) {
       if (stale()) return;
-      const msg = typeof e === "string" ? e : e?.message ?? JSON.stringify(e);
+      const msg = errorMessage(e);
       console.error("Failed to open page:", msg);
-      setLastError(`openPage failed: ${msg}`);
+      setLastError(`Couldn't open page: ${msg}`);
     }
   }, []);
 
-  const createPage = useCallback(async (title: string) => {
+  // Draw (Ctrl+W / sidebar button) opens a NEW whiteboard without touching the page:
+  // the `{{whiteboard:<id>}}` block is only appended once the board is saved with
+  // real content (first stroke/note/text/image). Just peeking leaves nothing behind.
+  // Map: whiteboard id -> page id that should receive the block.
+  const pendingBoardsRef = useRef<Map<string, string>>(new Map());
+  const openNewWhiteboard = useCallback((pageId: string) => {
+    const wbId = generateWhiteboardId();
+    pendingBoardsRef.current.set(wbId, pageId);
+    setWhiteboardId(wbId);
+    setCanvasMode("draw");
+  }, []);
+  useEffect(() => {
+    const onSaved = (e: Event) => {
+      const wbId = (e as CustomEvent).detail as string;
+      const pageId = pendingBoardsRef.current.get(wbId);
+      // Camera/grid-only saves have no content — keep waiting.
+      if (!pageId || !hasWhiteboardData(wbId)) return;
+      pendingBoardsRef.current.delete(wbId);
+      api.createBlock(pageId, `{{whiteboard:${wbId}}}`)
+        .then(() => { if (activePageIdRef.current === pageId) return openPage(pageId); })
+        .catch((err) => {
+          pendingBoardsRef.current.set(wbId, pageId); // retry on the next save
+          console.error("Failed to add whiteboard block:", err);
+        });
+    };
+    window.addEventListener("whiteboard-saved", onSaved);
+    return () => window.removeEventListener("whiteboard-saved", onSaved);
+  }, [openPage]);
+
+  // Resolves true once the page exists and is open. On failure it shows the reason
+  // and stays where it is — a rejected create never navigates.
+  const createPage = useCallback(async (rawTitle: string): Promise<boolean> => {
+    const title = rawTitle.trim();
+    if (!title) return false;
     try {
       setLastError(null);
       console.log("[createPage]", title);
@@ -125,12 +185,40 @@ export default function App() {
       console.log("[createPage] created:", page.id, page.title);
       await refresh();
       await openPage(page.id);
+      return true;
     } catch (e: any) {
-      const msg = typeof e === "string" ? e : e?.message ?? JSON.stringify(e);
+      const msg = errorMessage(e);
       console.error("Failed to create page:", msg);
-      setLastError(`createPage failed: ${msg}`);
+      setLastError(`Couldn't create page "${title}": ${msg}`);
+      return false;
     }
   }, [refresh, openPage]);
+
+  // Rename the open page. Rejections (e.g. the title is taken) are shown and the
+  // page keeps its old title; the promise rejects so callers can react too.
+  const renameActivePage = useCallback(async (pageId: string, rawTitle: string) => {
+    const title = rawTitle.trim();
+    if (!title) return;
+    let failure: unknown = null;
+    try {
+      const conflict = await pageTitleConflict(title, pageId);
+      if (conflict) throw new Error(conflict);
+      await api.renamePage(pageId, title);
+    } catch (e) {
+      failure = e;
+    }
+    // Re-read the page either way so the title shown is the one stored
+    // (openPage clears the banner, so the error is set after it).
+    if (activePageIdRef.current === pageId) await openPage(pageId);
+    refresh();
+    if (failure !== null) {
+      const msg = errorMessage(failure).replace(/^Already exists:\s*/i, "");
+      const text = `Couldn't rename to "${title}": ${msg}`;
+      setLastError(text);
+      setTimeout(() => setLastError(prev => prev === text ? null : prev), 8000);
+      throw failure;
+    }
+  }, [openPage, refresh]);
 
   const openJournal = useCallback(async (date?: string) => {
     const token = ++navTokenRef.current;
@@ -222,8 +310,8 @@ export default function App() {
       }
     } catch (e) {
       console.error("Failed to update block:", e);
-      setLastError("Failed to save — check your connection");
-      setTimeout(() => setLastError(null), 5000);
+      setLastError(saveErrorMessage(e));
+      setTimeout(() => setLastError(null), 8000);
     }
   }, [activePage]);
 
@@ -249,19 +337,100 @@ export default function App() {
     }
   }, [activePage, openPage]);
 
-  const deletePage = useCallback(async (id: string) => {
+  // Undo for the most recent page delete. Ctrl+Z (outside an editor) restores it
+  // as long as nothing newer happened: any edit, save or block action afterwards
+  // makes block-level undo the "most recent" again.
+  const pageUndoRef = useRef<{ id: string; title: string; restore: () => Promise<void> } | null>(null);
+  useEffect(() => {
+    const invalidate = () => { pageUndoRef.current = null; };
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (["Shift", "Control", "Meta", "Alt", "CapsLock"].includes(e.key)) return;
+      if (t?.closest?.(".ProseMirror, .cm-editor") && !(e.ctrlKey || e.metaKey)) invalidate();
+    };
+    // Ctrl+Z right after a page delete restores the page — even when the cursor
+    // already sits in a block of the page shown next (capture phase, so it runs
+    // before the editor's own undo, which has nothing to undo on a fresh page).
+    const onUndoKey = (e: KeyboardEvent) => {
+      if (!pageUndoRef.current || !(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey) return;
+      if (e.key.toLowerCase() !== "z") return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) return;
+      e.preventDefault();
+      e.stopPropagation();
+      pageUndoRef.current.restore();
+    };
+    const onPointer = (e: PointerEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t?.closest?.(".page-view, .canvas-layer")) invalidate();
+    };
+    window.addEventListener("minotes-content-saved", invalidate);
+    window.addEventListener("keydown", onUndoKey, true);
+    window.addEventListener("keydown", onKey, true);
+    window.addEventListener("pointerdown", onPointer, true);
+    return () => {
+      window.removeEventListener("minotes-content-saved", invalidate);
+      window.removeEventListener("keydown", onUndoKey, true);
+      window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("pointerdown", onPointer, true);
+    };
+  }, []);
+
+  // Move a page to Trash. If it is the open page, leave it first (to the page
+  // visited before it, else today's journal) so nothing can be typed into a
+  // trashed page. Undo: the toast button (10 s) or Ctrl+Z.
+  const deletePage = useCallback(async (id: string, title?: string) => {
+    const wasOpen = activePageIdRef.current === id;
+    const label = title ?? (wasOpen ? activePage?.page.title : undefined) ?? "Page";
     try {
-      await api.deletePage(id);
-      if (activePage?.page.id === id) {
-        setActivePage(null);
-      }
-      await refresh();
+      await api.trashPage(id); // explicit soft delete (the mock's delete_page is a hard delete)
     } catch (e) {
       console.error("Failed to delete page:", e);
-      setLastError("Failed to delete page — check your connection");
-      setTimeout(() => setLastError(null), 5000);
+      setLastError(`Couldn't delete "${label}": ${errorMessage(e)}`);
+      setTimeout(() => setLastError(null), 8000);
+      return;
     }
-  }, [activePage, refresh]);
+    if (wasOpen) {
+      const previous = getRecentPages().find(r => r.id !== id);
+      let left = false;
+      if (previous) {
+        try {
+          const tree = await api.getPageTree(previous.id);
+          const trashed = await api.listTrash().catch(() => [] as api.TrashItem[]);
+          if (!trashed.some(t => t.id === tree.page.id)) {
+            await openPage(tree.page.id);
+            left = true;
+          }
+        } catch { /* fall back to the journal */ }
+      }
+      if (!left) {
+        ++navTokenRef.current;
+        setActivePage(null);
+        await openJournal();
+      }
+    }
+    await refresh();
+    window.dispatchEvent(new Event("minotes-sidebar-refresh"));
+    let undone = false;
+    let dismissToast = () => {};
+    const restore = async () => {
+      if (undone) return;
+      undone = true;
+      pageUndoRef.current = null;
+      dismissToast();
+      try {
+        await api.restoreFromTrash(id, "page");
+        await refresh();
+        window.dispatchEvent(new Event("minotes-sidebar-refresh"));
+        if (wasOpen) await openPage(id);
+        showToast(`Restored "${label}"`);
+      } catch (e) {
+        setLastError(`Couldn't restore "${label}": ${errorMessage(e)}`);
+      }
+    };
+    pageUndoRef.current = { id, title: label, restore };
+    dismissToast = showUndoToast(`"${label}" moved to Trash`, restore, 10000, "Undo (Ctrl+Z)");
+  }, [activePage, refresh, openPage, openJournal]);
 
   const openInSidebar = useCallback(async (titleOrId: string) => {
     try {
@@ -286,6 +455,7 @@ export default function App() {
       syncingRef.current = true;
       setSyncState("syncing");
       const result = await api.gitSync();
+      setHeldDeletions(result.held_deletions ?? null);
       if (result.success) {
         setSyncState("idle");
         setSyncErrorMsg(null);
@@ -302,11 +472,20 @@ export default function App() {
           refresh();
           if (activePage) openPage(activePage.page.id).catch(() => {});
         }
+      } else if (result.offline) {
+        // Remote unreachable: not a failure — local edits are kept and synced later.
+        setSyncState("offline");
+        setSyncErrorMsg(result.error ?? "The sync remote can't be reached");
       } else {
         const errMsg = result.error ?? "Unknown error";
         setSyncState("error");
         setSyncErrorMsg(errMsg);
         showToast(`Sync failed: ${errMsg}`);
+        // An import problem still brought the rest of the other device's changes.
+        if (result.pages_imported > 0) {
+          refresh();
+          if (activePage) openPage(activePage.page.id).catch(() => {});
+        }
       }
     } catch (e) {
       setSyncState("error");
@@ -314,7 +493,62 @@ export default function App() {
     } finally {
       syncingRef.current = false;
     }
-  }, [activePage, refresh, openPage]);
+  }, [activePage, refresh, openPage, openJournal]);
+
+  // The other device's mass deletion: the user decides.
+  const resolveHeldDeletions = useCallback(async (action: "trash" | "keep") => {
+    try {
+      const n = await api.gitSyncResolveDeletions(action);
+      setHeldDeletions(null);
+      showToast(action === "trash"
+        ? `Moved ${n} item(s) to trash, as on the other device`
+        : "Kept the pages; the next sync sends them back to the other device");
+      refresh();
+      if (activePage) openPage(activePage.page.id).catch(() => {});
+    } catch (e) {
+      showToast(`Couldn't apply that: ${errorMessage(e)}`);
+    }
+  }, [refresh, openPage, activePage]);
+
+  // Another notebook was opened: close views and panels, forget per-notebook UI
+  // state, and land on that notebook's journal for today.
+  useEffect(() => {
+    api.getCurrentGraph().then(k => setNotebookKey(k ?? "")).catch(() => {});
+    const onSwitch = (e: Event) => {
+      const key = (e as CustomEvent<{ key: string }>).detail?.key ?? "";
+      setNotebookKey(key);
+      navTokenRef.current++;
+      setOpenPanel(null);
+      setCanvasMode(null);
+      setWhiteboardId(null);
+      setPdfViewerPath(null);
+      setRightSidebarPanels([]);
+      setFolderSettingsId(null);
+      setLastError(null);
+      setPendingJournalDate(null);
+      setActivePage(null);
+      setHeldDeletions(null);
+      setSyncState("idle");
+      setSyncErrorMsg(null);
+      undoStack.clear();
+      notifyCardsChanged();
+      refresh();
+      window.dispatchEvent(new Event("minotes-sidebar-refresh"));
+      openJournal().catch(() => {});
+      api.gitSyncStatus().then(status => {
+        setSyncStatus(status);
+        if (status.enabled) setTimeout(() => window.dispatchEvent(new Event("minotes-trigger-sync")), 0);
+      }).catch(() => setSyncStatus(null));
+    };
+    window.addEventListener(NOTEBOOK_SWITCHED, onSwitch);
+    return () => window.removeEventListener(NOTEBOOK_SWITCHED, onSwitch);
+  }, [refresh, openJournal]);
+
+  useEffect(() => {
+    const h = () => { triggerSync(); };
+    window.addEventListener("minotes-trigger-sync", h);
+    return () => window.removeEventListener("minotes-trigger-sync", h);
+  }, [triggerSync]);
 
   // Load sync status on mount + sync on app open
   useEffect(() => {
@@ -350,6 +584,7 @@ export default function App() {
   useEffect(() => {
     initTestApi();
     initTheme();
+    installBrokenImageHints();
     loadEnabledSnippets();
   }, []);
 
@@ -393,6 +628,7 @@ export default function App() {
         return true;
       },
       getCurrentPage: () => activePage?.page.title ?? null,
+      getOpenWhiteboardId: () => (canvasMode === "draw" ? whiteboardId : null),
       isPanelOpen: (name: string) => {
         const map: Record<string, boolean> = {
           search: openPanel === "search", query: openPanel === "query", graph: canvasMode === "graph",
@@ -401,48 +637,65 @@ export default function App() {
         return map[name] ?? false;
       },
     });
-  }, [activePage, openPanel, canvasMode]);
+    // Notebooks: switch like the sidebar menu does; drive the folder dialog
+    // (automation can't drive the native picker).
+    registerTestApi({
+      switchNotebook: (key: string) => switchNotebook(key).then(() => true),
+      setNextPickedFolder: (path: string | null) => { setNextPickedFolder(path); return true; },
+      getNotebookKey: () => notebookKey,
+    } as any);
+  }, [activePage, openPanel, canvasMode, whiteboardId, notebookKey]);
 
   // Keyboard shortcuts
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      // Bug #17: don't fire editor-disruptive chords while typing in an editor/input.
-      // A small whitelist (search, settings, sidebar toggle, theme, undo/redo) stays
-      // active; everything else bails out when focus is inside editable content.
+      if (!(e.metaKey || e.ctrlKey)) return;
+      // A key something else already handled (the editor's own bindings, a
+      // panel, the page-delete undo below) is not an app shortcut.
+      if (e.defaultPrevented) return;
       const target = e.target as HTMLElement;
+      // Block editor (ProseMirror / CodeMirror): app chords work here too — the
+      // editor binds none of them — but a key the editor already handled
+      // (preventDefault) is left alone.
       const inEditor =
-        !!target.closest?.(".ProseMirror") ||
-        target.isContentEditable ||
-        target.tagName === "INPUT" ||
-        target.tagName === "TEXTAREA";
+        !!target.closest?.(".ProseMirror, .cm-editor") || target.isContentEditable;
+      // Plain text fields (search, titles, kanban inputs, SQL): only the small
+      // always-on set (search, settings, theme, sidebar) acts here.
+      const inTextField = target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT";
+      const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+      const plain = !e.shiftKey && !e.altKey;
+      const appChord = !inTextField; // chords that would disrupt typing in a field
+
       // Cmd/Ctrl+K — search
-      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+      if (key === "k" && plain) {
         e.preventDefault();
         setOpenPanel(prev => prev === "search" ? null : "search");
       }
       // Cmd/Ctrl+J — today's journal
-      if ((e.metaKey || e.ctrlKey) && e.key === "j" && !inEditor) {
+      if (key === "j" && plain && appChord) {
         e.preventDefault();
+        setCanvasMode(null);
         openJournal();
       }
       // Cmd/Ctrl+Q — query panel
-      if ((e.metaKey || e.ctrlKey) && e.key === "q" && !inEditor) {
+      if (key === "q" && plain && appChord) {
         e.preventDefault();
         setOpenPanel(prev => prev === "query" ? null : "query");
       }
       // Cmd/Ctrl+G — graph view
-      if ((e.metaKey || e.ctrlKey) && e.key === "g" && !inEditor) {
+      if (key === "g" && plain && appChord) {
         e.preventDefault();
         setCanvasMode(prev => prev === "graph" ? null : "graph");
       }
       // Cmd/Ctrl+R — review panel
-      if ((e.metaKey || e.ctrlKey) && e.key === "r" && !inEditor) {
+      if (key === "r" && plain && appChord) {
         e.preventDefault();
         setOpenPanel(prev => prev === "review" ? null : "review");
       }
-      // Cmd/Ctrl+Z — undo (only when not inside editor; editor has its own undo)
-      if ((e.metaKey || e.ctrlKey) && e.key === "z" && !e.shiftKey) {
-        if (!inEditor) {
+      // Cmd/Ctrl+Z — undo (inside an editor the editor's own undo runs; a page
+      // delete is undone by the capture-phase listener below)
+      if (key === "z" && !e.shiftKey && !e.altKey) {
+        if (!inEditor && !inTextField) {
           e.preventDefault();
           executeUndo()
             .then(() => activePage ? openPage(activePage.page.id) : Promise.resolve())
@@ -450,73 +703,72 @@ export default function App() {
             .catch(() => setLastError("Undo failed"));
         }
       }
-      // Cmd/Ctrl+Shift+Z — redo
-      if ((e.metaKey || e.ctrlKey) && e.key === "z" && e.shiftKey && !inEditor) {
-        e.preventDefault();
-        executeRedo()
-          .then(() => activePage ? openPage(activePage.page.id) : Promise.resolve())
-          .then(() => refresh())
-          .catch(() => setLastError("Redo failed"));
-      }
+      // Cmd/Ctrl+Shift+Z / Ctrl+Y — redo: handled by PageView (capture phase).
       // Cmd/Ctrl+N — new page
-      if ((e.metaKey || e.ctrlKey) && e.key === "n" && !inEditor) {
+      if (key === "n" && plain && appChord) {
         e.preventDefault();
         const title = prompt("Page title:");
         if (title?.trim()) createPage(title.trim());
       }
       // Cmd/Ctrl+W — new whiteboard / toggle draw mode
-      if ((e.metaKey || e.ctrlKey) && e.key === "w" && !inEditor) {
+      if (key === "w" && plain && appChord) {
         e.preventDefault();
         if (canvasMode === "draw") {
           setCanvasMode(null);
           setWhiteboardId(null);
         } else if (activePage) {
-          const wbId = generateWhiteboardId();
-          api.createBlock(activePage.page.id, `{{whiteboard:${wbId}}}`).then(() => {
-            openPage(activePage.page.id);
-          });
-          setWhiteboardId(wbId);
-          setCanvasMode("draw");
+          openNewWhiteboard(activePage.page.id);
         }
       }
       // Cmd/Ctrl+M — mind map view
-      if ((e.metaKey || e.ctrlKey) && e.key === "m" && !inEditor) {
+      if (key === "m" && plain && appChord) {
         e.preventDefault();
         if (activePage) setCanvasMode(prev => prev === "mindmap" ? null : "mindmap");
       }
       // Cmd/Ctrl+Shift+K — kanban view
-      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === "K" && !inEditor) {
+      if (key === "k" && e.shiftKey && !e.altKey && appChord) {
         e.preventDefault();
         if (activePage) setCanvasMode(prev => prev === "kanban" ? null : "kanban");
       }
+      // Cmd/Ctrl+Shift+C — copy the open page as text
+      if (key === "c" && e.shiftKey && !e.altKey && appChord && activePage) {
+        e.preventDefault();
+        const pageId = activePage.page.id;
+        const title = activePage.page.title;
+        api.getPageTree(pageId)
+          .then(tree => navigator.clipboard.writeText(pageAsText(tree.blocks)))
+          .then(() => showToast(`Copied "${title}" to the clipboard`))
+          .catch(err => showToast(`Couldn't copy the page: ${errorMessage(err)}`));
+      }
       // Cmd/Ctrl+P — open PDF
-      if ((e.metaKey || e.ctrlKey) && e.key === "p" && !inEditor) {
+      if (key === "p" && plain && appChord) {
         e.preventDefault();
         const path = prompt("PDF file path:");
         if (path?.trim()) setPdfViewerPath(path.trim());
       }
       // Ctrl+Shift+T — toggle theme
-      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === "T") {
+      if (key === "t" && e.shiftKey && !e.altKey) {
         e.preventDefault();
         toggleTheme();
       }
       // Ctrl+, — settings
-      if ((e.metaKey || e.ctrlKey) && e.key === ",") {
+      if (key === "," && plain) {
         e.preventDefault();
         setOpenPanel(prev => prev === "settings" ? null : "settings");
       }
       // Ctrl+\ — toggle right sidebar
-      if ((e.metaKey || e.ctrlKey) && e.key === "\\") {
+      if (key === "\\" && plain) {
         e.preventDefault();
         setRightSidebarVisible(prev => !prev);
       }
       // Phase 4: Ctrl+1-7 — open pinned pages by position
-      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && !inEditor) {
-        const num = parseInt(e.key, 10);
+      if (plain && appChord) {
+        const num = parseInt(key, 10);
         if (num >= 1 && num <= 7) {
           e.preventDefault();
           api.listFavorites().then(favs => {
             if (favs.length >= num) {
+              setCanvasMode(null);
               openPage(favs[num - 1].id);
             }
           }).catch(() => {});
@@ -525,7 +777,7 @@ export default function App() {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [openJournal, createPage, activePage, whiteboardId, canvasMode]);
+  }, [openJournal, createPage, activePage, whiteboardId, canvasMode, openNewWhiteboard, openPage, refresh]);
 
   // UX-009: Journal as default landing + UX-017: Onboarding tutorial on first launch
   useEffect(() => {
@@ -574,19 +826,13 @@ export default function App() {
         onGraphClick={() => setCanvasMode(prev => prev === "graph" ? null : "graph")}
         onMindmapClick={() => { if (activePage) setCanvasMode(prev => prev === "mindmap" ? null : "mindmap"); }}
         onWhiteboardClick={() => {
-          if (activePage) {
-            const wbId = generateWhiteboardId();
-            api.createBlock(activePage.page.id, `{{whiteboard:${wbId}}}`).then(() => {
-              openPage(activePage.page.id);
-            });
-            setWhiteboardId(wbId);
-            setCanvasMode("draw");
-          }
+          if (activePage) openNewWhiteboard(activePage.page.id);
         }}
         onKanbanClick={() => { if (activePage) setCanvasMode(prev => prev === "kanban" ? null : "kanban"); }}
         onPagesClick={() => setCanvasMode(prev => prev === "pages" ? null : "pages")}
         onSettingsClick={() => setOpenPanel(prev => prev === "settings" ? null : "settings")}
         onFolderSettings={(id) => setFolderSettingsId(prev => prev === id ? null : id)}
+        onReviewClick={() => setOpenPanel("review")}
         onTodoBadgeClick={async () => {
           if (getSettings().ai?.todoExtraction === false) return; // Settings → AI → TODO extraction off
           try {
@@ -616,6 +862,7 @@ export default function App() {
       />
       <div className="main workspace-split mod-root" style={{ position: "relative", display: "flex", flexDirection: "row" }}>
         <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }}>
+          <NotebookBanner heldDeletions={heldDeletions} onResolveHeld={resolveHeldDeletions} />
           {lastError && (
             <div style={{ background: "#f38ba8", color: "#1e1e2e", padding: "8px 16px", fontSize: 13, fontWeight: 600 }}>
               {lastError}
@@ -654,11 +901,8 @@ export default function App() {
                     refresh();
                   });
                 } else {
-                  // Regular page: rename actual title
-                  api.renamePage(activePage.page.id, newTitle).then(() => {
-                    openPage(activePage.page.id);
-                    refresh();
-                  });
+                  // Regular page: rename actual title (errors are shown by renameActivePage)
+                  renameActivePage(activePage.page.id, newTitle).catch(() => {});
                 }
               } : undefined}
             />
@@ -674,16 +918,19 @@ export default function App() {
               onRefreshPage={() => openPage(activePage.page.id)}
               onOpenWhiteboard={(wbId: string) => { setWhiteboardId(wbId); setCanvasMode("draw"); }}
               onRenamePage={(newTitle: string) => {
-                if (activePage) {
-                  api.renamePage(activePage.page.id, newTitle).then(() => {
-                    openPage(activePage.page.id);
-                    refresh();
-                  });
-                }
+                // Errors (e.g. title taken) show above the title; the old title stays.
+                renameActivePage(activePage.page.id, newTitle).catch(() => {});
               }}
             />
           ) : pendingJournalDate ? (
             <div className="pending-journal">
+              {/* Same Prev / Today / Next as a journal page, so a future (not yet
+                  written) day is never a dead end. */}
+              <div className="journal-nav pending-journal-nav">
+                <button className="btn btn-sm" onClick={() => openJournal(shiftDateKey(pendingJournalDate, -1))}>← Prev</button>
+                <button className="btn btn-sm" onClick={() => openJournal(localDateKey())}>Today</button>
+                <button className="btn btn-sm" onClick={() => openJournal(shiftDateKey(pendingJournalDate, 1))}>Next →</button>
+              </div>
               <div className="pending-journal-date">
                 {(() => {
                   const [y, m, d] = pendingJournalDate.split("-").map(Number);
@@ -694,6 +941,10 @@ export default function App() {
               </div>
               <p className="pending-journal-hint">No journal entry yet</p>
               <button className="btn btn-primary" onClick={materializeJournal}>+ Start writing</button>
+              {/* ── Import: an empty notebook offers to bring notes in ── */}
+              {stats?.pages === 0 && (
+                <button className="btn btn-sm pending-journal-import" onClick={() => openImport()} data-testid="empty-import">Import notes from Obsidian, Evernote or markdown…</button>
+              )}
             </div>
           ) : (
             <EmptyState onCreatePage={createPage} />
@@ -719,6 +970,7 @@ export default function App() {
         onClose={() => setOpenPanel(null)}
         onPageClick={(id) => { openPage(id); setOpenPanel(null); }}
         onToggleTheme={() => { toggleTheme(); setOpenPanel(null); }}
+        onCreatePage={createPage}
         onNewPage={() => {
           setOpenPanel(null);
           const title = prompt("Page title:");
@@ -728,7 +980,6 @@ export default function App() {
         onGraph={() => { setCanvasMode(prev => prev === "graph" ? null : "graph"); setOpenPanel(null); }}
         onQuery={() => { setOpenPanel("query"); }}
         onReview={() => { setOpenPanel("review"); }}
-        onPlugins={() => { setOpenPanel("plugins"); }}
         onSync={() => { setOpenPanel("sync"); }}
         onObsidianPlugins={() => { setOpenPanel("obsidianPlugins"); }}
         onCssManager={() => { setOpenPanel("cssManager"); }}
@@ -741,10 +992,6 @@ export default function App() {
       />
       <ReviewPanel
         open={openPanel === "review"}
-        onClose={() => setOpenPanel(null)}
-      />
-      <PluginManager
-        open={openPanel === "plugins"}
         onClose={() => setOpenPanel(null)}
       />
       <ObsidianPluginBrowser
@@ -760,6 +1007,8 @@ export default function App() {
         onClose={() => setOpenPanel(null)}
         syncError={syncState === "error" ? syncErrorMsg : null}
         onSyncRetry={triggerSync}
+        onOpenSync={() => setOpenPanel("sync")}
+        onOpenCssSnippets={() => setOpenPanel("cssManager")}
       />
       <SyncPanel
         open={openPanel === "sync"}
@@ -769,6 +1018,12 @@ export default function App() {
           if (activePage) openPage(activePage.page.id);
         }}
       />
+      {/* ── Import ── */}
+      <ImportMount onOpenPage={openPage} onRefresh={refresh} />
+      {/* ── End import ── */}
+      {/* ── AI platform ── */}
+      <AiMount key={notebookKey} activePageId={activePage?.page.id ?? null} onOpenPage={openPage} />
+      {/* ── End AI platform ── */}
       <MobileNav
         activeTab={mobileTab}
         onPagesClick={() => setMobileTab("pages")}

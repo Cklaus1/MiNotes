@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { openImport } from "../lib/importPicks";
 
 interface Props {
   onCreatePage: (title: string) => void;
@@ -36,6 +37,9 @@ export default function EmptyState({ onCreatePage }: Props) {
           Create
         </button>
       </div>
+      <button className="btn btn-sm" onClick={() => openImport()} style={{ marginTop: 10 }} data-testid="empty-state-import">
+        Import notes from Obsidian, Evernote or markdown…
+      </button>
     </div>
   );
 }

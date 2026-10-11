@@ -14,7 +14,10 @@ import "@xyflow/react/dist/style.css";
 
 import type { Block } from "../../lib/api";
 import * as api from "../../lib/api";
+import { showToast, showUndoToast } from "../../lib/toast";
 import { blocksToFlow, extractLabel, type LayoutDirection, type MindMapNodeData } from "./blocksToFlow";
+import { loadCollapsed, saveCollapsed } from "./collapseStore";
+import { buildMindMapSvg, svgToPng } from "./exportImage";
 import MindMapNode from "./MindMapNode";
 
 const nodeTypes = { mindmapNode: MindMapNode };
@@ -59,28 +62,72 @@ interface ContextMenuState {
 const AUTO_COLLAPSE_THRESHOLD = 50;
 const AUTO_COLLAPSE_DEPTH = 3;
 
+const ROOT_NODE_ID = "__page_root__";
+/** Fit everything, but don't blow a 1–3 node map up to 3× zoom. */
+const FIT_VIEW = { padding: 0.2, maxZoom: 1.25 };
+
+/** Phase 7: on large pages, start with branches deeper than level 3 collapsed. */
+function autoCollapsed(blocks: Block[]): Set<string> {
+  if (blocks.length <= AUTO_COLLAPSE_THRESHOLD) return new Set();
+  const parentMap = new Map<string, string | null>();
+  const hasKids = new Set<string>();
+  for (const b of blocks) {
+    parentMap.set(b.id, b.parent_id ?? null);
+    if (b.parent_id) hasKids.add(b.parent_id);
+  }
+  const depthOf = (id: string): number => {
+    let d = 0, cur = parentMap.get(id);
+    while (cur && d < 100) { d++; cur = parentMap.get(cur); }
+    return d;
+  };
+  return new Set(blocks.filter((b) => hasKids.has(b.id) && depthOf(b.id) >= AUTO_COLLAPSE_DEPTH).map((b) => b.id));
+}
+
+/** Save a file: browser download, or (desktop) PNG to Downloads / text to the clipboard. */
+async function deliverExport(filename: string, data: Blob, kind: string): Promise<void> {
+  if (api.isTauri) {
+    // The desktop webview has no download manager: ask where to save.
+    const bytes = Array.from(new Uint8Array(await data.arrayBuffer()));
+    const path = await api.saveExportFile(filename, bytes);
+    if (path) showToast(`${kind} exported → ${path}`);
+    return;
+  }
+  const url = URL.createObjectURL(data);
+  const link = document.createElement("a");
+  link.download = filename;
+  link.href = url;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  showToast(`Exported ${filename}`);
+}
+
+const exportName = (title: string, ext: string) =>
+  `mindmap-${title.replace(/[\\/:*?"<>|\s]+/g, "-").replace(/^-+|-+$/g, "") || "page"}.${ext}`;
+
 function MindMapInner({ pageId, pageTitle, isJournal, journalDate, blocks, onClose, onRefreshPage, onRenameTitle }: Props) {
-  const [collapsedIds, setCollapsedIds] = useState<Set<string>>(() => {
-    // Phase 7: Auto-collapse deep branches on large pages
-    if (blocks.length > AUTO_COLLAPSE_THRESHOLD) {
-      const parentMap = new Map<string, string | null>();
-      for (const b of blocks) parentMap.set(b.id, b.parent_id ?? null);
-      const getDepth = (id: string): number => {
-        let d = 0, cur = parentMap.get(id);
-        while (cur) { d++; cur = parentMap.get(cur); }
-        return d;
-      };
-      const autoCollapsed = new Set<string>();
-      for (const b of blocks) {
-        const depth = getDepth(b.id);
-        if (depth >= AUTO_COLLAPSE_DEPTH && blocks.some((c) => c.parent_id === b.id)) {
-          autoCollapsed.add(b.id);
-        }
-      }
-      return autoCollapsed;
-    }
-    return new Set();
-  });
+  // Collapsed branches are shared with the outline and persisted (collapseStore).
+  const [collapsedIds, setCollapsedIds] = useState<Set<string>>(
+    () => loadCollapsed(pageId, blocks) ?? autoCollapsed(blocks),
+  );
+  const blocksRef = useRef(blocks);
+  blocksRef.current = blocks;
+  const loadedPageRef = useRef(pageId);
+  useEffect(() => {
+    if (loadedPageRef.current === pageId) return;
+    loadedPageRef.current = pageId;
+    setCollapsedIds(loadCollapsed(pageId, blocksRef.current) ?? autoCollapsed(blocksRef.current));
+  }, [pageId]);
+  const toggleCollapse = useCallback((blockId: string) => {
+    setCollapsedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(blockId)) next.delete(blockId);
+      else next.add(blockId);
+      saveCollapsed(pageId, next, blocksRef.current);
+      return next;
+    });
+  }, [pageId]);
   const [direction, setDirection] = useState<LayoutDirection>("LR");
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
@@ -114,9 +161,38 @@ function MindMapInner({ pageId, pageTitle, isJournal, journalDate, blocks, onClo
   }, [focusSubtreeRoot, blocks, pageTitle]);
 
   // Convert blocks to ReactFlow nodes/edges
+  // Node callbacks go through a ref so they always see current state, and are
+  // attached to every layout (a re-layout replaces node data wholesale — doing
+  // this in a separate effect lost onSave after any edit that kept the count).
+  const handlersRef = useRef({
+    save: (_blockId: string, _text: string) => {},
+    editEnd: (_blockId: string, _text: string) => {},
+    toggle: (_blockId: string) => {},
+  });
+  const renameRef = useRef(onRenameTitle);
+  renameRef.current = onRenameTitle;
+  const canRename = !!onRenameTitle;
   const { nodes: layoutNodes, edges: layoutEdges } = useMemo(() => {
-    return blocksToFlow(visibleBlocks, focusTitle, collapsedIds, direction, autoEditNodeId);
-  }, [visibleBlocks, focusTitle, collapsedIds, direction, autoEditNodeId]);
+    const flow = blocksToFlow(visibleBlocks, focusTitle, collapsedIds, direction, autoEditNodeId);
+    const nodes = flow.nodes.map((node) => {
+      const d = node.data as unknown as MindMapNodeData;
+      const id = d.blockId;
+      return {
+        ...node,
+        data: {
+          ...node.data,
+          autoEdit: autoEditNodeId !== null && id === autoEditNodeId,
+          onSave: id ? (text: string) => handlersRef.current.save(id, text) : undefined,
+          onEditEnd: id ? (text: string) => handlersRef.current.editEnd(id, text) : undefined,
+          onToggleCollapse: id ? () => handlersRef.current.toggle(id) : undefined,
+          onRenameTitle: d.isRoot && canRename ? (t: string) => renameRef.current?.(t) : undefined,
+          isJournal: d.isRoot ? isJournal : undefined,
+          journalDate: d.isRoot ? journalDate : undefined,
+        },
+      };
+    });
+    return { nodes, edges: flow.edges };
+  }, [visibleBlocks, focusTitle, collapsedIds, direction, autoEditNodeId, canRename, isJournal, journalDate]);
 
   const [nodes, setNodes, onNodesChange] = useNodesState(layoutNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(layoutEdges);
@@ -198,39 +274,6 @@ function MindMapInner({ pageId, pageTitle, isJournal, journalDate, blocks, onClo
     };
   }, [layoutNodes, layoutEdges, setNodes, setEdges]);
 
-  // Inject callbacks + autoEdit into node data
-  useEffect(() => {
-    setNodes((nds) =>
-      nds.map((node) => {
-        const d = node.data as unknown as MindMapNodeData;
-        return {
-          ...node,
-          data: {
-            ...node.data,
-            autoEdit: autoEditNodeId !== null && d.blockId === autoEditNodeId,
-            onSave: d.blockId
-              ? (text: string) => { api.updateBlock(d.blockId!, text).then(onRefreshPage); }
-              : undefined,
-            onClearAutoEdit: () => setAutoEditNodeId(null),
-            onRenameTitle: d.isRoot && onRenameTitle ? onRenameTitle : undefined,
-            isJournal: d.isRoot ? isJournal : undefined,
-            journalDate: d.isRoot ? journalDate : undefined,
-            onToggleCollapse: d.blockId
-              ? () => {
-                  setCollapsedIds((prev) => {
-                    const next = new Set(prev);
-                    if (next.has(d.blockId!)) next.delete(d.blockId!);
-                    else next.add(d.blockId!);
-                    return next;
-                  });
-                }
-              : undefined,
-          },
-        };
-      })
-    );
-  }, [nodes.length, setNodes, onRefreshPage, autoEditNodeId, onRenameTitle]);
-
   // Phase 7: Edge highlighting — highlight path from root to selected node
   useEffect(() => {
     if (!selectedNodeId) {
@@ -266,12 +309,12 @@ function MindMapInner({ pageId, pageTitle, isJournal, journalDate, blocks, onClo
 
   // Fit view on mount
   useEffect(() => {
-    setTimeout(() => reactFlow.fitView({ padding: 0.2 }), 100);
+    setTimeout(() => reactFlow.fitView(FIT_VIEW), 100);
   }, []);
 
   // Refit when focus mode changes
   useEffect(() => {
-    setTimeout(() => reactFlow.fitView({ padding: 0.2 }), 350);
+    setTimeout(() => reactFlow.fitView(FIT_VIEW), 350);
   }, [focusSubtreeRoot]);
 
   // Phase 7: Arrow key navigation
@@ -283,13 +326,86 @@ function MindMapInner({ pageId, pageTitle, isJournal, journalDate, blocks, onClo
     }
   }, [nodes, reactFlow]);
 
-  // Create block and auto-enter edit mode on the new node
+  // Create block and auto-enter edit mode on the new node. The new (empty)
+  // block stays visible while it is being edited; see editEnd.
   const createAndEdit = useCallback((parentId?: string) => {
     api.createBlock(pageId, "", parentId).then((newBlock) => {
       setAutoEditNodeId(newBlock.id);
       onRefreshPage();
-    });
+    }).catch((e) => showToast(`Couldn't add a node: ${e}`));
   }, [pageId, onRefreshPage]);
+
+  // First node of an empty map: reuse a lone empty top-level block (a fresh
+  // page has one) rather than piling up invisible empty blocks.
+  const addFirstNode = useCallback(() => {
+    const reusable = blocks.find((b) => !b.parent_id && b.content.trim() === "" && !blocks.some((c) => c.parent_id === b.id));
+    if (reusable) setAutoEditNodeId(reusable.id);
+    else createAndEdit(undefined);
+  }, [blocks, createAndEdit]);
+
+  // After an auto-edited (new) node is saved, keep it pinned until the refreshed
+  // blocks carry its content, so it doesn't blink out while it is still empty.
+  const pendingAutoEditDone = useRef<string | null>(null);
+  useEffect(() => {
+    const id = pendingAutoEditDone.current;
+    if (!id) return;
+    const b = blocks.find((x) => x.id === id);
+    if (!b || b.content.trim() !== "") {
+      pendingAutoEditDone.current = null;
+      setAutoEditNodeId((cur) => (cur === id ? null : cur));
+    }
+  }, [blocks]);
+
+  handlersRef.current = {
+    save: (blockId, text) => {
+      api.updateBlock(blockId, text).then(onRefreshPage).catch((e) => showToast(`Couldn't save: ${e}`));
+    },
+    editEnd: (blockId, text) => {
+      if (blockId !== autoEditNodeId) return;
+      if (text.trim() === "") {
+        // A new node left empty is abandoned: remove its block.
+        setAutoEditNodeId(null);
+        const b = blocks.find((x) => x.id === blockId);
+        if (b && b.content.trim() === "" && !blocks.some((c) => c.parent_id === blockId)) {
+          api.deleteBlock(blockId).then(onRefreshPage).catch(() => {});
+        }
+      } else {
+        pendingAutoEditDone.current = blockId;
+        setTimeout(() => setAutoEditNodeId((cur) => (cur === blockId ? null : cur)), 3000);
+      }
+    },
+    toggle: toggleCollapse,
+  };
+
+  // Delete a node and its branch, with an Undo toast that restores the whole
+  // subtree under its original ids (like Kanban cards and the outline).
+  const deleteNode = useCallback(async (blockId: string) => {
+    const block = blocks.find((b) => b.id === blockId);
+    if (!block) return;
+    const snapshot = await api.snapshotSubtrees([blockId], blocks).catch(() => null);
+    const label = extractLabel(block.content, 40);
+    const descendants = snapshot ? snapshot.length - 1 : 0;
+    try {
+      await api.deleteBlock(blockId);
+    } catch (e) {
+      showToast(`Couldn't delete: ${e}`);
+      return;
+    }
+    setSelectedNodeId(null);
+    onRefreshPage();
+    const msg = descendants > 0
+      ? `Deleted "${label}" and ${descendants} child node${descendants === 1 ? "" : "s"}`
+      : `Deleted "${label}"`;
+    if (snapshot) {
+      showUndoToast(msg, () => {
+        api.restoreBlocks(snapshot).then(onRefreshPage).catch((e) => showToast(`Couldn't undo: ${e}`));
+      }, 8000);
+    } else {
+      showToast(msg);
+    }
+  }, [blocks, onRefreshPage]);
+
+  const hasBlockNodes = layoutNodes.length > 1;
 
   // M key hold: show minimap while held
   useEffect(() => {
@@ -310,14 +426,33 @@ function MindMapInner({ pageId, pageTitle, isJournal, journalDate, blocks, onClo
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
+        e.preventDefault();
         if (contextMenu) { setContextMenu(null); return; }
         if (focusSubtreeRoot) { setFocusSubtreeRoot(null); return; }
         onClose();
         return;
       }
 
+      const typing = document.activeElement?.tagName === "INPUT" || document.activeElement?.tagName === "TEXTAREA";
+      // Empty map, or the page (root) node selected: Tab / Enter adds a
+      // top-level node — the only way to start a map from scratch.
+      if ((e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) && !typing && !e.ctrlKey && !e.metaKey && !e.altKey
+          && !focusSubtreeRoot && (selectedNodeId === ROOT_NODE_ID || (!selectedNodeId && !hasBlockNodes))) {
+        e.preventDefault();
+        if (hasBlockNodes) createAndEdit(undefined);
+        else addFirstNode();
+        return;
+      }
+
       if (!selectedNodeId) return;
       const nodeData = nodes.find((n) => n.id === selectedNodeId)?.data as unknown as MindMapNodeData | undefined;
+
+      if (e.key === "ArrowRight" && selectedNodeId === ROOT_NODE_ID) {
+        e.preventDefault();
+        const first = layoutEdges.find((edge) => edge.source === ROOT_NODE_ID);
+        if (first) navigateToNode(first.target);
+        return;
+      }
 
       // Arrow key navigation
       if (e.key === "ArrowRight" && nodeData?.blockId) {
@@ -333,7 +468,7 @@ function MindMapInner({ pageId, pageTitle, isJournal, journalDate, blocks, onClo
           // Go to parent
           const block = blocks.find((b) => b.id === nodeData.blockId);
           if (block?.parent_id) navigateToNode(block.parent_id);
-          else navigateToNode("__page_root__");
+          else navigateToNode(ROOT_NODE_ID);
         }
         return;
       }
@@ -383,17 +518,15 @@ function MindMapInner({ pageId, pageTitle, isJournal, journalDate, blocks, onClo
         }
       }
       if (e.key === "Delete" || e.key === "Backspace") {
-        if (document.activeElement?.tagName === "INPUT") return;
+        if (typing) return;
         e.preventDefault();
-        if (nodeData.childCount > 0) {
-          if (!confirm(`Delete this node and its ${nodeData.childCount} children?`)) return;
-        }
-        api.deleteBlock(nodeData.blockId!).then(onRefreshPage);
+        deleteNode(nodeData.blockId!);
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [selectedNodeId, nodes, blocks, pageId, onClose, onRefreshPage, collapsedIds, contextMenu, focusSubtreeRoot, navigateToNode]);
+  }, [selectedNodeId, nodes, blocks, pageId, onClose, onRefreshPage, collapsedIds, contextMenu, focusSubtreeRoot,
+      navigateToNode, createAndEdit, addFirstNode, deleteNode, hasBlockNodes, layoutEdges, direction]);
 
   // Track selection
   const onSelectionChange = useCallback(({ nodes: selected }: { nodes: Node[] }) => {
@@ -414,7 +547,7 @@ function MindMapInner({ pageId, pageTitle, isJournal, journalDate, blocks, onClo
       let closestId: string | null = null;
       let closestDist = Infinity;
       for (const node of nodes) {
-        if (node.id === draggedNode.id || node.id === "__page_root__") continue;
+        if (node.id === draggedNode.id || node.id === ROOT_NODE_ID) continue;
         const nd = node.data as unknown as MindMapNodeData;
         if (!nd.blockId) continue;
         // Don't drop onto own descendants
@@ -479,9 +612,9 @@ function MindMapInner({ pageId, pageTitle, isJournal, journalDate, blocks, onClo
 
   const handleDeleteNode = useCallback(() => {
     if (!contextMenu) return;
-    api.deleteBlock(contextMenu.blockId).then(onRefreshPage);
+    deleteNode(contextMenu.blockId);
     setContextMenu(null);
-  }, [contextMenu, onRefreshPage]);
+  }, [contextMenu, deleteNode]);
 
   const handleCopyBranch = useCallback(() => {
     if (!contextMenu) return;
@@ -500,64 +633,59 @@ function MindMapInner({ pageId, pageTitle, isJournal, journalDate, blocks, onClo
     setContextMenu(null);
   }, [contextMenu]);
 
-  // Export PNG
-  const handleExportPng = useCallback(() => {
-    const svgEl = document.querySelector(".mindmap-overlay .react-flow svg") as SVGSVGElement | null;
-    if (!svgEl) return;
-    const svgData = new XMLSerializer().serializeToString(svgEl);
-    const canvas = document.createElement("canvas");
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    const img = new Image();
-    img.onload = () => {
-      canvas.width = img.width || 1200;
-      canvas.height = img.height || 800;
-      ctx.fillStyle = "#1e1e2e";
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      ctx.drawImage(img, 0, 0);
-      canvas.toBlob((blob) => {
-        if (!blob) return;
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement("a");
-        link.download = `mindmap-${pageTitle}.png`;
-        link.href = url;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        URL.revokeObjectURL(url);
-      });
-    };
-    img.src = "data:image/svg+xml;base64," + btoa(unescape(encodeURIComponent(svgData)));
-  }, [pageTitle]);
+  // Export: a standalone SVG rebuilt from the layout (labels included), see exportImage.ts.
+  const overlayRef = useRef<HTMLDivElement>(null);
 
-  // Export SVG
-  const handleExportSvg = useCallback(() => {
-    const svgEl = document.querySelector(".mindmap-overlay .react-flow svg") as SVGSVGElement | null;
-    if (!svgEl) return;
-    const svgData = new XMLSerializer().serializeToString(svgEl);
-    const blob = new Blob([svgData], { type: "image/svg+xml" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.download = `mindmap-${pageTitle}.svg`;
-    link.href = url;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-  }, [pageTitle]);
+  // Bring a newly added node into view (it may land outside the viewport).
+  useEffect(() => {
+    if (!autoEditNodeId) return;
+    const t = setTimeout(() => {
+      const n = reactFlow.getNode(autoEditNodeId);
+      const rect = overlayRef.current?.getBoundingClientRect();
+      if (!n || !rect) return;
+      const { x, y, zoom } = reactFlow.getViewport();
+      const w = n.measured?.width ?? 180, h = n.measured?.height ?? 40;
+      const sx = n.position.x * zoom + x, sy = n.position.y * zoom + y;
+      if (sx < 0 || sy < 0 || sx + w * zoom > rect.width || sy + h * zoom > rect.height - 40) {
+        reactFlow.setCenter(n.position.x + w / 2, n.position.y + h / 2, { zoom: Math.min(zoom, 1.25), duration: 200 });
+      }
+    }, 400);
+    return () => clearTimeout(t);
+  }, [autoEditNodeId, layoutNodes, reactFlow]);
+  const renderSvg = useCallback(() => {
+    if (!overlayRef.current) return null;
+    const out = buildMindMapSvg(reactFlow.getNodes(), overlayRef.current);
+    return out.svg ? out : null;
+  }, [reactFlow]);
 
-  // Export Markdown outline
-  const handleExportMd = useCallback(() => {
+  const handleExportPng = useCallback(async () => {
+    const out = renderSvg();
+    if (!out) return;
+    try {
+      const png = await svgToPng(out.svg, out.width, out.height);
+      await deliverExport(exportName(pageTitle, "png"), png, "PNG");
+    } catch (e) {
+      showToast(`Export failed: ${e}`);
+    }
+  }, [pageTitle, renderSvg]);
+
+  const handleExportSvg = useCallback(async () => {
+    const out = renderSvg();
+    if (!out) return;
+    try {
+      await deliverExport(exportName(pageTitle, "svg"), new Blob([out.svg], { type: "image/svg+xml" }), "SVG");
+    } catch (e) {
+      showToast(`Export failed: ${e}`);
+    }
+  }, [pageTitle, renderSvg]);
+
+  const handleExportMd = useCallback(async () => {
     const outline = `# ${pageTitle}\n\n${blocksToOutline(blocks, null, 0)}`;
-    const blob = new Blob([outline], { type: "text/markdown" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.download = `mindmap-${pageTitle}.md`;
-    link.href = url;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
+    try {
+      await deliverExport(exportName(pageTitle, "md"), new Blob([outline], { type: "text/markdown" }), "Markdown outline");
+    } catch (e) {
+      showToast(`Export failed: ${e}`);
+    }
   }, [pageTitle, blocks]);
 
   // Breadcrumb for focus mode
@@ -578,7 +706,7 @@ function MindMapInner({ pageId, pageTitle, isJournal, journalDate, blocks, onClo
   }, [focusSubtreeRoot, blocks]);
 
   return (
-    <div className="mindmap-overlay" onClick={() => contextMenu && setContextMenu(null)}>
+    <div className="mindmap-overlay" ref={overlayRef} onClick={() => contextMenu && setContextMenu(null)}>
       <div className="mindmap-toolbar">
         {/* Breadcrumb in focus mode */}
         {focusSubtreeRoot && (
@@ -601,7 +729,7 @@ function MindMapInner({ pageId, pageTitle, isJournal, journalDate, blocks, onClo
         )}
 
         <div className="mindmap-toolbar-group">
-          <button className="btn btn-sm" onClick={() => reactFlow.fitView({ padding: 0.2 })} title="Fit all nodes">
+          <button className="btn btn-sm" onClick={() => reactFlow.fitView(FIT_VIEW)} title="Fit all nodes">
             Fit
           </button>
           <button className="btn btn-sm" onClick={() => reactFlow.zoomIn()} title="Zoom in">+</button>
@@ -618,19 +746,19 @@ function MindMapInner({ pageId, pageTitle, isJournal, journalDate, blocks, onClo
             <div className="mindmap-dropdown" onClick={() => setShowLayoutMenu(false)}>
               <button
                 className={direction === "LR" ? "active" : ""}
-                onClick={() => { setDirection("LR"); setTimeout(() => reactFlow.fitView({ padding: 0.2 }), 350); }}
+                onClick={() => { setDirection("LR"); setTimeout(() => reactFlow.fitView(FIT_VIEW), 350); }}
               >
                 ↔ Horizontal
               </button>
               <button
                 className={direction === "TB" ? "active" : ""}
-                onClick={() => { setDirection("TB"); setTimeout(() => reactFlow.fitView({ padding: 0.2 }), 350); }}
+                onClick={() => { setDirection("TB"); setTimeout(() => reactFlow.fitView(FIT_VIEW), 350); }}
               >
                 ↕ Vertical
               </button>
               <button
                 className={direction === "radial" ? "active" : ""}
-                onClick={() => { setDirection("radial"); setTimeout(() => reactFlow.fitView({ padding: 0.2 }), 350); }}
+                onClick={() => { setDirection("radial"); setTimeout(() => reactFlow.fitView(FIT_VIEW), 350); }}
               >
                 ◎ Radial
               </button>
@@ -666,6 +794,7 @@ function MindMapInner({ pageId, pageTitle, isJournal, journalDate, blocks, onClo
         onViewportChange={onViewportChange}
         nodeTypes={nodeTypes}
         fitView
+        fitViewOptions={FIT_VIEW}
         minZoom={0.1}
         maxZoom={3}
         nodesDraggable
@@ -689,6 +818,27 @@ function MindMapInner({ pageId, pageTitle, isJournal, journalDate, blocks, onClo
           />
         )}
       </ReactFlow>
+
+      {/* Empty map: the page node has nothing to hang off it yet. */}
+      {!hasBlockNodes && !focusSubtreeRoot && autoEditNodeId === null && (
+        <div
+          className="mm-empty-hint"
+          role="note"
+          style={{
+            position: "absolute", left: "50%", bottom: "18%", transform: "translateX(-50%)",
+            display: "flex", flexDirection: "column", alignItems: "center", gap: 8,
+            color: "var(--text-secondary)", fontSize: 13, textAlign: "center", zIndex: 5,
+          }}
+        >
+          <span>This page has no content yet.</span>
+          <button className="btn btn-sm btn-primary" onClick={(e) => { e.stopPropagation(); addFirstNode(); }}>
+            + Add first node
+          </button>
+          <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+            or select the page node and press Tab
+          </span>
+        </div>
+      )}
 
       {/* Bottom-right hover zone to trigger minimap */}
       <div

@@ -20,3 +20,9 @@ export function localDateKey(date: Date = new Date()): string {
 export function localTimeKey(date: Date = new Date()): string {
   return `${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
+
+/** The local YYYY-MM-DD key `days` days after (or before, if negative) `key`. */
+export function shiftDateKey(key: string, days: number): string {
+  const [y, m, d] = key.split("-").map(Number);
+  return localDateKey(new Date(y, m - 1, d + days));
+}

@@ -4,13 +4,17 @@ import { attachClosestEdge, extractClosestEdge, type Edge } from "@atlaskit/prag
 import { autoScrollForElements } from "@atlaskit/pragmatic-drag-and-drop-auto-scroll/element";
 import type { Block } from "../../lib/api";
 import * as api from "../../lib/api";
-import { extractLabel } from "../mindmap/blocksToFlow";
 import KanbanCard from "./KanbanCard";
+import { splitHeading } from "./kanbanModel";
 
 interface Props {
-  column: Block;
+  columnId: string;
+  /** The section block behind this column; null for the virtual "No section" column. */
+  column: Block | null;
+  title: string;
   cards: Block[];
-  allColumns: Block[];
+  allColumns: { id: string; title: string }[];
+  onMoveCard: (block: Block, toColumnId: string) => void;
   subBlockCounts: Map<string, number>;
   pageId: string;
   focusedCardId: string | null;
@@ -28,7 +32,7 @@ interface Props {
 }
 
 function KanbanColumn({
-  column, cards, allColumns, subBlockCounts, pageId,
+  columnId, column, title, cards, allColumns, onMoveCard, subBlockCounts, pageId,
   focusedCardId, searchQuery, isCollapsed, columnColor, columnColors,
   onSetColumnColor, onToggleCollapse, onFocusCard, onOpenSidePanel,
   onDeleteCard, onDeleteColumn, onRefresh,
@@ -46,8 +50,7 @@ function KanbanColumn({
   const titleInputRef = useRef<HTMLInputElement>(null);
   const newCardRef = useRef<HTMLTextAreaElement>(null);
 
-  // Don't uppercase — show the label as-is (stripped of markdown but preserving case)
-  const title = extractLabel(column.content);
+  const isUnsorted = column === null;
 
   const filteredCards = searchQuery
     ? cards.filter((c) => c.content.toLowerCase().includes(searchQuery.toLowerCase()))
@@ -58,13 +61,13 @@ function KanbanColumn({
     if (!el) return;
     return dropTargetForElements({
       element: el,
-      getData: () => ({ columnId: column.id }),
+      getData: () => ({ columnId }),
       canDrop: ({ source }) => !!source.data.cardId,
       onDragEnter: () => setIsDragOver(true),
       onDragLeave: () => setIsDragOver(false),
       onDrop: () => setIsDragOver(false),
     });
-  }, [column.id]);
+  }, [columnId]);
 
   useEffect(() => {
     const el = bodyRef.current;
@@ -73,41 +76,48 @@ function KanbanColumn({
   }, []);
 
   useEffect(() => {
+    // The virtual "No section" column always leads: it can't be dragged or displaced.
     const el = headerRef.current;
-    if (!el) return;
+    if (!el || isUnsorted) return;
     return draggable({
       element: el,
-      getInitialData: () => ({ columnDragId: column.id }),
+      getInitialData: () => ({ columnDragId: columnId }),
     });
-  }, [column.id]);
+  }, [columnId, isUnsorted]);
 
   useEffect(() => {
     const el = colRef.current;
-    if (!el) return;
+    if (!el || isUnsorted) return;
     return dropTargetForElements({
       element: el,
       getData: ({ input, element }) =>
-        attachClosestEdge({ columnDropId: column.id }, { input, element, allowedEdges: ["left", "right"] }),
-      canDrop: ({ source }) => !!source.data.columnDragId && source.data.columnDragId !== column.id,
+        attachClosestEdge({ columnDropId: columnId }, { input, element, allowedEdges: ["left", "right"] }),
+      canDrop: ({ source }) => !!source.data.columnDragId && source.data.columnDragId !== columnId,
       onDrag: ({ self }) => setClosestEdge(extractClosestEdge(self.data)),
       onDragLeave: () => setClosestEdge(null),
       onDrop: () => setClosestEdge(null),
     });
-  }, [column.id]);
+  }, [columnId, isUnsorted]);
 
+  // Edit the title text only; the heading marker ("## ") that makes the block a
+  // column is kept and re-applied on save.
   const startEditTitle = useCallback(() => {
-    setTitleText(column.content);
+    if (!column) return;
+    setTitleText(splitHeading(column.content).title);
     setEditingTitle(true);
     setTimeout(() => titleInputRef.current?.focus(), 0);
-  }, [column.content]);
+  }, [column]);
 
   const finishEditTitle = useCallback(() => {
-    const trimmed = titleText.trim();
-    if (trimmed && trimmed !== column.content.trim()) {
-      api.updateBlock(column.id, trimmed).then(onRefresh).catch(() => {});
-    }
     setEditingTitle(false);
-  }, [titleText, column.id, column.content, onRefresh]);
+    if (!column) return;
+    const trimmed = titleText.trim();
+    const { prefix, rest } = splitHeading(column.content);
+    const next = prefix + trimmed + rest;
+    if (trimmed && next.trim() !== column.content.trim()) {
+      api.updateBlock(column.id, next).then(onRefresh).catch(() => {});
+    }
+  }, [titleText, column, onRefresh]);
 
   const handleAddCard = useCallback(() => {
     setAddingCard(true);
@@ -119,13 +129,13 @@ function KanbanColumn({
     const text = newCardText.trim();
     setAddingCard(false);
     setNewCardText("");
-    if (text) api.createBlock(pageId, text, column.id).then(onRefresh).catch(() => {});
-  }, [newCardText, pageId, column.id, onRefresh]);
+    if (text) api.createBlock(pageId, text, column?.id).then(onRefresh).catch(() => {});
+  }, [newCardText, pageId, column, onRefresh]);
 
   return (
     <>
       {closestEdge === "left" && <div className="kanban-column-drop-indicator" />}
-      <div ref={colRef} className={`kanban-column${isCollapsed ? " collapsed" : ""}`} role="group" aria-label={`Column: ${title}`}>
+      <div ref={colRef} className={`kanban-column${isCollapsed ? " collapsed" : ""}${isUnsorted ? " kanban-column-unsorted" : ""}`} data-column-id={columnId} role="group" aria-label={`Column: ${title}`}>
         {/* Color accent bar */}
         {columnColor && <div className="kanban-color-bar" style={{ background: columnColor }} />}
 
@@ -145,15 +155,23 @@ function KanbanColumn({
               aria-label="Column title"
             />
           ) : (
-            <span className="kanban-column-title" onDoubleClick={startEditTitle}>{title}</span>
+            <span
+              className="kanban-column-title"
+              title={isUnsorted ? "Top-level blocks that are not under a section heading" : title}
+              onDoubleClick={startEditTitle}
+            >
+              {title}
+            </span>
           )}
           <div className="kanban-column-actions">
             <span className="kanban-column-count">{cards.length}</span>
             <button className="kanban-col-btn" onClick={() => setShowColorPicker(!showColorPicker)} title="Column color">●</button>
-            <button className="kanban-col-btn" onClick={() => onToggleCollapse(column.id)} title={isCollapsed ? "Expand" : "Collapse"}>
+            <button className="kanban-col-btn" onClick={() => onToggleCollapse(columnId)} title={isCollapsed ? "Expand" : "Collapse"}>
               {isCollapsed ? "+" : "-"}
             </button>
-            <button className="kanban-col-btn" onClick={() => onDeleteColumn(column, cards.length)} title="Delete column">x</button>
+            {column && (
+              <button className="kanban-col-btn" onClick={() => onDeleteColumn(column, cards.length)} title="Delete column">x</button>
+            )}
           </div>
 
           {/* Color picker popover */}
@@ -166,11 +184,11 @@ function KanbanColumn({
                     key={c}
                     className={`kanban-color-swatch${columnColor === c ? " active" : ""}`}
                     style={{ background: c }}
-                    onClick={() => { onSetColumnColor(column.id, columnColor === c ? null : c); setShowColorPicker(false); }}
+                    onClick={() => { onSetColumnColor(columnId, columnColor === c ? null : c); setShowColorPicker(false); }}
                   />
                 ))}
                 {columnColor && (
-                  <button className="kanban-color-clear" onClick={() => { onSetColumnColor(column.id, null); setShowColorPicker(false); }}>
+                  <button className="kanban-color-clear" onClick={() => { onSetColumnColor(columnId, null); setShowColorPicker(false); }}>
                     Clear
                   </button>
                 )}
@@ -194,7 +212,9 @@ function KanbanColumn({
                 key={card.id}
                 block={card}
                 subBlockCount={subBlockCounts.get(card.id) ?? 0}
+                columnId={columnId}
                 columns={allColumns}
+                onMoveTo={onMoveCard}
                 columnColor={columnColor}
                 isFocused={focusedCardId === card.id}
                 onFocus={onFocusCard}

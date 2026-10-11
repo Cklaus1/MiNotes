@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { useEscapeToClose } from "../lib/escapeStack";
 import { PluginLoader } from '../obsidian-compat/PluginLoader';
 import type { PluginManifest } from '../obsidian-compat/types';
 
@@ -24,6 +25,7 @@ async function getLoader(): Promise<PluginLoader> {
 }
 
 export default function ObsidianPluginBrowser({ open, onClose }: Props) {
+  useEscapeToClose(open, onClose);
   const [manifestJson, setManifestJson] = useState('');
   const [pluginCode, setPluginCode] = useState('');
   const [loaded, setLoaded] = useState<Array<{ id: string; name: string; enabled: boolean }>>([]);
@@ -87,7 +89,7 @@ export default function ObsidianPluginBrowser({ open, onClose }: Props) {
       <div className="query-panel" onClick={e => e.stopPropagation()} style={{ maxHeight: '85vh' }}>
         <div className="query-panel-header">
           <span>Obsidian Plugin Loader</span>
-          <button className="btn btn-sm" onClick={onClose}>&times;</button>
+          <button className="btn btn-sm" onClick={onClose} title="Close (Esc)" aria-label="Close">&times;</button>
         </div>
 
         {/* Loaded plugins list */}

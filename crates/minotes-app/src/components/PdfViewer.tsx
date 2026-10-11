@@ -283,6 +283,7 @@ export default function PdfViewer({ filePath, onClose, onBlockLink }: Props) {
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
+        e.preventDefault();
         if (contextMenu) {
           setContextMenu(null);
         } else if (editingHighlight) {

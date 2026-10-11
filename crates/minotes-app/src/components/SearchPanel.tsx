@@ -19,11 +19,12 @@ interface Props {
   onPageClick: (title: string) => void;
   onToggleTheme?: () => void;
   onNewPage?: () => void;
+  /** Create a page with this title and open it ("Create page" action for unmatched queries). */
+  onCreatePage?: (title: string) => void;
   onJournal?: () => void;
   onGraph?: () => void;
   onQuery?: () => void;
   onReview?: () => void;
-  onPlugins?: () => void;
   onSync?: () => void;
   onObsidianPlugins?: () => void;
   onCssManager?: () => void;
@@ -44,10 +45,13 @@ interface Command {
 
 export default function SearchPanel({
   open, onClose, onPageClick,
-  onToggleTheme, onNewPage, onJournal, onGraph, onQuery, onReview, onPlugins, onSync, onObsidianPlugins, onCssManager, onSettings,
+  onToggleTheme, onNewPage, onCreatePage, onJournal, onGraph, onQuery, onReview, onSync, onObsidianPlugins, onCssManager, onSettings,
 }: Props) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
+  // The query `results` belongs to — the "Create page" action waits for it so Enter
+  // on a half-finished search never creates a page instead of opening a result.
+  const [searchedQuery, setSearchedQuery] = useState("");
   const [pages, setPages] = useState<api.Page[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -62,13 +66,11 @@ export default function SearchPanel({
     { id: "graph", label: "Open Graph View", shortcut: "Ctrl+G", action: () => onGraph?.() },
     { id: "query", label: "Open SQL Query Panel", shortcut: "Ctrl+Q", action: () => onQuery?.() },
     { id: "review", label: "Open Flashcard Review", shortcut: "Ctrl+R", action: () => onReview?.() },
-    { id: "plugins", label: "Manage Plugins", action: () => onPlugins?.() },
     { id: "sync", label: "Sync & Version History", action: () => onSync?.() },
-    { id: "export-markdown", label: "Export Markdown", action: () => alert("Markdown export coming soon.") },
     { id: "obsidian-plugins", label: "Obsidian Plugins", action: () => onObsidianPlugins?.() },
     { id: "css-snippets", label: "CSS Snippets", action: () => onCssManager?.() },
     { id: "settings", label: "Settings", action: () => onSettings?.() },
-  ], [onToggleTheme, onNewPage, onJournal, onGraph, onQuery, onReview, onPlugins, onSync, onObsidianPlugins, onCssManager, onSettings]);
+  ], [onToggleTheme, onNewPage, onJournal, onGraph, onQuery, onReview, onSync, onObsidianPlugins, onCssManager, onSettings]);
 
   const filteredCommands = useMemo(() => {
     if (!isCommandMode) return [];
@@ -85,14 +87,16 @@ export default function SearchPanel({
       inputRef.current?.focus();
       setQuery("");
       setResults([]);
+      setSearchedQuery("");
       setSelectedIndex(0);
-      api.listPages(50).then(setPages).catch(() => {});
+      api.listPages(1000).then(setPages).catch(() => {});
     }
   }, [open]);
 
   const doSearch = useCallback(async (q: string) => {
     if (q.trim().length < 2) {
       setResults([]);
+      setSearchedQuery(q);
       return;
     }
     try {
@@ -102,6 +106,7 @@ export default function SearchPanel({
     } catch {
       setResults([]);
     }
+    setSearchedQuery(q);
   }, []);
 
   useEffect(() => {
@@ -114,6 +119,23 @@ export default function SearchPanel({
     p.title.toLowerCase().includes(query.toLowerCase())
   ).slice(0, 5);
 
+  // "Create page “<query>”": offered once the search for this query has settled and
+  // no page has exactly that title. It is the last item, so with no results it is
+  // the selected one and Enter creates + opens the page.
+  const createTitle = query.trim();
+  const canCreate = !!onCreatePage && !isCommandMode && createTitle.length >= 2 &&
+    searchedQuery === query &&
+    !pages.some(p => p.title.toLowerCase() === createTitle.toLowerCase());
+  const createIndex = filteredPages.length + results.length;
+  const createFromQuery = () => { onCreatePage?.(createTitle); onClose(); };
+
+  // Close the palette FIRST: many commands open another panel through the same
+  // "which panel is open" state, and closing afterwards would clear it again.
+  const runCommand = (cmd: Command) => {
+    onClose();
+    cmd.action();
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (isCommandMode) {
       const total = filteredCommands.length;
@@ -125,17 +147,15 @@ export default function SearchPanel({
         setSelectedIndex(i => Math.max(i - 1, 0));
       } else if (e.key === "Enter") {
         e.preventDefault();
-        if (selectedIndex < filteredCommands.length) {
-          filteredCommands[selectedIndex].action();
-          onClose();
-        }
+        if (selectedIndex < filteredCommands.length) runCommand(filteredCommands[selectedIndex]);
       } else if (e.key === "Escape") {
+        e.preventDefault();
         onClose();
       }
       return;
     }
 
-    const total = filteredPages.length + results.length;
+    const total = filteredPages.length + results.length + (canCreate ? 1 : 0);
     if (e.key === "ArrowDown") {
       e.preventDefault();
       setSelectedIndex(i => Math.min(i + 1, total - 1));
@@ -152,9 +172,12 @@ export default function SearchPanel({
         if (blockIdx < results.length) {
           onPageClick(results[blockIdx].block.page_id);
           onClose();
+        } else if (canCreate) {
+          createFromQuery();
         }
       }
     } else if (e.key === "Escape") {
+      e.preventDefault();
       onClose();
     }
   };
@@ -185,7 +208,7 @@ export default function SearchPanel({
                 <div
                   key={cmd.id}
                   className={`command-palette-item ${i === selectedIndex ? "selected" : ""}`}
-                  onClick={() => { cmd.action(); onClose(); }}
+                  onClick={() => runCommand(cmd)}
                   style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}
                 >
                   <span>{cmd.label}</span>
@@ -240,7 +263,17 @@ export default function SearchPanel({
                 </>
               )}
               {query.length >= 2 && filteredPages.length === 0 && results.length === 0 && (
-                <div className="command-palette-empty">No results</div>
+                <div className="command-palette-empty">No results for &ldquo;{createTitle}&rdquo;</div>
+              )}
+              {canCreate && (
+                <div
+                  className={`command-palette-item command-palette-create ${createIndex === selectedIndex ? "selected" : ""}`}
+                  onClick={createFromQuery}
+                  title="Create a new page with this title"
+                >
+                  <span><span className="command-palette-create-plus">+</span> Create page &ldquo;{createTitle}&rdquo;</span>
+                  {createIndex === selectedIndex && <span className="shortcut-hint">Enter</span>}
+                </div>
               )}
               {query.length < 2 && filteredPages.length === 0 && (
                 <div className="command-palette-empty">

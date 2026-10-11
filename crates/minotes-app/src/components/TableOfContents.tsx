@@ -1,5 +1,6 @@
 import { useMemo, useEffect, useState, useRef } from "react";
 import type { Block } from "../lib/api";
+import { useEscapeToClose } from "../lib/escapeStack";
 
 interface Props {
   blocks: Block[];
@@ -56,6 +57,8 @@ export default function TableOfContents({ blocks, visible, onClose }: Props) {
 
     return () => observer.disconnect();
   }, [visible, headings]);
+
+  useEscapeToClose(visible && headings.length > 0, onClose);
 
   // Hide entirely when no headings
   if (!visible || headings.length === 0) return null;

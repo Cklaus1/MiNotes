@@ -8,8 +8,7 @@ interface Props {
 
 interface BacklinkEntry {
   link: api.Link;
-  block?: api.Block;
-  page?: api.Page;
+  block?: api.BlockWithPage;
 }
 
 export default function BacklinksPanel({ pageId, onPageClick }: Props) {
@@ -20,26 +19,12 @@ export default function BacklinksPanel({ pageId, onPageClick }: Props) {
     let cancelled = false;
     setLoading(true);
 
-    api.getBacklinks(pageId).then(async (links) => {
+    api.getBacklinks(pageId).then((links) => {
       if (cancelled) return;
-      // Look up the source block for each backlink by exact ID
-      const enriched: BacklinkEntry[] = [];
-      const pages = await api.listPages(500);
-      const pageMap = new Map(pages.map(p => [p.id, p]));
-
-      for (const link of links) {
-        try {
-          const block = await api.getBlock(link.from_block);
-          const page = block ? pageMap.get(block.page_id) : undefined;
-          enriched.push({ link, block: block ?? undefined, page });
-        } catch {
-          enriched.push({ link });
-        }
-      }
-      if (!cancelled) {
-        setEntries(enriched);
-        setLoading(false);
-      }
+      // get_backlinks returns each link with its source block and page title in
+      // one call (it used to be one get_block call per link).
+      setEntries(links.map(link => ({ link, block: link.block })));
+      setLoading(false);
     }).catch(() => { if (!cancelled) setLoading(false); });
 
     return () => { cancelled = true; };
@@ -57,7 +42,7 @@ export default function BacklinksPanel({ pageId, onPageClick }: Props) {
           className="backlink-item"
           onClick={() => entry.block && onPageClick(entry.block.page_id)}
         >
-          {entry.page && <strong>{entry.page.title}: </strong>}
+          {entry.block && <strong>{entry.block.page_title}: </strong>}
           {entry.block?.content.slice(0, 100) ?? "(block not found)"}
         </div>
       ))}

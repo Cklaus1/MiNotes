@@ -24,9 +24,19 @@ export async function executeUndo(): Promise<boolean> {
   notifyTouched(action);
 
   switch (action.type) {
-    case 'create':
+    case 'create': {
+      // Snapshot the block (and anything since nested under it) first, so redo can
+      // bring it back with the SAME id — later undo entries refer to that id.
+      try {
+        const tree = await api.getPageTree(action.pageId);
+        const snap = await api.snapshotSubtrees([action.blockId], tree.blocks);
+        if (snap.length) action.restore = snap;
+      } catch (e) {
+        console.error("undo: could not snapshot created block", e);
+      }
       await api.deleteBlock(action.blockId);
       break;
+    }
     case 'delete':
       // Original ids, parents, positions and properties come back in one call.
       if (action.restore?.length) await api.restoreBlocks(action.restore);
@@ -57,7 +67,8 @@ export async function executeRedo(): Promise<boolean> {
 
   switch (action.type) {
     case 'create':
-      await api.createBlock(action.pageId, action.newContent ?? '', undefined);
+      if (action.restore?.length) await api.restoreBlocks(action.restore);
+      else await api.createBlock(action.pageId, action.newContent ?? '', undefined);
       break;
     case 'delete':
       for (const id of restoreRoots(action.restore ?? [])) await api.deleteBlock(id);

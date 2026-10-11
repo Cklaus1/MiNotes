@@ -6,6 +6,9 @@ import tippy, { type Instance as TippyInstance } from "tippy.js";
 import { PageLinkMenu } from "./PageLinkMenu";
 import { listPages, createPage } from "../lib/api";
 
+/** Exported so the editor can tell whether this menu is open (e.g. Escape closes it). */
+export const pageLinkPluginKey = new PluginKey("pageLinkSuggestion");
+
 export const PageLinkSuggestion = Extension.create({
   name: "pageLinkSuggestion",
 
@@ -14,6 +17,9 @@ export const PageLinkSuggestion = Extension.create({
       suggestion: {
         char: "[[",
         allowSpaces: true,
+        // A finished "[[Page]]" is not a query: don't pop the menu up over it.
+        allow: ({ state, range }: { state: any; range: { from: number; to: number } }) =>
+          !state.doc.textBetween(range.from, range.to, " ", " ").includes("]]"),
         command: async ({ editor, range, props }: { editor: any; range: any; props: any }) => {
           let title = props.title;
           // If the item has no id, it means "create new page"
@@ -102,7 +108,7 @@ export const PageLinkSuggestion = Extension.create({
   addProseMirrorPlugins() {
     return [
       Suggestion({
-        pluginKey: new PluginKey("pageLinkSuggestion"),
+        pluginKey: pageLinkPluginKey,
         editor: this.editor,
         ...this.options.suggestion,
       }),

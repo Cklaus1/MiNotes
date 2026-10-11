@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import * as api from "../lib/api";
+import { notifyCardsChanged } from "../lib/cards";
 
 interface Props {
   open: boolean;
@@ -45,42 +46,30 @@ export default function ReviewPanel({ open, onClose }: Props) {
       setChildBlocks([]);
       return;
     }
+    let cancelled = false;
     (async () => {
       try {
-        // Find the block to get its content and page context
-        const results = await api.search(currentCard.block_id, 1);
-        if (results.length > 0) {
-          setBlockContent(results[0].content);
-          // Try to load child blocks (for basic card answer)
-          const pageTree = await api.getPageTree(results[0].page_id);
-          const children = pageTree.blocks.filter(
-            (b) => b.parent_id === currentCard.block_id
-          );
-          setChildBlocks(children);
-        } else {
-          // Fallback: try running a query to get the block directly
-          const qr = await api.runQuery(
-            `SELECT content, page_id FROM blocks WHERE id = '${currentCard.block_id}'`
-          );
-          if (qr.rows.length > 0) {
-            setBlockContent(qr.rows[0].content as string);
-            const pageId = qr.rows[0].page_id as string;
-            const pageTree = await api.getPageTree(pageId);
-            const children = pageTree.blocks.filter(
-              (b) => b.parent_id === currentCard.block_id
-            );
-            setChildBlocks(children);
-          } else {
-            setBlockContent("[Block not found]");
-            setChildBlocks([]);
-          }
+        // Front = the card's block; back = its child blocks (outline order).
+        const block = await api.getBlock(currentCard.block_id);
+        if (cancelled) return;
+        if (!block) {
+          setBlockContent("[Block not found]");
+          setChildBlocks([]);
+          return;
         }
+        setBlockContent(block.content);
+        const pageTree = await api.getPageTree(block.page_id);
+        if (cancelled) return;
+        setChildBlocks(pageTree.blocks.filter((b) => b.parent_id === currentCard.block_id));
       } catch (e) {
         console.error("Failed to load block content:", e);
-        setBlockContent("[Error loading content]");
-        setChildBlocks([]);
+        if (!cancelled) {
+          setBlockContent("[Error loading content]");
+          setChildBlocks([]);
+        }
       }
     })();
+    return () => { cancelled = true; };
   }, [currentCard]);
 
   const handleRate = useCallback(
@@ -89,6 +78,7 @@ export default function ReviewPanel({ open, onClose }: Props) {
       try {
         await api.reviewCard(currentCard.id, rating);
         setReviewedCount((c) => c + 1);
+        notifyCardsChanged(); // sidebar due count
 
         // Move to next card
         const nextIndex = currentIndex + 1;
@@ -120,6 +110,7 @@ export default function ReviewPanel({ open, onClose }: Props) {
     if (!open) return;
     const handler = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
+        e.preventDefault();
         onClose();
         return;
       }
@@ -178,7 +169,8 @@ export default function ReviewPanel({ open, onClose }: Props) {
             <p>No cards due for review right now.</p>
             {stats && stats.total_cards === 0 && (
               <p className="review-hint">
-                Create flashcards from blocks to start reviewing.
+                Right-click a block and choose <strong>Make flashcard</strong> (or type{" "}
+                <code>/flashcard</code>): the block is the question, its child blocks are the answer.
               </p>
             )}
           </div>
@@ -209,7 +201,7 @@ export default function ReviewPanel({ open, onClose }: Props) {
                     ))
                   ) : (
                     <div className="review-answer-block review-answer-self">
-                      (No child blocks -- this block is the answer)
+                      No answer yet: add child blocks under this block to give the card an answer.
                     </div>
                   )}
                 </div>

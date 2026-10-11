@@ -13,19 +13,24 @@
   --danger: #f38ba8;
 }
 
+/* Light theme: every text colour below clears WCAG AA (4.5:1) on bg-primary,
+   bg-secondary AND bg-surface (active rows, chips), since each is used as text
+   on all three. Accent is also a fill under var(--bg-primary) text (buttons,
+   active tabs, the mind map root) — 6.7:1. Catppuccin Latte's own accent,
+   green, yellow and red are too light for text on these backgrounds. */
 [data-theme="light"] {
   --bg-primary: #eff1f5;
   --bg-secondary: #e6e9ef;
   --bg-surface: #ccd0da;
   --text-primary: #4c4f69;
-  --text-secondary: #5c5f77;
-  --text-muted: #9ca0b0;
-  --accent: #1e66f5;
-  --accent-hover: #209fb5;
+  --text-secondary: #545770;
+  --text-muted: #6c6f85;
+  --accent: #134bbd;
+  --accent-hover: #0f45ad;
   --border: #bcc0cc;
-  --success: #40a02b;
-  --warning: #df8e1d;
-  --danger: #d20f39;
+  --success: #256b17;
+  --warning: #8a5300;
+  --danger: #b80d32;
 }
 
 :root {
@@ -137,6 +142,24 @@ body {
   color: var(--text-primary);
 }
 
+/* The ⋮ must be findable without hovering: show it for the open page, while the
+   row has keyboard focus, and while its menu is open. */
+.page-item.active .page-more-btn,
+.page-item:focus-visible .page-more-btn,
+.page-item:focus-within .page-more-btn,
+.page-item.menu-open .page-more-btn,
+.folder-item:focus-within .page-more-btn {
+  opacity: 0.8;
+}
+.page-item:focus-visible {
+  outline: 2px solid var(--interactive-accent, #89b4fa);
+  outline-offset: -2px;
+}
+.sidebar-context-menu-item:focus-visible {
+  outline: 2px solid var(--interactive-accent, #89b4fa);
+  outline-offset: -2px;
+}
+
 .sidebar-rename-input {
   background: var(--background-primary);
   border: 1px solid var(--interactive-accent);
@@ -180,6 +203,51 @@ body {
   padding: 8px 0;
   overflow-y: auto;
   flex: 1;
+  /* Scroll cues: a thin always-visible scrollbar (::-webkit-scrollbar below — the
+     standard scrollbar-* properties would switch WebKitGTK back to auto-hiding
+     overlay scrollbars) plus edge shadows that appear
+     only while more content is hidden above/below (the covers scroll with the
+     content and hide the shadows at either end). */
+  background:
+    linear-gradient(var(--bg-secondary) 40%, transparent) top / 100% 28px no-repeat local,
+    linear-gradient(transparent, var(--bg-secondary) 60%) bottom / 100% 28px no-repeat local,
+    linear-gradient(var(--sidebar-scroll-shadow), transparent) top / 100% 10px no-repeat scroll,
+    linear-gradient(transparent, var(--sidebar-scroll-shadow)) bottom / 100% 10px no-repeat scroll;
+  --sidebar-scroll-shadow: rgba(0, 0, 0, 0.28);
+}
+
+[data-theme="light"] .sidebar-section {
+  --sidebar-scroll-shadow: rgba(76, 79, 105, 0.14);
+}
+
+.sidebar-section::-webkit-scrollbar {
+  width: 8px;
+}
+
+.sidebar-section::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.sidebar-section::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+  border: 2px solid var(--bg-secondary);
+}
+
+.sidebar-section::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+
+.sidebar-section-count {
+  font-weight: 500;
+  letter-spacing: 0;
+  opacity: 0.85;
+}
+
+/* Sidebar + journal-nav buttons: at least 24px tall (WCAG 2.2 target size). */
+.sidebar .btn-sm,
+.journal-nav .btn-sm {
+  min-height: 24px;
 }
 
 .sidebar-section-title {
@@ -194,7 +262,7 @@ body {
 .sidebar-todo-badge {
   padding: 4px 16px;
   font-size: 12px;
-  color: var(--text);
+  color: var(--text-secondary);
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -202,12 +270,14 @@ body {
 }
 
 .sidebar-todo-badge:hover {
-  background: var(--bg-hover);
+  background: var(--bg-surface);
 }
 
 .sidebar-todo-count {
-  background: var(--accent);
-  color: var(--bg);
+  /* --text-primary on --bg-surface: 8.5:1 dark, 5.1:1 light (the old accent pill
+     used undefined vars and measured 1.46:1). */
+  background: var(--bg-surface);
+  color: var(--text-primary);
   font-size: 10px;
   font-weight: 700;
   padding: 1px 5px;
@@ -835,6 +905,8 @@ body {
   cursor: pointer;
   font-size: 14px;
   padding: 2px 4px;
+  min-width: 24px;
+  min-height: 24px;
   border-radius: 4px;
   transition: color 0.15s, background 0.15s;
   opacity: 0.7;
@@ -853,6 +925,7 @@ body {
   cursor: pointer;
   font-size: 10px;
   padding: 3px 6px;
+  min-height: 24px;
   border-radius: 4px;
   transition: background 0.15s, color 0.15s;
   line-height: 1;
@@ -1409,6 +1482,21 @@ body {
   font-size: 13px;
 }
 
+/* "Create page “query”" action offered when nothing has that exact title */
+.command-palette-create {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-top: 1px solid var(--border);
+  color: var(--text-primary);
+}
+
+.command-palette-create-plus {
+  color: var(--accent);
+  font-weight: 700;
+  margin-right: 4px;
+}
+
 /* Keyboard shortcut hint */
 .shortcut-hint {
   font-size: 11px;
@@ -1853,11 +1941,70 @@ body {
 
 .graph-toolbar {
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-start;
   align-items: center;
+  gap: 12px;
   padding: 8px 16px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-secondary);
+}
+
+.graph-toolbar-stats {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-right: auto;
+  white-space: nowrap;
+}
+
+.graph-hidden-count {
+  color: var(--text-muted);
+}
+
+.graph-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.graph-toggle input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+/* The canvas fills what is left under the toolbar (not 100% of the view, which
+   pushed its bottom edge out of sight). */
+.graph-canvas-wrap {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+
+.graph-canvas-wrap > canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.graph-canvas-note {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--text-secondary);
 }
 
 /* ── Review Panel (SRS) ── */
@@ -2546,7 +2693,7 @@ body {
   top: 50%;
   left: 50%;
   transform: translate(-50%, -50%);
-  color: rgba(166, 173, 200, 0.38);
+  color: var(--text-muted);
   font-size: 24px;
   font-weight: 300;
   pointer-events: none;
@@ -2602,7 +2749,7 @@ body {
 
 .wb-settings-toggle button.active {
   background: var(--accent);
-  color: #1e1e2e;
+  color: var(--bg-primary);
   font-weight: 600;
 }
 
@@ -3686,6 +3833,23 @@ body.theme-light { /* matches our light theme */ }
   color: var(--text-secondary);
 }
 
+.shortcuts-group + .shortcuts-group {
+  margin-top: 12px;
+}
+.shortcuts-group-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+.shortcuts-group .shortcuts-grid {
+  grid-template-columns: 1fr;
+  gap: 4px;
+}
+.shortcuts-group .shortcut-key {
+  min-width: 96px;
+}
+
 /* ── Animations ── */
 
 @keyframes block-appear {
@@ -3901,6 +4065,41 @@ body.theme-light { /* matches our light theme */ }
   color: #fff;
 }
 
+/* Table structure toolbar — same look as the bubble toolbar, pinned above the table */
+.table-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px 4px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+  animation: scale-in 0.1s ease-out;
+}
+
+.table-toolbar button {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 12px;
+  padding: 4px 7px;
+  border-radius: 4px;
+  cursor: pointer;
+  line-height: 1;
+  font-family: inherit;
+  white-space: nowrap;
+}
+
+.table-toolbar button:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.table-toolbar button.danger:hover {
+  color: var(--danger);
+}
+
 .bubble-separator {
   width: 1px;
   height: 16px;
@@ -3979,7 +4178,7 @@ body.theme-light { /* matches our light theme */ }
 
 .canvas-mode-btn.active {
   background: var(--accent);
-  color: #1e1e2e;
+  color: var(--bg-primary);
   font-weight: 600;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
 }
@@ -4089,10 +4288,20 @@ body.theme-light { /* matches our light theme */ }
   color: var(--text-primary);
   cursor: pointer;
   transition: background 0.15s, border-color 0.15s, box-shadow 0.15s, transform 0.15s;
-  max-width: 200px;
-  white-space: nowrap;
+  max-width: 220px;
   overflow: hidden;
-  text-overflow: ellipsis;
+}
+
+/* Label: up to two lines, then an ellipsis (full text is in the node's title). */
+.mm-label {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  min-width: 0;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
 .mm-node:hover {
@@ -4108,7 +4317,7 @@ body.theme-light { /* matches our light theme */ }
 
 .mm-node.mm-root {
   background: var(--accent);
-  color: #1e1e2e;
+  color: var(--bg-primary);
   font-weight: 700;
   font-size: 14px;
   border-color: var(--accent);
@@ -4116,7 +4325,8 @@ body.theme-light { /* matches our light theme */ }
 }
 
 .mm-node.mm-root:hover {
-  background: #7ba4e8;
+  background: var(--accent);
+  filter: brightness(0.92);
 }
 
 .mm-root-icon {
@@ -4157,9 +4367,9 @@ body.theme-light { /* matches our light theme */ }
 .mm-node[data-depth="4"] { opacity: 0.7; font-size: 12px; }
 
 /* TODO states */
-.mm-node[data-todo="todo"] { border-left: 3px solid #f9e2af; }
-.mm-node[data-todo="doing"] { border-left: 3px solid #89b4fa; }
-.mm-node[data-todo="done"] { border-left: 3px solid #a6e3a1; }
+.mm-node[data-todo="todo"] { border-left: 3px solid var(--warning); }
+.mm-node[data-todo="doing"] { border-left: 3px solid var(--accent); }
+.mm-node[data-todo="done"] { border-left: 3px solid var(--success); }
 
 .mm-node-content {
   display: flex;
@@ -4171,9 +4381,9 @@ body.theme-light { /* matches our light theme */ }
   font-size: 12px;
   flex-shrink: 0;
 }
-.mm-check.done { color: #a6e3a1; }
-.mm-check.doing { color: #89b4fa; }
-.mm-check.todo { color: #f9e2af; }
+.mm-check.done { color: var(--success); }
+.mm-check.doing { color: var(--accent); }
+.mm-check.todo { color: var(--warning); }
 
 .mm-strikethrough {
   text-decoration: line-through;
@@ -4182,7 +4392,7 @@ body.theme-light { /* matches our light theme */ }
 
 .mm-collapse-badge {
   background: var(--accent);
-  color: #1e1e2e;
+  color: var(--bg-primary);
   font-size: 10px;
   font-weight: 700;
   padding: 1px 5px;
@@ -4193,7 +4403,7 @@ body.theme-light { /* matches our light theme */ }
 }
 
 .mm-collapse-badge:hover {
-  background: #7ba4e8;
+  filter: brightness(0.92);
 }
 
 /* Editing state */
@@ -4352,7 +4562,7 @@ body.theme-light { /* matches our light theme */ }
 
 .mindmap-dropdown button:hover {
   background: var(--accent);
-  color: #1e1e2e;
+  color: var(--bg-primary);
 }
 
 .mindmap-dropdown button.active {
@@ -4390,7 +4600,7 @@ body.theme-light { /* matches our light theme */ }
 
 .mindmap-context-menu button:hover {
   background: var(--accent);
-  color: #1e1e2e;
+  color: var(--bg-primary);
 }
 
 .mindmap-context-menu button.danger:hover {
@@ -4546,9 +4756,20 @@ body.theme-light { /* matches our light theme */ }
 
 .kanban-column-title {
   flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Virtual "No section" column: not a block, so not draggable/renamable. */
+.kanban-column-unsorted .kanban-column-header {
+  cursor: default;
+}
+
+.kanban-column-unsorted .kanban-column-title {
+  color: var(--text-secondary);
+  font-style: italic;
 }
 
 .kanban-column-count {
@@ -4623,9 +4844,9 @@ body.theme-light { /* matches our light theme */ }
   border-radius: 3px;
   width: fit-content;
 }
-.kanban-todo-todo { background: rgba(137, 180, 250, 0.15); color: #89b4fa; }
-.kanban-todo-doing { background: rgba(249, 226, 175, 0.15); color: #f9e2af; }
-.kanban-todo-done { background: rgba(166, 227, 161, 0.15); color: #a6e3a1; }
+.kanban-todo-todo { background: rgba(137, 180, 250, 0.15); color: var(--accent); }
+.kanban-todo-doing { background: rgba(249, 226, 175, 0.15); color: var(--warning); }
+.kanban-todo-done { background: rgba(166, 227, 161, 0.15); color: var(--success); }
 
 .kanban-card-text {
   word-break: break-word;
@@ -5096,7 +5317,7 @@ body.theme-light { /* matches our light theme */ }
 
 .kanban-toast-undo {
   background: var(--accent) !important;
-  color: #1e1e2e !important;
+  color: var(--bg-primary) !important;
   border: none;
   cursor: pointer;
   font-size: 13px;
@@ -5518,6 +5739,42 @@ body.theme-light { /* matches our light theme */ }
   margin: 0;
 }
 
+.pending-journal-nav {
+  display: flex;
+  gap: 6px;
+}
+
+/* Inline validation message under a text field (rename, new page/project) */
+.inline-field-error {
+  color: var(--text-error, #f38ba8);
+  font-size: 12px;
+  line-height: 1.35;
+  padding: 3px 2px 2px;
+  white-space: normal;
+}
+.sidebar-inline-error {
+  padding-right: 12px;
+}
+
+/* An image in a note that failed to load: a visible box with the reason
+   (lib/brokenImages.ts puts it in the alt text and the tooltip). */
+img.img-broken {
+  display: inline-block;
+  min-width: 260px;
+  min-height: 44px;
+  height: auto !important;
+  max-height: 96px;
+  max-width: 100%;
+  padding: 10px 12px;
+  border: 1px dashed var(--text-error, #f38ba8);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--text-error, #f38ba8) 8%, transparent);
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: normal;
+}
+
 /* ── Git Sync indicator ── */
 .sync-indicator {
   font-size: 11px;
@@ -5570,6 +5827,11 @@ body.theme-light { /* matches our light theme */ }
   font-weight: 600;
   cursor: pointer;
   white-space: nowrap;
+}
+
+.minotes-toast-undo-btn:focus-visible {
+  outline: 2px solid var(--interactive-accent, #89b4fa);
+  outline-offset: 2px;
 }
 
 .minotes-toast-undo-btn:hover {
@@ -6012,4 +6274,32 @@ body.theme-light { /* matches our light theme */ }
   10% { opacity: 1; transform: translateY(0); }
   80% { opacity: 1; transform: translateY(0); }
   100% { opacity: 0; transform: translateY(-2px); }
+}
+
+/* Flashcard indicator: small card glyph at the block's right edge */
+.flashcard-indicator {
+  position: absolute;
+  right: 22px;
+  top: 6px;
+  display: flex;
+  color: var(--accent);
+  opacity: 0.75;
+  pointer-events: auto;
+  cursor: help;
+}
+
+.block.is-flashcard > .block-content {
+  padding-right: 22px;
+}
+
+.block-context-menu-hint {
+  display: block;
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 1px;
+}
+
+.block-context-menu-item:hover .block-context-menu-hint {
+  color: inherit;
+  opacity: 0.8;
 }

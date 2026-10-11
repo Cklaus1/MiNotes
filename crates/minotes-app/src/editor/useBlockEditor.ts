@@ -1,53 +1,26 @@
 import { useEditor } from "@tiptap/react";
 import { useRef, useCallback, useEffect } from "react";
-import StarterKit from "@tiptap/starter-kit";
-import { HardBreak } from "@tiptap/extension-hard-break";
-import TaskList from "@tiptap/extension-task-list";
-import TaskItem from "@tiptap/extension-task-item";
-import Highlight from "@tiptap/extension-highlight";
-import Typography from "@tiptap/extension-typography";
-import Placeholder from "@tiptap/extension-placeholder";
-import CodeBlockLowlight from "@tiptap/extension-code-block-lowlight";
-import { Table } from "@tiptap/extension-table";
-import { TableRow } from "@tiptap/extension-table-row";
-import { TableCell } from "@tiptap/extension-table-cell";
-import { TableHeader } from "@tiptap/extension-table-header";
-import Image from "@tiptap/extension-image";
-import { common, createLowlight } from "lowlight";
-import { Markdown } from "tiptap-markdown";
-import { WikiLinkNode } from "./WikiLinkNode";
-import { BlockRefNode } from "./BlockRefNode";
-import { TagNode } from "./TagNode";
-import { SlashCommands, setSlashCallbacks } from "./slashCommands";
-import { PageLinkSuggestion } from "./PageLinkSuggestion";
-import { BlockRefSuggestion } from "./BlockRefSuggestion";
+import { isInTable, moveToCellBelow } from "./tables";
+import { setSlashCallbacks, slashPluginKey } from "./slashCommands";
+import { pageLinkPluginKey } from "./PageLinkSuggestion";
+import { blockRefPluginKey } from "./BlockRefSuggestion";
+import { createBlockExtensions } from "./blockExtensions";
+// ── Import / attachments ──
+import { attachmentHash, encodeName, isImage, openAttachment, storeFile } from "../lib/attachments";
+import { showToast } from "../lib/toast";
+// ── End import ──
 
-const lowlight = createLowlight(common);
 
-/**
- * A line break inside a block is stored as a plain "\n" (blocks are line-oriented:
- * "Line1\nLine2"). Parsing uses `breaks: true` so that newline becomes a hardBreak
- * instead of collapsing to a space; this serializer writes it back as "\n"
- * (tiptap-markdown's default is CommonMark's backslash-newline), so an edited
- * multi-line block round-trips byte-for-byte.
- */
-const LineBreak = HardBreak.extend({
-  addStorage() {
-    return {
-      markdown: {
-        serialize(state: any, node: any, parent: any, index: number) {
-          for (let i = index + 1; i < parent.childCount; i++) {
-            if (parent.child(i).type !== node.type) {
-              state.write(state.inTable ? "<br>" : "\n");
-              return;
-            }
-          }
-        },
-        parse: {},
-      },
-    };
-  },
-});
+/** True while a suggestion menu (/, [[, (( ) is open in this editor state. */
+function suggestionMenuOpen(state: any): boolean {
+  return [slashPluginKey, pageLinkPluginKey, blockRefPluginKey]
+    .some((key) => !!(key.getState(state) as any)?.active);
+}
+
+/** Tab, including WebKitGTK's Shift+Tab (GDK ISO_Left_Tab) which may not report key "Tab". */
+function isTabKey(event: KeyboardEvent): boolean {
+  return event.key === "Tab" || event.key === "ISO_Left_Tab" || event.code === "Tab" || event.keyCode === 9;
+}
 
 interface UseBlockEditorOptions {
   content: string;
@@ -65,8 +38,12 @@ interface UseBlockEditorOptions {
   onPasteMultiline?: (lines: string[]) => void;
   onIndent?: () => void;
   onOutdent?: () => void;
+  /** Escape (no menu open): leave editing. */
+  onEscape?: () => void;
   onSlashCommand?: (newMarkdown: string) => void;
   onTagClick?: (tag: string) => void;
+  /** `/flashcard`: make this block a flashcard. */
+  onMakeFlashcard?: () => void;
 }
 
 export function useBlockEditor({
@@ -83,8 +60,10 @@ export function useBlockEditor({
   onPasteMultiline,
   onIndent,
   onOutdent,
+  onEscape,
   onSlashCommand,
   onTagClick,
+  onMakeFlashcard,
 }: UseBlockEditorOptions) {
   const onSaveRef = useRef(onSave);
   // NOT a mirror of the `content` prop — this tracks the last markdown the editor
@@ -104,8 +83,10 @@ export function useBlockEditor({
   const onPasteMultilineRef = useRef(onPasteMultiline);
   const onIndentRef = useRef(onIndent);
   const onOutdentRef = useRef(onOutdent);
+  const onEscapeRef = useRef(onEscape);
   const onSlashCommandRef = useRef(onSlashCommand);
   const onTagClickRef = useRef(onTagClick);
+  const onMakeFlashcardRef = useRef(onMakeFlashcard);
   const editorInstanceRef = useRef<any>(null);
   const skipSyncRef = useRef(false);
   const slashActiveRef = useRef(false);
@@ -128,8 +109,10 @@ export function useBlockEditor({
   onPasteMultilineRef.current = onPasteMultiline;
   onIndentRef.current = onIndent;
   onOutdentRef.current = onOutdent;
+  onEscapeRef.current = onEscape;
   onSlashCommandRef.current = onSlashCommand;
   onTagClickRef.current = onTagClick;
+  onMakeFlashcardRef.current = onMakeFlashcard;
 
   // Slash callbacks are set per-editor instance after creation (see useEffect below)
 
@@ -190,6 +173,15 @@ export function useBlockEditor({
     return true;
   };
 
+  /** Persist the editor's current content now (e.g. after a table structure change). */
+  const saveNow = () => {
+    const ed = editorInstanceRef.current;
+    if (!ed || ed.isDestroyed) return;
+    const md = getMarkdown();
+    if (md !== contentRef.current.trim()) commitSave(md);
+    else dirtyRef.current = false;
+  };
+
   /** Merge this block into the previous one (Backspace at start). */
   const mergeWithPrevious = (): boolean => {
     if (!onBackspaceAtStartRef.current) return false;
@@ -198,81 +190,55 @@ export function useBlockEditor({
   };
 
   const editor = useEditor({
-    extensions: [
-      StarterKit.configure({
-        heading: { levels: [1, 2, 3, 4] },
-        codeBlock: false, // replaced by CodeBlockLowlight
-        hardBreak: false, // replaced by LineBreak (plain-newline markdown)
-      }),
-      LineBreak,
-      CodeBlockLowlight.configure({ lowlight }),
-      Table.configure({ resizable: true }),
-      TableRow,
-      TableCell,
-      TableHeader,
-      TaskList.extend({
-        parseHTML() {
-          return [
-            { tag: 'ul[data-type="taskList"]', priority: 51 },
-            { tag: 'ul.contains-task-list', priority: 51 },
-          ];
-        },
-      }),
-      TaskItem.extend({
-        parseHTML() {
-          return [
-            { tag: `li[data-type="taskItem"]`, priority: 52 },
-            {
-              tag: 'li.task-list-item',
-              priority: 52,
-              getAttrs: (el: HTMLElement) => {
-                const checkbox = el.querySelector('input[type="checkbox"]');
-                return { checked: checkbox ? (checkbox as HTMLInputElement).checked : false };
-              },
-            },
-          ];
-        },
-      }).configure({ nested: true }),
-      Highlight,
-      Image.configure({ inline: false, allowBase64: true }),
-      Typography,
-      Placeholder.configure({
-        placeholder: ({ editor }) => editor.isFocused ? "Type '/' for commands" : "",
-        showOnlyWhenEditable: true,
-        showOnlyCurrent: true,
-      }),
-      Markdown.configure({
-        html: false,
-        breaks: true,
-        transformPastedText: true,
-        transformCopiedText: true,
-      }),
-      WikiLinkNode.configure({ onPageLinkClick: (title: string, shiftKey?: boolean) => onPageLinkClickRef.current(title, shiftKey) }),
-      BlockRefNode.configure({ onBlockRefClick: (blockId: string) => onBlockRefClickRef.current?.(blockId) }),
-      TagNode.configure({ onTagClick: (tag: string) => onTagClickRef.current?.(tag) }),
-      SlashCommands,
-      PageLinkSuggestion,
-      BlockRefSuggestion,
-    ],
+    extensions: createBlockExtensions({
+      onPageLinkClick: (title: string, shiftKey?: boolean) => onPageLinkClickRef.current(title, shiftKey),
+      onBlockRefClick: (blockId: string) => onBlockRefClickRef.current?.(blockId),
+      onTagClick: (tag: string) => onTagClickRef.current?.(tag),
+    }),
     content,
     editorProps: {
       attributes: {
         class: "block-editor-prosemirror",
       },
       handleKeyDown(view, event) {
-        if (event.key === "Escape") {
-          // Unindent block (same as Shift+Tab), or do nothing if already at root
-          if (onOutdentRef.current) {
+        if (event.key === "Escape" || event.key === "Esc") {
+          // An open /, [[ or (( menu gets the Escape: the suggestion plugin closes it
+          // and the cursor stays where it was. (These editorProps run BEFORE plugin
+          // key handlers, so swallowing Escape here kept the menus open.)
+          if (suggestionMenuOpen(view.state)) return false;
+          // Otherwise Escape leaves editing ("Close"); outdenting is Shift+Tab's job.
+          if (onEscapeRef.current) {
             event.preventDefault();
-            onOutdentRef.current();
+            onEscapeRef.current();
+            return true;
           }
-          return true;
+          return false;
         }
 
         // Ctrl+Enter — cycle TODO state
         if (event.key === "Enter" && (event.ctrlKey || event.metaKey) && onToggleTodoRef.current) {
           event.preventDefault();
           onToggleTodoRef.current();
+          return true;
+        }
+
+        // Table cells: Tab / Shift+Tab move between cells (Tab in the last cell adds a
+        // row), Enter moves to the cell below (adding a row at the bottom). Enter must
+        // never split a cell into two paragraphs: that isn't expressible as a pipe table.
+        if (isInTable(view.state) && !document.querySelector('.tippy-box') &&
+            (isTabKey(event) || (event.key === "Enter" && !event.shiftKey && !event.ctrlKey && !event.metaKey))) {
+          const ed = editorInstanceRef.current;
+          if (!ed) return false;
+          event.preventDefault();
+          if (event.key === "Enter") {
+            moveToCellBelow(ed);
+          } else if (event.shiftKey) {
+            ed.commands.goToPreviousCell();
+          } else if (!ed.commands.goToNextCell()) {
+            ed.chain().addRowAfter().goToNextCell().run();
+          }
+          // A row added at the end is a structural change: persist it now.
+          if (dirtyRef.current) saveNow();
           return true;
         }
 
@@ -338,23 +304,35 @@ export function useBlockEditor({
           }
         }
 
-        // Tab — indent block (unless inside list/task item)
-        if (event.key === "Tab" && !event.shiftKey && onIndentRef.current) {
+        // Tab / Shift+Tab — indent / outdent the block. Inside a list in the block,
+        // first try to sink/lift the list item; when that isn't possible (first item,
+        // top level) fall back to the block. Tab must never fall through to the
+        // browser, whose default moves focus to another block.
+        if (isTabKey(event) && !document.querySelector('.tippy-box')) {
+          const ed = editorInstanceRef.current;
           const { $from } = view.state.selection;
-          const parent = $from.node($from.depth);
-          if (parent.type.name === "listItem" || parent.type.name === "taskItem") return false;
+          // Innermost list item around the cursor, and whether it is nested in another.
+          let itemType: string | null = null;
+          let itemDepth = -1;
+          let nested = false;
+          for (let d = $from.depth; d > 0; d--) {
+            const name = $from.node(d).type.name;
+            if (name !== "listItem" && name !== "taskItem") continue;
+            if (itemType === null) { itemType = name; itemDepth = d; } else { nested = true; break; }
+          }
           event.preventDefault();
-          onIndentRef.current();
-          return true;
-        }
-
-        // Shift+Tab — outdent block (unless inside list/task item)
-        if (event.key === "Tab" && event.shiftKey && onOutdentRef.current) {
-          const { $from } = view.state.selection;
-          const parent = $from.node($from.depth);
-          if (parent.type.name === "listItem" || parent.type.name === "taskItem") return false;
-          event.preventDefault();
-          onOutdentRef.current();
+          if (itemType && ed) {
+            // Sink needs a previous item to nest under; lift only un-nests (lifting a
+            // top-level item would turn "- [ ] task" into plain text instead of
+            // outdenting the block).
+            const hasPrevItem = $from.index(itemDepth - 1) > 0;
+            const handled = event.shiftKey
+              ? nested && ed.commands.liftListItem(itemType)
+              : hasPrevItem && ed.commands.sinkListItem(itemType);
+            if (handled) return true;
+          }
+          if (event.shiftKey) onOutdentRef.current?.();
+          else onIndentRef.current?.();
           return true;
         }
 
@@ -382,29 +360,44 @@ export function useBlockEditor({
 
         return false;
       },
+      // ── Import / attachments: a link to a stored file opens it with the OS ──
+      handleClick(_view, _pos, event) {
+        const a = (event.target as HTMLElement | null)?.closest?.("a[href]") as HTMLAnchorElement | null;
+        const hash = attachmentHash(a?.getAttribute("href"));
+        if (!hash) return false;
+        event.preventDefault();
+        openAttachment(hash).catch((e) => showToast(`Couldn't open the file: ${e}`));
+        return true;
+      },
       handlePaste(view, event) {
-        // Image paste: convert to data URL and insert as image node
+        // A pasted image or file is stored as an attachment (in the notebook,
+        // by content hash) and referenced from the block — not inlined as data.
         const files = event.clipboardData?.files;
         if (files && files.length > 0) {
-          const file = files[0];
-          if (file.type.startsWith('image/')) {
-            event.preventDefault();
-            const reader = new FileReader();
-            reader.onload = () => {
-              const src = reader.result as string;
-              const ed = editorInstanceRef.current;
-              if (ed) {
-                ed.chain().focus().setImage({ src }).run();
-                // Save after inserting image
-                setTimeout(() => {
-                  commitSave(getMarkdown());
-                }, 50);
+          const list = Array.from(files);
+          event.preventDefault();
+          (async () => {
+            for (const file of list) {
+              try {
+                const att = await storeFile(file);
+                const ed = editorInstanceRef.current;
+                if (!ed || ed.isDestroyed) return;
+                const ref = `attachment:${att.hash}/${encodeName(att.name)}`;
+                if (isImage(att)) {
+                  ed.chain().focus().setImage({ src: ref, alt: att.name }).run();
+                } else {
+                  ed.chain().focus().insertContent({ type: "text", text: att.name, marks: [{ type: "link", attrs: { href: ref } }] }).run();
+                }
+              } catch (e) {
+                showToast(`Couldn't attach ${file.name || "the file"}: ${e}`);
               }
-            };
-            reader.readAsDataURL(file);
-            return true;
-          }
+            }
+            setTimeout(() => commitSave(getMarkdown()), 50);
+          })();
+          return true;
         }
+        void view;
+        // ── End import ──
 
         const text = event.clipboardData?.getData('text/plain') ?? '';
 
@@ -478,6 +471,10 @@ export function useBlockEditor({
         if (slashActiveRef.current) return;
         // Focus -> blur without an edit must leave stored content byte-identical.
         if (!dirtyRef.current) return;
+        // Unmounted meanwhile (the block went back to static rendering): the unmount
+        // flush already saved; a destroyed editor would read as "" and wipe the block.
+        const ed = editorInstanceRef.current;
+        if (!ed || ed.isDestroyed) return;
         const normalized = getMarkdown();
         if (normalized !== contentRef.current.trim()) {
           commitSave(normalized);
@@ -517,6 +514,7 @@ export function useBlockEditor({
         (lines: string[]) => {
           onPasteMultilineRef.current?.(lines);
         },
+        () => onMakeFlashcardRef.current?.(),
       );
     }
   }, [editor]);
@@ -563,6 +561,7 @@ export function useBlockEditor({
           contentRef.current = markdown;
           onSaveRef.current(markdown);
         }
+        dirtyRef.current = false;
       } catch {
         // editor already destroyed — nothing we can do
       }
@@ -581,5 +580,7 @@ export function useBlockEditor({
     },
     /** Merge into the previous block: same path as Backspace at start. */
     mergeWithPrevious,
+    /** Save the current content immediately (structural edits that shouldn't wait for blur). */
+    saveNow,
   };
 }

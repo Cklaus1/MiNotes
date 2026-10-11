@@ -6,6 +6,12 @@ import CalendarWidget from "./CalendarWidget";
 import { showToast, showUndoToast } from "../lib/toast";
 import { ContextMenuPortal } from "../lib/ContextMenuPortal";
 import { getSettings, type MiNotesSettings } from "../lib/settings";
+import NotebookSwitcher from "./NotebookSwitcher";
+import { NOTEBOOK_SWITCHED } from "../lib/notebooks";
+import { useEscapeToClose } from "../lib/escapeStack";
+import { folderNameConflict } from "../lib/folderNames";
+import { errorMessage } from "../lib/errors";
+import { pageTitleConflict } from "../lib/pageNames";
 function formatJournalDate(dateStr: string): string {
   try {
     const [y, m, d] = dateStr.split("-").map(Number);
@@ -48,8 +54,10 @@ interface Props {
   activePage: Page | null;
   stats: GraphStats | null;
   onPageClick: (id: string) => void;
-  onCreatePage: (title: string) => void;
-  onDeletePage: (id: string) => void;
+  /** Resolves true when the page was created (false/rejects keeps the field open). */
+  onCreatePage: (title: string) => Promise<boolean> | void;
+  /** Move a page to Trash (App leaves it first if it is open, and offers Undo). */
+  onDeletePage: (id: string, title?: string) => void;
   onJournalClick: (date?: string) => void;
   onSearchClick: () => void;
   onGraphClick: () => void;
@@ -60,6 +68,8 @@ interface Props {
   onSettingsClick: () => void;
   onFolderSettings: (folderId: string) => void;
   onTodoBadgeClick: () => void;
+  /** Opens flashcard review (shown once any flashcard exists). */
+  onReviewClick?: () => void;
   activeMode: "graph" | "mindmap" | "whiteboard" | "kanban" | "pages" | null;
   refreshKey: number;
   syncState?: "idle" | "syncing" | "error" | "offline";
@@ -68,12 +78,13 @@ interface Props {
 export default function Sidebar({
   activePage, stats, onPageClick, onCreatePage, onDeletePage,
   onJournalClick, onSearchClick, onGraphClick, onMindmapClick, onWhiteboardClick, onKanbanClick, onPagesClick, onSettingsClick, onFolderSettings, onTodoBadgeClick, activeMode, refreshKey,
-  syncState,
+  syncState, onReviewClick,
 }: Props) {
   const [newTitle, setNewTitle] = useState("");
   const [showCreate, setShowCreate] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
   const [showFolderCreate, setShowFolderCreate] = useState(false);
+  const [folderCreateError, setFolderCreateError] = useState<string | null>(null);
   const [treeData, setTreeData] = useState<FolderTreeRoot | null>(null);
   const [journals, setJournals] = useState<Page[]>([]);
   const [showCalendar, setShowCalendar] = useState(false);
@@ -84,6 +95,7 @@ export default function Sidebar({
   const [archivedItems, setArchivedItems] = useState<api.ArchiveItem[]>([]);
   const [showArchived, setShowArchived] = useState(false);
   const [pendingTodos, setPendingTodos] = useState(0);
+  const [srs, setSrs] = useState<api.SrsStats | null>(null);
   // settings.ai.todoExtraction gates the TODO badge; updates live via the
   // minotes-settings-changed event (no reload needed).
   const [todoExtraction, setTodoExtraction] = useState(() => getSettings().ai?.todoExtraction ?? true);
@@ -106,6 +118,21 @@ export default function Sidebar({
   useEffect(() => {
     saveExpandedIds(expandedProjectIds);
   }, [expandedProjectIds]);
+
+  // Another notebook: its own expanded projects; panels from the old one close.
+  useEffect(() => {
+    const onSwitch = () => {
+      setExpandedProjectIds(loadExpandedIds());
+      setAllCollapsed(false);
+      setShowTrash(false);
+      setShowArchived(false);
+      setShowCreate(false);
+      setShowFolderCreate(false);
+      setShowCalendar(false);
+    };
+    window.addEventListener(NOTEBOOK_SWITCHED, onSwitch);
+    return () => window.removeEventListener(NOTEBOOK_SWITCHED, onSwitch);
+  }, []);
 
   const toggleProjectExpanded = useCallback((folderId: string, shiftKey: boolean) => {
     setExpandedProjectIds(prev => {
@@ -171,7 +198,22 @@ export default function Sidebar({
     return () => window.removeEventListener("minotes-sidebar-refresh", refetch);
   }, [refreshKey, todoExtraction]);
 
-  
+  // Flashcard review entry: due count, refreshed whenever cards change (made,
+  // removed, reviewed), on sidebar refreshes, and when the window regains focus
+  // (cards fall due with time).
+  useEffect(() => {
+    const refetch = () => api.getSrsStats().then(setSrs).catch(() => {});
+    refetch();
+    window.addEventListener("minotes-cards-changed", refetch);
+    window.addEventListener("minotes-sidebar-refresh", refetch);
+    window.addEventListener("focus", refetch);
+    return () => {
+      window.removeEventListener("minotes-cards-changed", refetch);
+      window.removeEventListener("minotes-sidebar-refresh", refetch);
+      window.removeEventListener("focus", refetch);
+    };
+  }, [refreshKey]);
+
   useEffect(() => { loadTree(); }, [loadTree, refreshKey]);
 
   // Listen for direct sidebar refresh events (from FolderSettingsPanel, etc.)
@@ -181,18 +223,42 @@ export default function Sidebar({
     return () => window.removeEventListener("minotes-sidebar-refresh", handler);
   }, [loadTree]);
 
-  const handleCreate = () => {
-    if (newTitle.trim()) {
-      onCreatePage(newTitle.trim());
-      setNewTitle("");
-      setShowCreate(false);
+  // Inline "new page" / "new project" fields: Enter or clicking away commits a
+  // non-empty name and cancels an empty one (the same as every rename field).
+  const creatingRef = useRef(false);
+  const handleCreate = async () => {
+    const title = newTitle.trim();
+    if (!title) { setShowCreate(false); setNewTitle(""); return; }
+    if (creatingRef.current) return;
+    creatingRef.current = true;
+    try {
+      const ok = await onCreatePage(title);
+      if (ok !== false) {
+        setNewTitle("");
+        setShowCreate(false);
+      }
+    } finally {
+      creatingRef.current = false;
     }
   };
 
   const handleCreateFolder = async () => {
-    if (newFolderName.trim()) {
-      const folder = await api.createFolder(newFolderName.trim());
+    const name = newFolderName.trim();
+    if (!name) { setShowFolderCreate(false); setNewFolderName(""); setFolderCreateError(null); return; }
+    if (creatingRef.current) return;
+    creatingRef.current = true;
+    try {
+      const conflict = await folderNameConflict(name, null);
+      if (conflict) { setFolderCreateError(conflict); return; }
+      let folder: api.Folder;
+      try {
+        folder = await api.createFolder(name);
+      } catch (e) {
+        setFolderCreateError(`Couldn't create project: ${errorMessage(e)}`);
+        return;
+      }
       setNewFolderName("");
+      setFolderCreateError(null);
       setShowFolderCreate(false);
       // Auto-expand the new project
       setExpandedProjectIds(prev => {
@@ -201,8 +267,12 @@ export default function Sidebar({
         return next;
       });
       loadTree();
+    } finally {
+      creatingRef.current = false;
     }
   };
+
+  useEscapeToClose(showCalendar, () => setShowCalendar(false));
 
   const handleDropOnRoot = async (e: React.DragEvent) => {
     e.preventDefault();
@@ -252,13 +322,20 @@ export default function Sidebar({
       {/* -- Sticky top: Search + New -- */}
       <div className="sidebar-header">
         <h1>MiNotes</h1>
+        <NotebookSwitcher />
         <button className="sidebar-gear-btn" onClick={onSettingsClick} title="Settings (Ctrl+,)">&#x2699;</button>
       </div>
       <div className="sidebar-actions-bar">
         <button className="btn btn-sm" onClick={onSearchClick} title="Search (Ctrl+K)" style={{ flex: 1 }}>
           &#128269; Search
         </button>
-        <button className="btn btn-sm btn-primary" onClick={() => setShowCreate(!showCreate)}>
+        <button
+          className="btn btn-sm btn-primary"
+          // mousedown would blur the open field first (which commits/cancels it)
+          onMouseDown={e => { if (showCreate) e.preventDefault(); }}
+          onClick={() => setShowCreate(!showCreate)}
+          title="New page (Ctrl+N)"
+        >
           + New
         </button>
       </div>
@@ -272,8 +349,10 @@ export default function Sidebar({
             onChange={e => setNewTitle(e.target.value)}
             onKeyDown={e => {
               if (e.key === "Enter") handleCreate();
-              if (e.key === "Escape") setShowCreate(false);
+              if (e.key === "Escape") { e.preventDefault(); setShowCreate(false); setNewTitle(""); }
             }}
+            onBlur={handleCreate}
+            aria-label="New page title"
             autoFocus
           />
         </div>
@@ -286,8 +365,12 @@ export default function Sidebar({
         </span>
         <span
           className="sidebar-section-chevron"
+          role="button"
+          tabIndex={0}
+          aria-expanded={showCalendar}
           onClick={() => setShowCalendar(c => !c)}
-          title={showCalendar ? "Hide calendar" : "Show calendar"}
+          onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setShowCalendar(c => !c); } }}
+          title={showCalendar ? "Hide calendar (Esc)" : "Show calendar"}
         >
           {showCalendar ? "\u25B4" : "\u25BE"}
         </span>
@@ -377,6 +460,20 @@ export default function Sidebar({
           </div>
         )}
 
+        {/* Flashcard review */}
+        {onReviewClick && srs && srs.total_cards > 0 && (
+          <div
+            className="sidebar-todo-badge sidebar-review-badge"
+            role="button"
+            tabIndex={0}
+            onClick={onReviewClick}
+            onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onReviewClick(); } }}
+            title={`Review flashcards (Ctrl+R) — ${srs.due_count} due, ${srs.total_cards} total`}
+          >
+            Review <span className="sidebar-todo-count">{srs.due_count}</span> due
+          </div>
+        )}
+
         {/* -- Projects -- */}
         {(allProjects.length > 0 || treeData) && (
           <>
@@ -399,13 +496,17 @@ export default function Sidebar({
                   className="search-input"
                   placeholder="Project name..."
                   value={newFolderName}
-                  onChange={e => setNewFolderName(e.target.value)}
+                  onChange={e => { setNewFolderName(e.target.value); setFolderCreateError(null); }}
                   onKeyDown={e => {
                     if (e.key === "Enter") handleCreateFolder();
-                    if (e.key === "Escape") setShowFolderCreate(false);
+                    if (e.key === "Escape") { e.preventDefault(); setShowFolderCreate(false); setNewFolderName(""); setFolderCreateError(null); }
                   }}
+                  onBlur={() => { if (!folderCreateError) handleCreateFolder(); }}
+                  aria-label="New project name"
+                  aria-invalid={!!folderCreateError}
                   autoFocus
                 />
+                {folderCreateError && <div className="inline-field-error" role="alert">{folderCreateError}</div>}
               </div>
             ) : (
               <div
@@ -458,7 +559,9 @@ export default function Sidebar({
             {/* Pages (not in any project, excluding pinned) */}
             {treeData && treeData.root_pages.filter(p => !p.is_journal && !pinnedIds.has(p.id)).length > 0 && (
               <>
-              <div className="sidebar-section-title">Pages</div>
+              <div className="sidebar-section-title">
+                Pages <span className="sidebar-section-count">({treeData.root_pages.filter(p => !p.is_journal && !pinnedIds.has(p.id)).length})</span>
+              </div>
               <div
                 className="root-drop-zone"
                 onDragOver={e => { e.preventDefault(); e.currentTarget.classList.add("drop-target"); }}
@@ -632,7 +735,7 @@ function DraggablePage({
   activePage: Page | null;
   depth: number;
   onPageClick: (id: string) => void;
-  onDeletePage: (id: string) => void;
+  onDeletePage: (id: string, title?: string) => void;
   onRefresh: () => void;
   allFolders?: FolderTree[];
   isPinned?: boolean;
@@ -644,27 +747,74 @@ function DraggablePage({
   const [showMoveSubmenu, setShowMoveSubmenu] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState(page.title);
+  const [renameError, setRenameError] = useState<string | null>(null);
   const [dropPos, setDropPos] = useState<"above" | "below" | null>(null);
+  const rowRef = useRef<HTMLDivElement>(null);
 
-  const openMenu = (x: number, y: number) => {
+  // `viaKeyboard`: focus the first menu item so arrows/Enter work right away.
+  const openMenu = (x: number, y: number, viaKeyboard = false) => {
     setCtxMenu({ x, y });
     setShowMoveSubmenu(false);
+    if (viaKeyboard) {
+      setTimeout(() => {
+        (document.querySelector(".sidebar-context-menu .sidebar-context-menu-item") as HTMLElement | null)?.focus();
+      }, 0);
+    }
   };
-
-  const handleMoveToFolder = async (folderId: string | undefined) => {
-    await api.movePageToFolder(page.id, folderId);
+  const closeMenu = () => {
     setCtxMenu(null);
     setShowMoveSubmenu(false);
-    onRefresh();
   };
 
-  const handleRename = async () => {
-    const trimmed = renameValue.trim();
-    if (trimmed && trimmed !== page.title) {
-      await api.renamePage(page.id, trimmed);
-      onRefresh();
+  const folderName = (id: string | undefined | null) =>
+    id ? (allFolders?.find(f => f.id === id)?.name ?? "project") : null;
+
+  const handleMoveToFolder = async (folderId: string | undefined) => {
+    const fromFolder = page.folder_id ?? undefined;
+    closeMenu();
+    try {
+      await api.movePageToFolder(page.id, folderId);
+    } catch (e) {
+      showToast(`Couldn't move "${displayTitle(page)}": ${errorMessage(e)}`);
+      return;
     }
-    setRenaming(false);
+    onRefresh();
+    const where = folderName(folderId);
+    showUndoToast(
+      where ? `Moved "${displayTitle(page)}" to ${where}` : `Moved "${displayTitle(page)}" out of ${folderName(fromFolder) ?? "its project"}`,
+      async () => {
+        await api.movePageToFolder(page.id, fromFolder).catch(() => {});
+        onRefresh();
+      },
+      8000,
+    );
+    rowRef.current?.focus();
+  };
+
+  const renamingDone = useRef(false);
+  const handleRename = async () => {
+    if (renamingDone.current) return;
+    const trimmed = renameValue.trim();
+    if (!trimmed || trimmed === page.title) {
+      setRenaming(false);
+      setRenameError(null);
+      return;
+    }
+    renamingDone.current = true;
+    try {
+      const conflict = await pageTitleConflict(trimmed, page.id);
+      if (conflict) throw new Error(conflict);
+      await api.renamePage(page.id, trimmed);
+      setRenaming(false);
+      setRenameError(null);
+      onRefresh();
+      window.dispatchEvent(new Event("minotes-page-renamed"));
+    } catch (e) {
+      // Keep the field open with the reason; the page keeps its old title.
+      setRenameError(errorMessage(e).replace(/^Already exists:\s*/i, ""));
+    } finally {
+      renamingDone.current = false;
+    }
   };
 
   const handleTogglePin = async () => {
@@ -708,9 +858,25 @@ function DraggablePage({
   };
 
   return (
+    <>
     <div
-      className={`page-item ${activePage?.id === page.id ? "active" : ""} ${dropPos === "above" ? "drop-above" : ""} ${dropPos === "below" ? "drop-below" : ""}`}
+      ref={rowRef}
+      className={`page-item ${activePage?.id === page.id ? "active" : ""} ${ctxMenu ? "menu-open" : ""} ${dropPos === "above" ? "drop-above" : ""} ${dropPos === "below" ? "drop-below" : ""}`}
       style={{ paddingLeft: 16 + depth * 16 }}
+      tabIndex={renaming ? -1 : 0}
+      role="link"
+      aria-current={activePage?.id === page.id ? "page" : undefined}
+      aria-haspopup="menu"
+      title={`${displayTitle(page)} — Shift+F10 or the menu key for actions`}
+      onKeyDown={e => {
+        if (renaming || e.target !== e.currentTarget) return;
+        if (e.key === "Enter") { e.preventDefault(); onPageClick(page.id); }
+        if (e.key === "ContextMenu" || (e.key === "F10" && e.shiftKey)) {
+          e.preventDefault();
+          const r = e.currentTarget.getBoundingClientRect();
+          openMenu(r.left + 24, r.bottom + 2, true);
+        }
+      }}
       draggable={!renaming}
       onDragStart={e => {
         e.dataTransfer.setData("text/page-id", page.id);
@@ -752,9 +918,16 @@ function DraggablePage({
         await api.reorderFavorite(draggedId, newPos);
         onRefresh();
       }) : undefined}
-      onMouseDown={e => { if (!renaming) mouseStart.current = { x: e.clientX, y: e.clientY }; }}
+      onMouseDown={e => {
+        // Only a primary click on the row itself navigates: not right-click, not
+        // the ⋮ button, and not clicks inside the menu (a portal, so React still
+        // bubbles its events through this row).
+        const t = e.target as HTMLElement;
+        const onRow = e.currentTarget.contains(t) && !t.closest(".page-more-btn");
+        mouseStart.current = !renaming && e.button === 0 && onRow ? { x: e.clientX, y: e.clientY } : null;
+      }}
       onMouseUp={e => {
-        if (renaming) return;
+        if (renaming || e.button !== 0) { mouseStart.current = null; return; }
         const start = mouseStart.current;
         if (start) {
           const dx = Math.abs(e.clientX - start.x);
@@ -775,32 +948,38 @@ function DraggablePage({
         <input
           className="sidebar-rename-input"
           value={renameValue}
-          onChange={e => setRenameValue(e.target.value)}
+          onChange={e => { setRenameValue(e.target.value); setRenameError(null); }}
           onKeyDown={e => {
+            e.stopPropagation();
             if (e.key === "Enter") handleRename();
-            if (e.key === "Escape") setRenaming(false);
+            if (e.key === "Escape") { e.preventDefault(); setRenaming(false); setRenameError(null); }
           }}
-          onBlur={handleRename}
+          onBlur={() => { if (renameError) { setRenaming(false); setRenameError(null); } else handleRename(); }}
           autoFocus
+          aria-label="Page title"
+          aria-invalid={!!renameError}
           onClick={e => e.stopPropagation()}
         />
       ) : (
         <span>{displayIcon(page)} {displayTitle(page)}</span>
       )}
-      {/* ⋮ more button — visible on hover */}
+      {/* ⋮ more button — shown on hover, on keyboard focus and for the open page */}
       <button
         ref={moreRef}
         className="page-more-btn"
         onClick={(e) => {
           e.stopPropagation();
           const rect = e.currentTarget.getBoundingClientRect();
-          openMenu(rect.left, rect.bottom + 2);
+          openMenu(rect.left, rect.bottom + 2, e.detail === 0);
         }}
-        title="More actions"
+        title="Page actions (Shift+F10)"
+        aria-label={`Actions for ${displayTitle(page)}`}
+        aria-haspopup="menu"
+        tabIndex={-1}
       >&#8942;</button>
       {/* Context menu — rendered via portal to avoid clipping */}
       {ctxMenu && (
-        <ContextMenuPortal x={ctxMenu.x} y={ctxMenu.y} onClose={() => { setCtxMenu(null); setShowMoveSubmenu(false); }}>
+        <ContextMenuPortal x={ctxMenu.x} y={ctxMenu.y} onClose={() => { closeMenu(); }}>
           {!page.is_journal && (
             <button
               className="sidebar-context-menu-item"
@@ -857,14 +1036,9 @@ function DraggablePage({
           <div className="sidebar-context-menu-sep" />
           <button
             className="sidebar-context-menu-item danger"
-            onClick={async () => {
-              setCtxMenu(null);
-              await api.trashPage(page.id);
-              onRefresh();
-              showUndoToast(`"${displayTitle(page)}" deleted`, async () => {
-                await api.restoreFromTrash(page.id, "page");
-                onRefresh();
-              });
+            onClick={() => {
+              closeMenu();
+              onDeletePage(page.id, displayTitle(page));
             }}
           >
             &#128465; Delete
@@ -872,6 +1046,12 @@ function DraggablePage({
         </ContextMenuPortal>
       )}
     </div>
+    {renaming && renameError && (
+      <div className="inline-field-error sidebar-inline-error" role="alert" style={{ marginLeft: 16 + depth * 16 }}>
+        {renameError}
+      </div>
+    )}
+    </>
   );
 }
 
@@ -885,7 +1065,7 @@ function FolderItem({
   isExpanded: boolean;
   onToggleExpanded: (shiftKey: boolean) => void;
   onPageClick: (id: string) => void;
-  onDeletePage: (id: string) => void;
+  onDeletePage: (id: string, title?: string) => void;
   onRefresh: () => void;
   allFolders?: FolderTree[];
   pinnedIds?: Set<string>;
@@ -898,6 +1078,8 @@ function FolderItem({
   const [folderMenu, setFolderMenu] = useState<{ x: number; y: number } | null>(null);
   const [renamingFolder, setRenamingFolder] = useState(false);
   const [folderRenameValue, setFolderRenameValue] = useState(folder.name);
+  const [folderError, setFolderError] = useState<string | null>(null);
+  const [inlineError, setInlineError] = useState<string | null>(null);
 
   const PAGE_CAP = 8;
   const sortedPages = [...folder.pages]
@@ -919,16 +1101,18 @@ function FolderItem({
 
   const handleRenameFolder = async () => {
     if (!renamingFolder) return; // guard against double-fire
-    setRenamingFolder(false);
     const trimmed = folderRenameValue.trim();
-    if (trimmed && trimmed !== folder.name) {
-      try {
-        await api.renameFolder(folder.id, trimmed);
-      } catch (e) {
-        console.error("Rename folder failed:", e);
-      }
-      onRefresh();
+    if (!trimmed || trimmed === folder.name) { setRenamingFolder(false); setFolderError(null); return; }
+    const conflict = await folderNameConflict(trimmed, folder.parent_id ?? null, folder.id);
+    if (conflict) { setFolderError(conflict); return; }
+    setRenamingFolder(false);
+    setFolderError(null);
+    try {
+      await api.renameFolder(folder.id, trimmed);
+    } catch (e) {
+      showToast(`Couldn't rename project: ${errorMessage(e)}`);
     }
+    onRefresh();
   };
 
   const handleDrop = async (e: React.DragEvent) => {
@@ -945,13 +1129,24 @@ function FolderItem({
     }
   };
 
+  const inlineBusy = useRef(false);
   const handleInlineCreate = async () => {
-    if (inlineTitle.trim()) {
-      const page = await api.createPage(inlineTitle.trim());
+    const title = inlineTitle.trim();
+    if (!title) { setShowInlineCreate(false); setInlineTitle(""); setInlineError(null); return; }
+    if (inlineBusy.current) return;
+    inlineBusy.current = true;
+    try {
+      const page = await api.createPage(title);
       await api.movePageToFolder(page.id, folder.id);
       setInlineTitle("");
+      setInlineError(null);
       setShowInlineCreate(false);
       onRefresh();
+      onPageClick(page.id);
+    } catch (e) {
+      setInlineError(`Couldn't create page: ${errorMessage(e)}`);
+    } finally {
+      inlineBusy.current = false;
     }
   };
 
@@ -976,13 +1171,15 @@ function FolderItem({
           <input
             className="sidebar-rename-input"
             value={folderRenameValue}
-            onChange={e => setFolderRenameValue(e.target.value)}
+            onChange={e => { setFolderRenameValue(e.target.value); setFolderError(null); }}
             onKeyDown={e => {
               e.stopPropagation();
               if (e.key === "Enter") handleRenameFolder();
-              if (e.key === "Escape") { setRenamingFolder(false); }
+              if (e.key === "Escape") { e.preventDefault(); setRenamingFolder(false); setFolderError(null); }
             }}
-            onBlur={handleRenameFolder}
+            onBlur={() => { if (folderError) { setRenamingFolder(false); setFolderError(null); } else handleRenameFolder(); }}
+            aria-label="Project name"
+            aria-invalid={!!folderError}
             onClick={e => e.stopPropagation()}
             onMouseDown={e => e.stopPropagation()}
             autoFocus
@@ -1003,9 +1200,16 @@ function FolderItem({
             const rect = e.currentTarget.getBoundingClientRect();
             setFolderMenu({ x: rect.left, y: rect.bottom + 2 });
           }}
-          title="More actions"
+          title="Project actions"
+          aria-label={`Actions for project ${folder.name}`}
+          aria-haspopup="menu"
         >&#8942;</button>
       </div>
+      {renamingFolder && folderError && (
+        <div className="inline-field-error sidebar-inline-error" role="alert" style={{ marginLeft: 16 + depth * 16 }}>
+          {folderError}
+        </div>
+      )}
       {/* Folder context menu — rendered via portal */}
       {folderMenu && (
         <ContextMenuPortal x={folderMenu.x} y={folderMenu.y} onClose={() => setFolderMenu(null)}>
@@ -1058,13 +1262,16 @@ function FolderItem({
             className="search-input"
             placeholder="Page title..."
             value={inlineTitle}
-            onChange={e => setInlineTitle(e.target.value)}
+            onChange={e => { setInlineTitle(e.target.value); setInlineError(null); }}
             onKeyDown={e => {
               if (e.key === "Enter") handleInlineCreate();
-              if (e.key === "Escape") { setShowInlineCreate(false); setInlineTitle(""); }
+              if (e.key === "Escape") { e.preventDefault(); setShowInlineCreate(false); setInlineTitle(""); setInlineError(null); }
             }}
+            onBlur={() => { if (!inlineError) handleInlineCreate(); }}
+            aria-label={`New page in ${folder.name}`}
             autoFocus
           />
+          {inlineError && <div className="inline-field-error" role="alert">{inlineError}</div>}
         </div>
       )}
       {/* Phase 4: animated expand/collapse */}

@@ -6,6 +6,10 @@ import tippy, { type Instance as TippyInstance } from "tippy.js";
 import { SlashMenu, type SlashMenuItem } from "./SlashMenu";
 import { generateWhiteboardId } from "../lib/whiteboardUtils";
 import { BUILTIN_TEMPLATES, applyTemplateVars } from "../lib/builtinTemplates";
+import { emptyTableMarkdown } from "./tables";
+
+/** Exported so the editor can tell whether this menu is open (e.g. Escape closes it). */
+export const slashPluginKey = new PluginKey("slashCommands");
 
 /*
  * Slash commands use two strategies:
@@ -21,9 +25,10 @@ export function setSlashCallbacks(
   command: (markdown: string) => void,
   save: () => void,
   template?: (lines: string[]) => void,
+  flashcard?: () => void,
 ) {
   if (editor) {
-    (editor.storage as any).slashCallbacks = { command, save, template };
+    (editor.storage as any).slashCallbacks = { command, save, template, flashcard };
   }
 }
 
@@ -99,6 +104,27 @@ const COMMANDS: SlashMenuItem[] = [
     description: "horizontal line separator",
     command: ({ editor, range }) => {
       (editor.storage as any).slashCallbacks?.command("---");
+    },
+  },
+  {
+    // Markdown approach (like headings): the block becomes a pipe table, which the
+    // sync path renders as a TipTap table — so what's on screen is what's stored.
+    title: "Table",
+    description: "table grid rows columns 3x3",
+    command: ({ editor, range }) => {
+      const text = getTextBeforeSlash(editor, range);
+      const table = emptyTableMarkdown(3, 2);
+      (editor.storage as any).slashCallbacks?.command(text ? `${text}\n\n${table}` : table);
+    },
+  },
+  {
+    title: "Flashcard",
+    description: "flashcard card srs review spaced repetition question answer",
+    command: ({ editor, range }) => {
+      editor.chain().focus().deleteRange(range).run();
+      const cb = (editor.storage as any).slashCallbacks;
+      cb?.save();
+      cb?.flashcard?.();
     },
   },
   {
@@ -202,7 +228,7 @@ export const SlashCommands = Extension.create({
   addProseMirrorPlugins() {
     return [
       Suggestion({
-        pluginKey: new PluginKey("slashCommands"),
+        pluginKey: slashPluginKey,
         editor: this.editor,
         ...this.options.suggestion,
       }),

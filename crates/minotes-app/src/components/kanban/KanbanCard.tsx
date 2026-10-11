@@ -3,12 +3,15 @@ import { draggable, dropTargetForElements } from "@atlaskit/pragmatic-drag-and-d
 import { attachClosestEdge, extractClosestEdge, type Edge } from "@atlaskit/pragmatic-drag-and-drop-hitbox/closest-edge";
 import type { Block } from "../../lib/api";
 import * as api from "../../lib/api";
-import { extractLabel, detectTodoState } from "../mindmap/blocksToFlow";
+import { extractTaskLabel, detectTodoState } from "../mindmap/blocksToFlow";
 
 interface Props {
   block: Block;
   subBlockCount: number;
-  columns: Block[];
+  /** Column this card is shown in (a section block id, or the "No section" id). */
+  columnId: string;
+  columns: { id: string; title: string }[];
+  onMoveTo: (block: Block, toColumnId: string) => void;
   columnColor: string | null;
   isFocused: boolean;
   onFocus: (id: string) => void;
@@ -17,7 +20,7 @@ interface Props {
   onRefresh: () => void;
 }
 
-function KanbanCard({ block, subBlockCount, columns, columnColor, isFocused, onFocus, onOpenSidePanel, onDelete, onRefresh }: Props) {
+function KanbanCard({ block, subBlockCount, columnId, columns, onMoveTo, columnColor, isFocused, onFocus, onOpenSidePanel, onDelete, onRefresh }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [closestEdge, setClosestEdge] = useState<Edge | null>(null);
@@ -26,7 +29,9 @@ function KanbanCard({ block, subBlockCount, columns, columnColor, isFocused, onF
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  const label = extractLabel(block.content);
+  // The badge shows the TODO/DOING/DONE state, so the keyword is stripped from
+  // the displayed text (the stored content keeps it).
+  const label = extractTaskLabel(block.content, 240);
   const todoState = detectTodoState(block.content);
 
   const wikiLinks: string[] = [];
@@ -39,21 +44,21 @@ function KanbanCard({ block, subBlockCount, columns, columnColor, isFocused, onF
     if (!el) return;
     const dragCleanup = draggable({
       element: el,
-      getInitialData: () => ({ cardId: block.id, sourceColumnId: block.parent_id }),
+      getInitialData: () => ({ cardId: block.id, sourceColumnId: columnId }),
       onDragStart: () => setIsDragging(true),
       onDrop: () => setIsDragging(false),
     });
     const dropCleanup = dropTargetForElements({
       element: el,
       getData: ({ input, element }) =>
-        attachClosestEdge({ cardId: block.id, columnId: block.parent_id }, { input, element, allowedEdges: ["top", "bottom"] }),
+        attachClosestEdge({ cardId: block.id, columnId }, { input, element, allowedEdges: ["top", "bottom"] }),
       canDrop: ({ source }) => source.data.cardId !== block.id,
       onDrag: ({ self }) => setClosestEdge(extractClosestEdge(self.data)),
       onDragLeave: () => setClosestEdge(null),
       onDrop: () => setClosestEdge(null),
     });
     return () => { dragCleanup(); dropCleanup(); };
-  }, [block.id, block.parent_id]);
+  }, [block.id, columnId]);
 
   useEffect(() => {
     if (isFocused && ref.current && !editing) ref.current.focus();
@@ -91,10 +96,10 @@ function KanbanCard({ block, subBlockCount, columns, columnColor, isFocused, onF
     setContextMenu(null);
   }, [block.id, block.content, onRefresh]);
 
-  const handleMoveTo = useCallback((columnId: string) => {
-    api.moveBlock(block.id, columnId, 999).then(onRefresh).catch(() => {});
+  const handleMoveTo = useCallback((toColumnId: string) => {
+    onMoveTo(block, toColumnId);
     setContextMenu(null);
-  }, [block.id, onRefresh]);
+  }, [block, onMoveTo]);
 
   return (
     <div className="kanban-card-wrapper">
@@ -166,12 +171,12 @@ function KanbanCard({ block, subBlockCount, columns, columnColor, isFocused, onF
               {todoState === "done" ? "Remove DONE" : todoState === "doing" ? "Mark DONE" : todoState === "todo" ? "Mark DOING" : "Add TODO"}
             </button>
             <button onClick={() => { onDelete(block); setContextMenu(null); }}>Delete</button>
-            {columns.filter((c) => c.id !== block.parent_id).length > 0 && (
+            {columns.filter((c) => c.id !== columnId).length > 0 && (
               <>
                 <div className="kanban-ctx-divider" />
                 <span className="kanban-ctx-label">Move to...</span>
-                {columns.filter((c) => c.id !== block.parent_id).map((c) => (
-                  <button key={c.id} onClick={() => handleMoveTo(c.id)}>{extractLabel(c.content)}</button>
+                {columns.filter((c) => c.id !== columnId).map((c) => (
+                  <button key={c.id} title={c.title} onClick={() => handleMoveTo(c.id)}>{c.title}</button>
                 ))}
               </>
             )}

@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { useEscapeToClose } from "../lib/escapeStack";
 import * as api from "../lib/api";
 
 interface Props {
@@ -9,6 +10,7 @@ interface Props {
 }
 
 export default function SyncPanel({ open, onClose, currentPageId, onPageRestored }: Props) {
+  useEscapeToClose(open, onClose);
   const [status, setStatus] = useState<api.SyncStatus | null>(null);
   const [versions, setVersions] = useState<api.VersionInfo[]>([]);
   const [syncing, setSyncing] = useState(false);

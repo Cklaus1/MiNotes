@@ -43,7 +43,7 @@ export default function QueryPanel({ open, onClose, onPageClick }: Props) {
       <div className="query-panel" onClick={e => e.stopPropagation()}>
         <div className="query-panel-header">
           <span>SQL Query</span>
-          <button className="btn btn-sm" onClick={onClose}>×</button>
+          <button className="btn btn-sm" onClick={onClose} title="Close (Esc)" aria-label="Close query panel">×</button>
         </div>
 
         <div className="query-examples">
@@ -67,7 +67,7 @@ export default function QueryPanel({ open, onClose, onPageClick }: Props) {
               e.preventDefault();
               runQuery();
             }
-            if (e.key === "Escape") onClose();
+            if (e.key === "Escape") { e.preventDefault(); onClose(); }
           }}
           placeholder="SELECT * FROM blocks WHERE content LIKE '%...' LIMIT 20"
           rows={3}

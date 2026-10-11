@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { useEscapeToClose } from "../lib/escapeStack";
 import type { CssSnippet } from "../lib/api";
 import * as api from "../lib/api";
 import { reloadSnippets } from "../lib/cssLoader";
@@ -11,6 +12,7 @@ interface Props {
 type EditorMode = "add-custom" | "add-obsidian" | "edit" | null;
 
 export default function CssSnippetManager({ open, onClose }: Props) {
+  useEscapeToClose(open, onClose);
   const [snippets, setSnippets] = useState<CssSnippet[]>([]);
   const [mode, setMode] = useState<EditorMode>(null);
   const [editName, setEditName] = useState("");

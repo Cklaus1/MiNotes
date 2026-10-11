@@ -38,7 +38,7 @@ function extractColor(content: string): string | null {
 }
 
 /** Strip markdown formatting to get a clean label */
-export function extractLabel(content: string): string {
+export function extractLabel(content: string, maxLen = 60): string {
   let text = content.trim();
   // Strip heading markers
   text = text.replace(/^#{1,4}\s+/, "");
@@ -54,7 +54,7 @@ export function extractLabel(content: string): string {
   // Strip wiki links
   text = text.replace(/\[\[(.+?)\]\]/g, "$1");
   // Replace whiteboard embeds with label
-  text = text.replace(/\{\{whiteboard:[^}]+\}\}/g, "(Whiteboard)");
+  text = text.replace(/\{\{whiteboard:[^}]+\}\}/g, WHITEBOARD_LABEL);
   // Strip checkbox markers
   text = text.replace(/^- \[[ x]\]\s*/, "");
   // Strip list markers
@@ -62,8 +62,31 @@ export function extractLabel(content: string): string {
   // First line only
   text = text.split("\n")[0];
   // Truncate
-  if (text.length > 60) text = text.slice(0, 57) + "...";
+  if (text.length > maxLen) text = text.slice(0, maxLen - 1).trimEnd() + "…";
   return text || "(empty)";
+}
+
+/** Label shown in place of a `{{whiteboard:<id>}}` embed. */
+export const WHITEBOARD_LABEL = "🎨 Whiteboard";
+
+/**
+ * Remove the leading TODO/DOING/DONE keyword — for views that already show the
+ * state as a badge or icon. Only strips what detectTodoState() recognises.
+ */
+export function stripTodoKeyword(content: string): string {
+  return content.replace(/^(TODO|DOING|DONE) /, "");
+}
+
+/** Label for a task-aware view: markdown and the state keyword stripped. */
+export function extractTaskLabel(content: string, maxLen = 60): string {
+  return extractLabel(stripTodoKeyword(content), maxLen);
+}
+
+/** True when a block is an H1 that just repeats the page title ("# Title"). */
+export function isTitleHeading(content: string, pageTitle: string): boolean {
+  const m = content.trim().match(/^#\s+(.+)$/);
+  if (!m) return false;
+  return extractLabel(m[1], Infinity).toLowerCase() === pageTitle.trim().toLowerCase();
 }
 
 export function detectTodoState(content: string): "todo" | "doing" | "done" | null {
@@ -102,6 +125,23 @@ function countDescendants(
   return count;
 }
 
+// Node box metrics — keep in sync with .mm-node / .mm-label in styles.css.
+// A label that doesn't fit on one line wraps to a second, then ellipsizes.
+const NODE_MAX_WIDTH = 220;
+const NODE_CHAR_WIDTH = 7.5;
+const NODE_LINE_HEIGHT = 40;
+const NODE_TWO_LINE_HEIGHT = 58;
+/** Longest label kept in the DOM; CSS clamps what is actually visible. */
+const NODE_LABEL_MAX = 120;
+
+function nodeBox(label: string, extra: number, minWidth: number): { width: number; height: number } {
+  const natural = label.length * NODE_CHAR_WIDTH + 32 + extra;
+  return {
+    width: Math.min(NODE_MAX_WIDTH, Math.max(minWidth, natural)),
+    height: natural > NODE_MAX_WIDTH ? NODE_TWO_LINE_HEIGHT : NODE_LINE_HEIGHT,
+  };
+}
+
 export type LayoutDirection = "LR" | "TB" | "radial";
 
 export function blocksToFlow(
@@ -138,8 +178,8 @@ export function blocksToFlow(
 
   // Root node = page title
   const rootId = "__page_root__";
-  const rootWidth = Math.min(220, Math.max(120, pageTitle.length * 9 + 32));
-  g.setNode(rootId, { width: rootWidth, height: 44 });
+  const rootBox = nodeBox(pageTitle, pageTitle.length * 1.5 + 16, 120);
+  g.setNode(rootId, { width: Math.min(240, rootBox.width + 20), height: rootBox.height + 4 });
   nodes.push({
     id: rootId,
     type: "mindmapNode",
@@ -180,8 +220,11 @@ export function blocksToFlow(
     if (visited.has(block.id)) return; // cycle guard
     visited.add(block.id);
 
-    const isEmpty = isBlockEmpty(block.content);
     const isBeingEdited = block.id === editingNodeId;
+    // A top-level "# Page title" block duplicates the root node: don't render
+    // it, and hang its children off the root (same pass-through as empty blocks).
+    const isEmpty = isBlockEmpty(block.content)
+      || (!block.parent_id && isTitleHeading(block.content, pageTitle));
 
     if (isEmpty && !isBeingEdited) {
       // Skip this empty node but still process its children
@@ -198,10 +241,13 @@ export function blocksToFlow(
     }
 
     const isCollapsed = collapsedIds.has(block.id);
-    const label = extractLabel(block.content);
-    const width = Math.min(200, Math.max(100, label.length * 7.5 + 32));
+    const todoState = detectTodoState(block.content);
+    // The status icon already says TODO/DOING/DONE — don't repeat it in the text.
+    const label = extractTaskLabel(block.content, NODE_LABEL_MAX);
+    const hasChildren = (childrenMap.get(block.id)?.length ?? 0) > 0;
+    const box = nodeBox(label, (todoState ? 18 : 0) + (hasChildren ? 26 : 0), 100);
 
-    g.setNode(block.id, { width, height: 40 });
+    g.setNode(block.id, box);
     g.setEdge(parentNodeId, block.id);
 
     const depth = getDepth(block.id, parentMap) + 1; // +1 because root is depth 0
@@ -215,7 +261,7 @@ export function blocksToFlow(
         blockId: block.id,
         isRoot: false,
         depth,
-        todoState: detectTodoState(block.content),
+        todoState,
         collapsed: isCollapsed,
         childCount: countDescendants(block.id, childrenMap),
         color: extractColor(block.content),

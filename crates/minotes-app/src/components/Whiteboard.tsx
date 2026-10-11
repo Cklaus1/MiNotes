@@ -1664,6 +1664,7 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
       // must not switch tools, delete elements, or close the board.
       if (isForeignEditable(e.target, containerRef.current)) return;
       if (e.key === "Escape") {
+        e.preventDefault(); // handled here — views underneath must not close too
         // If a textarea recently handled Escape (within 500ms), skip
         // WebKitGTK has different event timing than Chrome — need wider window
         if (Date.now() - escapeHandledRef.current < 500) {

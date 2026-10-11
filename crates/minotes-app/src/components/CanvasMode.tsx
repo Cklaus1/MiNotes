@@ -1,10 +1,11 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import type { Block } from "../lib/api";
 import GraphView from "./GraphView";
 import MindMapView from "./mindmap/MindMapView";
 import KanbanView from "./kanban/KanbanView";
 import Whiteboard from "./Whiteboard";
 import AllPagesView from "./AllPagesView";
+import { useEscapeToClose } from "../lib/escapeStack";
 
 export type CanvasModeType = "graph" | "mindmap" | "draw" | "kanban" | "pages";
 
@@ -29,6 +30,13 @@ export default function CanvasMode({
   onClose, onPageClick, onRefreshPage, onGraphSwitch, onWhiteboardClose, onRenameTitle,
 }: Props) {
   const [mode, setMode] = useState<CanvasModeType>(initialMode);
+  // App changes initialMode while the canvas is already open (Ctrl+G from Draw,
+  // Ctrl+M from Graph…). Follow it; the in-canvas tabs still switch locally.
+  useEffect(() => { setMode(initialMode); }, [initialMode]);
+
+  // Graph, mind map and whiteboard close themselves on Escape; kanban and All
+  // Pages have no handler of their own.
+  useEscapeToClose(mode === "kanban" || mode === "pages", onClose);
 
   const handleModeSwitch = useCallback((newMode: CanvasModeType) => {
     setMode(newMode);
