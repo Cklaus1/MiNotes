@@ -41,7 +41,7 @@ echo "════════════════════════�
 echo "  MiNotes Desktop Journeys (real app, real backend)"
 echo "═══════════════════════════════════════════════"
 
-rm -rf "$STATE"/{persist,devA,devB,nbook,outside,xnb,remote.git} "$STATE/results.tsv"
+rm -rf "$STATE"/{persist,devA,devB,nbook,outside,xnb,zip8,remote.git} "$STATE/results.tsv"
 if [[ -z "$DESKTOP_NO_BUILD" ]]; then
   "$DC" up --webdriver --profile persist >/dev/null || { echo "build/launch failed"; exit 1; }
 else
@@ -632,6 +632,79 @@ step "The CLI searches all notebooks too"
 R=$(mx -f text search wombat8 --all-notebooks)
 [[ "$R" == *"[Office8]"*"wombat8 rollout checklist"* && "$R" == *"Skipped: Gone8 (not available)"* ]] \
   && pass "minotes search --all-notebooks: labelled hit + skipped note" || fail "CLI all-notebooks search" "$R"
+journey "D9. I back up a notebook as one .zip and bring it back as a new notebook"
+# Export notebook… / Import notebook… from the notebook menu (the dialogs are
+# bypassed with setNextExportDest / setNextZipPick, both inside the scratch HOME).
+# Also the way notebooks leave and enter app storage on Android.
+# ═══════════════════════════════════════════════
+device zip8 || true
+ZH="$STATE/zip8"
+A8="const api=await import('/src/lib/api.ts');"
+mkdir -p "$ZH/Backups"
+toasts() { ev "[...document.querySelectorAll('.minotes-toast')].map(t=>t.textContent).join(' ¦ ')"; }
+zip_names() { python3 -c 'import sys,zipfile;print("\n".join(zipfile.ZipFile(sys.argv[1]).namelist()))' "$1" 2>&1; }
+
+step "I write a page with an image"
+ev "(async()=>{$A8 const p=await api.createPage('Zip Page');await api.createBlock(p.id,'packed into a zip zq8');const c=document.createElement('canvas');c.width=40;c.height=20;const b=Uint8Array.from(atob(c.toDataURL('image/png').split(',')[1]),ch=>ch.charCodeAt(0));const a=await api.storeAttachment('zip8.png','image/png',b);await api.createBlock(p.id,'![zip8.png](attachment:'+a.hash+'/zip8.png)');return 'ok'})()" >/dev/null
+HOME8=$(ev "(async()=>{$A8 return (await api.getNotebookSession()).key})()")
+
+step "Notebook menu → Export notebook… → one .zip"
+ev "window.__MINOTES__.setNextExportDest('$ZH/Backups/backup.zip')" >/dev/null
+menu_action "Export notebook"
+for _ in $(seq 1 40); do [[ -f "$ZH/Backups/backup.zip" ]] && break; sleep 0.25; done
+[[ -f "$ZH/Backups/backup.zip" ]] && pass "backup.zip written ($(stat -c %s "$ZH/Backups/backup.zip") bytes)" || fail "No zip" "$(toasts)"
+NAMES=$(zip_names "$ZH/Backups/backup.zip")
+R=$(for f in "default/notebook.minotes" "default/notebook.json" "default/notes/Zip Page.md"; do grep -qxF "$f" <<<"$NAMES" && echo -n y || echo -n "[$f missing]"; done)
+is "It holds notebook.minotes, notebook.json and notes/Zip Page.md" "$R" "yyy"
+is "…the attachment store (one image)" "$(grep -c '^default/attachments/../[0-9a-f]\{64\}\.png$' <<<"$NAMES")" "1"
+is "…and no device-private state (.minotes/, _attachments/)" "$(grep -cE '/\.minotes/|_attachments' <<<"$NAMES")" "0"
+[[ "$(toasts)" == *"Exported"* ]] && pass "A toast says what was exported" || fail "Export toast" "$(toasts)"
+[[ -z "$(find "$ZH/Backups" -name '*.minotes-tmp')" ]] && pass "No temp files next to it" || fail "Temp files left" "$(ls -a "$ZH/Backups")"
+
+step "A hostile zip (path traversal) is refused and writes nothing"
+python3 - "$ZH/Backups/evil.zip" "$ZH/Backups/backup.zip" <<'PY'
+import sys, zipfile
+src = zipfile.ZipFile(sys.argv[2]).read("default/notebook.minotes")
+with zipfile.ZipFile(sys.argv[1], "w") as z:
+    z.writestr("evil/notebook.minotes", src)
+    z.writestr("evil/../../escaped.txt", "pwned")
+PY
+N_BEFORE=$(ev "(async()=>{$A8 return String((await api.listNotebooks()).length)})()")
+ev "window.__MINOTES__.setNextZipPick('$ZH/Backups/evil.zip')" >/dev/null
+menu_action "Import notebook"; sleep 1.5
+[[ "$(toasts)" == *"unsafe path"* ]] && pass "Refused with a reason" || fail "Hostile zip" "$(toasts)"
+is "No notebook was added" "$(ev "(async()=>{$A8 return String((await api.listNotebooks()).length)})()")" "$N_BEFORE"
+[[ -z "$(find "$ZH" -name escaped.txt)" ]] && pass "Nothing escaped the import folder" || fail "Zip-slip" "$(find "$ZH" -name escaped.txt)"
+
+step "Notebook menu → Import notebook… → it opens as a new notebook (never over the original)"
+ev "window.__MINOTES__.setNextZipPick('$ZH/Backups/backup.zip')" >/dev/null
+menu_action "Import notebook"
+waitfor "(document.querySelector('[data-testid=notebook-switcher]')?.innerText||'').includes('default 2')" 20 \
+  && pass "Opened as 'default 2' (the name was taken)" || fail "Imported notebook not opened" "$(switcher) $(toasts)"
+NB8=$(ev "(async()=>{$A8 return (await api.getNotebookSession()).key})()")
+[[ -n "$NB8" && "$NB8" != "$HOME8" ]] && pass "It has its own key" || fail "Import key" "$NB8"
+[[ -f "$ZH/MiNotes/default 2/notebook.minotes" && -d "$ZH/MiNotes/default 2/notes" ]] \
+  && pass "A folder of its own: ~/MiNotes/default 2" || fail "Imported folder" "$(ls -A "$ZH/MiNotes" 2>&1)"
+[[ "$(blocks_of 'Zip Page')" == *"packed into a zip zq8"* ]] && pass "My page came back" || fail "Imported content" "$(blocks_of 'Zip Page')"
+api "navigateTo('Zip Page')" >/dev/null; sleep 2
+waitfor "[...document.querySelectorAll('.block img')].some(i=>i.complete&&i.naturalWidth===40)" 10 \
+  && pass "…with its image (from the imported attachment store)" || fail "Imported image" "$(ev "[...document.querySelectorAll('.block img')].map(i=>i.src+':'+i.naturalWidth).join(' ')")"
+"$DC" wshot "d9-imported" >/dev/null
+wait_file "$ZH/MiNotes/default 2/notes/Zip Page.md" 15 "zq8" && pass "The imported notebook gets its own markdown copy" || fail "Imported mirror" "$(ls "$ZH/MiNotes/default 2/notes" 2>&1)"
+is "The original is still there and untouched" "$(ev "(async()=>{$A8 const l=await api.listNotebooks();return String(l.some(n=>n.key==='$HOME8'&&n.available))})()")" "true"
+
+step "Manage notebooks… offers Export… per notebook and Import notebook (.zip)…"
+menu_action "Manage"
+is "Export… on every row, one Import button" "$(ev "[document.querySelectorAll('[data-testid=export-notebook]').length,document.querySelectorAll('[data-testid=import-notebook-zip]').length].join(',')")" "2,1"
+"$DC" wshot "d9-manage" >/dev/null
+"$DC" press Escape >/dev/null 2>&1; sleep 0.5
+
+step "I quit and open the app again"
+"$DC" restart >/dev/null && waitfor "window.__MINOTES__ && !!window.__MINOTES__.navigateTo" 30
+waitfor "(document.querySelector('[data-testid=notebook-switcher]')?.innerText||'').includes('default 2')" 15 \
+  && pass "The imported notebook reopens" || fail "After restart" "$(switcher)"
+[[ "$(blocks_of 'Zip Page')" == *"zq8"* ]] && pass "…with my page" || fail "Content after restart" "$(blocks_of 'Zip Page')"
+is "Desktop capabilities: folders, reveal, outside edits" "$(ev "(async()=>{$A8 const c=await api.getPlatformCapabilities();return [c.app_storage,c.choose_location,c.open_folder,c.outside_edits,c.notebook_zip].join(',')})()")" "false,true,true,true,true"
 
 # ═══════════════════════════════════════════════
 echo ""

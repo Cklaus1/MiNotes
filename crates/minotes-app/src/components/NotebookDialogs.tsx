@@ -2,7 +2,10 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import * as api from "../lib/api";
 import { showToast } from "../lib/toast";
 import { errorMessage } from "../lib/errors";
-import { formatSize, notebooksChanged, pickFolder, prettyPath, switchNotebook, timeAgo } from "../lib/notebooks";
+import {
+  exportNotebook, formatSize, importNotebookFromZip, notebooksChanged, pickFolder, prettyPath, switchNotebook, timeAgo,
+  useCapabilities,
+} from "../lib/notebooks";
 
 function Modal({ title, onClose, children, wide, testId }: {
   title: string; onClose: () => void; children: ReactNode; wide?: boolean; testId?: string;
@@ -69,6 +72,7 @@ export function NewNotebookDialog({ existingNames, onClose }: { existingNames: s
   const [defaultLoc, setDefaultLoc] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const caps = useCapabilities();
   const problem = nameProblem(name, existingNames);
 
   useEffect(() => {
@@ -92,7 +96,7 @@ export function NewNotebookDialog({ existingNames, onClose }: { existingNames: s
     setBusy(true);
     setError(null);
     try {
-      const nb = await api.createNotebook(name.trim(), location);
+      const nb = await api.createNotebook(name.trim(), caps.choose_location ? location : undefined);
       await switchNotebook(nb.key);
       notebooksChanged();
       showToast(`Created notebook “${nb.name}” in ${prettyPath(nb.path)}`);
@@ -120,6 +124,12 @@ export function NewNotebookDialog({ existingNames, onClose }: { existingNames: s
         />
       </label>
       {problem && <div className="nb-field-error">{problem}</div>}
+      {!caps.choose_location ? (
+        <div className="nb-hint" data-testid="new-notebook-app-storage">
+          Kept in MiNotes' own storage on this device. Use Export notebook… for a copy you can keep
+          elsewhere, or Git sync to use it on other devices.
+        </div>
+      ) : (
       <div className="nb-field">
         <span className="nb-label">Location</span>
         <div className="nb-location-row">
@@ -131,7 +141,8 @@ export function NewNotebookDialog({ existingNames, onClose }: { existingNames: s
           Copying the folder is a complete backup.
         </span>
       </div>
-      {cloud && <CloudWarning service={cloud} />}
+      )}
+      {caps.choose_location && cloud && <CloudWarning service={cloud} />}
       {error && <div className="nb-field-error" role="alert">{error}</div>}
       <div className="nb-modal-actions">
         <button className="btn btn-sm" onClick={onClose}>Cancel</button>
@@ -204,6 +215,7 @@ export function ManageNotebooksDialog({ notebooks, session, onClose, onMove, onL
   const [deleting, setDeleting] = useState<api.NotebookInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
   const renameRef = useRef<HTMLInputElement>(null);
+  const caps = useCapabilities();
 
   const startRename = (nb: api.NotebookInfo) => {
     setRenaming(nb.key);
@@ -266,7 +278,7 @@ export function ManageNotebooksDialog({ notebooks, session, onClose, onMove, onL
                       </span>
                     )}
                     <span className="nb-manage-meta">
-                      {nb.kind === "folder" ? prettyPath(nb.path) : `${prettyPath(nb.path)} (app data folder)`}
+                      {caps.app_storage ? "On this device" : nb.kind === "folder" ? prettyPath(nb.path) : `${prettyPath(nb.path)} (app data folder)`}
                       {nb.available && <> · {formatSize(nb.size_bytes)} · opened {timeAgo(nb.last_opened)}</>}
                     </span>
                   </div>
@@ -274,7 +286,17 @@ export function ManageNotebooksDialog({ notebooks, session, onClose, onMove, onL
                     {nb.available ? (
                       <>
                         <button className="btn btn-sm" onClick={() => startRename(nb)}>Rename</button>
-                        {current && nb.kind === "legacy" && (
+                        {caps.notebook_zip && (
+                          <button
+                            className="btn btn-sm"
+                            onClick={() => exportNotebook(nb)}
+                            title={`Save “${nb.name}” as one .zip file`}
+                            data-testid="export-notebook"
+                          >
+                            Export…
+                          </button>
+                        )}
+                        {current && nb.kind === "legacy" && caps.move_to_folder && (
                           <button className="btn btn-sm" onClick={onMove} data-testid="move-notebook-open">Move to a folder…</button>
                         )}
                         <button
@@ -289,7 +311,7 @@ export function ManageNotebooksDialog({ notebooks, session, onClose, onMove, onL
                       </>
                     ) : (
                       <>
-                        <button className="btn btn-sm" onClick={() => onLocate(nb)}>Locate…</button>
+                        {caps.open_folder && <button className="btn btn-sm" onClick={() => onLocate(nb)}>Locate…</button>}
                         <button className="btn btn-sm" onClick={() => forget(nb)} title="Remove from this list; no files are touched">
                           Remove from list
                         </button>
@@ -301,8 +323,22 @@ export function ManageNotebooksDialog({ notebooks, session, onClose, onMove, onL
             })}
           </ul>
           {error && <div className="nb-field-error" role="alert">{error}</div>}
+          {caps.notebook_zip && (
+            <div className="nb-modal-actions" style={{ justifyContent: "flex-start" }}>
+              <button
+                className="btn btn-sm"
+                onClick={async () => { if (await importNotebookFromZip()) onClose(); }}
+                title="Add a notebook from a MiNotes .zip as a new notebook (nothing existing is replaced)"
+                data-testid="import-notebook-zip"
+              >
+                Import notebook (.zip)…
+              </button>
+            </div>
+          )}
           <div className="nb-hint">
-            Renaming changes the name shown here; the folder keeps its name. Deleting keeps the markdown copy.
+            {caps.app_storage
+              ? "Notebooks are kept in MiNotes' own storage on this device. Export… saves a .zip copy anywhere you choose."
+              : "Renaming changes the name shown here; the folder keeps its name. Deleting keeps the markdown copy."}
           </div>
         </>
       )}

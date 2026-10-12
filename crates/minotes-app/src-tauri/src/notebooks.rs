@@ -187,7 +187,7 @@ fn outside_pass(app: &AppHandle, paths: Vec<PathBuf>) {
     let report = {
         let Ok(db) = state.db.lock() else { return };
         let Ok(s) = state.session.lock() else { return };
-        if s.held_by.is_some() || !s.notebook.mirror_enabled() {
+        if s.held_by.is_some() || !s.notebook.mirror_enabled() || notebook::is_app_storage() {
             return;
         }
         let target = MirrorTarget::for_notebook(&s.notebook);
@@ -487,7 +487,7 @@ fn follow_session_with_watch(app: &AppHandle) {
     let Some(w) = app.try_state::<MirrorWatch>() else { return };
     let Some(state) = app.try_state::<AppState>() else { return };
     let want = match state.session.lock() {
-        Ok(s) if s.held_by.is_none() && s.notebook.mirror_enabled() => Some(s.notebook.mirror_dir()),
+        Ok(s) if s.held_by.is_none() && s.notebook.mirror_enabled() && !notebook::is_app_storage() => Some(s.notebook.mirror_dir()),
         Ok(_) => None,
         Err(_) => return,
     };
@@ -662,7 +662,7 @@ pub fn default_notebook_location(name: String) -> String {
 pub fn create_notebook(name: String, location: Option<String>) -> Result<NotebookInfo, String> {
     let name = name.trim().to_string();
     notebook::validate_name(&name).map_err(|e| e.to_string())?;
-    let loc = match location.filter(|l| !l.trim().is_empty()) {
+    let loc = match location.filter(|l| !l.trim().is_empty() && !notebook::is_app_storage()) {
         Some(l) => l,
         None => notebook::default_location(&name).display().to_string(),
     };
@@ -674,6 +674,7 @@ pub fn create_notebook(name: String, location: Option<String>) -> Result<Noteboo
 /// Register an existing notebook folder ("Open notebook…"). Does not switch.
 #[tauri::command]
 pub fn open_notebook_folder(path: String) -> Result<NotebookInfo, String> {
+    crate::platform::require_folders("Opening a notebook folder")?;
     let dir = security::validate_notebook_dir(&path, &home_roots())?;
     let nb = notebook::open_folder(&dir).map_err(|e| e.to_string())?;
     Ok(notebook::info(&nb))
@@ -682,6 +683,7 @@ pub fn open_notebook_folder(path: String) -> Result<NotebookInfo, String> {
 /// "Locate…" for a notebook whose folder went missing.
 #[tauri::command]
 pub fn locate_notebook(key: String, path: String) -> Result<NotebookInfo, String> {
+    crate::platform::require_folders("Locating a notebook folder")?;
     let dir = security::validate_notebook_dir(&path, &home_roots())?;
     let nb = notebook::locate(&key, &dir).map_err(|e| e.to_string())?;
     Ok(notebook::info(&nb))
@@ -727,6 +729,7 @@ pub fn take_over_notebook(app: AppHandle, state: State<'_, AppState>) -> Result<
 /// only then remove the old files.
 #[tauri::command(async)]
 pub fn move_notebook_to_folder(app: AppHandle, state: State<'_, AppState>, path: String) -> Result<SessionInfo, String> {
+    crate::platform::require_folders("Moving a notebook to a folder")?;
     let dest = security::validate_notebook_dir(&path, &home_roots())?;
     let _fs = FS_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let new_nb = {
@@ -788,6 +791,7 @@ pub fn mirror_rebuild(app: AppHandle) -> Result<MirrorStatusOut, String> {
 
 #[tauri::command]
 pub fn mirror_open_folder(state: State<'_, AppState>) -> Result<(), String> {
+    crate::platform::require_folders("Opening the folder")?;
     let nb = session_notebook(&state)?;
     let dir = nb.mirror_dir();
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;

@@ -3,7 +3,10 @@
  * banners and App: switching (with per-notebook UI state), the folder picker
  * (native dialog, with a test hook), and the events that tie them together.
  */
+import { useEffect, useState } from "react";
 import * as api from "./api";
+import { showToast } from "./toast";
+import { errorMessage } from "./errors";
 import { undoStack } from "./undoStack";
 
 /** Fired after the open notebook changed (detail: { key }). App resets its views. */
@@ -117,4 +120,98 @@ export function prettyPath(p: string, home?: string): string {
 /** Keep the end of a long path (the part that tells folders apart): "…/MiNotes/Work". */
 export function tailPath(p: string, max = 34): string {
   return p.length <= max ? p : "…" + p.slice(p.length - max + 1);
+}
+
+// ── Platform capabilities (from the backend; never UA sniffing) ──
+
+/** Desktop defaults: what browser mode and the first render assume. */
+export const DESKTOP_CAPABILITIES: api.PlatformCapabilities = {
+  platform: "desktop", mobile: false, app_storage: false, choose_location: true, open_folder: true,
+  reveal_folder: true, move_to_folder: true, outside_edits: true, mirror_always: true,
+  import_from_files: true, keychain: true, notebook_zip: true,
+};
+
+let capsPromise: Promise<api.PlatformCapabilities> | null = null;
+let capsValue: api.PlatformCapabilities = DESKTOP_CAPABILITIES;
+
+/** The platform's capabilities (fetched once). */
+export function platformCapabilities(): Promise<api.PlatformCapabilities> {
+  if (!capsPromise) {
+    capsPromise = api.getPlatformCapabilities()
+      .then(c => { capsValue = c ? { ...DESKTOP_CAPABILITIES, ...c } : DESKTOP_CAPABILITIES; return capsValue; })
+      .catch(() => DESKTOP_CAPABILITIES);
+  }
+  return capsPromise;
+}
+
+/** React hook: the capabilities (desktop defaults until the backend answered). */
+export function useCapabilities(): api.PlatformCapabilities {
+  const [caps, setCaps] = useState<api.PlatformCapabilities>(capsValue);
+  useEffect(() => {
+    let live = true;
+    platformCapabilities().then(c => { if (live) setCaps(c); });
+    return () => { live = false; };
+  }, []);
+  return caps;
+}
+
+// ── Notebook .zip export / import ──
+
+const count = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+let nextZipPick: string | null | undefined;
+let nextExportDest: string | null | undefined;
+
+/** Test hook: the next "Import notebook…" uses this file (null = cancelled). */
+export function setNextZipPick(path: string | null) {
+  nextZipPick = path;
+}
+
+/** Test hook: the next "Export notebook…" writes here instead of asking. */
+export function setNextExportDest(path: string | null) {
+  nextExportDest = path;
+}
+
+/** "Export notebook…": a .zip of the notebook (default: the open one), saved
+ *  where the user picks. Shows a toast; returns what was written, or null. */
+export async function exportNotebook(nb?: { key: string; name: string }): Promise<api.ZipExport | null> {
+  const dest = nextExportDest;
+  nextExportDest = undefined;
+  try {
+    const r = await api.exportNotebookZip(nb?.key ?? null, dest ?? null);
+    if (r) showToast(`Exported “${r.name}”: ${count(r.pages, "page")}, ${count(r.attachments, "file")}, ${formatSize(r.bytes)}`);
+    return r ?? null;
+  } catch (e) {
+    showToast(`Couldn't export the notebook: ${errorMessage(e)}`);
+    return null;
+  }
+}
+
+/** "Import notebook…": pick a notebook .zip, add it as a new notebook and open
+ *  it. Never replaces an existing notebook. */
+export async function importNotebookFromZip(): Promise<api.ZipImport | null> {
+  let source: string | null;
+  if (nextZipPick !== undefined) {
+    source = nextZipPick;
+    nextZipPick = undefined;
+  } else if (api.isTauri) {
+    const r = await api.pickZipNative("Import a MiNotes notebook (.zip)");
+    source = typeof r === "string" ? r : null;
+  } else {
+    const r = window.prompt("Notebook .zip to import (path)");
+    source = r?.trim() ? r.trim() : null;
+  }
+  if (!source) return null;
+  try {
+    const r = await api.importNotebookZip(source);
+    await switchNotebook(r.notebook.key);
+    notebooksChanged();
+    const renamed = r.renamed_from ? ` as “${r.notebook.name}” (“${r.renamed_from}” already exists)` : ` “${r.notebook.name}”`;
+    const skipped = r.skipped.length ? ` ${r.skipped.length} damaged file(s) were left out.` : "";
+    showToast(`Imported notebook${renamed}: ${count(r.pages, "page")}, ${count(r.attachments, "file")}.${skipped}`);
+    return r;
+  } catch (e) {
+    showToast(`Couldn't import that notebook: ${errorMessage(e)}`);
+    return null;
+  }
 }

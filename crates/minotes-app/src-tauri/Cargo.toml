@@ -23,5 +23,14 @@ chrono = { workspace = true }
 reqwest = { version = "0.12", features = ["rustls-tls"], default-features = false }
 regex = "1"
 notify = "6"
+
 # ── AI platform: OpenRouter key in the OS keychain ──
+# Not on Android: keyring has no Android store there (only an in-memory mock
+# that silently forgets the key), so the app reports "no keychain" instead.
+[target.'cfg(not(target_os = "android"))'.dependencies]
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
+
+# Android: writing / reading the content:// URIs the system picker returns
+# (notebook zip export / import). Already in the tree via tauri-plugin-dialog.
+[target.'cfg(target_os = "android")'.dependencies]
+tauri-plugin-fs = "2"

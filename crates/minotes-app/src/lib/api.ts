@@ -577,6 +577,46 @@ export const mirrorStatus = () => invoke<MirrorStatus>("mirror_status");
 export const mirrorRebuild = () => invoke<MirrorStatus>("mirror_rebuild");
 export const mirrorOpenFolder = () => invoke<void>("mirror_open_folder");
 
+/** What this platform can do with notebooks (Android: app storage, no folders). */
+export interface PlatformCapabilities {
+  platform: string;
+  mobile: boolean;
+  /** Notebooks live in app-private storage (no user-visible folders). */
+  app_storage: boolean;
+  choose_location: boolean;
+  open_folder: boolean;
+  reveal_folder: boolean;
+  move_to_folder: boolean;
+  outside_edits: boolean;
+  /** The markdown copy is kept for every notebook (false: only with git sync). */
+  mirror_always: boolean;
+  import_from_files: boolean;
+  keychain: boolean;
+  notebook_zip: boolean;
+}
+export const getPlatformCapabilities = () => invoke<PlatformCapabilities>("get_platform_capabilities");
+
+export interface ZipExport { path: string; name: string; pages: number; attachments: number; bytes: number }
+export interface ZipImport {
+  notebook: NotebookInfo;
+  pages: number;
+  attachments: number;
+  skipped: string[];
+  renamed_from: string | null;
+}
+/** Export a notebook (default: the open one) as a .zip. Without `dest` the
+ *  backend shows the save dialog / share picker. Null when cancelled. */
+export const exportNotebookZip = (key?: string | null, dest?: string | null) =>
+  invoke<ZipExport | null>("export_notebook_zip", { key: key ?? null, dest: dest ?? null });
+/** Import a notebook .zip (path, or the picker's content:// URI) as a new notebook. */
+export const importNotebookZip = (source: string) =>
+  invoke<ZipImport>("import_notebook_zip", { source });
+/** Native picker for a notebook .zip. Null when cancelled. */
+export const pickZipNative = (title: string) =>
+  invoke<string | null>("plugin:dialog|open", {
+    options: { directory: false, multiple: false, title, filters: [{ name: "MiNotes notebook (.zip)", extensions: ["zip"] }] },
+  });
+
 /** Native folder picker (Tauri dialog plugin). Null when cancelled. */
 export const pickFolderNative = (title: string, defaultPath?: string) =>
   invoke<string | null>("plugin:dialog|open", {

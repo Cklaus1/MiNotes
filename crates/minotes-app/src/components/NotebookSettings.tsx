@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import * as api from "../lib/api";
 import { showToast } from "../lib/toast";
 import { errorMessage } from "../lib/errors";
-import { NOTEBOOKS_CHANGED, NOTEBOOK_SWITCHED, prettyPath, tailPath, timeAgo } from "../lib/notebooks";
+import { NOTEBOOKS_CHANGED, NOTEBOOK_SWITCHED, exportNotebook, prettyPath, tailPath, timeAgo, useCapabilities } from "../lib/notebooks";
 import "./notebooks.css";
 
 /**
@@ -15,6 +15,7 @@ export default function NotebookSettings() {
   const [mirror, setMirror] = useState<api.MirrorStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [, tick] = useState(0);
+  const caps = useCapabilities();
 
   const load = useCallback(() => {
     api.getNotebookSession().then(s => setSession(s ?? null)).catch(() => {});
@@ -69,7 +70,7 @@ export default function NotebookSettings() {
     : mirror.read_only
       ? "Written by the other window that has this notebook open"
       : !mirror.enabled
-        ? "Off for this notebook"
+        ? (caps.mirror_always ? "Off for this notebook" : "Off — kept only while Git sync is on")
         : mirror.behind
           ? "Behind"
           : mirror.pending
@@ -86,10 +87,10 @@ export default function NotebookSettings() {
       <div className="settings-row">
         <span className="settings-row-label">Stored in</span>
         <span className="settings-row-value nb-path" title={session.path}>
-          {session.kind === "folder" ? tailPath(prettyPath(session.path), 28) : `App data (${tailPath(prettyPath(session.db_path), 22)})`}
+          {caps.app_storage ? "This device (app storage)" : session.kind === "folder" ? tailPath(prettyPath(session.path), 28) : `App data (${tailPath(prettyPath(session.db_path), 22)})`}
         </span>
       </div>
-      {session.kind === "legacy" && !session.read_only && (
+      {session.kind === "legacy" && !session.read_only && caps.move_to_folder && (
         <div className="settings-row">
           <span className="settings-row-label">Folder of its own</span>
           <button
@@ -103,19 +104,28 @@ export default function NotebookSettings() {
       )}
       <div className="settings-subtitle">Markdown copy</div>
       <div className="nb-hint" style={{ padding: "0 0 6px" }}>
-        Every page as a plain <code>.md</code> file, updated a few seconds after each edit — readable by any
-        editor, and what Git sync commits.
+        {caps.mirror_always ? (
+          <>Every page as a plain <code>.md</code> file, updated a few seconds after each edit — readable by any
+          editor, and what Git sync commits.</>
+        ) : (
+          <>On this device only Git sync uses the markdown copy, so it is written while sync is on. For a
+          readable copy elsewhere, use Export notebook (.zip) below.</>
+        )}
       </div>
-      <div className="settings-row">
-        <span className="settings-row-label">Location</span>
-        <span className="settings-row-value nb-path" title={mirror?.dir ?? session.mirror_dir} data-testid="mirror-dir">
-          {tailPath(prettyPath(mirror?.dir ?? session.mirror_dir), 28)}
-        </span>
-      </div>
-      <div className="settings-row">
-        <span className="settings-row-label">Last written</span>
-        <span className="settings-row-value" data-testid="mirror-last-written">{timeAgo(mirror?.last_written_at)}</span>
-      </div>
+      {(caps.mirror_always || mirror?.enabled) && (
+        <>
+          <div className="settings-row">
+            <span className="settings-row-label">Location</span>
+            <span className="settings-row-value nb-path" title={mirror?.dir ?? session.mirror_dir} data-testid="mirror-dir">
+              {tailPath(prettyPath(mirror?.dir ?? session.mirror_dir), 28)}
+            </span>
+          </div>
+          <div className="settings-row">
+            <span className="settings-row-label">Last written</span>
+            <span className="settings-row-value" data-testid="mirror-last-written">{timeAgo(mirror?.last_written_at)}</span>
+          </div>
+        </>
+      )}
       <div className="settings-row">
         <span className="settings-row-label">Status</span>
         <span className={`settings-row-value nb-mirror-status${mirror?.behind ? " behind" : ""}`} data-testid="mirror-status">
@@ -131,13 +141,28 @@ export default function NotebookSettings() {
         <div className="nb-hint nb-mirror-error" title={mirror.error}>The markdown copy is behind: {mirror.error}</div>
       )}
       <div className="settings-row nb-mirror-actions">
-        <button className="btn btn-sm" onClick={openFolder} disabled={!api.isTauri} data-testid="mirror-open-folder">
+        {caps.reveal_folder && <button className="btn btn-sm" onClick={openFolder} disabled={!api.isTauri} data-testid="mirror-open-folder">
           Open folder
-        </button>
-        <button className="btn btn-sm" onClick={rebuild} disabled={busy || !!mirror?.read_only} data-testid="mirror-rebuild">
-          {busy ? "Rebuilding…" : "Rebuild markdown copy"}
-        </button>
+        </button>}
+        {(caps.mirror_always || mirror?.enabled) && (
+          <button className="btn btn-sm" onClick={rebuild} disabled={busy || !!mirror?.read_only} data-testid="mirror-rebuild">
+            {busy ? "Rebuilding…" : "Rebuild markdown copy"}
+          </button>
+        )}
       </div>
+      {caps.notebook_zip && (
+        <div className="settings-row">
+          <span className="settings-row-label">Copy</span>
+          <button
+            className="btn btn-sm"
+            onClick={() => exportNotebook(session)}
+            title="Save this notebook as one .zip file: database, attachments and a markdown copy"
+            data-testid="settings-export-zip"
+          >
+            Export notebook (.zip)…
+          </button>
+        </div>
+      )}
     </div>
   );
 }

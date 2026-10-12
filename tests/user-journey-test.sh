@@ -2901,7 +2901,7 @@ R=$(ev "document.querySelector('.sidebar-header [data-testid=notebook-switcher]'
 step "Its menu lists my notebooks with the open one checked, plus New / Open / Manage"
 ev "document.querySelector('[data-testid=notebook-switcher]').click()" >/dev/null; sleep 0.5
 R=$(ev "(()=>{const m=document.querySelector('.nb-menu');if(!m)return 'no menu';const cur=m.querySelector('[aria-checked=true]');return (cur?cur.dataset.notebookKey:'none')+'|'+[...m.querySelectorAll('.nb-menu-action')].map(b=>b.textContent.trim()).join(',')})()" | tr -d '"')
-[[ "$R" == "$HOME_NB|New notebook…,Open notebook…,Manage notebooks…,Import…" ]] && pass "Menu: current checked + actions" || fail "Notebook menu" "$R"
+[[ "$R" == "$HOME_NB|New notebook…,Open notebook…,Manage notebooks…,Export notebook…,Import notebook…,Import from other apps…" ]] && pass "Menu: current checked + actions" || fail "Notebook menu" "$R"
 ss "60-notebook-menu"
 
 step "New notebook… asks for a name and a location, creates it and opens it"

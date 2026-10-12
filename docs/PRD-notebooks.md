@@ -204,13 +204,15 @@ sensitive. Decide in the encryption PRD; this layout accommodates both.
 
 ## 9. Open questions
 
-1. Default location for new notebooks: `~/MiNotes/<name>`, or keep `~/.minotes`
-   and make "choose a folder" opt-in?
+1. ~~Default location for new notebooks: `~/MiNotes/<name>`, or keep `~/.minotes`
+   and make "choose a folder" opt-in?~~ **Resolved: `~/MiNotes/<name>`** (app and
+   `minotes notebook create`); Android uses app storage (§11).
 2. Should the mirror include a human-readable index (`README.md` with a page list)?
 3. ~~Cross-notebook search and links: out of scope here — worth a follow-up?~~
    **Resolved: built** — see §10.
-4. Mobile (the Android build): fixed app storage only, or folder access via the
-   system picker?
+4. ~~Mobile (the Android build): fixed app storage only, or folder access via the
+   system picker?~~ **Resolved: app storage; the picker only for copies.** See
+   §11 "Android storage (built)".
 5. ~~Rename `graph` → `notebook` in the CLI and commands eventually, with aliases?~~
    **Resolved: renamed.** "Graph" now means only the link graph (Graph view,
    `minotes graph data|neighbors|stats`). The CLI's one selector is
@@ -273,3 +275,65 @@ notebook has that name and this notebook has a page literally titled `A::B`,
   links to it (it isn't even opened for writing).
 - Caveat: the chip follows renames, but the markdown text keeps the title as
   written (`[[Work::Old title]]`) until the link is edited.
+
+## 11. Android storage (built)
+
+Decision (Q4): on Android the database always lives in app-private storage.
+SQLite never runs on a Storage Access Framework `content://` URI (no real file
+path, unsafe locking). The system picker is used only for copies.
+
+- **One place decides the directories** — `minotes_core::notebook` (`home_dir`,
+  `base_dir`, `notebooks_dir`, `default_location`, `legacy_mirror_dir`). Desktop and
+  the CLI are unchanged (`~/.minotes`, `~/MiNotes/<name>`, `~/MiNotes_Sync[-<name>]`).
+  On Android the app injects its data dir at startup (`set_app_storage`):
+  `<app_data>` is the legacy `.minotes` base (`default.db`, `notebooks.json`,
+  `active_graph`), folder notebooks go to `<app_data>/notebooks/<name>/` with the
+  desktop layout, and a legacy notebook's mirror / git sync dir is
+  `<app_data>/MiNotes_Sync[-<name>]`. `TMPDIR`/`SQLITE_TMPDIR` point at the app's
+  cache dir (Android has no writable `/tmp`). The pre-fix APK crashed at launch
+  opening `./.minotes/default.db` because Android sets no `HOME`.
+- **Export notebook… / Import notebook…** (`notebook_zip`, commands
+  `export_notebook_zip` / `import_notebook_zip`; notebook menu, Manage notebooks,
+  Settings; also on desktop as a one-file backup). The zip is a notebook folder:
+  a `VACUUM INTO` snapshot checked against live row counts, `notebook.json`, a
+  freshly rendered `notes/` (without `_attachments/`, whose originals are in
+  `attachments/`), and the attachment store. Import refuses unsafe names (`..`,
+  absolute, drive letters, backslashes), symlinks, encrypted entries and duplicate
+  names before writing anything; caps entries (200k), total size (8 GB) and the
+  database (4 GB) and counts real bytes while extracting (lying headers are caught);
+  drops attachments whose content does not hash to their name; requires
+  `integrity_check` = ok and the MiNotes tables; ignores `notes/` and `.minotes/`
+  (derived / device-private). It always becomes a new notebook in a new folder:
+  a known id gets a new one, a taken name becomes "Name 2", an existing folder is
+  never written into.
+- **Capabilities, not user-agent sniffing**: `get_platform_capabilities`. On
+  Android the UI hides choosing a location, Open notebook… / Locate…, Move to a
+  folder…, Open folder, and Import from other apps (those need real paths).
+- **Mirror on Android: off unless git sync is on.** Nobody else can read
+  app-private files, so a continuous second copy only costs battery and space; the
+  zip export is the readable copy, and git sync (which commits the mirror) turns it
+  back on. The outside-edit watcher and imports never run in app storage.
+- **Keychain**: `keyring` is not compiled for Android (it only has an in-memory
+  mock there that would silently forget the key); the AI settings report "no
+  keychain".
+- **Mobile save-on-background**: the editor saves a block on blur; on mobile the
+  focused editor is blurred when the app goes to the background, so an OS kill
+  doesn't lose the block being typed.
+
+Verified on an Android 14 (API 34, x86_64) emulator with a debug APK: the app
+starts and creates `default.db` in `/data/user/0/com.minotes.app/`; "New
+notebook…" (real taps and typing) creates `notebooks/Phone/` with the desktop
+layout and no location field; a page written there survives a force-stop and
+relaunch; the menu shows New / Manage / Export / Import only; capabilities report
+`app_storage`; Export notebook… goes through the system save picker and writes
+`Download/Phone.minotes.zip` (pulled with adb: snapshot + notebook.json + notes/);
+Import notebook… through the open picker (`content://` URI) creates and opens
+"Phone 2"; Settings shows "This device (app storage)" and the mirror off.
+Not verified on a device: a physical phone, ARM builds (only `--target x86_64`
+was built), git sync on Android (no `git` binary there — the sync UI reports git
+unavailable), very large zips, and the share sheet (the save picker is used).
+
+Later (not built): a markdown copy written to a user-picked SAF folder
+(`ACTION_OPEN_DOCUMENT_TREE`, persisted URI permission, export-only); an Android
+Keystore-backed store for the AI key; importing Obsidian / Evernote / markdown
+folders on Android (needs SAF tree reading).

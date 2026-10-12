@@ -35,6 +35,7 @@ fn runtime() -> &'static Runtime {
 // ── Keychain ──
 
 /// (key, keychain usable). A missing entry still means the keychain works.
+#[cfg(not(target_os = "android"))]
 fn keychain_read() -> (Option<String>, bool) {
     match keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER).and_then(|e| e.get_password()) {
         Ok(k) => (Some(k), true),
@@ -42,6 +43,35 @@ fn keychain_read() -> (Option<String>, bool) {
         Err(_) => (None, false),
     }
 }
+
+#[cfg(not(target_os = "android"))]
+fn keychain_write(key: &str) -> Result<(), String> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER).map_err(|e| e.to_string())?;
+    entry.set_password(key).map_err(|e| e.to_string())
+}
+
+#[cfg(not(target_os = "android"))]
+fn keychain_delete() {
+    if let Ok(e) = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER) {
+        let _ = e.delete_credential();
+    }
+}
+
+// Android: no keychain backend yet (an Android Keystore-backed store is a
+// follow-up). Report it as unavailable rather than pretend to store the key.
+#[cfg(target_os = "android")]
+fn keychain_read() -> (Option<String>, bool) {
+    let _ = (KEYRING_SERVICE, KEYRING_USER);
+    (None, false)
+}
+
+#[cfg(target_os = "android")]
+fn keychain_write(_key: &str) -> Result<(), String> {
+    Err("no keychain on Android".into())
+}
+
+#[cfg(target_os = "android")]
+fn keychain_delete() {}
 
 fn current_key() -> (Option<String>, KeyStatus) {
     let (k, available) = keychain_read();
@@ -79,8 +109,7 @@ pub fn ai_set_api_key(key: String) -> Result<KeyStatus, String> {
     if key.is_empty() {
         return Err("The key is empty.".into());
     }
-    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER).map_err(|e| e.to_string())?;
-    entry.set_password(&key).map_err(|_| {
+    keychain_write(&key).map_err(|_| {
         format!(
             "No OS keychain is available on this system, so the key was not stored. \
              Set {} in the environment and restart MiNotes.",
@@ -92,9 +121,7 @@ pub fn ai_set_api_key(key: String) -> Result<KeyStatus, String> {
 
 #[tauri::command]
 pub fn ai_clear_api_key() -> Result<KeyStatus, String> {
-    if let Ok(e) = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER) {
-        let _ = e.delete_credential();
-    }
+    keychain_delete();
     Ok(current_key().1)
 }
 
