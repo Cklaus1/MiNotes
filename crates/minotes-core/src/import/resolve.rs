@@ -333,6 +333,12 @@ pub fn resolve(model: &Model, ctx: &ResolveCtx) -> Resolved {
                     for l in find_wiki_links(seg) {
                         s.push_str(&seg[last..l.start]);
                         last = l.end;
+                        // `[[Notebook::Page]]` (a MiNotes cross-notebook link) is
+                        // kept as written: never resolved to a note of the import.
+                        if !l.embed && crate::links::split_notebook_link(l.target).is_some() {
+                            s.push_str(&seg[l.start..l.end]);
+                            continue;
+                        }
                         s.push_str(&wiki(&l, i, &dir, n, model, &titles, &skipped, &mut att_used, &mut w, &find_note, &find_att));
                     }
                     s.push_str(&seg[last..]);
@@ -679,6 +685,14 @@ mod tests {
         let f = move |t: &str| taken.contains(&t.to_lowercase());
         let re = HashMap::new();
         resolve(m, &ResolveCtx { title_taken: &f, reimport: &re, collisions: Collision::KeepBoth, unlinked_files: true })
+    }
+
+    #[test]
+    fn cross_notebook_links_are_kept_as_written() {
+        let m = model(vec![note("Home.md", "see [[Work::Alpha]] and [[Alpha]]"), note("Alpha.md", "a")], vec![]);
+        let r = run(&m, &[]);
+        assert_eq!(r.notes[0].body, "see [[Work::Alpha]] and [[Alpha]]");
+        assert_eq!(r.warnings.count("unresolved_link"), 0);
     }
 
     #[test]

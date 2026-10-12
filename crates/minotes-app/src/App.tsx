@@ -35,6 +35,8 @@ import { getSettings } from "./lib/settings";
 import NotebookBanner from "./components/NotebookBanner";
 import { listenOutsideEdits, OUTSIDE_PAGES_CHANGED } from "./lib/outsideEdits";
 import { NOTEBOOK_SWITCHED, setNextPickedFolder, switchNotebook } from "./lib/notebooks";
+import { OPEN_IN_NOTEBOOK, type OpenInNotebook } from "./lib/crossNotebook";
+import { setPendingReveal } from "./lib/pendingReveal";
 import { notifyCardsChanged } from "./lib/cards";
 // ── AI platform ──
 import AiMount from "./components/AiMount";
@@ -558,6 +560,27 @@ export default function App() {
     window.addEventListener(NOTEBOOK_SWITCHED, onSwitch);
     return () => window.removeEventListener(NOTEBOOK_SWITCHED, onSwitch);
   }, [refresh, openJournal]);
+
+  // A cross-notebook search result or [[Notebook::Page]] link: switch notebooks
+  // (the usual flow: views reset, undo cleared) and open the page there. The
+  // switch's own landing on today's journal is superseded by this navigation.
+  useEffect(() => {
+    const onOpen = async (e: Event) => {
+      const d = (e as CustomEvent<OpenInNotebook>).detail;
+      if (!d?.pageId) return;
+      try {
+        if (d.key && d.key !== (await api.getCurrentNotebook())) await switchNotebook(d.key);
+        setPendingReveal(d.blockId ?? null);
+        setOpenPanel(null);
+        setCanvasMode(null);
+        await openPage(d.pageId);
+      } catch (err) {
+        setLastError(`Couldn't open the page: ${errorMessage(err)}`);
+      }
+    };
+    window.addEventListener(OPEN_IN_NOTEBOOK, onOpen);
+    return () => window.removeEventListener(OPEN_IN_NOTEBOOK, onOpen);
+  }, [openPage]);
 
   useEffect(() => {
     const h = () => { triggerSync(); };

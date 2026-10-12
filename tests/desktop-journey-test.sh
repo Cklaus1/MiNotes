@@ -41,7 +41,7 @@ echo "════════════════════════�
 echo "  MiNotes Desktop Journeys (real app, real backend)"
 echo "═══════════════════════════════════════════════"
 
-rm -rf "$STATE"/{persist,devA,devB,nbook,outside,remote.git} "$STATE/results.tsv"
+rm -rf "$STATE"/{persist,devA,devB,nbook,outside,xnb,remote.git} "$STATE/results.tsv"
 if [[ -z "$DESKTOP_NO_BUILD" ]]; then
   "$DC" up --webdriver --profile persist >/dev/null || { echo "build/launch failed"; exit 1; }
 else
@@ -547,6 +547,91 @@ grep -q "added while read-only" "$OF" && pass "…and the file was not touched" 
 ev "document.querySelector('[data-testid=readonly-banner] button')?.click()" >/dev/null
 wait_js "(async()=>{$A7 return (await api.getPageTree('Outside Page')).blocks.map(b=>b.content).join('|')})()" "added while read-only" 15 \
   && pass "Taking the notebook over imports the edit made meanwhile" || fail "Edit lost after take-over" "$(blocks_of 'Outside Page')"
+
+# ═══════════════════════════════════════════════
+journey "D8. I search and link across my notebooks"
+# "All notebooks" search reads the other notebooks without writing them (bytes,
+# mtime, lock unchanged), skips one whose folder is gone, and opens a hit in its
+# notebook. [[Work8::Plan8]] is stored by target id, survives renaming the page
+# and the notebook (done with the CLI while the app is open), creates nothing
+# locally, round-trips through the markdown copy; the CLI searches all notebooks.
+# ═══════════════════════════════════════════════
+device xnb || true
+XH="$STATE/xnb"; W8="$XH/MiNotes/Work8"; DB8="$XH/.minotes/default.db"
+A8="const api=await import('/src/lib/api.ts');"
+mx() { HOME="$XH" "$REPO_ROOT/target/debug/minotes" "$@" 2>&1; }
+cur8() { ev "(async()=>{$A8 return (await api.getNotebookSession()).key})()"; }
+setval8() { ev "(()=>{const i=document.querySelector('$1');if(!i)return 'no input';const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;set.call(i,'$2');i.dispatchEvent(new Event('input',{bubbles:true}));return 'ok'})()" >/dev/null; }
+chips8() { ev "[...document.querySelectorAll('.block .xnb-link')].map(c=>c.textContent).join('|')"; }
+HOME8=$(cur8)
+
+step "A second notebook made with the CLI, and one whose folder is gone"
+mx notebook create Work8 >/dev/null; mx notebook create Gone8 >/dev/null
+mx --notebook Work8 page create Plan8 >/dev/null
+mx --notebook Work8 block create Plan8 "wombat8 rollout checklist" >/dev/null
+rm -rf "$XH/MiNotes/Gone8"
+WKEY8=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["id"])' "$W8/notebook.json" 2>/dev/null)
+[[ -n "$WKEY8" && -n "$HOME8" ]] && pass "Work8 ($WKEY8) next to the open notebook ($HOME8)" || fail "Setup" "$(ls "$XH/MiNotes" 2>&1)"
+SUM8=$(sha256sum <"$W8/notebook.minotes"); MT8=$(stat -c %y "$W8/notebook.minotes")
+
+step "Search with All notebooks finds it — Work8 is only read"
+ev "(async()=>{const s=await import('/src/lib/settings.ts');s.updateSettings({searchAllNotebooks:true});return 1})()" >/dev/null
+api "openSearch()" >/dev/null; sleep 0.6
+setval8 ".command-palette-input" "wombat8"
+waitfor "document.querySelectorAll('[data-testid=search-other-result]').length>0" 10 \
+  && pass "A hit from Work8" || fail "No cross-notebook hit" "$(ev "document.querySelector('.command-palette')?.innerText||''")"
+is "Labelled with its notebook" "$(ev "document.querySelector('[data-testid=search-other-result] .xnb-badge')?.textContent||''")" "Work8"
+waitfor "!!document.querySelector('[data-testid=search-skipped]')" 5
+is "Gone8 is skipped quietly" "$(ev "document.querySelector('[data-testid=search-skipped]')?.textContent||''")" "Skipped: Gone8 (not available)"
+"$DC" wshot "d8-search" >/dev/null
+is "Work8's database is byte-identical" "$(sha256sum <"$W8/notebook.minotes")" "$SUM8"
+is "…with the same mtime" "$(stat -c %y "$W8/notebook.minotes")" "$MT8"
+[[ ! -e "$W8/.minotes/lock.json" ]] && pass "…and its lock was never taken" || fail "Lock taken by a search" "$(cat "$W8/.minotes/lock.json")"
+ev "document.querySelector('[data-testid=search-other-result]').click()" >/dev/null
+waitfor "(window.__MINOTES__.getCurrentPage()||'')==='Plan8'" 15 && pass "Clicking it opens Plan8" || fail "Open hit" "$(api 'getCurrentPage()')"
+is "…in Work8" "$(cur8)" "$WKEY8"
+"$DC" wshot "d8-opened" >/dev/null
+ev "window.__MINOTES__.switchNotebook('$HOME8')" >/dev/null; sleep 2
+ev "(async()=>{const s=await import('/src/lib/settings.ts');s.updateSettings({searchAllNotebooks:false});return 1})()" >/dev/null
+
+step "[[Work8::Plan8]]: stored by id, a chip, nothing created locally"
+ev "(async()=>{$A8 await api.createPage('Elsewhere8');const p=await api.createPage('Links8');await api.createBlock(p.id,'Go to [[Work8::Plan8]] or [[Work8::Missing8]]');return 1})()" >/dev/null
+api "navigateTo('Links8')" >/dev/null
+waitfor "[...document.querySelectorAll('.block .xnb-link')].map(c=>c.textContent+c.classList.contains('xnb-missing')).join('|')==='Work8 › Plan8false|Work8 › Missing8true'" 10 \
+  && pass "Chips: Work8 › Plan8, and a muted not-found Work8 › Missing8" || fail "Chips" "$(chips8)"
+PLAN8=$(sqlite3 "$W8/notebook.minotes" "select id from pages where title='Plan8'")
+is "notebook_links: target notebook key + page id" "$(sqlite3 "$DB8" "select notebook_key||'|'||coalesce(page_id,'-') from notebook_links where page_title='Plan8'")" "$WKEY8|$PLAN8"
+is "No local link rows or pages for them" "$(sqlite3 "$DB8" "select (select count(*) from links l join blocks b on b.id=l.from_block where b.content like '%Work8::%')||'|'||(select count(*) from pages where title like '%::%' or title in ('Plan8','Missing8'))")" "0|0"
+wait_file "$XH/MiNotes_Sync/Links8.md" 15 "Go to [[Work8::Plan8]] or [[Work8::Missing8]]" \
+  && pass "The markdown copy keeps the link as written" || fail "Mirror" "$(cat "$XH/MiNotes_Sync/Links8.md" 2>&1 | head -5)"
+"$DC" wshot "d8-chips" >/dev/null
+
+step "Renaming the page and the notebook (CLI, app open) doesn't break it"
+mx --notebook Work8 page rename Plan8 "Plan8 final" >/dev/null
+mx notebook rename Work8 Office8 >/dev/null
+ev "window.dispatchEvent(new Event('minotes-notebooks-changed'))" >/dev/null
+api "navigateTo('Elsewhere8')" >/dev/null; sleep 1; api "navigateTo('Links8')" >/dev/null
+waitfor "(document.querySelector('.block .xnb-link')?.textContent||'')==='Office8 › Plan8 final'" 10 \
+  && pass "The chip shows the new names (resolved by id)" || fail "Chip after renames" "$(chips8)"
+is "The block text is unchanged" "$(sqlite3 "$DB8" "select count(*) from blocks where content='Go to [[Work8::Plan8]] or [[Work8::Missing8]]'")" "1"
+"$DC" wshot "d8-after-rename" >/dev/null
+ev "document.querySelector('.block .xnb-link').click()" >/dev/null
+waitfor "(window.__MINOTES__.getCurrentPage()||'')==='Plan8 final'" 15 && pass "…and still opens the page" || fail "Follow after rename" "$(api 'getCurrentPage()')"
+is "…in that notebook" "$(cur8)" "$WKEY8"
+ev "window.__MINOTES__.switchNotebook('$HOME8')" >/dev/null; sleep 2
+
+step "The not-found chip explains; nothing is created over there"
+api "navigateTo('Links8')" >/dev/null; sleep 1.5
+ev "document.querySelectorAll('.block .xnb-link')[1]?.click()" >/dev/null
+waitfor "[...document.querySelectorAll('.minotes-toast')].some(t=>t.textContent.includes('has no page'))" 5 \
+  && pass "A toast says Office8 has no such page" || fail "Not-found click" "$(ev "[...document.querySelectorAll('.minotes-toast')].map(t=>t.textContent).join(' | ')")"
+is "Still here" "$(cur8)|$(api 'getCurrentPage()')" "$HOME8|Links8"
+is "No page Missing8 in Office8" "$(sqlite3 "$W8/notebook.minotes" "select count(*) from pages where title like 'Missing8%'")" "0"
+
+step "The CLI searches all notebooks too"
+R=$(mx -f text search wombat8 --all-notebooks)
+[[ "$R" == *"[Office8]"*"wombat8 rollout checklist"* && "$R" == *"Skipped: Gone8 (not available)"* ]] \
+  && pass "minotes search --all-notebooks: labelled hit + skipped note" || fail "CLI all-notebooks search" "$R"
 
 # ═══════════════════════════════════════════════
 echo ""

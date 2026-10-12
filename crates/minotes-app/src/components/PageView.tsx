@@ -2,6 +2,7 @@ import { useState, useRef, useCallback, useEffect, useLayoutEffect, useMemo } fr
 import { flushSync } from "react-dom";
 import type { Block, PageTree, Property } from "../lib/api";
 import * as api from "../lib/api";
+import { setPendingReveal, takePendingReveal } from "../lib/pendingReveal";
 import { getSettings } from "../lib/settings";
 import { localDateKey } from "../lib/dates";
 import BlockItem from "./BlockItem";
@@ -64,9 +65,6 @@ function outlineOrder(list: Block[]): Block[] {
 }
 
 const propError = (e: unknown) => String((e as any)?.message ?? e);
-
-/** Block to reveal once the page that a ((block ref)) points to has opened. */
-let pendingRevealBlockId: string | null = null;
 
 interface Props {
   pageTree: PageTree;
@@ -354,10 +352,9 @@ export default function PageView({
       // On the render where the page changes, localBlocks still hold the PREVIOUS
       // page's blocks (they're swapped in by the sync effect): use the new tree.
       const fresh = pageTree.blocks;
-      if (pendingRevealBlockId && fresh.some(b => b.id === pendingRevealBlockId)) {
-        const id = pendingRevealBlockId;
-        pendingRevealBlockId = null;
-        setTimeout(() => revealBlockRef.current(id), 30);
+      const revealId = takePendingReveal(fresh.map(b => b.id));
+      if (revealId) {
+        setTimeout(() => revealBlockRef.current(revealId), 30);
         return;
       }
       // The first block is hidden when it's an H1 repeating the page title (see
@@ -1423,7 +1420,7 @@ export default function PageView({
       if (!b) { showToast("The referenced block no longer exists"); return; }
       // get_block carries page_title (BlockWithPage); fall back to a tree lookup.
       const title = (b as any).page_title ?? (await api.getPageTree(b.page_id)).page.title;
-      pendingRevealBlockId = blockId;
+      setPendingReveal(blockId);
       onPageLinkClickRef.current(title);
     }).catch((e) => {
       console.error("block ref navigation failed:", e);

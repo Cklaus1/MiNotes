@@ -49,7 +49,7 @@ Goals
 Non-goals
 - Files as the source of truth.
 - Real-time collaboration, or two apps writing one notebook at the same moment.
-- Cross-notebook links or search (possible later; see §9).
+- Cross-notebook backlinks (search and links were added later — see §10).
 - Encryption (see §8 — designed to fit, specified separately).
 - Importing from other apps (see `PRD-import.md`, to be written; §8).
 
@@ -207,7 +207,8 @@ sensitive. Decide in the encryption PRD; this layout accommodates both.
 1. Default location for new notebooks: `~/MiNotes/<name>`, or keep `~/.minotes`
    and make "choose a folder" opt-in?
 2. Should the mirror include a human-readable index (`README.md` with a page list)?
-3. Cross-notebook search and links: out of scope here — worth a follow-up?
+3. ~~Cross-notebook search and links: out of scope here — worth a follow-up?~~
+   **Resolved: built** — see §10.
 4. Mobile (the Android build): fixed app storage only, or folder access via the
    system picker?
 5. ~~Rename `graph` → `notebook` in the CLI and commands eventually, with aliases?~~
@@ -220,3 +221,55 @@ sensitive. Decide in the encryption PRD; this layout accommodates both.
    `delete_graph_cmd` were removed in favour of the `*_notebook` commands). On-disk
    names are unchanged: `~/.minotes/active_graph`, `~/.minotes/<name>.db`,
    `~/MiNotes_Sync[-<name>]`.
+
+## 10. Cross-notebook search and links (built)
+
+Resolves §9 Q3. Core `minotes-core/src/cross_notebook.rs`, app commands in
+`src-tauri/src/cross_notebook.rs`, frontend `lib/crossNotebook.ts`.
+
+**Search.** The search palette (Ctrl+K — also the sidebar's Search button; there
+is no separate full search view) has an **All notebooks** toggle, off by default
+and remembered (`searchAllNotebooks` setting). On, the open notebook's results
+come first as before, then every other registered notebook's (title and block
+hits), grouped and labelled with the notebook name. Other notebooks are opened
+strictly read-only — `SQLITE_OPEN_READ_ONLY` + `query_only`, no schema setup or
+migrations, never the notebook lock, 200 ms busy timeout — off the UI thread
+(async command), capped at 10 block + 5 title hits per notebook and 2.5 s in
+total. Notebooks that can't be read are skipped with a quiet note ("Skipped: Work
+(not available)"): missing folder, busy (held exclusively), unreadable, out of
+time, or **locked** — the hook for encrypted notebooks: a `notebook.json` with an
+`encryption` entry is "not searchable while locked" until unlocking exists.
+Opening a hit switches notebooks with the normal switch flow, opens the page and
+reveals the block. CLI: `minotes search <q> --all-notebooks` (every format
+carries the notebook name; CSV prints skipped notebooks on stderr).
+
+**Links.** `[[Notebook::Page title]]`; the notebook is matched by its registry
+name, case-insensitively. `::` had no meaning inside `[[…]]` before (it is only
+the line-level `key:: value` property separator, and property keys may not
+contain it), so no alternative syntax was needed. Kept for old data: if no
+notebook has that name and this notebook has a page literally titled `A::B`,
+`[[A::B]]` stays a normal local link.
+
+- Storage: link sync records each link in the `notebook_links` table (block; the
+  notebook and title as written; the resolved notebook key + page id). The table
+  is created idempotently (`CREATE TABLE IF NOT EXISTS`, no version bump). Rows
+  whose text is unchanged keep their ids across edits; a link to a page that
+  didn't exist yet is pinned when it first resolves. Resolution tries the stored
+  ids first, so renaming the target page or notebook keeps the link working; the
+  chip shows the current names while the block text stays as written.
+- Never a row in `links`: no local page, nothing in the local graph, no
+  backlinks, unlinked references or rename rewriting. Following a link never
+  creates a page, here or in the other notebook.
+- Rendering: a chip "Notebook › Page", styled apart from local links; click →
+  switch and open. Unresolvable → a muted, dashed "not found" (or "unavailable")
+  chip with a tooltip; clicking it explains in a toast.
+- Autocomplete: `[[` also offers the other notebooks as `Name::`; after
+  `[[Work::` it lists Work's page titles (read-only). Enter on an unknown title
+  inserts the link anyway (nothing is created).
+- The markdown mirror, export, sync and outside-edit import keep the text
+  unchanged (it is block content); the Obsidian/markdown importer keeps
+  `[[A::B]]` as written instead of resolving it to an imported note.
+- **No cross-notebook backlinks in v1**: the target notebook never learns who
+  links to it (it isn't even opened for writing).
+- Caveat: the chip follows renames, but the markdown text keeps the title as
+  written (`[[Work::Old title]]`) until the link is edited.

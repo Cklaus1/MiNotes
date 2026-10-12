@@ -265,12 +265,21 @@ impl Database {
     /// MiNotes instance has open). No schema setup or migrations run, and
     /// `query_only` makes any write fail instead of changing the file.
     pub fn open_read_only(path: &Path) -> Result<Self> {
+        Self::open_read_only_with_timeout(path, 5000)
+    }
+
+    /// [`open_read_only`](Self::open_read_only) with a chosen busy timeout (ms).
+    /// Cross-notebook search uses a short one: a notebook that is busy is skipped,
+    /// not waited for.
+    pub fn open_read_only_with_timeout(path: &Path, busy_timeout_ms: u32) -> Result<Self> {
         use rusqlite::OpenFlags;
         let conn = Connection::open_with_flags(
             path,
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )?;
-        conn.execute_batch("PRAGMA busy_timeout=5000; PRAGMA query_only=ON; PRAGMA foreign_keys=ON;")?;
+        conn.execute_batch(&format!(
+            "PRAGMA busy_timeout={busy_timeout_ms}; PRAGMA query_only=ON; PRAGMA foreign_keys=ON;"
+        ))?;
         Ok(Self { conn, attachments_override: Default::default() })
     }
 
@@ -434,6 +443,7 @@ impl Database {
         self.conn.execute_batch(FTS_SCHEMA)?;
         self.run_migrations()?;
         self.migrate_whiteboards()?;
+        self.migrate_notebook_links()?;
         // ── Import / attachments ──
         self.migrate_attachments()?;
         self.migrate_import_runs()?;

@@ -76,9 +76,13 @@ enum Commands {
         /// Search query
         #[arg(allow_hyphen_values = true)]
         query: String,
-        /// Max results
+        /// Max results (per notebook with --all-notebooks)
         #[arg(long)]
         limit: Option<i64>,
+        /// Also search every other notebook (opened read-only); each result
+        /// carries its notebook's name
+        #[arg(long)]
+        all_notebooks: bool,
     },
     /// Daily journal
     Journal {
@@ -229,7 +233,10 @@ fn main() {
         Commands::Block { cmd } => commands::block::run(&db, cmd, &cli.actor, fmt),
         Commands::Folder { cmd } => commands::folder::run(&db, cmd, &cli.actor),
         Commands::Property { cmd } => commands::property::run(&db, cmd, &cli.actor),
-        Commands::Search { query, limit } => commands::search::run(&db, &query, limit, fmt),
+        Commands::Search { query, limit, all_notebooks: false } => commands::search::run(&db, &query, limit, fmt),
+        Commands::Search { query, limit, all_notebooks: true } => {
+            commands::search::run_all(&db, &db_path, &query, limit, fmt)
+        }
         Commands::Journal { date, cmd } => match cmd {
             Some(JournalCmd::Create { content, date: d }) => {
                 commands::journal::run_create(&db, &content, d.as_deref(), &cli.actor)

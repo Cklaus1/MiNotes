@@ -31,6 +31,7 @@ crates/
 - **Whiteboard per-block** — content `{{whiteboard:<id>}}`, data in the SQLite `whiteboards` table (`get_whiteboard`/`save_whiteboard`), utils in `lib/whiteboardUtils.ts`. Legacy `minotes-whiteboard-<id>` localStorage entries are imported into the DB on first open (the localStorage copy is kept as a backup). Git sync exports each referenced board to `<syncdir>/.minotes-whiteboards/<id>.json` (newer `updated_at` wins); markdown/site export writes the same sidecars. Boards are never deleted with their block (undo must be able to restore it) — `gc_whiteboards()` removes unreferenced ones after empty-trash / permanent deletes.
 - **Markdown mirror ↔ outside edits** — the mirror (`mirror.rs`) records a sha256 per page file; it never overwrites or prunes a file whose hash changed. `outside.rs` imports such edits (id-preserving reconcile; removed lines → a Trash page; both sides changed → "(edited outside)" copy; new file → page; deleted file → trash, mass-delete guarded). The app watches the mirror folder (`notebooks.rs`, event `outside-edits` → `lib/outsideEdits.ts`). Own writes are recognised by hash, never by mtime.
 - **React Fast Refresh** — component .tsx files must ONLY export React components. Utility exports break HMR.
+- **Cross-notebook** — `[[Notebook::Page]]` links live in `notebook_links` (target notebook key + page id), never in `links`; other notebooks are only opened via `cross_notebook::open_read_only` (no migrations, no lock). Search palette "All notebooks" toggle → `search_other_notebooks`; CLI `search --all-notebooks`. See PRD-notebooks §10.
 
 ## Build & test
 
@@ -75,7 +76,7 @@ cargo run -p minotes-cli -- notebook list                     # notebook create|
 
 - Tests use `agent-browser` (headless Chrome via CDP) — must be installed separately
 - Test API exposed on `window.__MINOTES__` for automation
-- 61 user journeys, ~396 assertions in `tests/user-journey-test.sh` (browser + mock by default; `JOURNEY_BACKEND=desktop` runs them on the real app). Desktop journeys D1–D7 (~141 assertions) in `tests/desktop-journey-test.sh`; D7 covers outside edits of the markdown copy.
+- 62 user journeys, ~419 assertions in `tests/user-journey-test.sh` (browser + mock by default; `JOURNEY_BACKEND=desktop` runs them on the real app). Desktop journeys D1–D8 (~162 assertions) in `tests/desktop-journey-test.sh`; D7 covers outside edits of the markdown copy, D8 cross-notebook search and links.
 - `get_page_blocks`/`getPageTree` return blocks in **outline order** (depth-first, siblings by position). Positions are per-parent — never sort a page's blocks by position alone.
 - ProseMirror doesn't respond to CDP keyboard events — use `window.__MINOTES__` API instead
 - Browser-mode tests use the mock backend and don't enforce the CSP. For anything Tauri-only use the `desktop-check` skill (Xvfb + xdotool + screenshots against a throwaway HOME).

@@ -51,6 +51,7 @@ impl Database {
         )?;
 
         let parsed = extract_links(content);
+        let mut notebook_links: Vec<(String, String)> = Vec::new();
         for link in parsed {
             match link {
                 ParsedLink::PageLink(title) => {
@@ -74,8 +75,11 @@ impl Database {
                         self.create_link(block_id, None, Some(&target_id), "reference", actor)?;
                     }
                 }
+                // [[Notebook::Page]]: recorded apart, never a local link/page.
+                ParsedLink::NotebookLink { notebook, page } => notebook_links.push((notebook, page)),
             }
         }
+        self.sync_notebook_links(block_id, &notebook_links, actor)?;
         // ── Import / attachments ──
         self.sync_block_attachments(block_id, content)?;
         // ── End import ──

@@ -10,6 +10,7 @@ import { getSettingsCached } from "../lib/cachedSettings";
 import { loadBlockProperties } from "../lib/blockProperties";
 import { claimEditor, forgetEditor, requestEditorSweep, type EditorOwner } from "../lib/editorActivation";
 import { renderBlockStatic, staticRootClass } from "../editor/staticRender";
+import { followNotebookLinkElement, hydrateNotebookLinks } from "../lib/crossNotebook";
 import BlockContextMenu from "./BlockContextMenu";
 import { WHITEBOARD_REGEX, hasWhiteboardData } from "../lib/whiteboardUtils";
 import WhiteboardThumbnail from "./WhiteboardThumbnail";
@@ -99,9 +100,17 @@ function StaticBlockContent({ content, onPageLinkClick, onBlockRefClick, onToggl
   const ref = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     ref.current?.replaceChildren(renderBlockStatic(content));
+    if (content.includes("::")) hydrateNotebookLinks(ref.current);
   }, [content]);
   const handleClick = (e: React.MouseEvent) => {
     const t = e.target as HTMLElement;
+    const xnb = t.closest(".xnb-link") as HTMLElement | null;
+    if (xnb) {
+      e.preventDefault();
+      e.stopPropagation();
+      followNotebookLinkElement(xnb);
+      return;
+    }
     const wiki = t.closest(".wiki-link") as HTMLElement | null;
     if (wiki) {
       const name = wiki.getAttribute("data-page-id") || wiki.getAttribute("data-page-name") || wiki.textContent;
@@ -463,7 +472,7 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
     }
     // Links/refs act on click; shift-click extends the block selection.
     e.preventDefault();
-    if (e.shiftKey || target.closest('.wiki-link, .block-ref, a[href]')) return;
+    if (e.shiftKey || target.closest('.wiki-link, .xnb-link, .block-ref, a[href]')) return;
     const x = e.clientX, y = e.clientY;
     if (!activate()) return;
     const ed = getEd();

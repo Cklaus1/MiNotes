@@ -9,6 +9,9 @@ import {
 interface PageItem {
   id: string;
   title: string;
+  /** "notebook": inserts `[[Name::`; "xpage": a page in notebook `notebook`. */
+  kind?: "notebook" | "xpage";
+  notebook?: string;
 }
 
 interface PageLinkMenuProps {
@@ -67,10 +70,13 @@ export const PageLinkMenu = forwardRef<
   }));
 
   if (items.length === 0) {
+    const sep = query.indexOf("::");
     return (
       <div className="slash-menu">
         <div className="slash-menu-empty">
-          No pages found. Press Enter to create "{query}".
+          {sep >= 0
+            ? `No such page in ${query.slice(0, sep).trim() || "that notebook"}. Enter links to it anyway (nothing is created).`
+            : `No pages found. Press Enter to create "${query}".`}
         </div>
       </div>
     );
@@ -81,11 +87,21 @@ export const PageLinkMenu = forwardRef<
       {items.map((item, index) => (
         <button
           key={item.id}
+          data-kind={item.kind ?? "page"}
           className={`slash-menu-item ${index === selectedIndex ? "active" : ""}`}
           onClick={() => selectItem(index)}
           onMouseEnter={() => setSelectedIndex(index)}
         >
-          <span className="slash-menu-item-title">{item.title}</span>
+          {item.kind === "notebook" ? (
+            <>
+              <span className="slash-menu-item-title">{item.title}::</span>
+              <span className="slash-menu-item-hint">notebook</span>
+            </>
+          ) : item.kind === "xpage" ? (
+            <span className="slash-menu-item-title"><span className="xnb-badge">{item.notebook}</span> {item.title}</span>
+          ) : (
+            <span className="slash-menu-item-title">{item.title}</span>
+          )}
         </button>
       ))}
     </div>

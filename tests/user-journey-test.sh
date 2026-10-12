@@ -3063,6 +3063,117 @@ R=$(ev "(async()=>{$A61 return (await api.getNotebookSession()).key})()" | tr -d
 [[ "$R" == "$HOME61" ]] && pass "Home notebook open again" || fail "Switch back" "$R"
 
 # ═══════════════════════════════════════════════
+journey "62. I find and link a page in my other notebook"
+# Search with "All notebooks" finds a page in another notebook and opens it there;
+# a [[Notebook::Page]] link renders as a chip, opens the page, survives the page's
+# rename, never creates a page; a link to nothing is a muted "not found" chip;
+# typing [[ offers my notebooks, then their pages.
+# ═══════════════════════════════════════════════
+A62="const api=await import('/src/lib/api.ts');"
+setval62() { ev "(()=>{const i=document.querySelector('$1');if(!i)return 'no input';const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;set.call(i,'$2');i.dispatchEvent(new Event('input',{bubbles:true}));return 'ok'})()" >/dev/null; }
+cur62() { ev "(async()=>{$A62 return (await api.getNotebookSession()).key})()" | tr -d '"'; }
+api "closePanel()" >/dev/null; sleep 0.3
+ev "(async()=>{const s=await import('/src/lib/settings.ts');s.updateSettings({searchAllNotebooks:false});return 1})()" >/dev/null
+HOME62=$(cur62)
+WORK62="Work62 $(date +%s)"
+WKEY62=$(ev "(async()=>{$A62 return (await api.createNotebook('$WORK62')).key})()" | tr -d '"')
+ev "window.__MINOTES__.switchNotebook('$WKEY62')" >/dev/null; sleep 2
+ev "(async()=>{$A62 const p=await api.createPage('Roadmap62');await api.createBlock(p.id,'Intro to the roadmap');await api.createBlock(p.id,'quokka62 migration plan');return 1})()" >/dev/null
+ev "window.__MINOTES__.switchNotebook('$HOME62')" >/dev/null; sleep 2
+[[ -n "$WKEY62" && "$(cur62)" == "$HOME62" ]] && pass "Two notebooks: '$WORK62' holds Roadmap62" || fail "Setup" "work=$WKEY62 cur=$(cur62)"
+
+step "Ctrl+K only searches this notebook until I tick All notebooks"
+api "openSearch()" >/dev/null; sleep 0.6
+setval62 ".command-palette-input" "quokka62"; sleep 1.2
+R=$(ev "document.querySelectorAll('[data-testid=search-other-result]').length+'|'+!!document.querySelector('[data-testid=search-all-notebooks]')" | tr -d '"')
+[[ "$R" == "0|true" ]] && pass "Toggle shown, off by default: no other-notebook results" || fail "Search scope" "$R"
+ev "document.querySelector('[data-testid=search-all-notebooks]').click()" >/dev/null
+for _ in $(seq 1 12); do sleep 0.5; R=$(ev "[...document.querySelectorAll('[data-testid=search-other-result]')].map(e=>e.innerText.replace(/\\s+/g,' ')).join(' / ')" | tr -d '"'); [[ "$R" == *quokka62* ]] && break; done
+[[ "$R" == *"$WORK62"*"quokka62 migration plan"*"Roadmap62"* ]] && pass "Found in the other notebook, labelled with its name ($R)" || fail "Cross-notebook result" "$R"
+R=$(ev "(()=>{const s=document.querySelector('[data-testid=search-notebook-section]');return s?s.textContent:''})()" | tr -d '"')
+[[ "$R" == *"$WORK62"* ]] && pass "Results grouped under the notebook's name" || fail "Notebook section" "$R"
+R=$(ev "(async()=>{const s=await import('/src/lib/settings.ts');return String(s.getSettings().searchAllNotebooks)})()" | tr -d '"')
+[[ "$R" == "true" ]] && pass "The choice is remembered" || fail "Setting not saved" "$R"
+ss "62-search-all-notebooks"
+
+step "Opening the result switches notebooks and shows the block"
+ev "[...document.querySelectorAll('[data-testid=search-other-result]')].find(e=>e.innerText.includes('quokka62'))?.click()" >/dev/null
+for _ in $(seq 1 16); do sleep 0.5; [[ "$(api 'getCurrentPage()' | tr -d '"')" == "Roadmap62" ]] && break; done
+R="$(cur62)|$(api 'getCurrentPage()' | tr -d '"')"
+[[ "$R" == "$WKEY62|Roadmap62" ]] && pass "Now in $WORK62, on Roadmap62" || fail "Open result" "$R"
+R=$(ev "document.querySelector('[data-testid=notebook-switcher]')?.innerText||''" | tr -d '"')
+[[ "$R" == *"$WORK62"* ]] && pass "The sidebar shows the switched notebook" || fail "Switcher label" "$R"
+R=$(ev "(()=>{const b=[...document.querySelectorAll('[data-block-id]')].find(e=>e.textContent.includes('quokka62'));return b?String(b.classList.contains('block-ref-highlight')||!!b.querySelector('.ProseMirror-focused')||b.contains(document.activeElement)):'none'})()" | tr -d '"')
+[[ "$R" == "true" ]] && pass "The matching block is revealed" || fail "Block reveal" "$R"
+ss "62-opened-in-other-notebook"
+ev "window.__MINOTES__.switchNotebook('$HOME62')" >/dev/null; sleep 2
+
+step "A [[Notebook::Page]] link renders as a chip — and creates nothing"
+ev "(async()=>{$A62 const p=await api.createPage('Links62');await api.createBlock(p.id,'See [[$WORK62::Roadmap62]] and [[$WORK62::No Such Page62]]');return 1})()" >/dev/null
+api "navigateTo('Links62')" >/dev/null; sleep 2
+CHIPS62="[...document.querySelectorAll('.block .xnb-link')].map(c=>c.textContent+'#'+c.classList.contains('xnb-missing')).join(' | ')"
+for _ in $(seq 1 10); do R=$(ev "$CHIPS62" | tr -d '"'); [[ "$R" == *"#true"* ]] && break; sleep 0.5; done
+[[ "$R" == "$WORK62 › Roadmap62#false | $WORK62 › No Such Page62#true" ]] && pass "Chips: '$WORK62 › Roadmap62' and a muted not-found one" || fail "Chips" "$R"
+R=$(ev "document.querySelectorAll('.block .xnb-link')[1]?.title||''" | tr -d '"')
+[[ "$R" == *"Not found"* ]] && pass "The not-found chip explains itself on hover" || fail "Tooltip" "$R"
+R=$(ev "(async()=>{$A62 const t=(await api.listPages(1000)).map(p=>p.title);const g=await api.getGraphData();return [t.some(x=>x.includes('::')||x.includes('Roadmap62')),g.nodes.some(n=>String(n.title||n.label||'').includes('Roadmap62'))].join('|')})()" | tr -d '"')
+[[ "$R" == "false|false" ]] && pass "No local page and nothing in the local graph" || fail "Fake local page" "$R"
+ss "62-chips"
+
+step "Clicking the chip opens the page in its notebook"
+ev "document.querySelectorAll('.block .xnb-link')[0].click()" >/dev/null
+for _ in $(seq 1 16); do sleep 0.5; [[ "$(api 'getCurrentPage()' | tr -d '"')" == "Roadmap62" ]] && break; done
+R="$(cur62)|$(api 'getCurrentPage()' | tr -d '"')"
+[[ "$R" == "$WKEY62|Roadmap62" ]] && pass "Switched to $WORK62 and opened Roadmap62" || fail "Follow link" "$R"
+
+step "I rename the page over there — the link still finds it"
+ev "(async()=>{$A62 const t=await api.getPageTree('Roadmap62');await api.renamePage(t.page.id,'Roadmap62 final');return 1})()" >/dev/null
+R=$(ev "(async()=>{$A62 const t=(await api.listPages(1000)).map(p=>p.title);return [t.includes('No Such Page62'),t.includes('Roadmap62 final')].join('|')})()" | tr -d '"')
+[[ "$R" == "false|true" ]] && pass "Renamed; no page was created for the missing link" || fail "Other notebook pages" "$R"
+ev "window.__MINOTES__.switchNotebook('$HOME62')" >/dev/null; sleep 2
+api "navigateTo('Links62')" >/dev/null; sleep 2
+for _ in $(seq 1 10); do R=$(ev "document.querySelectorAll('.block .xnb-link')[0]?.textContent||''" | tr -d '"'); [[ "$R" == *final* ]] && break; sleep 0.5; done
+[[ "$R" == "$WORK62 › Roadmap62 final" ]] && pass "The chip shows the new title" || fail "Chip after rename" "$R"
+R=$(ev "(async()=>{$A62 const t=await api.getPageTree('Links62');return t.blocks[0].content})()" | tr -d '"')
+[[ "$R" == *"[[$WORK62::Roadmap62]]"* ]] && pass "The block text is untouched (round-trips as written)" || fail "Block text" "$R"
+ss "62-chip-after-rename"
+ev "document.querySelectorAll('.block .xnb-link')[0].click()" >/dev/null
+for _ in $(seq 1 16); do sleep 0.5; [[ "$(api 'getCurrentPage()' | tr -d '"')" == "Roadmap62 final" ]] && break; done
+[[ "$(api 'getCurrentPage()' | tr -d '"')" == "Roadmap62 final" ]] && pass "…and still opens it" || fail "Follow after rename" "$(api 'getCurrentPage()')"
+ev "window.__MINOTES__.switchNotebook('$HOME62')" >/dev/null; sleep 2
+
+step "Clicking the not-found chip explains instead of creating a page"
+api "navigateTo('Links62')" >/dev/null; sleep 2
+ev "document.querySelectorAll('.block .xnb-link')[1]?.click()" >/dev/null; sleep 1.5
+R=$(ev "[...document.querySelectorAll('.minotes-toast')].map(t=>t.textContent).join(' | ')" | tr -d '"')
+[[ "$R" == *"has no page"*"No Such Page62"* ]] && pass "A toast explains the page doesn't exist there" || fail "Not-found click" "$R"
+R="$(cur62)|$(api 'getCurrentPage()' | tr -d '"')"
+[[ "$R" == "$HOME62|Links62" ]] && pass "I stay where I was" || fail "Moved on a not-found click" "$R"
+
+step "Typing [[ offers my other notebook, then its pages"
+ev "(async()=>{$A62 const p=await api.createPage('Typing62');await api.createBlock(p.id,'Next');return 1})()" >/dev/null
+api "navigateTo('Typing62')" >/dev/null; sleep 2
+api "focusBlock(0)" >/dev/null; sleep 0.5
+api "typeInBlock(0, ' [[${WORK62:0:6}')" >/dev/null; sleep 1.5
+R=$(ev "[...document.querySelectorAll('.slash-menu-item[data-kind=notebook]')].map(e=>e.textContent).join('|')" | tr -d '"')
+[[ "$R" == *"$WORK62::"* ]] && pass "Notebook offered as '$WORK62::'" || fail "Notebook suggestion" "$R"
+ev "[...document.querySelectorAll('.slash-menu-item[data-kind=notebook]')].find(e=>e.textContent.includes('$WORK62'))?.click()" >/dev/null; sleep 1.5
+R=$(ev "[...document.querySelectorAll('.slash-menu-item[data-kind=xpage]')].map(e=>e.textContent).join('|')" | tr -d '"')
+[[ "$R" == *"Roadmap62 final"* ]] && pass "Then its pages ($R)" || fail "Page suggestions" "$R"
+ev "[...document.querySelectorAll('.slash-menu-item[data-kind=xpage]')].find(e=>e.textContent.includes('Roadmap62 final'))?.click()" >/dev/null; sleep 1
+api "closePanel()" >/dev/null; press "Escape"; sleep 1.5
+R=$(ev "(async()=>{$A62 const t=await api.getPageTree('Typing62');return t.blocks[0].content})()" | tr -d '"')
+[[ "$R" == *"[[$WORK62::Roadmap62 final]]"* ]] && pass "Inserted [[$WORK62::Roadmap62 final]]" || fail "Inserted link" "$R"
+api "navigateTo('Typing62')" >/dev/null; sleep 2
+for _ in $(seq 1 10); do R=$(ev "document.querySelector('.block .xnb-link')?.textContent||''" | tr -d '"'); [[ -n "$R" ]] && break; sleep 0.5; done
+[[ "$R" == "$WORK62 › Roadmap62 final" ]] && pass "…rendered as a chip" || fail "Typed chip" "$R"
+ss "62-typed-link"
+
+step "Search back to this notebook only"
+ev "(async()=>{const s=await import('/src/lib/settings.ts');s.updateSettings({searchAllNotebooks:false});return 1})()" >/dev/null
+[[ "$(cur62)" == "$HOME62" ]] && pass "Home notebook open" || fail "End notebook" "$(cur62)"
+
+# ═══════════════════════════════════════════════
 close_app
 
 # ═══════════════════════════════════════════════

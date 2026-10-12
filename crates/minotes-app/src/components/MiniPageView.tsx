@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import type { PageTree } from "../lib/api";
 import * as api from "../lib/api";
+import { followNotebookLink, notebookLinkLabel, splitNotebookLink } from "../lib/crossNotebook";
 
 interface Props {
   pageId: string;
@@ -11,6 +12,18 @@ function renderContent(text: string, onPageClick: (id: string) => void) {
   const parts = text.split(/(\[\[[^\]]+\]\])/g);
   return parts.map((part, i) => {
     const match = part.match(/^\[\[([^\]]+)\]\]$/);
+    const xnb = match ? splitNotebookLink(match[1].split("|")[0]) : null;
+    if (xnb) {
+      return (
+        <span
+          key={i}
+          className="xnb-link"
+          onClick={(e) => { e.stopPropagation(); void followNotebookLink(xnb.notebook, xnb.page); }}
+        >
+          {notebookLinkLabel(xnb.notebook, xnb.page)}
+        </span>
+      );
+    }
     if (match) {
       return (
         <span

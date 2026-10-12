@@ -10,6 +10,26 @@ pub enum ParsedLink {
     PageLink(String),
     /// ((block-uuid)) — reference to a block by UUID
     BlockRef(Uuid),
+    /// [[Notebook::Page title]] — a page in ANOTHER notebook (see
+    /// `crate::cross_notebook`). Never a row in `links`: it is recorded in
+    /// `notebook_links` and never creates or points at a local page.
+    NotebookLink { notebook: String, page: String },
+}
+
+/// The separator of a cross-notebook link: `[[Notebook::Page]]`.
+pub const NOTEBOOK_SEP: &str = "::";
+
+/// Split a wiki-link target into `(notebook, page)` when it uses the
+/// cross-notebook form `Notebook::Page` (both sides non-empty after trimming).
+/// `::` has no other meaning inside `[[…]]` (it is the inline-property
+/// separator only at line level, `key:: value`).
+pub fn split_notebook_link(target: &str) -> Option<(&str, &str)> {
+    let (nb, page) = target.split_once(NOTEBOOK_SEP)?;
+    let (nb, page) = (nb.trim(), page.trim());
+    if nb.is_empty() || page.is_empty() || nb.contains('[') || nb.contains(']') {
+        return None;
+    }
+    Some((nb, page))
 }
 
 /// Extract all [[page links]] and ((block refs)) from content.
@@ -28,7 +48,12 @@ pub fn extract_links(content: &str) -> Vec<ParsedLink> {
                     // `[[Title|alias]]` (and the editor's `[[Title|<page-id>]]`)
                     // target the page named by the part before the pipe.
                     let title = page_link_title(inner);
-                    if !title.is_empty() {
+                    if let Some((notebook, page)) = split_notebook_link(title) {
+                        links.push(ParsedLink::NotebookLink {
+                            notebook: notebook.to_string(),
+                            page: page.to_string(),
+                        });
+                    } else if !title.is_empty() {
                         links.push(ParsedLink::PageLink(title.to_string()));
                     }
                     i += 4 + end;
@@ -170,6 +195,23 @@ mod tests {
             rewrite_page_links("é [[ Émile ]] ü", "Émile", "Zoë").as_deref(),
             Some("é [[Zoë]] ü")
         );
+    }
+
+    #[test]
+    fn test_notebook_links() {
+        let links = extract_links("see [[Work::Q3 plan]] and [[ Home :: Groceries |x]] and [[Local]]");
+        assert_eq!(links, vec![
+            ParsedLink::NotebookLink { notebook: "Work".into(), page: "Q3 plan".into() },
+            ParsedLink::NotebookLink { notebook: "Home".into(), page: "Groceries".into() },
+            ParsedLink::PageLink("Local".into()),
+        ]);
+        // Not the cross-notebook form: empty sides, a single colon.
+        assert_eq!(split_notebook_link("::Page"), None);
+        assert_eq!(split_notebook_link("Work::"), None);
+        assert_eq!(split_notebook_link("Work: Page"), None);
+        assert_eq!(split_notebook_link("A::B::C"), Some(("A", "B::C")));
+        // Renaming a local page "Work" never touches [[Work::X]].
+        assert_eq!(rewrite_page_links("[[Work::X]] [[Work]]", "Work", "Job").as_deref(), Some("[[Work::X]] [[Job]]"));
     }
 
     #[test]

@@ -86,7 +86,7 @@ pub fn print_page_list_text(pages: &[Page]) {
 }
 
 /// Truncate to at most `max` characters, respecting UTF-8 boundaries.
-fn truncate_chars(s: &str, max: usize) -> &str {
+pub(crate) fn truncate_chars(s: &str, max: usize) -> &str {
     match s.char_indices().nth(max) {
         Some((byte_idx, _)) => &s[..byte_idx],
         None => s,
@@ -228,7 +228,7 @@ pub fn print_blocks_list_csv(blocks: &[Block]) {
     }
 }
 
-fn csv_escape(s: &str) -> String {
+pub(crate) fn csv_escape(s: &str) -> String {
     if s.contains(',') || s.contains('"') || s.contains('\n') || s.contains('\r') {
         format!("\"{}\"", s.replace('"', "\"\""))
     } else {

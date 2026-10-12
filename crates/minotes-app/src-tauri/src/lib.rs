@@ -12,6 +12,7 @@ use serde::Serialize;
 use tauri::State;
 
 mod notebooks;
+mod cross_notebook;
 mod security;
 // ── Import / attachments ──
 mod import_commands;
@@ -1700,6 +1701,9 @@ pub fn run() {
             get_properties_batch,
             // ── End perf ──
             // ── Notebooks ──
+            cross_notebook::search_other_notebooks,
+            cross_notebook::resolve_notebook_links,
+            cross_notebook::list_notebook_pages,
             notebooks::list_notebooks,
             notebooks::get_notebook_session,
             notebooks::dismiss_notebook_notice,

@@ -189,6 +189,54 @@ export async function snapshotSubtrees(rootIds: string[], pageBlocks: Block[]): 
 export const search = (query: string, limit?: number) =>
   invoke<Block[]>("search_blocks", { query, limit: limit ?? 20 });
 
+// ── Cross-notebook search and links (core cross_notebook.rs) ──
+export type SkipReason = "unavailable" | "locked" | "busy" | "error" | "timeout";
+export interface SkippedNotebook {
+  notebook_key: string;
+  notebook_name: string;
+  reason: SkipReason;
+  /** "not available", "locked", … */
+  label: string;
+  detail: string;
+}
+export interface NotebookPageHit { id: string; title: string; is_journal: boolean }
+export interface NotebookBlockHit { block: Block; page_title: string }
+export interface NotebookResults {
+  notebook_key: string;
+  notebook_name: string;
+  current: boolean;
+  pages: NotebookPageHit[];
+  blocks: NotebookBlockHit[];
+}
+export interface CrossSearch {
+  query: string;
+  results: NotebookResults[];
+  skipped: SkippedNotebook[];
+  elapsed_ms: number;
+}
+/** Every notebook except the open one, opened read-only (off the UI thread). */
+export const searchOtherNotebooks = (query: string, perNotebook?: number) =>
+  invoke<CrossSearch>("search_other_notebooks", { query, perNotebook: perNotebook ?? null });
+
+export interface LinkRef { block_id?: string | null; notebook: string; page: string }
+export type LinkStatus = "ok" | "local" | "page_missing" | "notebook_missing" | "unavailable";
+export interface LinkTarget {
+  status: LinkStatus;
+  notebook_key: string | null;
+  notebook_name: string | null;
+  page_id: string | null;
+  page_title: string | null;
+  current: boolean;
+  detail: string | null;
+}
+/** Resolve `[[Notebook::Page]]` links (by stored ids first, then by name). */
+export const resolveNotebookLinks = (links: LinkRef[]) =>
+  invoke<LinkTarget[]>("resolve_notebook_links", { links });
+export interface NotebookPages { notebook_key: string; notebook_name: string; current: boolean; pages: NotebookPageHit[] }
+/** Page titles of the notebook named `notebook` (link autocomplete), read-only. */
+export const listNotebookPages = (notebook: string, query: string, limit?: number) =>
+  invoke<NotebookPages>("list_notebook_pages", { notebook, query, limit: limit ?? null });
+
 // Links
 export const getBacklinks = (pageId: string) =>
   invoke<Link[]>("get_backlinks", { pageId });

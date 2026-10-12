@@ -428,3 +428,49 @@ fn notebook_open_registers_an_existing_folder() {
     assert_eq!(json(&out)["name"], "Shared");
     assert!(run(&h, &["--notebook", "Shared", "page", "list"]).status.success());
 }
+
+#[test]
+fn search_all_notebooks_labels_results_and_skips_unavailable() {
+    let h = TempHome::new();
+    for nb in ["Home", "Work", "Gone"] {
+        let out = run(&h, &["notebook", "create", nb]);
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    run(&h, &["--notebook", "Home", "page", "create", "Groceries"]);
+    run(&h, &["--notebook", "Home", "block", "create", "Groceries", "okapi food"]);
+    run(&h, &["--notebook", "Work", "page", "create", "Q3 Plan"]);
+    run(&h, &["--notebook", "Work", "block", "create", "Q3 Plan", "okapi budget"]);
+    std::fs::remove_dir_all(h.path().join("MiNotes/Gone")).unwrap();
+    let work_db = h.path().join("MiNotes/Work/notebook.minotes");
+    let before = std::fs::read(&work_db).unwrap();
+
+    // Without the flag: only the chosen notebook.
+    let v = json(&run(&h, &["--notebook", "Home", "search", "okapi"]));
+    assert_eq!(v["count"], 1);
+
+    let v = json(&run(&h, &["--notebook", "Home", "search", "okapi", "--all-notebooks"]));
+    assert_eq!(v["count"], 2, "{v}");
+    assert_eq!(v["results"][0]["notebook"], "Home", "the open notebook first");
+    assert_eq!(v["results"][0]["current_notebook"], true);
+    assert_eq!(v["results"][1]["notebook"], "Work");
+    assert_eq!(v["results"][1]["page_title"], "Q3 Plan");
+    assert_eq!(v["skipped"][0]["notebook_name"], "Gone");
+    assert_eq!(v["skipped"][0]["reason"], "unavailable");
+
+    let out = run(&h, &["--notebook", "Home", "-f", "text", "search", "okapi", "--all-notebooks"]);
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(text.contains("[Work]") && text.contains("[Home]"), "{text}");
+    assert!(text.contains("Skipped: Gone (not available)"), "{text}");
+    let out = run(&h, &["--notebook", "Home", "-f", "md", "search", "okapi", "--all-notebooks"]);
+    let md = String::from_utf8(out.stdout).unwrap();
+    assert!(md.contains("## Home") && md.contains("## Work") && md.contains("- okapi budget (Q3 Plan)"), "{md}");
+    let out = run(&h, &["--notebook", "Home", "-f", "csv", "search", "okapi", "--all-notebooks"]);
+    let csv = String::from_utf8(out.stdout).unwrap();
+    assert!(csv.starts_with("notebook,notebook_key,"), "{csv}");
+    assert!(csv.lines().any(|l| l.starts_with("Work,")), "{csv}");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("Skipped: Gone"));
+
+    // The other notebook was only read.
+    assert_eq!(std::fs::read(&work_db).unwrap(), before, "Work's database untouched");
+    assert!(!h.path().join("MiNotes/Work/.minotes/lock.json").exists());
+}

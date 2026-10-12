@@ -21,6 +21,8 @@ export interface MiNotesSettings {
   fullTreeMode: boolean;
   /** AI assistant settings */
   ai: AiSettings;
+  /** Search (Ctrl+K) also looks in every other notebook (default: off) */
+  searchAllNotebooks: boolean;
 }
 
 const STORAGE_KEY = "minotes-settings";
@@ -34,6 +36,7 @@ const DEFAULTS: MiNotesSettings = {
     linkSuggestions: true,
     todoExtraction: true,
   },
+  searchAllNotebooks: false,
 };
 
 export function getSettings(): MiNotesSettings {

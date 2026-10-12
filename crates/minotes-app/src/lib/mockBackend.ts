@@ -350,7 +350,10 @@ function pageLinkTitles(content: string): string[] {
       const end = content.indexOf("]]", i + 2);
       if (end >= 0) {
         const t = content.slice(i + 2, end).split("|")[0].trim();
-        if (t) out.push(t);
+        // `[[Notebook::Page]]` is a cross-notebook link, never a local one —
+        // unless no notebook has that name (then an old `A::B` title links locally).
+        const xnb = splitNotebookLink(t);
+        if (t && !(xnb && mockNotebookByName(xnb.notebook))) out.push(t);
         i = end + 2;
         continue;
       }
@@ -859,14 +862,18 @@ const handlers: Record<string, (args: any) => any> = {
     return page;
   },
 
-  create_block: ({ pageId, content, parentId }: { pageId: string; content: string; parentId?: string }) =>
-    createBlock(pageId, content, parentId),
+  create_block: ({ pageId, content, parentId }: { pageId: string; content: string; parentId?: string }) => {
+    const b = createBlock(pageId, content, parentId);
+    pinNotebookLinks(b);
+    return b;
+  },
 
   update_block: ({ id, content }: { id: string; content: string }) => {
     const block = requireBlock(id);
     const prev = block.content;
     block.content = content;
     block.updated_at = ts();
+    pinNotebookLinks(block);
     undoLog.push(() => { const b = blocks.get(id); if (b) b.content = prev; });
     return block;
   },
@@ -1245,6 +1252,33 @@ const handlers: Record<string, (args: any) => any> = {
     };
   },
   delete_card: ({ cardId }: { cardId: string }) => cards.delete(cardId),
+  // ── Cross-notebook search and links (core cross_notebook.rs) ──
+  search_other_notebooks: ({ query, perNotebook }: { query: string; perNotebook?: number | null }) => {
+    const start = Date.now();
+    const per = Math.min(Math.max(perNotebook ?? 10, 1), 50);
+    const results: any[] = [];
+    const skipped: any[] = [];
+    for (const nb of handlers.list_notebooks({}) as MockNotebook[]) {
+      if (nb.key === currentNotebook) continue;
+      if (!nb.available) { skipped.push(skipEntry(nb, "unavailable")); continue; }
+      const r = withNotebook(nb.key, () => ({
+        pages: pageTitleHits(query, 5),
+        blocks: searchBlocks(query, per).map(b => ({ block: { ...b }, page_title: pages.get(b.page_id)?.title ?? "" })),
+      }));
+      if (r.pages.length || r.blocks.length) {
+        results.push({ notebook_key: nb.key, notebook_name: nb.name, current: false, ...r });
+      }
+    }
+    return { query, results, skipped, elapsed_ms: Date.now() - start };
+  },
+  resolve_notebook_links: ({ links }: { links: Array<{ block_id?: string | null; notebook: string; page: string }> }) =>
+    (links ?? []).map(resolveNotebookLink),
+  list_notebook_pages: ({ notebook, query, limit }: { notebook: string; query: string; limit?: number | null }) => {
+    const nb = mockNotebookByName(notebook) ?? fail(`No notebook named \u201c${notebook}\u201d`);
+    if (!nb.available) fail(`Notebook \u201c${nb.name}\u201d is not available`);
+    const hits = withNotebook(nb.key, () => pageTitleHits(query, Math.min(Math.max(limit ?? 8, 1), 50)));
+    return { notebook_key: nb.key, notebook_name: nb.name, current: nb.key === currentNotebook, pages: hits };
+  },
   // ── Notebooks (mirrors minotes-core notebook.rs + the app's switch) ──
   switch_notebook: ({ key }: { key: string }) => {
     validateNotebookKey(key);
@@ -1679,10 +1713,116 @@ function emptyStore(): MockStore {
 /** Saved stores of the notebooks that are not open. */
 const notebookStores: Map<string, MockStore> = new Map();
 
+// ── Cross-notebook search and links (core cross_notebook.rs) ──
+
+/** core `links::split_notebook_link`. */
+function splitNotebookLink(target: string): { notebook: string; page: string } | null {
+  const i = target.indexOf("::");
+  if (i < 0) return null;
+  const notebook = target.slice(0, i).trim();
+  const page = target.slice(i + 2).trim();
+  if (!notebook || !page || /[[\]]/.test(notebook)) return null;
+  return { notebook, page };
+}
+
+/** A notebook by display name: exact case first, then case-insensitive; available first. */
+function mockNotebookByName(name: string): MockNotebook | undefined {
+  const n = name.trim();
+  let hits = mockNotebooks.filter(x => x.name === n);
+  if (!hits.length) hits = mockNotebooks.filter(x => x.name.toLowerCase() === n.toLowerCase());
+  return hits.sort((a, b) => Number(b.available) - Number(a.available))[0];
+}
+
+/** Run `fn` against notebook `key`'s data (read-only use only), then restore. */
+function withNotebook<T>(key: string, fn: () => T): T {
+  if (key === currentNotebook) return fn();
+  const saved = snapshotStore();
+  restoreStore(notebookStores.get(key) ?? emptyStore());
+  try {
+    return fn();
+  } finally {
+    restoreStore(saved);
+  }
+}
+
+function skipEntry(nb: MockNotebook, reason: string) {
+  const labels: Record<string, string> = {
+    unavailable: "not available", locked: "locked", busy: "busy", error: "could not be read", timeout: "took too long",
+  };
+  return { notebook_key: nb.key, notebook_name: nb.name, reason, label: labels[reason], detail: "" };
+}
+
+/** core `search_page_titles`: visible pages whose title contains the query. */
+function pageTitleHits(query: string, limit: number) {
+  const q = asciiLower(query.trim());
+  return Array.from(pages.values())
+    .filter(p => !pageHidden(p.id) && asciiLower(p.title).includes(q))
+    .sort((a, b) => Number(asciiLower(b.title) === q) - Number(asciiLower(a.title) === q) || b.updated_at.localeCompare(a.updated_at))
+    .slice(0, limit)
+    .map(p => ({ id: p.id, title: p.title, is_journal: !!p.is_journal }));
+}
+
+/** `notebook_links` rows: "<block>\0<notebook>\0<page>" (lower-cased) -> resolved target. */
+const notebookLinkPins: Map<string, { key: string | null; pageId: string | null }> = new Map();
+const pinKey = (blockId: string, nb: string, page: string) =>
+  `${blockId}\u0000${nb.trim().toLowerCase()}\u0000${page.trim().toLowerCase()}`;
+
+function findTargetPage(storedPageId: string | null | undefined, title: string): Page | undefined {
+  const byId = storedPageId ? pages.get(storedPageId) : undefined;
+  if (byId && !pageHidden(byId.id)) return byId;
+  const p = resolveLink(title);
+  return p && !pageHidden(p.id) ? p : undefined;
+}
+
+/** core `sync_notebook_links`: rows for unchanged links keep their ids; new ones resolve now. */
+function pinNotebookLinks(b: Block) {
+  const keep = new Set<string>();
+  const re = /\[\[([^\]]+)\]\]/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(b.content)) !== null) {
+    const xnb = splitNotebookLink(m[1].split("|")[0].trim());
+    if (!xnb) continue;
+    const k = pinKey(b.id, xnb.notebook, xnb.page);
+    keep.add(k);
+    if (notebookLinkPins.get(k)?.key) continue;
+    const nb = mockNotebookByName(xnb.notebook);
+    if (!nb) { notebookLinkPins.set(k, { key: null, pageId: null }); continue; }
+    const p = nb.available ? withNotebook(nb.key, () => findTargetPage(null, xnb.page)) : undefined;
+    notebookLinkPins.set(k, { key: nb.key, pageId: p?.id ?? null });
+  }
+  for (const k of [...notebookLinkPins.keys()]) {
+    if (k.startsWith(b.id + "\u0000") && !keep.has(k)) notebookLinkPins.delete(k);
+  }
+}
+
+/** core `resolve_links` for one link (pins what resolves, like the app). */
+function resolveNotebookLink(it: { block_id?: string | null; notebook: string; page: string }) {
+  const k = it.block_id ? pinKey(it.block_id, it.notebook, it.page) : null;
+  const pin = k ? notebookLinkPins.get(k) : undefined;
+  const nb = (pin?.key ? mockNotebooks.find(n => n.key === pin.key) : undefined) ?? mockNotebookByName(it.notebook);
+  const none = { notebook_key: null, notebook_name: null, page_id: null, page_title: null, current: false, detail: null };
+  if (!nb) {
+    const local = resolveLink(`${it.notebook.trim()}::${it.page.trim()}`);
+    return local
+      ? { ...none, status: "local", page_id: local.id, page_title: local.title, current: true }
+      : { ...none, status: "notebook_missing" };
+  }
+  const base = { ...none, notebook_key: nb.key, notebook_name: nb.name, current: nb.key === currentNotebook };
+  if (!nb.available) return { ...base, status: "unavailable", detail: "not available" };
+  const storedPage = pin?.key === nb.key ? pin.pageId : null;
+  const p = withNotebook(nb.key, () => {
+    const hit = findTargetPage(storedPage, it.page.trim());
+    return hit ? { id: hit.id, title: hit.title } : undefined;
+  });
+  if (!p) return { ...base, status: "page_missing" };
+  if (k && pin) notebookLinkPins.set(k, { key: nb.key, pageId: p.id });
+  return { ...base, status: "ok", page_id: p.id, page_title: p.title };
+}
+
 // ── Argument validation, as Tauri does before the Rust command runs ──
 // Generated from the #[tauri::command] signatures in src-tauri/src/lib.rs:
 // non-Option params are required; params the command parses as a UUID must be one.
-const REQUIRED_ARGS: Record<string, string[]> = {"get_page_tree":["titleOrId"],"create_page":["title"],"delete_page":["id"],"rename_page":["id","newTitle"],"create_block":["pageId","content"],"update_block":["id","content"],"delete_block":["id"],"search_blocks":["query"],"get_backlinks":["pageId"],"get_unlinked_references":["pageId"],"run_query":["sql"],"create_folder":["name"],"move_page_to_folder":["pageId"],"reorder_page":["id","newPosition"],"set_property":["entityId","entityType","key","value"],"get_properties":["entityId"],"get_inherited_properties":["blockId"],"delete_property":["entityId","key"],"delete_folder":["id"],"update_folder_appearance":["id"],"rename_folder":["id","newName"],"create_card":["blockId","cardType"],"review_card":["cardId","rating"],"delete_card":["cardId"],"add_favorite":["pageId"],"remove_favorite":["pageId"],"reorder_favorite":["pageId","newPosition"],"add_alias":["pageId","alias"],"remove_alias":["alias"],"get_aliases":["pageId"],"create_template":["name","content"],"apply_template":["pageId","templateName"],"delete_template":["name"],"publish_site":["outputDir"],"move_block":["id","newParent","position"],"reorder_block":["id","position"],"reparent_block":["id"],"register_plugin":["name","version"],"enable_plugin":["name"],"disable_plugin":["name"],"uninstall_plugin":["name"],"switch_notebook":["key"],"create_highlight":["pdfPath","pageNum","x","y","width","height","color"],"get_highlights":["pdfPath"],"update_highlight_note":["id","note"],"delete_highlight":["id"],"search_highlights":["query"],"sync_page":["pageId"],"get_version_history":["pageId"],"restore_version":["pageId","versionHash"],"plugin_storage_get":["pluginName","key"],"plugin_storage_set":["pluginName","key","value"],"add_css_snippet":["name","css","source"],"toggle_css_snippet":["name"],"delete_css_snippet":["name"],"update_css_snippet":["name","css"],"clip_content":["title","content"],"save_png_to_downloads":["filename","data"],"read_pdf_file":["path"],"read_file_base64":["path"],"fetch_og_metadata":["url"],"get_block":["id"],"get_blocks":["ids"],"get_properties_batch":["entityIds"],"archive_page":["id"],"unarchive_page":["id"],"archive_folder":["id"],"unarchive_folder":["id"],"trash_page":["id"],"trash_folder":["id"],"restore_from_trash":["id","itemType"],"permanently_delete":["id","itemType"],"get_whiteboard":["id"],"save_whiteboard":["id","data"],"restore_blocks":["blocks"],"default_notebook_location":["name"],"create_notebook":["name"],"open_notebook_folder":["path"],"locate_notebook":["key","path"],"rename_notebook":["key","name"],"delete_notebook":["key"],"forget_notebook":["key"],"move_notebook_to_folder":["path"],"git_sync_resolve_deletions":["action"]};
+const REQUIRED_ARGS: Record<string, string[]> = {"get_page_tree":["titleOrId"],"create_page":["title"],"delete_page":["id"],"rename_page":["id","newTitle"],"create_block":["pageId","content"],"update_block":["id","content"],"delete_block":["id"],"search_blocks":["query"],"get_backlinks":["pageId"],"get_unlinked_references":["pageId"],"run_query":["sql"],"create_folder":["name"],"move_page_to_folder":["pageId"],"reorder_page":["id","newPosition"],"set_property":["entityId","entityType","key","value"],"get_properties":["entityId"],"get_inherited_properties":["blockId"],"delete_property":["entityId","key"],"delete_folder":["id"],"update_folder_appearance":["id"],"rename_folder":["id","newName"],"create_card":["blockId","cardType"],"review_card":["cardId","rating"],"delete_card":["cardId"],"add_favorite":["pageId"],"remove_favorite":["pageId"],"reorder_favorite":["pageId","newPosition"],"add_alias":["pageId","alias"],"remove_alias":["alias"],"get_aliases":["pageId"],"create_template":["name","content"],"apply_template":["pageId","templateName"],"delete_template":["name"],"publish_site":["outputDir"],"move_block":["id","newParent","position"],"reorder_block":["id","position"],"reparent_block":["id"],"register_plugin":["name","version"],"enable_plugin":["name"],"disable_plugin":["name"],"uninstall_plugin":["name"],"switch_notebook":["key"],"create_highlight":["pdfPath","pageNum","x","y","width","height","color"],"get_highlights":["pdfPath"],"update_highlight_note":["id","note"],"delete_highlight":["id"],"search_highlights":["query"],"sync_page":["pageId"],"get_version_history":["pageId"],"restore_version":["pageId","versionHash"],"plugin_storage_get":["pluginName","key"],"plugin_storage_set":["pluginName","key","value"],"add_css_snippet":["name","css","source"],"toggle_css_snippet":["name"],"delete_css_snippet":["name"],"update_css_snippet":["name","css"],"clip_content":["title","content"],"save_png_to_downloads":["filename","data"],"read_pdf_file":["path"],"read_file_base64":["path"],"fetch_og_metadata":["url"],"get_block":["id"],"get_blocks":["ids"],"get_properties_batch":["entityIds"],"archive_page":["id"],"unarchive_page":["id"],"archive_folder":["id"],"unarchive_folder":["id"],"trash_page":["id"],"trash_folder":["id"],"restore_from_trash":["id","itemType"],"permanently_delete":["id","itemType"],"get_whiteboard":["id"],"save_whiteboard":["id","data"],"restore_blocks":["blocks"],"default_notebook_location":["name"],"create_notebook":["name"],"open_notebook_folder":["path"],"locate_notebook":["key","path"],"rename_notebook":["key","name"],"delete_notebook":["key"],"forget_notebook":["key"],"move_notebook_to_folder":["path"],"git_sync_resolve_deletions":["action"],"search_other_notebooks":["query"],"resolve_notebook_links":["links"],"list_notebook_pages":["notebook","query"]};
 const UUID_ARGS: Record<string, string[]> = {"delete_page":["id"],"rename_page":["id"],"create_block":["pageId","parentId?"],"update_block":["id"],"delete_block":["id"],"get_backlinks":["pageId"],"get_unlinked_references":["pageId"],"create_folder":["parentId?"],"move_page_to_folder":["pageId","folderId?"],"reorder_page":["id"],"set_property":["entityId"],"get_properties":["entityId"],"get_inherited_properties":["blockId"],"delete_property":["entityId"],"delete_folder":["id"],"update_folder_appearance":["id"],"rename_folder":["id"],"create_card":["blockId"],"review_card":["cardId"],"delete_card":["cardId"],"add_favorite":["pageId"],"remove_favorite":["pageId"],"reorder_favorite":["pageId"],"add_alias":["pageId"],"get_aliases":["pageId"],"apply_template":["pageId"],"move_block":["id","newParent"],"reorder_block":["id","parentId?"],"reparent_block":["id","parentId?"],"update_highlight_note":["id"],"delete_highlight":["id"],"sync_page":["pageId"],"get_version_history":["pageId"],"restore_version":["pageId"],"get_block":["id"],"archive_page":["id"],"unarchive_page":["id"],"archive_folder":["id"],"unarchive_folder":["id"],"trash_page":["id"],"trash_folder":["id"],"restore_from_trash":["id"],"permanently_delete":["id"]};
 
 /** The uuid crate's message for a malformed id (what the Tauri command returns). */
