@@ -787,11 +787,13 @@ mod tests {
         raw_zip(&z, &[("N/notebook.minotes", &fs::read(&other).unwrap())]);
         assert!(import_zip(&z, &ImportLimits::default()).unwrap_err().to_string().contains("not a MiNotes"));
 
-        // A damaged MiNotes database (page bytes overwritten).
+        // A damaged MiNotes database: every b-tree page after the first gets an
+        // invalid page-type byte. (Overwriting arbitrary bytes is layout-dependent:
+        // they can land in free space or row text, which integrity_check can't see.)
         let mut db = valid_db_bytes(&home);
-        let len = db.len();
-        for b in &mut db[len / 2..len / 2 + 2048.min(len / 2)] {
-            *b = 0xAB;
+        let page = match u16::from_be_bytes([db[16], db[17]]) { 1 => 65536, n => n as usize };
+        for start in (page..db.len()).step_by(page) {
+            db[start] = 0xAB;
         }
         raw_zip(&z, &[("N/notebook.minotes", &db)]);
         assert!(import_zip(&z, &ImportLimits::default()).is_err());
