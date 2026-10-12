@@ -42,7 +42,50 @@ pub const FORMAT_VERSION: u32 = 1;
 const MIRROR_STATE_FILE: &str = "mirror-state.json";
 const SYNC_CONFIG_FILE: &str = "sync-config.json";
 
+// ── Where things live ──
+//
+// The one place that decides the data directories. Desktop (and the CLI) use
+// the user's home exactly as always: `~/.minotes`, `~/MiNotes/<name>`,
+// `~/MiNotes_Sync[-<name>]`. On Android the app injects its private data dir
+// at startup ([`set_app_storage`]); then everything lives inside it:
+//
+// ```text
+// <app_data>/                 # = the legacy `~/.minotes` (default.db, registry, active_graph)
+// ├── notebooks/<name>/       # folder notebooks, same layout as on desktop
+// └── MiNotes_Sync[-<name>]/  # a legacy notebook's mirror / git sync dir
+// ```
+//
+// SQLite never runs on a Storage Access Framework URI: the system picker is
+// only used for copies (zip export / import, see `notebook_zip`).
+
+static APP_STORAGE: std::sync::RwLock<Option<PathBuf>> = std::sync::RwLock::new(None);
+
+/// Keep everything in `dir` (the app's private data dir) instead of the home
+/// directory. Called once at startup on mobile, before any path is resolved.
+/// `None` restores the desktop layout (tests).
+pub fn set_app_storage(dir: Option<PathBuf>) {
+    if let Ok(mut g) = APP_STORAGE.write() {
+        *g = dir;
+    }
+}
+
+/// The injected app data dir (mobile), if any.
+pub fn app_storage() -> Option<PathBuf> {
+    APP_STORAGE.read().ok().and_then(|g| g.clone())
+}
+
+/// Everything lives in app-private storage (Android): nobody but MiNotes can
+/// read or edit the files, and there is no folder to choose or reveal.
+pub fn is_app_storage() -> bool {
+    app_storage().is_some()
+}
+
+/// The user's home directory — or, in app storage, the app data dir (so `~`
+/// and the "inside home" checks resolve there).
 pub fn home_dir() -> PathBuf {
+    if let Some(dir) = app_storage() {
+        return dir;
+    }
     std::env::var_os("HOME")
         .filter(|h| !h.is_empty())
         .map(PathBuf::from)
@@ -50,16 +93,28 @@ pub fn home_dir() -> PathBuf {
 }
 
 /// `~/.minotes` (created on demand): legacy databases, the registry, the active
-/// notebook marker.
+/// notebook marker. In app storage: the app data dir itself.
 pub fn base_dir() -> PathBuf {
-    let dir = home_dir().join(".minotes");
+    let dir = match app_storage() {
+        Some(dir) => dir,
+        None => home_dir().join(".minotes"),
+    };
     let _ = fs::create_dir_all(&dir);
     dir
 }
 
-/// Where "New notebook…" proposes to put a notebook: `~/MiNotes/<name>`.
+/// The folder new notebooks go into: `~/MiNotes`, or `<app_data>/notebooks`.
+pub fn notebooks_dir() -> PathBuf {
+    match app_storage() {
+        Some(dir) => dir.join("notebooks"),
+        None => home_dir().join("MiNotes"),
+    }
+}
+
+/// Where "New notebook…" proposes to put a notebook: `~/MiNotes/<name>`
+/// (`<app_data>/notebooks/<name>` in app storage).
 pub fn default_location(name: &str) -> PathBuf {
-    home_dir().join("MiNotes").join(crate::repo::export::sanitize_component(name))
+    notebooks_dir().join(crate::repo::export::sanitize_component(name))
 }
 
 fn io_err(what: &str, path: &Path, e: std::io::Error) -> Error {
@@ -134,7 +189,7 @@ pub fn read_meta(root: &Path) -> Result<NotebookMeta> {
     Ok(meta)
 }
 
-fn write_meta(root: &Path, meta: &NotebookMeta) -> Result<()> {
+pub(crate) fn write_meta(root: &Path, meta: &NotebookMeta) -> Result<()> {
     write_json_atomic(&root.join(META_FILE), meta)
 }
 
@@ -291,12 +346,29 @@ impl Notebook {
         }
     }
 
+    /// Git sync is switched on for this notebook (its sync config says so).
+    pub fn sync_enabled(&self) -> bool {
+        fs::read_to_string(self.sync_config_path())
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .and_then(|v| v.get("enabled").and_then(|e| e.as_bool()))
+            .unwrap_or(false)
+    }
+
     /// The database exists where it should (a folder on an unplugged drive does not).
     pub fn available(&self) -> bool {
         self.db_path().is_file()
     }
 
+    /// Whether the continuous markdown mirror runs. In app storage (Android)
+    /// only while git sync is on: nobody else can read app-private files, so
+    /// there a mirror is just a second copy costing battery and space — the
+    /// notebook zip export is the readable copy, and git sync (which commits
+    /// the mirror) brings it back when it is wanted.
     pub fn mirror_enabled(&self) -> bool {
+        if is_app_storage() && !self.sync_enabled() {
+            return false;
+        }
         match &self.location {
             Location::Legacy { .. } => true,
             Location::Folder { root } => read_meta(root).map(|m| m.mirror.enabled).unwrap_or(true),
@@ -455,7 +527,7 @@ fn dir_is_empty(p: &Path) -> bool {
     fs::read_dir(p).map(|mut rd| rd.next().is_none()).unwrap_or(false)
 }
 
-fn register(root: &Path, meta: &NotebookMeta) -> Result<Notebook> {
+pub(crate) fn register(root: &Path, meta: &NotebookMeta) -> Result<Notebook> {
     let mut reg = Registry::load();
     reg.upsert(RegistryEntry {
         id: meta.id.clone(),
@@ -575,7 +647,7 @@ pub fn open_folder(root: &Path) -> Result<Notebook> {
     register(&root, &meta)
 }
 
-fn unique_name(base: &str) -> String {
+pub(crate) fn unique_name(base: &str) -> String {
     let names: Vec<String> = list().into_iter().map(|n| n.name).collect();
     for n in 2..1000 {
         let c = format!("{base} {n}");
@@ -1124,6 +1196,41 @@ pub(crate) mod tests {
                 None => std::env::remove_var("HOME"),
             }
         }
+    }
+
+    /// App storage (Android layout) for the life of the guard. Only inside a
+    /// FakeHome, which serialises the tests that resolve paths.
+    pub(crate) struct AppStorage;
+
+    impl AppStorage {
+        pub(crate) fn set(dir: &Path) -> AppStorage {
+            set_app_storage(Some(dir.to_path_buf()));
+            AppStorage
+        }
+    }
+
+    impl Drop for AppStorage {
+        fn drop(&mut self) {
+            set_app_storage(None);
+        }
+    }
+
+    #[test]
+    fn desktop_paths_are_unchanged_without_app_storage() {
+        let home = FakeHome::new();
+        assert!(!is_app_storage());
+        assert_eq!(home_dir(), home.path());
+        assert_eq!(base_dir(), home.path().join(".minotes"));
+        assert_eq!(default_location("Work"), home.path().join("MiNotes").join("Work"));
+        assert_eq!(legacy_mirror_dir("default"), home.path().join("MiNotes_Sync"));
+        assert_eq!(legacy_mirror_dir("work"), home.path().join("MiNotes_Sync-work"));
+        assert_eq!(Notebook::legacy("default").db_path(), home.path().join(".minotes").join("default.db"));
+        assert!(Notebook::legacy("default").mirror_enabled());
+        {
+            let _g = AppStorage::set(&home.path().join("app"));
+            assert_eq!(base_dir(), home.path().join("app"));
+        }
+        assert_eq!(base_dir(), home.path().join(".minotes"), "guard restores the desktop layout");
     }
 
     #[test]

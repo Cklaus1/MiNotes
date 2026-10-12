@@ -103,6 +103,20 @@ cargo run -p minotes-cli -- notebook list                     # notebook create|
 - **`page create` has no `--folder` flag** — create the page first, then assign it: `minotes folder add-page <page-id> <folder-id>`. Using `property set folder_id` does nothing (that key is not the DB column).
 - **`page get <title>`** returns page + all blocks by default. Use `--no-blocks` for metadata only.
 
+## Android
+
+```bash
+cd crates/minotes-app && ANDROID_HOME=~/Android/Sdk NDK_HOME=~/Android/Sdk/ndk/27.0.12077973 \
+  npx tauri android build --debug --apk --target x86_64   # emulator; drop --target for all ABIs
+# → src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk
+```
+
+- **All paths come from `minotes_core::notebook`** (`base_dir`, `home_dir`, `notebooks_dir`, `default_location`, `legacy_mirror_dir`). Never read `$HOME` directly — Android has none (the pre-fix APK died opening `./.minotes/default.db`). On Android `platform::init_app_storage` injects the app data dir at startup: `<app_data>` = the old `~/.minotes`, folder notebooks in `<app_data>/notebooks/<name>/`.
+- **SQLite never runs on a picker `content://` URI.** The picker is only for copies: `export_notebook_zip` / `import_notebook_zip` (core `notebook_zip`), via `tauri-plugin-fs` on Android.
+- **Gate desktop-only UI on `useCapabilities()`** (`get_platform_capabilities`), never the user agent. Android: no folder choosing/opening/revealing/moving, no outside-edit watcher, mirror only while git sync is on, no Obsidian/Evernote import, no keychain (`keyring` is not compiled for Android).
+- The window is created in `setup` (`"create": false` in tauri.conf.json) after `AppState` is managed — the data dir is only known there on mobile.
+- Emulator on this WSL host: `adb start-server` hangs; run `adb -P <port> nodaemon server` in the background instead, and boot with `-no-window -gpu swiftshader_indirect`. Data: `adb shell run-as com.minotes.app ls` (debug APK).
+
 ## Running on WSLg
 
 ```bash

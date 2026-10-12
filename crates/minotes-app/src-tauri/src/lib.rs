@@ -11,7 +11,9 @@ use minotes_core::sync_manager::{self, GitSyncResult, GitSyncStatus};
 use serde::Serialize;
 use tauri::State;
 
+mod notebook_transfer;
 mod notebooks;
+mod platform;
 mod security;
 // ── Import / attachments ──
 mod import_commands;
@@ -52,11 +54,9 @@ fn virtual_journal_tree(id: uuid::Uuid, d: chrono::NaiveDate) -> PageTree {
     PageTree { page, blocks: vec![] }
 }
 
+/// `~/.minotes` (app storage on Android) — decided in one place, minotes-core.
 fn base_dir() -> PathBuf {
-    let home = dirs_next().unwrap_or_else(|| PathBuf::from("."));
-    let dir = home.join(".minotes");
-    std::fs::create_dir_all(&dir).ok();
-    dir
+    minotes_core::notebook::base_dir()
 }
 
 // Bug #16: the active notebook selection must survive restarts. Persist its key to a
@@ -80,7 +80,11 @@ pub(crate) fn set_active_notebook_key(key: &str) {
     let _ = std::fs::write(active_notebook_file(), key);
 }
 
+/// The user's home (the app data dir in app storage), if known.
 fn dirs_next() -> Option<PathBuf> {
+    if let Some(dir) = minotes_core::notebook::app_storage() {
+        return Some(dir);
+    }
     std::env::var("HOME").ok().map(PathBuf::from)
 }
 
@@ -1096,7 +1100,7 @@ fn base64_encode(data: &[u8]) -> String {
 /// response. Restricted to regular `.pdf` files (see `validate_pdf_path`).
 #[tauri::command]
 fn read_pdf_file(path: String) -> Result<tauri::ipc::Response, String> {
-    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    let home = dirs_next();
     let canon = security::validate_pdf_path(&path, home.as_deref())?;
     let bytes = std::fs::read(&canon).map_err(|e| format!("Cannot open PDF: {e}"))?;
     if bytes.len() as u64 > security::MAX_PDF_BYTES {
@@ -1536,15 +1540,36 @@ fn startup_notebook() -> (minotes_core::notebook::Notebook, Option<String>) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let (nb, notice) = startup_notebook();
-    let (db, held_by) = notebooks::open_for_session(&nb, false).expect("Failed to open database");
-    let startup_db_path = nb.db_path();
-    let startup_key = nb.key.clone();
-    minotes_core::notebook::touch_last_opened(&nb);
+    let builder = tauri::Builder::default();
+    // Android: read / write the content:// URIs the system picker hands out
+    // (notebook zip export / import).
+    #[cfg(target_os = "android")]
+    let builder = builder.plugin(tauri_plugin_fs::init());
 
-    let app = tauri::Builder::default()
+    let app = builder
         .setup(move |app| {
             use tauri::Manager;
+            // Mobile: the data dir is only known through the app's path API,
+            // so the notebook is opened here (desktop: same order, same paths).
+            #[cfg(mobile)]
+            platform::init_app_storage(app)?;
+            let (nb, notice) = startup_notebook();
+            let (db, held_by) = notebooks::open_for_session(&nb, false)
+                .map_err(|e| format!("Failed to open database: {e}"))?;
+            let startup_db_path = nb.db_path();
+            let startup_key = nb.key.clone();
+            minotes_core::notebook::touch_last_opened(&nb);
+            app.manage(AppState {
+                db: Mutex::new(db),
+                current_notebook: Mutex::new(startup_key),
+                session: Mutex::new(notebooks::Session { notebook: nb, held_by, notice }),
+                virtual_journals: Mutex::new(HashMap::new()),
+            });
+            // The window is created only now (`"create": false` in
+            // tauri.conf.json): no command can run before AppState exists.
+            for cfg in app.config().app.windows.clone() {
+                tauri::WebviewWindowBuilder::from_config(app.handle(), &cfg)?.build()?;
+            }
             let handle = app.handle().clone();
             let watch = notebooks::start_db_watch(&handle);
             watch.watch(&startup_db_path);
@@ -1571,12 +1596,6 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
-        .manage(AppState {
-            db: Mutex::new(db),
-            current_notebook: Mutex::new(startup_key),
-            session: Mutex::new(notebooks::Session { notebook: nb, held_by, notice }),
-            virtual_journals: Mutex::new(HashMap::new()),
-        })
         .invoke_handler(tauri::generate_handler![
             list_pages,
             get_page_tree,
@@ -1717,6 +1736,9 @@ pub fn run() {
             notebooks::mirror_open_folder,
             notebooks::git_sync_resolve_deletions,
             notebooks::outside_edit_set_blocks,
+            platform::get_platform_capabilities,
+            notebook_transfer::export_notebook_zip,
+            notebook_transfer::import_notebook_zip,
             // ── Import / attachments ──
             import_commands::store_attachment,
             import_commands::store_dropped_files,

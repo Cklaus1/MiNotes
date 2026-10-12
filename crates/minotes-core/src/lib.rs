@@ -11,6 +11,7 @@ pub mod links;
 pub mod mirror;
 pub mod models;
 pub mod notebook;
+pub mod notebook_zip;
 pub mod outside;
 pub mod repo;
 pub mod search;

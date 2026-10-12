@@ -1,11 +1,13 @@
 import { useState } from "react";
 import { openImport } from "../lib/importPicks";
+import { useCapabilities } from "../lib/notebooks";
 
 interface Props {
   onCreatePage: (title: string) => void;
 }
 
 export default function EmptyState({ onCreatePage }: Props) {
+  const caps = useCapabilities();
   const [title, setTitle] = useState("");
 
   return (
@@ -37,9 +39,9 @@ export default function EmptyState({ onCreatePage }: Props) {
           Create
         </button>
       </div>
-      <button className="btn btn-sm" onClick={() => openImport()} style={{ marginTop: 10 }} data-testid="empty-state-import">
+      {caps.import_from_files && <button className="btn btn-sm" onClick={() => openImport()} style={{ marginTop: 10 }} data-testid="empty-state-import">
         Import notes from Obsidian, Evernote or markdown…
-      </button>
+      </button>}
     </div>
   );
 }

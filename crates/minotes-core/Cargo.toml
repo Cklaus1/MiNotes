@@ -18,6 +18,8 @@ ureq = "3"
 quick-xml = "0.39"
 base64 = "0.22"
 md-5 = "0.10"
+# Notebook zip export / import (pure-Rust deflate: builds for Android too).
+zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 # ── End import ──
 
 [dev-dependencies]

@@ -1333,6 +1333,40 @@ const handlers: Record<string, (args: any) => any> = {
   mirror_status: () => mockMirrorStatus(),
   mirror_rebuild: () => { mirrorWrittenAt = ts(); return mockMirrorStatus(); },
   mirror_open_folder: notInBrowser("mirror_open_folder"),
+  // Platform + notebook .zip (mirrors src-tauri platform.rs / notebook_transfer.rs).
+  get_platform_capabilities: () => ({
+    platform: "browser", mobile: false, app_storage: false, choose_location: true, open_folder: true,
+    reveal_folder: true, move_to_folder: true, outside_edits: true, mirror_always: true,
+    import_from_files: true, keychain: true, notebook_zip: true,
+  }),
+  export_notebook_zip: ({ key, dest }: { key?: string | null; dest?: string | null }) => {
+    const k = key ?? currentNotebook;
+    const nb = mockNotebooks.find(n => n.key === k);
+    if (!nb) fail(`Not found: Unknown notebook ${k}`);
+    if (!dest) return null; // the browser has no save dialog: treated as cancelled
+    if (!dest.toLowerCase().endsWith(".zip")) fail("The export file must be a .zip");
+    if (mockZips.has(dest)) fail(`${dest} already exists`);
+    const store = k === currentNotebook ? snapshotStore() : notebookStores.get(k) ?? emptyStore();
+    mockZips.set(dest, { name: nb.name, id: nb.key, store: { maps: structuredClone(store.maps), undo: [] } });
+    return { path: dest, name: nb.name, pages: store.maps[0].size, attachments: 0, bytes: 1024 };
+  },
+  import_notebook_zip: ({ source }: { source: string }) => {
+    const z = mockZips.get(source);
+    if (!z) fail(`Invalid input: This zip is not a MiNotes notebook (no notebook.minotes inside)`);
+    let name = z.name;
+    let renamed_from: string | null = null;
+    if (mockNotebooks.some(n => n.name === name)) {
+      renamed_from = name;
+      let i = 2;
+      while (mockNotebooks.some(n => n.name === `${z.name} ${i}`)) i++;
+      name = `${z.name} ${i}`;
+    }
+    const key = mockNotebooks.some(n => n.key === z.id) ? genId() : z.id;
+    const nb = folderNotebook(key, name, `${MOCK_HOME}/MiNotes/${name}`);
+    mockNotebooks.push(nb);
+    notebookStores.set(key, { maps: structuredClone(z.store.maps), undo: [] });
+    return { notebook: nb, pages: z.store.maps[0].size, attachments: 0, skipped: [], renamed_from };
+  },
   save_export_file: notInBrowser("save_export_file"),
   git_sync_resolve_deletions: () => 0,
   outside_edit_set_blocks: () => null,
@@ -1678,11 +1712,13 @@ function emptyStore(): MockStore {
 
 /** Saved stores of the notebooks that are not open. */
 const notebookStores: Map<string, MockStore> = new Map();
+/** Notebook .zip files "on disk" (path → what was exported). */
+const mockZips: Map<string, { name: string; id: string; store: MockStore }> = new Map();
 
 // ── Argument validation, as Tauri does before the Rust command runs ──
 // Generated from the #[tauri::command] signatures in src-tauri/src/lib.rs:
 // non-Option params are required; params the command parses as a UUID must be one.
-const REQUIRED_ARGS: Record<string, string[]> = {"get_page_tree":["titleOrId"],"create_page":["title"],"delete_page":["id"],"rename_page":["id","newTitle"],"create_block":["pageId","content"],"update_block":["id","content"],"delete_block":["id"],"search_blocks":["query"],"get_backlinks":["pageId"],"get_unlinked_references":["pageId"],"run_query":["sql"],"create_folder":["name"],"move_page_to_folder":["pageId"],"reorder_page":["id","newPosition"],"set_property":["entityId","entityType","key","value"],"get_properties":["entityId"],"get_inherited_properties":["blockId"],"delete_property":["entityId","key"],"delete_folder":["id"],"update_folder_appearance":["id"],"rename_folder":["id","newName"],"create_card":["blockId","cardType"],"review_card":["cardId","rating"],"delete_card":["cardId"],"add_favorite":["pageId"],"remove_favorite":["pageId"],"reorder_favorite":["pageId","newPosition"],"add_alias":["pageId","alias"],"remove_alias":["alias"],"get_aliases":["pageId"],"create_template":["name","content"],"apply_template":["pageId","templateName"],"delete_template":["name"],"publish_site":["outputDir"],"move_block":["id","newParent","position"],"reorder_block":["id","position"],"reparent_block":["id"],"register_plugin":["name","version"],"enable_plugin":["name"],"disable_plugin":["name"],"uninstall_plugin":["name"],"switch_notebook":["key"],"create_highlight":["pdfPath","pageNum","x","y","width","height","color"],"get_highlights":["pdfPath"],"update_highlight_note":["id","note"],"delete_highlight":["id"],"search_highlights":["query"],"sync_page":["pageId"],"get_version_history":["pageId"],"restore_version":["pageId","versionHash"],"plugin_storage_get":["pluginName","key"],"plugin_storage_set":["pluginName","key","value"],"add_css_snippet":["name","css","source"],"toggle_css_snippet":["name"],"delete_css_snippet":["name"],"update_css_snippet":["name","css"],"clip_content":["title","content"],"save_png_to_downloads":["filename","data"],"read_pdf_file":["path"],"read_file_base64":["path"],"fetch_og_metadata":["url"],"get_block":["id"],"get_blocks":["ids"],"get_properties_batch":["entityIds"],"archive_page":["id"],"unarchive_page":["id"],"archive_folder":["id"],"unarchive_folder":["id"],"trash_page":["id"],"trash_folder":["id"],"restore_from_trash":["id","itemType"],"permanently_delete":["id","itemType"],"get_whiteboard":["id"],"save_whiteboard":["id","data"],"restore_blocks":["blocks"],"default_notebook_location":["name"],"create_notebook":["name"],"open_notebook_folder":["path"],"locate_notebook":["key","path"],"rename_notebook":["key","name"],"delete_notebook":["key"],"forget_notebook":["key"],"move_notebook_to_folder":["path"],"git_sync_resolve_deletions":["action"]};
+const REQUIRED_ARGS: Record<string, string[]> = {"get_page_tree":["titleOrId"],"create_page":["title"],"delete_page":["id"],"rename_page":["id","newTitle"],"create_block":["pageId","content"],"update_block":["id","content"],"delete_block":["id"],"search_blocks":["query"],"get_backlinks":["pageId"],"get_unlinked_references":["pageId"],"run_query":["sql"],"create_folder":["name"],"move_page_to_folder":["pageId"],"reorder_page":["id","newPosition"],"set_property":["entityId","entityType","key","value"],"get_properties":["entityId"],"get_inherited_properties":["blockId"],"delete_property":["entityId","key"],"delete_folder":["id"],"update_folder_appearance":["id"],"rename_folder":["id","newName"],"create_card":["blockId","cardType"],"review_card":["cardId","rating"],"delete_card":["cardId"],"add_favorite":["pageId"],"remove_favorite":["pageId"],"reorder_favorite":["pageId","newPosition"],"add_alias":["pageId","alias"],"remove_alias":["alias"],"get_aliases":["pageId"],"create_template":["name","content"],"apply_template":["pageId","templateName"],"delete_template":["name"],"publish_site":["outputDir"],"move_block":["id","newParent","position"],"reorder_block":["id","position"],"reparent_block":["id"],"register_plugin":["name","version"],"enable_plugin":["name"],"disable_plugin":["name"],"uninstall_plugin":["name"],"switch_notebook":["key"],"create_highlight":["pdfPath","pageNum","x","y","width","height","color"],"get_highlights":["pdfPath"],"update_highlight_note":["id","note"],"delete_highlight":["id"],"search_highlights":["query"],"sync_page":["pageId"],"get_version_history":["pageId"],"restore_version":["pageId","versionHash"],"plugin_storage_get":["pluginName","key"],"plugin_storage_set":["pluginName","key","value"],"add_css_snippet":["name","css","source"],"toggle_css_snippet":["name"],"delete_css_snippet":["name"],"update_css_snippet":["name","css"],"clip_content":["title","content"],"save_png_to_downloads":["filename","data"],"read_pdf_file":["path"],"read_file_base64":["path"],"fetch_og_metadata":["url"],"get_block":["id"],"get_blocks":["ids"],"get_properties_batch":["entityIds"],"archive_page":["id"],"unarchive_page":["id"],"archive_folder":["id"],"unarchive_folder":["id"],"trash_page":["id"],"trash_folder":["id"],"restore_from_trash":["id","itemType"],"permanently_delete":["id","itemType"],"get_whiteboard":["id"],"save_whiteboard":["id","data"],"restore_blocks":["blocks"],"default_notebook_location":["name"],"create_notebook":["name"],"open_notebook_folder":["path"],"locate_notebook":["key","path"],"rename_notebook":["key","name"],"delete_notebook":["key"],"forget_notebook":["key"],"move_notebook_to_folder":["path"],"git_sync_resolve_deletions":["action"],"import_notebook_zip":["source"]};
 const UUID_ARGS: Record<string, string[]> = {"delete_page":["id"],"rename_page":["id"],"create_block":["pageId","parentId?"],"update_block":["id"],"delete_block":["id"],"get_backlinks":["pageId"],"get_unlinked_references":["pageId"],"create_folder":["parentId?"],"move_page_to_folder":["pageId","folderId?"],"reorder_page":["id"],"set_property":["entityId"],"get_properties":["entityId"],"get_inherited_properties":["blockId"],"delete_property":["entityId"],"delete_folder":["id"],"update_folder_appearance":["id"],"rename_folder":["id"],"create_card":["blockId"],"review_card":["cardId"],"delete_card":["cardId"],"add_favorite":["pageId"],"remove_favorite":["pageId"],"reorder_favorite":["pageId"],"add_alias":["pageId"],"get_aliases":["pageId"],"apply_template":["pageId"],"move_block":["id","newParent"],"reorder_block":["id","parentId?"],"reparent_block":["id","parentId?"],"update_highlight_note":["id"],"delete_highlight":["id"],"sync_page":["pageId"],"get_version_history":["pageId"],"restore_version":["pageId"],"get_block":["id"],"archive_page":["id"],"unarchive_page":["id"],"archive_folder":["id"],"unarchive_folder":["id"],"trash_page":["id"],"trash_folder":["id"],"restore_from_trash":["id"],"permanently_delete":["id"]};
 
 /** The uuid crate's message for a malformed id (what the Tauri command returns). */

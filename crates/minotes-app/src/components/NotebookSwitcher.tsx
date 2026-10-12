@@ -4,7 +4,8 @@ import * as api from "../lib/api";
 import { showToast } from "../lib/toast";
 import { errorMessage } from "../lib/errors";
 import {
-  NOTEBOOKS_CHANGED, NOTEBOOK_SWITCHED, notebooksChanged, pickFolder, prettyPath, switchNotebook,
+  NOTEBOOKS_CHANGED, NOTEBOOK_SWITCHED, exportNotebook, importNotebookFromZip, notebooksChanged, pickFolder, prettyPath,
+  switchNotebook, useCapabilities,
 } from "../lib/notebooks";
 import { NewNotebookDialog, ManageNotebooksDialog, MoveNotebookDialog } from "./NotebookDialogs";
 import "./notebooks.css";
@@ -26,6 +27,7 @@ export default function NotebookSwitcher() {
   const [dialog, setDialog] = useState<Dialog>(null);
   const [busy, setBusy] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
+  const caps = useCapabilities();
 
   const load = useCallback(async () => {
     try {
@@ -152,11 +154,11 @@ export default function NotebookSwitcher() {
                     <span className="nb-item-text">
                       <span className="nb-item-name">{nb.name}</span>
                       <span className="nb-item-path">
-                        {nb.available ? prettyPath(nb.kind === "folder" ? nb.path : nb.mirror_dir) : "unavailable"}
+                        {caps.app_storage ? "On this device" : nb.available ? prettyPath(nb.kind === "folder" ? nb.path : nb.mirror_dir) : "unavailable"}
                       </span>
                     </span>
                   </button>
-                  {!nb.available && (
+                  {!nb.available && caps.open_folder && (
                     <button className="btn btn-sm nb-locate" onClick={() => locate(nb)}>Locate…</button>
                   )}
                 </div>
@@ -167,17 +169,43 @@ export default function NotebookSwitcher() {
           <button role="menuitem" className="nb-menu-action" onClick={() => { setOpen(false); setDialog("new"); }}>
             New notebook…
           </button>
-          <button role="menuitem" className="nb-menu-action" onClick={openFolder}>
-            Open notebook…
-          </button>
+          {caps.open_folder && (
+            <button role="menuitem" className="nb-menu-action" onClick={openFolder}>
+              Open notebook…
+            </button>
+          )}
           <button role="menuitem" className="nb-menu-action" onClick={() => { setOpen(false); setDialog("manage"); }}>
             Manage notebooks…
           </button>
-          {/* ── Import ── */}
           <div className="nb-menu-sep" />
-          <button role="menuitem" className="nb-menu-action" onClick={() => { setOpen(false); openImport(); }} data-testid="menu-import">
-            Import…
-          </button>
+          {caps.notebook_zip && (
+            <>
+              <button
+                role="menuitem"
+                className="nb-menu-action"
+                onClick={() => { setOpen(false); exportNotebook(session ?? undefined); }}
+                title="Save this notebook as one .zip file (a complete copy: database, attachments and a markdown copy)"
+                data-testid="menu-export-zip"
+              >
+                Export notebook…
+              </button>
+              <button
+                role="menuitem"
+                className="nb-menu-action"
+                onClick={() => { setOpen(false); importNotebookFromZip(); }}
+                title="Add a notebook from a MiNotes .zip as a new notebook"
+                data-testid="menu-import-zip"
+              >
+                Import notebook…
+              </button>
+            </>
+          )}
+          {/* ── Import ── */}
+          {caps.import_from_files && (
+            <button role="menuitem" className="nb-menu-action" onClick={() => { setOpen(false); openImport(); }} data-testid="menu-import">
+              Import from other apps…
+            </button>
+          )}
           {/* ── End import ── */}
         </div>
       )}

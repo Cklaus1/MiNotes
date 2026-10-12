@@ -34,7 +34,9 @@ import { getRecentPages } from "./lib/recentFiles";
 import { getSettings } from "./lib/settings";
 import NotebookBanner from "./components/NotebookBanner";
 import { listenOutsideEdits, OUTSIDE_PAGES_CHANGED } from "./lib/outsideEdits";
-import { NOTEBOOK_SWITCHED, setNextPickedFolder, switchNotebook } from "./lib/notebooks";
+import {
+  NOTEBOOK_SWITCHED, setNextExportDest, setNextPickedFolder, setNextZipPick, switchNotebook, useCapabilities,
+} from "./lib/notebooks";
 import { notifyCardsChanged } from "./lib/cards";
 // ── AI platform ──
 import AiMount from "./components/AiMount";
@@ -54,6 +56,7 @@ export default function App() {
   activePageIdRef.current = activePage?.page.id ?? null;
   const [pendingJournalDate, setPendingJournalDate] = useState<string | null>(null);
   const [stats, setStats] = useState<api.GraphStats | null>(null);
+  const caps = useCapabilities();
   const [openPanel, setOpenPanel] = useState<string | null>(null);
   const [canvasMode, setCanvasMode] = useState<CanvasModeType | null>(null);
   const [whiteboardId, setWhiteboardId] = useState<string | null>(null);
@@ -85,6 +88,20 @@ export default function App() {
       console.error("Failed to refresh:", e);
     }
   }, []);
+
+  // Mobile: the OS may kill a backgrounded app at any time, and the editor saves
+  // a block on blur. Blur it when the app goes to the background so the normal
+  // save runs while the process is still alive.
+  useEffect(() => {
+    if (!caps.mobile) return;
+    const onHide = () => {
+      if (document.visibilityState !== "hidden") return;
+      const el = document.activeElement as HTMLElement | null;
+      if (el && el !== document.body) el.blur();
+    };
+    document.addEventListener("visibilitychange", onHide);
+    return () => document.removeEventListener("visibilitychange", onHide);
+  }, [caps.mobile]);
 
   // Listen for external DB writes (e.g. CLI) and refresh the sidebar automatically
   useEffect(() => {
@@ -657,6 +674,8 @@ export default function App() {
     registerTestApi({
       switchNotebook: (key: string) => switchNotebook(key).then(() => true),
       setNextPickedFolder: (path: string | null) => { setNextPickedFolder(path); return true; },
+      setNextZipPick: (path: string | null) => { setNextZipPick(path); return true; },
+      setNextExportDest: (path: string | null) => { setNextExportDest(path); return true; },
       getNotebookKey: () => notebookKey,
     } as any);
   }, [activePage, openPanel, canvasMode, whiteboardId, notebookKey]);
@@ -956,7 +975,7 @@ export default function App() {
               <p className="pending-journal-hint">No journal entry yet</p>
               <button className="btn btn-primary" onClick={materializeJournal}>+ Start writing</button>
               {/* ── Import: an empty notebook offers to bring notes in ── */}
-              {stats?.pages === 0 && (
+              {stats?.pages === 0 && caps.import_from_files && (
                 <button className="btn btn-sm pending-journal-import" onClick={() => openImport()} data-testid="empty-import">Import notes from Obsidian, Evernote or markdown…</button>
               )}
             </div>
