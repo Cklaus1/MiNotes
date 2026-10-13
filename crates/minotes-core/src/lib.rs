@@ -1,6 +1,7 @@
 // ── AI platform ──
 pub mod ai;
 // ── End AI platform ──
+pub mod crypto;
 pub mod cross_notebook;
 pub mod db;
 pub mod error;

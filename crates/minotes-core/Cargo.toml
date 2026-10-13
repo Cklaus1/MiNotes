@@ -12,6 +12,11 @@ chrono = { workspace = true }
 thiserror = { workspace = true }
 hostname = "0.4"
 sha2 = "0.10"
+# Encryption (PRD-encryption §4.2): key slots. hkdf and zeroize are already in the tree.
+argon2 = "0.5"
+aes-gcm = "0.10"
+hkdf = "0.12"
+zeroize = "1"
 # AI platform: blocking HTTP client for the OpenAI-compatible providers (OpenRouter / local).
 ureq = "3"
 # ── Import / attachments ──
