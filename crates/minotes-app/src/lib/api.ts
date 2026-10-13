@@ -727,10 +727,6 @@ export const getEnabledCssSnippets = () =>
 export const updateCssSnippet = (name: string, css: string) =>
   invoke<CssSnippet>("update_css_snippet", { name, css });
 
-// Undo
-export const undo = () =>
-  invoke<number | null>("undo");
-
 // File export — saves PNG to Downloads (WSL-aware in Tauri mode)
 export const savePngToDownloads = (filename: string, data: number[]) =>
   invoke<string>("save_png_to_downloads", { filename, data });

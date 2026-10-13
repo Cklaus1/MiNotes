@@ -651,14 +651,6 @@ pub(crate) fn wsl_windows_profile() -> Option<PathBuf> {
     None
 }
 
-// ── Undo Command ──
-
-#[tauri::command]
-fn undo(state: State<'_, AppState>) -> Result<Option<i64>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    db.undo_last("user").map_err(|e| e.to_string())
-}
-
 // ── Block Move Command ──
 
 #[tauri::command]
@@ -1468,7 +1460,7 @@ fn save_whiteboard(state: State<'_, AppState>, id: String, data: String) -> Resu
     db.save_whiteboard(&id, &data).map(|_| ()).map_err(|e| e.to_string())
 }
 
-/// Delete whiteboards no block, template or undo-able event references any
+/// Delete whiteboards no block, template or recent (in-horizon) block event references any
 /// more. Returns the deleted board ids. (Also runs after empty-trash and
 /// permanent deletes.)
 #[tauri::command]
@@ -1671,7 +1663,6 @@ pub fn run() {
             delete_css_snippet,
             get_enabled_css_snippets,
             update_css_snippet,
-            undo,
             save_png_to_downloads,
             save_export_file,
             reorder_block,

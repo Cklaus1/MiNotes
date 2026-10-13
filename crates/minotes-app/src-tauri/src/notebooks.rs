@@ -95,6 +95,9 @@ pub fn open_for_session(nb: &Notebook, force: bool) -> Result<(Database, Option<
         // SQLite's own locking stays the real guard.
         _ => {
             let db = nb.open_db().map_err(|e| e.to_string())?;
+            // Startup / notebook switch: drop change-feed events past the
+            // horizon (cheap when there are none; also done after empty-trash).
+            db.compact_events_quietly();
             Ok((db, None))
         }
     }

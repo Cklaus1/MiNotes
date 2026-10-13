@@ -39,7 +39,10 @@ impl Database {
             created_at: now,
         };
 
-        self.emit_event("link.created", &link.id, "link", &link, actor)?;
+        // No event: link rows are derived from block content (re-derived on
+        // every content write), and the block's own event already records the
+        // change. Nothing reads `link.*` events (sync, GC and the app don't).
+        let _ = actor;
         Ok(link)
     }
 

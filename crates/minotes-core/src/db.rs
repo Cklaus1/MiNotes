@@ -298,18 +298,43 @@ impl Database {
         Ok(db)
     }
 
-    /// Run `f` atomically inside a SQLite SAVEPOINT.
+    /// Run `f` atomically.
     ///
-    /// On `Ok` the savepoint is RELEASEd (committing if it was the outermost
-    /// transaction); on `Err` (or a panic) it is rolled back so no partial state
-    /// is left behind. Savepoints nest correctly, so repo functions that call
-    /// each other (e.g. `trash_folder` → `remove_favorite`) can each use `tx`,
-    /// and it also composes with an outer `BEGIN`/savepoint opened by a caller.
+    /// The OUTERMOST call (the connection is in autocommit mode) opens a
+    /// `BEGIN IMMEDIATE` transaction: it takes the write lock up front, so a
+    /// body that reads before it writes can't be failed by another connection
+    /// committing in between. (A deferred transaction has to upgrade its read
+    /// snapshot to a write lock, and in WAL mode that fails at once with
+    /// `SQLITE_BUSY_SNAPSHOT` — `busy_timeout` doesn't apply.) Waiting for the
+    /// lock honours `busy_timeout` plus a bounded retry of the `BEGIN` alone
+    /// (see [`begin_immediate`](Self::begin_immediate)); `f` never re-runs.
+    ///
+    /// Nested calls (and calls inside a transaction a caller opened with `BEGIN`)
+    /// use a SAVEPOINT, so repo functions that call each other (e.g.
+    /// `trash_folder` → `remove_favorite`) can each use `tx`.
+    ///
+    /// On `Ok` the transaction is committed / the savepoint RELEASEd; on `Err`
+    /// (or a panic) it is rolled back so no partial state is left behind.
     pub fn tx<T>(&self, f: impl FnOnce() -> Result<T>) -> Result<T> {
+        if self.conn.is_autocommit() {
+            self.begin_immediate()?;
+            let mut guard = TxGuard { conn: &self.conn, kind: TxKind::Outer, done: false };
+            return match f() {
+                Ok(v) => {
+                    self.conn.execute_batch("COMMIT")?; // on failure the guard rolls back
+                    guard.done = true;
+                    Ok(v)
+                }
+                Err(e) => {
+                    guard.rollback();
+                    Err(e)
+                }
+            };
+        }
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let name = format!("minotes_sp_{}", COUNTER.fetch_add(1, Ordering::Relaxed));
         self.conn.execute_batch(&format!("SAVEPOINT {name}"))?;
-        let mut guard = SavepointGuard { conn: &self.conn, name: &name, done: false };
+        let mut guard = TxGuard { conn: &self.conn, kind: TxKind::Savepoint(&name), done: false };
         match f() {
             Ok(v) => {
                 self.conn.execute_batch(&format!("RELEASE {name}"))?;
@@ -319,6 +344,37 @@ impl Database {
             Err(e) => {
                 guard.rollback();
                 Err(e)
+            }
+        }
+    }
+
+    /// Begin the outermost transaction of [`tx`](Self::tx).
+    ///
+    /// `BEGIN IMMEDIATE` waits up to `busy_timeout` for another writer. If it
+    /// still reports busy (a long writer, or SQLite returning busy without
+    /// calling the busy handler, e.g. during WAL recovery) it is retried a
+    /// bounded number of times. Only the `BEGIN` is retried — nothing has run
+    /// yet, so that is always safe; a transaction body is never re-run.
+    ///
+    /// A read-only connection can't take the write lock and only reads, so it
+    /// gets a deferred `BEGIN`.
+    fn begin_immediate(&self) -> Result<()> {
+        const MAX_ATTEMPTS: u32 = 3;
+        const MAX_TOTAL: std::time::Duration = std::time::Duration::from_secs(12);
+        if self.conn.is_readonly(rusqlite::MAIN_DB).unwrap_or(false) {
+            self.conn.execute_batch("BEGIN DEFERRED")?;
+            return Ok(());
+        }
+        let started = std::time::Instant::now();
+        let mut attempt = 1;
+        loop {
+            match self.conn.execute_batch("BEGIN IMMEDIATE") {
+                Ok(()) => return Ok(()),
+                Err(e) if is_busy(&e) && attempt < MAX_ATTEMPTS && started.elapsed() < MAX_TOTAL => {
+                    std::thread::sleep(std::time::Duration::from_millis(50 * u64::from(attempt)));
+                    attempt += 1;
+                }
+                Err(e) => return Err(e.into()),
             }
         }
     }
@@ -432,13 +488,15 @@ impl Database {
     }
 
     fn init(&self) -> Result<()> {
+        // First: even switching to WAL needs a lock, and must wait for another
+        // connection instead of failing with "database is locked".
+        self.conn.execute_batch("PRAGMA busy_timeout=5000;")?;  // 5s
         self.conn.execute_batch("PRAGMA journal_mode=WAL;")?;
         self.conn.execute_batch("PRAGMA synchronous=FULL;")?;
         self.conn.execute_batch("PRAGMA foreign_keys=ON;")?;
         self.conn.execute_batch("PRAGMA cache_size=-20000;")?;   // 20 MB
         self.conn.execute_batch("PRAGMA mmap_size=134217728;")?; // 128 MB
         self.conn.execute_batch("PRAGMA temp_store=MEMORY;")?;
-        self.conn.execute_batch("PRAGMA busy_timeout=5000;")?;  // 5s
         self.conn.execute_batch(SCHEMA)?;
         self.conn.execute_batch(FTS_SCHEMA)?;
         self.run_migrations()?;
@@ -497,27 +555,42 @@ impl Database {
     }
 }
 
-/// Rolls a savepoint back on drop unless it was released (covers panics too).
-struct SavepointGuard<'a> {
+/// `SQLITE_BUSY` with any extended code (`_SNAPSHOT`, `_RECOVERY`, `_TIMEOUT`).
+pub(crate) fn is_busy(e: &rusqlite::Error) -> bool {
+    matches!(e, rusqlite::Error::SqliteFailure(f, _) if f.code == rusqlite::ErrorCode::DatabaseBusy)
+}
+
+enum TxKind<'a> {
+    /// The `BEGIN IMMEDIATE` transaction of an outermost `tx`.
+    Outer,
+    Savepoint(&'a str),
+}
+
+/// Rolls a transaction / savepoint back on drop unless it was committed /
+/// released (covers panics too).
+struct TxGuard<'a> {
     conn: &'a Connection,
-    name: &'a str,
+    kind: TxKind<'a>,
     done: bool,
 }
 
-impl SavepointGuard<'_> {
+impl TxGuard<'_> {
     fn rollback(&mut self) {
         if !self.done {
             self.done = true;
             // Errors ignored: SQLite may already have rolled the whole txn back
-            // (e.g. SQLITE_FULL), in which case the savepoint no longer exists.
-            let _ = self
-                .conn
-                .execute_batch(&format!("ROLLBACK TO {0}; RELEASE {0}", self.name));
+            // (e.g. SQLITE_FULL), in which case there is nothing left to undo.
+            let _ = match self.kind {
+                TxKind::Outer => self.conn.execute_batch("ROLLBACK"),
+                TxKind::Savepoint(name) => {
+                    self.conn.execute_batch(&format!("ROLLBACK TO {name}; RELEASE {name}"))
+                }
+            };
         }
     }
 }
 
-impl Drop for SavepointGuard<'_> {
+impl Drop for TxGuard<'_> {
     fn drop(&mut self) {
         self.rollback();
     }
@@ -741,6 +814,117 @@ mod tests {
         assert!(db.get_page_by_title("Outer").unwrap().is_some());
         assert!(db.get_page_by_title("Inner").unwrap().is_none());
         assert!(db.conn.is_autocommit());
+    }
+
+    fn two_connections() -> (tempfile::TempDir, Database, Database) {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("c3.db");
+        let a = Database::open(&path).unwrap();
+        let b = Database::open(&path).unwrap();
+        (tmp, a, b)
+    }
+
+    // C-3: A's transaction reads, B commits a write, A writes. With a deferred
+    // transaction A's write failed at once with SQLITE_BUSY_SNAPSHOT; the
+    // outermost tx now holds the write lock from BEGIN IMMEDIATE, so B waits
+    // for A (busy_timeout) and both writes land.
+    #[test]
+    fn test_tx_read_then_write_survives_concurrent_commit() {
+        let (_t, a, b) = two_connections();
+        let page = a.create_page("P", None, false, None, "user").unwrap();
+        let page_id = page.id;
+        let b_path = b.conn.path().unwrap().to_string();
+        drop(b);
+        let (to_b, b_go) = std::sync::mpsc::channel::<()>();
+        let (b_done_tx, b_done) = std::sync::mpsc::channel::<std::time::Duration>();
+        let writer = std::thread::spawn(move || {
+            let b = Database::open(Path::new(&b_path)).unwrap();
+            b_go.recv().unwrap();
+            let t0 = std::time::Instant::now();
+            b.create_block(&page_id, "from B", None, None, "cli").unwrap();
+            b_done_tx.send(t0.elapsed()).unwrap();
+        });
+        a.tx(|| {
+            let n: i64 = a.conn.query_row("SELECT COUNT(*) FROM blocks", [], |r| r.get(0))?;
+            assert_eq!(n, 0);
+            to_b.send(()).unwrap();
+            // Give B time to try its commit while A is between read and write.
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            a.create_block(&page_id, "from A", None, None, "user")?;
+            Ok(())
+        })
+        .expect("A's read-then-write must not fail with SQLITE_BUSY");
+        let waited = b_done.recv().unwrap();
+        writer.join().unwrap();
+        assert!(waited >= std::time::Duration::from_millis(200), "B waited for A's lock: {waited:?}");
+        let contents: Vec<String> = a.get_page_blocks(&page_id).unwrap().into_iter().map(|b| b.content).collect();
+        assert_eq!(contents.len(), 2, "{contents:?}");
+    }
+
+    // The CLI-style scenario: another connection commits between the app's
+    // edits; every next edit (a read-then-write tx) succeeds.
+    #[test]
+    fn test_concurrent_cli_writer_does_not_fail_app_edits() {
+        let (_t, app, cli) = two_connections();
+        let page = app.create_page("P", None, false, None, "user").unwrap();
+        let blk = app.create_block(&page.id, "v0", None, None, "user").unwrap();
+        for i in 0..20 {
+            cli.create_block(&page.id, &format!("cli {i}"), None, None, "cli").unwrap();
+            app.update_block(&blk.id, Some(&format!("v{}", i + 1)), "user").unwrap();
+        }
+        // Interleaved from two threads, too.
+        let path = cli.conn.path().unwrap().to_string();
+        let pid = page.id;
+        let h = std::thread::spawn(move || {
+            let c = Database::open(Path::new(&path)).unwrap();
+            for i in 0..50 {
+                c.create_block(&pid, &format!("t {i}"), None, None, "cli").unwrap();
+            }
+        });
+        for i in 0..50 {
+            app.update_block(&blk.id, Some(&format!("w{i}")), "user").unwrap();
+        }
+        h.join().unwrap();
+        assert_eq!(app.get_page_blocks(&page.id).unwrap().len(), 71);
+    }
+
+    // A failed BEGIN IMMEDIATE (lock held past busy_timeout) runs nothing and
+    // leaves the connection usable; a nested tx still uses a savepoint.
+    #[test]
+    fn test_tx_busy_begin_runs_nothing() {
+        let (_t, a, b) = two_connections();
+        a.conn.execute_batch("PRAGMA busy_timeout=50").unwrap();
+        b.conn.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let mut ran = false;
+        let r: Result<()> = a.tx(|| {
+            ran = true;
+            Ok(())
+        });
+        assert!(matches!(&r, Err(crate::error::Error::Database(e)) if is_busy(e)), "{r:?}");
+        assert!(!ran, "the body must not run without the lock");
+        assert!(a.conn.is_autocommit());
+        b.conn.execute_batch("COMMIT").unwrap();
+        a.tx(|| {
+            assert!(!a.conn.is_autocommit());
+            a.tx(|| Ok(()))
+        })
+        .unwrap();
+        assert!(a.conn.is_autocommit());
+    }
+
+    // Read-only connections (another instance's notebook) can still use tx for
+    // reads, and have a busy timeout.
+    #[test]
+    fn test_read_only_tx_and_busy_timeout() {
+        let (t, a, _b) = two_connections();
+        a.create_page("P", None, false, None, "user").unwrap();
+        let ro = Database::open_read_only(&t.path().join("c3.db")).unwrap();
+        let n = ro.tx(|| Ok(ro.list_pages(None)?.len())).unwrap();
+        assert_eq!(n, 1);
+        let ms: i64 = ro.conn.query_row("PRAGMA busy_timeout", [], |r| r.get(0)).unwrap();
+        assert_eq!(ms, 5000);
+        let ms: i64 = a.conn.query_row("PRAGMA busy_timeout", [], |r| r.get(0)).unwrap();
+        assert_eq!(ms, 5000);
     }
 
     // v4 migrates an existing v3 database: FTS rebuilt without porter (prefix

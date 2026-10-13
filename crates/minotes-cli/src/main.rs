@@ -282,7 +282,7 @@ fn run_reindex(db: &Database) -> i32 {
     // built-in 'rebuild' command regenerates it from the blocks table. It runs
     // inside a transaction so a failure leaves the old index intact.
     let r = || -> minotes_core::error::Result<i64> {
-        let tx = db.conn.unchecked_transaction()?;
+        let tx = rusqlite::Transaction::new_unchecked(&db.conn, rusqlite::TransactionBehavior::Immediate)?;
         tx.execute_batch("INSERT INTO blocks_fts(blocks_fts) VALUES('rebuild');")?;
         let count: i64 = tx.query_row("SELECT COUNT(*) FROM blocks", [], |r| r.get(0))?;
         tx.commit()?;
@@ -369,7 +369,9 @@ fn run_batch_create(db: &Database, page: &str, actor: &str) -> i32 {
 
     // All-or-nothing: an invalid item or failed insert rolls back every block
     // (dropping `tx` without commit rolls back).
-    let tx = match db.conn.unchecked_transaction() {
+    // IMMEDIATE: the block writes read first (positions); a deferred transaction
+    // would fail at once if the app commits in between (SQLITE_BUSY_SNAPSHOT).
+    let tx = match rusqlite::Transaction::new_unchecked(&db.conn, rusqlite::TransactionBehavior::Immediate) {
         Ok(tx) => tx,
         Err(e) => { output::print_error(&e.to_string()); return 1; }
     };

@@ -72,9 +72,9 @@ const cards: Map<string, Card> = new Map(); // SRS flashcards by card id
 const aliases: Map<string, { pageId: string; created_at: string }> = new Map(); // alias -> page
 const templates: Map<string, Template> = new Map(); // by name
 const cssSnippets: Map<string, CssSnippet> = new Map(); // by name
-/** Undo log (core `undo_last` basics): newest last. */
+/** Mutation log, newest last. Only its length is read now (graph stats'
+ *  event count); the backend undo it once mirrored was removed. */
 const undoLog: Array<() => void> = [];
-let undoSeq = 0;
 
 // ── Seed test data ──
 
@@ -1419,13 +1419,6 @@ const handlers: Record<string, (args: any) => any> = {
   update_highlight_note: notInBrowser("update_highlight_note"),
   delete_highlight: () => false,
   search_highlights: () => [],
-  // core undo_last basics: block create/update/delete and page create.
-  undo: () => {
-    const op = undoLog.pop();
-    if (!op) return null;
-    op();
-    return ++undoSeq;
-  },
   get_sync_status: () => ({ total_pages: 0, synced_pages: 0, pending_changes: 0 }),
   sync_page: notInBrowser("sync_page"),
   get_version_history: () => [],

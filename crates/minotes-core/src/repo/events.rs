@@ -1,10 +1,10 @@
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use serde::Serialize;
 use uuid::Uuid;
 
 use crate::db::Database;
 use crate::error::{Error, Result};
-use crate::models::{Block, Event};
+use crate::models::Event;
 
 impl Database {
     /// Emit an event for any mutation. Called internally by repo methods.
@@ -77,193 +77,38 @@ impl Database {
         Ok(events)
     }
 
-    /// Undo the most recent user-level event by reversing its mutation.
-    /// Returns the undone event's ID, or None if nothing to undo.
+    /// Delete events older than `older_than` — but never one inside the
+    /// [`EVENT_HORIZON_DAYS`] window, whatever the caller passes. Returns the
+    /// number deleted.
     ///
-    /// Derived events (`link.*`, emitted as a side effect of block writes) and
-    /// `undo.*` records are skipped. The original event is marked `undone=1`
-    /// rather than deleted so the audit log stays intact and a future `redo` can
-    /// find it. The whole undo is atomic.
+    /// The event log is a bounded change feed, not a history. What reads it:
+    /// - sync (`pages_modified_since` / `folders_modified_since`) asks "what
+    ///   changed here after `t`", where `t` is the current sync cycle's export
+    ///   time or the moment a mass deletion was held — both recent (a held
+    ///   deletion is re-checked every cycle). Page/block edits are also visible
+    ///   through `updated_at`; the events are what reveal block *deletions*.
+    ///   A caller holding an older marker passes it as `older_than` to keep more.
+    /// - whiteboard/attachment GC: content of blocks deleted or edited inside
+    ///   the horizon stays protected (see [`gc_whiteboards`](Self::gc_whiteboards)).
+    /// - `minotes events` (CLI tail/list) — best effort, no completeness promise.
     ///
-    /// An event that can no longer be reversed (a block deletion whose page has
-    /// since been deleted) must not wedge the undo stack: it is marked `undone`
-    /// with an `undo.skipped` record carrying the reason, and an
-    /// `InvalidInput("Cannot undo ...")` error is returned for the caller to
-    /// surface. The NEXT `undo_last` call proceeds with the previous event.
-    pub fn undo_last(&self, actor: &str) -> Result<Option<i64>> {
-        let mut skipped: Option<(Event, String)> = None;
-        let out = self.undo_last_inner(actor, &mut skipped)?;
-        if let Some((event, reason)) = skipped {
-            self.tx(|| {
-                self.emit_event(
-                    "undo.skipped",
-                    &event.entity_id,
-                    &event.entity_type,
-                    &serde_json::json!({
-                        "event_id": event.id,
-                        "event_type": event.event_type,
-                        "reason": reason,
-                    }),
-                    actor,
-                )?;
-                self.conn.execute(
-                    "UPDATE events SET undone = 1 WHERE id = ?1",
-                    rusqlite::params![event.id],
-                )?;
-                Ok(())
-            })?;
-            return Err(Error::InvalidInput(format!(
-                "Cannot undo {}: {reason}. It was skipped; undo again to continue with the previous action",
-                event.event_type
-            )));
-        }
-        Ok(out)
+    /// Run at startup and after empty-trash / permanent deletes (with GC).
+    pub fn compact_events(&self, older_than: DateTime<Utc>) -> Result<usize> {
+        let cutoff = older_than.min(event_horizon_start());
+        Ok(self.conn.execute(
+            "DELETE FROM events WHERE created_at < ?1",
+            [cutoff.to_rfc3339()],
+        )?)
     }
 
-    fn undo_last_inner(&self, actor: &str, skipped: &mut Option<(Event, String)>) -> Result<Option<i64>> {
-        self.tx(|| {
-            let event = {
-                let mut stmt = self.conn.prepare(
-                    "SELECT id, event_type, entity_id, entity_type, payload, actor, created_at
-                     FROM events
-                     WHERE event_type NOT LIKE 'undo.%'
-                       AND event_type NOT LIKE 'link.%'
-                       AND undone = 0
-                     ORDER BY id DESC LIMIT 1",
-                )?;
-                let mut rows = stmt.query([])?;
-                match rows.next()? {
-                    Some(row) => row_to_event(row).map_err(Error::Database)?,
-                    None => return Ok(None),
-                }
-            };
-
-            let event_id = event.id;
-            let entity_id = event.entity_id;
-
-            match event.event_type.as_str() {
-                "block.created" => {
-                    // Undo create = delete (with any children added since).
-                    self.delete_block_subtree_raw(&entity_id)?;
-                }
-                "block.deleted" => {
-                    // Undo delete = recreate the block, then its descendants
-                    // root-first, with original parent/position.
-                    let root: Option<Block> = serde_json::from_value(event.payload.clone()).ok();
-                    let subtree: Vec<Block> = event
-                        .payload
-                        .get("subtree")
-                        .and_then(|v| serde_json::from_value(v.clone()).ok())
-                        .unwrap_or_default();
-                    if let Some(root) = root {
-                        let page_exists: bool = self.conn.query_row(
-                            "SELECT EXISTS(SELECT 1 FROM pages WHERE id = ?1)",
-                            rusqlite::params![root.page_id.to_string()],
-                            |row| row.get(0),
-                        )?;
-                        if !page_exists {
-                            *skipped = Some((
-                                event.clone(),
-                                format!("page {} no longer exists", root.page_id),
-                            ));
-                            return Ok(None);
-                        }
-                        let mut restored = Vec::new();
-                        for b in std::iter::once(&root).chain(subtree.iter()) {
-                            if self.restore_block_row(b)? {
-                                restored.push(b);
-                            }
-                        }
-                        // Re-derive link rows once every block (incl. ref targets) exists.
-                        for b in restored {
-                            self.sync_block_links(&b.id, &b.content, actor)?;
-                        }
-                    }
-                }
-                "block.updated" => {
-                    // Undo update = restore the prior content carried in the payload.
-                    // (Events written before this field existed can't be reversed.)
-                    if let Some(prev) = event.payload.get("previous_content").and_then(|v| v.as_str()) {
-                        let n = self.conn.execute(
-                            "UPDATE blocks SET content = ?1, updated_at = ?2 WHERE id = ?3",
-                            rusqlite::params![prev, Utc::now().to_rfc3339(), entity_id.to_string()],
-                        )?;
-                        if n > 0 {
-                            self.sync_block_links(&entity_id, prev, actor)?;
-                        }
-                    }
-                }
-                "page.created" => {
-                    self.conn.execute(
-                        "DELETE FROM properties WHERE entity_id = ?1
-                            OR entity_id IN (SELECT id FROM blocks WHERE page_id = ?1)",
-                        rusqlite::params![entity_id.to_string()],
-                    )?;
-                    self.conn.execute(
-                        "DELETE FROM pages WHERE id = ?1",
-                        rusqlite::params![entity_id.to_string()],
-                    )?;
-                }
-                _ => {}
-            }
-
-            self.emit_event(
-                &format!("undo.{}", event.event_type),
-                &entity_id,
-                &event.entity_type,
-                &event.payload,
-                actor,
-            )?;
-            self.conn.execute(
-                "UPDATE events SET undone = 1 WHERE id = ?1",
-                rusqlite::params![event_id],
-            )?;
-            Ok(Some(event_id))
-        })
-    }
-
-    /// Re-insert a deleted block row. A parent that no longer exists (or is on
-    /// another page) degrades to root level. Returns false if the page is gone
-    /// or the block already exists.
-    fn restore_block_row(&self, b: &Block) -> Result<bool> {
-        let page_exists: bool = self.conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM pages WHERE id = ?1)",
-            rusqlite::params![b.page_id.to_string()],
-            |row| row.get(0),
-        )?;
-        if !page_exists {
-            return Err(Error::InvalidInput(format!(
-                "Cannot undo delete: page {} no longer exists",
-                b.page_id
-            )));
+    /// [`compact_events`](Self::compact_events) at the horizon; errors are
+    /// logged, never returned (housekeeping must not fail the caller).
+    pub fn compact_events_quietly(&self) {
+        match self.compact_events(event_horizon_start()) {
+            Ok(n) if n > 0 => eprintln!("[minotes] compacted {n} events older than {EVENT_HORIZON_DAYS} days"),
+            Ok(_) => {}
+            Err(e) => eprintln!("[minotes] event compaction failed: {e}"),
         }
-        let parent = match b.parent_id {
-            Some(p) => {
-                let ok: bool = self.conn.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM blocks WHERE id = ?1 AND page_id = ?2)",
-                    rusqlite::params![p.to_string(), b.page_id.to_string()],
-                    |row| row.get(0),
-                )?;
-                ok.then(|| p.to_string())
-            }
-            None => None,
-        };
-        let n = self.conn.execute(
-            "INSERT OR IGNORE INTO blocks (id, page_id, parent_id, position, content, format, collapsed, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            rusqlite::params![
-                b.id.to_string(),
-                b.page_id.to_string(),
-                parent,
-                b.position,
-                b.content,
-                b.format,
-                b.collapsed as i32,
-                b.created_at.to_rfc3339(),
-                Utc::now().to_rfc3339(),
-            ],
-        )?;
-        Ok(n > 0)
     }
 }
 
@@ -285,61 +130,35 @@ fn row_to_event(row: &rusqlite::Row<'_>) -> rusqlite::Result<Event> {
     })
 }
 
+/// How long the event log keeps a change, and therefore how long the content of
+/// a deleted or edited block keeps its whiteboard/attachment alive after the
+/// block is gone (GC). Generous on purpose: the frontend's session undo restores
+/// deleted blocks from its own snapshot (`restore_blocks`), and a board or file
+/// it points at must still exist then — a session is far shorter than this.
+/// Pages in the Trash need no horizon: their blocks keep their rows, so their
+/// content protects what it references until the Trash is emptied.
+pub const EVENT_HORIZON_DAYS: i64 = 30;
+
+/// The oldest moment still inside [`EVENT_HORIZON_DAYS`].
+pub fn event_horizon_start() -> DateTime<Utc> {
+    Utc::now() - chrono::Duration::days(EVENT_HORIZON_DAYS)
+}
+
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::db::Database;
 
-    // (a) Undo skips derived link.* events and undoes the user's block creation.
-    #[test]
-    fn test_undo_skips_derived_link_events() {
-        let db = Database::open_in_memory().unwrap();
-        let t = db.create_page("T", None, false, None, "user").unwrap();
-        let src = db.create_page("Src", None, false, None, "user").unwrap();
-        let b = db.create_block(&src.id, "see [[T]]", None, None, "user").unwrap();
-        db.undo_last("user").unwrap().unwrap();
-        assert!(db.get_block(&b.id).unwrap().is_none(), "block creation undone");
-        assert!(db.get_backlinks(&t.id).unwrap().is_empty());
+    fn backdate_all(db: &Database, days: i64) {
+        let t = (Utc::now() - chrono::Duration::days(days)).to_rfc3339();
+        db.conn.execute("UPDATE events SET created_at = ?1", [t]).unwrap();
     }
 
-    // (c) Undoing an update restores the previous content (and its links).
-    #[test]
-    fn test_undo_block_update_restores_content() {
-        let db = Database::open_in_memory().unwrap();
-        let t = db.create_page("T", None, false, None, "user").unwrap();
-        let src = db.create_page("Src", None, false, None, "user").unwrap();
-        let b = db.create_block(&src.id, "see [[T]]", None, None, "user").unwrap();
-        db.update_block(&b.id, Some("no link now"), "user").unwrap();
-        assert!(db.get_backlinks(&t.id).unwrap().is_empty());
-        db.undo_last("user").unwrap().unwrap();
-        assert_eq!(db.get_block(&b.id).unwrap().unwrap().content, "see [[T]]");
-        assert_eq!(db.get_backlinks(&t.id).unwrap().len(), 1);
+    fn count(db: &Database, sql: &str) -> i64 {
+        db.conn.query_row(sql, [], |r| r.get(0)).unwrap()
     }
 
-    // (b) Undoing a cascaded delete restores parent before children with the
-    // original parent_id/position, in a single undo step.
-    #[test]
-    fn test_undo_cascaded_delete_restores_hierarchy() {
-        let db = Database::open_in_memory().unwrap();
-        let page = db.create_page("P", None, false, None, "user").unwrap();
-        let a = db.create_block(&page.id, "A", None, Some(3.0), "user").unwrap();
-        let b = db.create_block(&page.id, "B", Some(&a.id), Some(2.0), "user").unwrap();
-        let c = db.create_block(&page.id, "C", Some(&b.id), Some(7.0), "user").unwrap();
-        let d = db.create_block(&page.id, "D", Some(&a.id), Some(1.0), "user").unwrap();
-        db.delete_block(&a.id, "user").unwrap();
-        assert!(db.get_page_blocks(&page.id).unwrap().is_empty());
-
-        db.undo_last("user").unwrap().unwrap();
-        let get = |id| db.get_block(id).unwrap().unwrap();
-        assert_eq!(get(&a.id).parent_id, None);
-        assert_eq!(get(&a.id).position, 3.0);
-        assert_eq!(get(&b.id).parent_id, Some(a.id));
-        assert_eq!(get(&b.id).position, 2.0);
-        assert_eq!(get(&c.id).parent_id, Some(b.id));
-        assert_eq!(get(&c.id).position, 7.0);
-        assert_eq!(get(&d.id).parent_id, Some(a.id));
-    }
-
-    // (d) Delete events are emitted only after the delete succeeds.
+    // Delete events are emitted only after the delete succeeds.
     #[test]
     fn test_delete_block_event_after_delete() {
         let db = Database::open_in_memory().unwrap();
@@ -349,58 +168,52 @@ mod tests {
             .execute_batch("CREATE TRIGGER boom BEFORE DELETE ON blocks BEGIN SELECT RAISE(ABORT, 'x'); END;")
             .unwrap();
         assert!(db.delete_block(&a.id, "user").is_err());
-        let n: i64 = db
-            .conn
-            .query_row("SELECT COUNT(*) FROM events WHERE event_type = 'block.deleted'", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(n, 0);
+        assert_eq!(count(&db, "SELECT COUNT(*) FROM events WHERE event_type = 'block.deleted'"), 0);
     }
 
+    // Compaction drops events older than the horizon and never one inside it,
+    // even when asked to (older_than = now).
     #[test]
-    fn test_undo_nothing() {
+    fn test_compact_events_respects_horizon() {
         let db = Database::open_in_memory().unwrap();
-        assert_eq!(db.undo_last("user").unwrap(), None);
+        let p = db.create_page("Old", None, false, None, "user").unwrap();
+        db.create_block(&p.id, "x", None, None, "user").unwrap();
+        backdate_all(&db, EVENT_HORIZON_DAYS + 5);
+        let q = db.create_page("New", None, false, None, "user").unwrap();
+        db.create_block(&q.id, "y", None, None, "user").unwrap();
+        let total = count(&db, "SELECT COUNT(*) FROM events");
+
+        let n = db.compact_events(Utc::now()).unwrap();
+        assert_eq!(n, 2, "only the two backdated events go");
+        assert_eq!(count(&db, "SELECT COUNT(*) FROM events"), total - 2);
+        assert_eq!(db.compact_events(Utc::now()).unwrap(), 0, "idempotent");
+        // A caller with an older sync marker keeps even more.
+        backdate_all(&db, EVENT_HORIZON_DAYS + 1);
+        assert_eq!(db.compact_events(Utc::now() - chrono::Duration::days(EVENT_HORIZON_DAYS + 2)).unwrap(), 0);
     }
 
-    // An undo that can't be applied (its page was permanently deleted) is
-    // reported once, marked undone with a reason, and does NOT block the stack:
-    // the next undo proceeds with the previous action.
+    // Sync's change detection still works after compaction: a block deletion
+    // (visible only through the event log) since the last sync is detected.
     #[test]
-    fn test_undo_skips_unrestorable_block_delete() {
+    fn test_sync_detects_changes_after_compaction() {
         let db = Database::open_in_memory().unwrap();
-        let keep = db.create_page("Keep", None, false, None, "user").unwrap();
-        let kb = db.create_block(&keep.id, "keep me", None, None, "user").unwrap();
-        db.update_block(&kb.id, Some("edited"), "user").unwrap();
-        let gone = db.create_page("Gone", None, false, None, "user").unwrap();
-        let gb = db.create_block(&gone.id, "x", None, None, "user").unwrap();
-        db.delete_block(&gb.id, "user").unwrap();
-        db.permanently_delete_page(&gone.id, "user").unwrap();
-        // Newest undoable event is page.deleted (a no-op undo); then block.deleted.
-        db.undo_last("user").unwrap().unwrap();
+        let old = db.create_page("Old", None, false, None, "user").unwrap();
+        db.create_block(&old.id, "ancient", None, None, "user").unwrap();
+        let p = db.create_page("P", None, false, None, "user").unwrap();
+        let b = db.create_block(&p.id, "goes away", None, None, "user").unwrap();
+        backdate_all(&db, EVENT_HORIZON_DAYS + 10);
+        // Make the rows look old too, so only the event can reveal the delete.
+        let long_ago = (Utc::now() - chrono::Duration::days(EVENT_HORIZON_DAYS + 10)).to_rfc3339();
+        db.conn.execute("UPDATE pages SET updated_at = ?1", [&long_ago]).unwrap();
+        db.conn.execute("UPDATE blocks SET updated_at = ?1", [&long_ago]).unwrap();
 
-        let err = db.undo_last("user").unwrap_err().to_string();
-        assert!(err.contains("no longer exists"), "{err}");
-        let (undone, skipped): (i64, i64) = db
-            .conn
-            .query_row(
-                "SELECT (SELECT undone FROM events WHERE event_type = 'block.deleted'),
-                        (SELECT COUNT(*) FROM events WHERE event_type = 'undo.skipped')",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .unwrap();
-        assert_eq!((undone, skipped), (1, 1));
+        let last_sync = Utc::now() - chrono::Duration::hours(1);
+        db.delete_block(&b.id, "user").unwrap();
+        db.conn.execute("UPDATE pages SET updated_at = ?1", [&long_ago]).unwrap();
 
-        // Not stuck: the next undos walk on (block.created of the gone page's
-        // block is harmless, then page.created of Gone, then Keep's edit).
-        let mut restored = false;
-        for _ in 0..4 {
-            db.undo_last("user").unwrap();
-            if db.get_block(&kb.id).unwrap().map(|b| b.content == "keep me").unwrap_or(false) {
-                restored = true;
-                break;
-            }
-        }
-        assert!(restored, "earlier edit was undone after the skipped event");
+        assert!(db.compact_events(Utc::now()).unwrap() > 0);
+        let modified = db.pages_modified_since(last_sync, "sync").unwrap();
+        assert!(modified.contains(&p.id), "deleted block still marks its page modified");
+        assert!(!modified.contains(&old.id));
     }
 }

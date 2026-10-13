@@ -272,25 +272,26 @@ impl Database {
             let previous = self
                 .get_block(id)?
                 .ok_or_else(|| Error::NotFound(format!("Block {id}")))?;
+            // Nothing to change (the editor saves on every blur): no write, no
+            // `updated_at` bump, no event, no link re-derivation.
+            let Some(c) = content.filter(|c| *c != previous.content) else {
+                return Ok(previous);
+            };
             let now = Utc::now();
-
-            if let Some(c) = content {
-                self.conn.execute(
-                    "UPDATE blocks SET content = ?1, updated_at = ?2 WHERE id = ?3",
-                    rusqlite::params![c, now.to_rfc3339(), id.to_string()],
-                )?;
-            }
+            self.conn.execute(
+                "UPDATE blocks SET content = ?1, updated_at = ?2 WHERE id = ?3",
+                rusqlite::params![c, now.to_rfc3339(), id.to_string()],
+            )?;
 
             let block = self
                 .get_block(id)?
                 .ok_or_else(|| Error::NotFound(format!("Block {id}")))?;
-            // Carry the prior content so `undo_last` can restore it.
+            // Carry the prior content: GC keeps what it referenced for the
+            // event horizon (a session undo may restore it).
             let mut payload = serde_json::to_value(&block)?;
             payload["previous_content"] = serde_json::Value::String(previous.content);
             self.emit_event("block.updated", &block.id, "block", &payload, actor)?;
-            if content.is_some() {
-                self.sync_block_links(&block.id, &block.content, actor)?;
-            }
+            self.sync_block_links(&block.id, &block.content, actor)?;
             Ok(block)
         })
     }
@@ -515,11 +516,8 @@ impl Database {
     ///   or `"text"` when there is none.
     /// - Link rows are re-derived for every restored block once all of them exist,
     ///   and for other blocks whose `((ref))` points at a restored block.
-    /// - One `block.created` event is emitted per block, parents first. Undo
-    ///   therefore treats a restore like block creation: each `undo_last` removes
-    ///   the most recently restored block (plus anything still under it), so the
-    ///   restored blocks go away last-restored first, one undo each. The original
-    ///   `block.deleted` event is left untouched.
+    /// - One `block.created` event is emitted per block, parents first (change
+    ///   feed for sync). The original `block.deleted` event is left untouched.
     /// - A `{{whiteboard:<id>}}` block simply points at its board again (boards
     ///   are not deleted with blocks; see `gc_whiteboards`).
     ///
@@ -729,6 +727,32 @@ mod tests {
         let block = db.create_block(&page.id, "Old", None, None, "user").unwrap();
         let updated = db.update_block(&block.id, Some("New"), "user").unwrap();
         assert_eq!(updated.content, "New");
+    }
+
+    // A save with unchanged content writes nothing: no event, no updated_at
+    // bump. Link rows are derived — writing a linked block emits no link.* events.
+    #[test]
+    fn test_noop_update_writes_no_event() {
+        let db = Database::open_in_memory().unwrap();
+        db.create_page("T", None, false, None, "user").unwrap();
+        let page = db.create_page("P", None, false, None, "user").unwrap();
+        let block = db.create_block(&page.id, "see [[T]]", None, None, "user").unwrap();
+        let events = |db: &Database| -> i64 {
+            db.conn.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0)).unwrap()
+        };
+        let before = events(&db);
+        let same = db.update_block(&block.id, Some("see [[T]]"), "user").unwrap();
+        assert_eq!(same.updated_at, block.updated_at);
+        db.update_block(&block.id, None, "user").unwrap();
+        assert_eq!(events(&db), before, "no-op saves emit nothing");
+        db.update_block(&block.id, Some("see [[T]] again"), "user").unwrap();
+        assert_eq!(events(&db), before + 1, "one block.updated, no link.* events");
+        let links: i64 = db
+            .conn
+            .query_row("SELECT COUNT(*) FROM events WHERE event_type LIKE 'link.%'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(links, 0);
+        assert_eq!(db.get_backlinks(&db.get_page_by_title("T").unwrap().unwrap().id).unwrap().len(), 1);
     }
 
     #[test]
@@ -995,12 +1019,6 @@ mod tests {
         assert_eq!(db.get_backlinks(&target.id).unwrap().len(), 1, "page link re-derived");
         assert_eq!(to_block_links(&db, &a.id), 2, "C's and the other block's ((ref)) re-derived");
         assert!(db.get_block(&other.id).unwrap().is_some());
-
-        // Undo treats the restore like creation: the last block inserted
-        // (parents first ⇒ C) is removed first, one block per undo.
-        db.undo_last("user").unwrap().unwrap();
-        assert!(db.get_block(&c.id).unwrap().is_none());
-        assert!(db.get_block(&b.id).unwrap().is_some());
     }
 
     #[test]

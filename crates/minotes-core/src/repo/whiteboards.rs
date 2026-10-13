@@ -136,14 +136,18 @@ impl Database {
     /// A board is KEPT while it is referenced by
     /// (a) any block's content — live, trashed and archived pages alike (they all
     ///     keep their rows in `blocks`), or a template's content;
-    /// (b) any not-yet-undone event whose undo would bring that content back: a
-    ///     `block.deleted` payload (root + whole subtree) or a `block.updated`
-    ///     `previous_content`. `undo_last` could restore such a block, and it
-    ///     must find its drawing. (A deletion whose page is gone since is still
-    ///     counted — conservative; undo skips it, but the page could return.)
+    /// (b) content a block had until recently: a `block.deleted` payload (root +
+    ///     whole subtree) or a `block.updated` `previous_content`, for events
+    ///     inside the [`EVENT_HORIZON_DAYS`](crate::repo::events::EVENT_HORIZON_DAYS)
+    ///     window. The frontend's session undo can bring such a block back
+    ///     (`restore_blocks`, from its own snapshot), and it must find its
+    ///     drawing. The horizon is far longer than a session; older events are
+    ///     compacted away (`compact_events`), so they protect nothing.
     ///
-    /// This is why deleting a block never deletes its board; boards are only
-    /// collected here (after empty-trash / permanent deletes).
+    /// Pages in the Trash are covered by (a). This is why deleting a block
+    /// never deletes its board; boards are only collected here (after
+    /// empty-trash / permanent deletes), and never while a session undo could
+    /// still restore their block.
     ///
     /// Copying a whiteboard block copies its `{{whiteboard:<id>}}` marker, so two
     /// blocks can share ONE board (edits show in both). That sharing is left as
@@ -151,23 +155,24 @@ impl Database {
     pub fn gc_whiteboards(&self) -> Result<Vec<String>> {
         self.tx(|| {
             let mut referenced: HashSet<String> = HashSet::new();
+            let horizon = crate::repo::events::event_horizon_start().to_rfc3339();
             for sql in [
                 "SELECT content FROM blocks WHERE content LIKE '%{{whiteboard:%'",
                 "SELECT content FROM templates WHERE content LIKE '%{{whiteboard:%'",
-                // Undo of block.deleted re-inserts the root + subtree carried in
-                // the payload.
+                // A recent deletion: root + subtree carried in the payload.
                 "SELECT payload FROM events
-                  WHERE undone = 0 AND event_type = 'block.deleted'
+                  WHERE created_at >= ?1 AND event_type = 'block.deleted'
                     AND payload LIKE '%{{whiteboard:%'",
-                // Undo of block.updated restores `previous_content`.
+                // A recent edit away from the board: `previous_content`.
                 "SELECT json_extract(payload, '$.previous_content') FROM events
-                  WHERE undone = 0 AND event_type = 'block.updated' AND json_valid(payload)
+                  WHERE created_at >= ?1 AND event_type = 'block.updated' AND json_valid(payload)
                     AND json_extract(payload, '$.previous_content') LIKE '%{{whiteboard:%'",
-                // (block.created / page.* undos never bring content back; a
-                // page.deleted payload carries only the page row.)
+                // (a page.deleted payload carries only the page row: a purged
+                // page's boards are free.)
             ] {
                 let mut stmt = self.conn.prepare(sql)?;
-                for text in stmt.query_map([], |r| r.get::<_, String>(0))? {
+                let params = horizon_params(&stmt, &horizon);
+                for text in stmt.query_map(rusqlite::params_from_iter(params), |r| r.get::<_, String>(0))? {
                     referenced.extend(whiteboard_refs(&text?));
                 }
             }
@@ -185,6 +190,9 @@ impl Database {
     /// Best-effort GC after a permanent delete: a GC problem must never fail
     /// (or roll back) the delete itself.
     pub(crate) fn gc_whiteboards_quietly(&self) {
+        // Housekeeping at the same safe moment: drop events past the horizon
+        // (they no longer protect anything, see `gc_whiteboards`).
+        self.compact_events_quietly();
         if let Err(e) = self.gc_whiteboards() {
             eprintln!("[minotes] whiteboard GC failed: {e}");
         }
@@ -192,6 +200,12 @@ impl Database {
         self.gc_attachments_quietly();
         // ── End import ──
     }
+}
+
+/// The bind parameters of a GC reference query: the horizon start for the
+/// event queries (`?1`), none for the content queries. Shared with attachments.
+pub(crate) fn horizon_params<'a>(stmt: &rusqlite::Statement<'_>, horizon: &'a str) -> Vec<&'a str> {
+    if stmt.parameter_count() == 0 { Vec::new() } else { vec![horizon] }
 }
 
 /// Every whiteboard id referenced as `{{whiteboard:<id>}}` anywhere in `text`
@@ -294,17 +308,71 @@ mod tests {
         left.sort();
         assert_eq!(left, vec!["wb-arch", "wb-live", "wb-prev", "wb-shared", "wb-trash", "wb-undo"]);
 
-        // Undo brings the deleted block back — with its drawing.
-        db.undo_last("user").unwrap().unwrap(); // orig
-        db.undo_last("user").unwrap().unwrap(); // del
-        assert!(db.get_block(&del.id).unwrap().is_some());
-        assert!(db.get_whiteboard("wb-undo").unwrap().is_some());
-
-        // Emptying the trash purges the trashed page and its (now orphan) board.
+        // Emptying the trash purges the trashed page and its (now orphan) board;
+        // the recently deleted / edited-away boards are still in the horizon.
         assert_eq!(db.empty_trash("user").unwrap(), 1);
         assert!(db.get_whiteboard("wb-trash").unwrap().is_none());
         assert!(db.get_whiteboard("wb-live").unwrap().is_some());
         assert!(db.get_whiteboard("wb-arch").unwrap().is_some());
+        assert!(db.get_whiteboard("wb-undo").unwrap().is_some());
+        assert!(db.get_whiteboard("wb-prev").unwrap().is_some());
+    }
+
+    fn backdate_events(db: &Database, days: i64) {
+        let t = (Utc::now() - chrono::Duration::days(days)).to_rfc3339();
+        db.conn.execute("UPDATE events SET created_at = ?1", [t]).unwrap();
+    }
+
+    // A deleted whiteboard block protects its board for the event horizon (a
+    // session undo restores it via restore_blocks — with its drawing), and no
+    // longer once the deletion is older than that.
+    #[test]
+    fn test_gc_whiteboards_event_horizon() {
+        use crate::repo::events::EVENT_HORIZON_DAYS;
+        let db = Database::open_in_memory().unwrap();
+        let p = db.create_page("P", None, false, None, "user").unwrap();
+        let del = db.create_block(&p.id, "{{whiteboard:wb-del}}", None, None, "user").unwrap();
+        let upd = db.create_block(&p.id, "{{whiteboard:wb-upd}}", None, None, "user").unwrap();
+        db.save_whiteboard("wb-del", "{}").unwrap();
+        db.save_whiteboard("wb-upd", "{}").unwrap();
+        db.delete_block(&del.id, "user").unwrap();
+        db.update_block(&upd.id, Some("text"), "user").unwrap();
+        let trashed = db.create_page("T", None, false, None, "user").unwrap();
+        db.trash_page(&trashed.id).unwrap();
+
+        // Within the horizon: empty trash keeps both boards, and a session
+        // undo (restore_blocks) gets the drawing back.
+        backdate_events(&db, EVENT_HORIZON_DAYS - 1);
+        db.empty_trash("user").unwrap();
+        assert!(db.get_whiteboard("wb-del").unwrap().is_some());
+        assert!(db.get_whiteboard("wb-upd").unwrap().is_some());
+        db.restore_blocks(
+            &[crate::models::RestoreBlock {
+                id: del.id,
+                page_id: p.id,
+                parent_id: None,
+                position: del.position,
+                content: del.content.clone(),
+                properties: vec![],
+            }],
+            "user",
+        )
+        .unwrap();
+        db.delete_block(&del.id, "user").unwrap();
+
+        // Older than the horizon: the next empty-trash collects both.
+        backdate_events(&db, EVENT_HORIZON_DAYS + 1);
+        let trashed = db.create_page("T2", None, false, None, "user").unwrap();
+        db.trash_page(&trashed.id).unwrap();
+        db.empty_trash("user").unwrap();
+        assert!(db.get_whiteboard("wb-del").unwrap().is_none());
+        assert!(db.get_whiteboard("wb-upd").unwrap().is_none());
+        let old: i64 = db.conn.query_row(
+            "SELECT COUNT(*) FROM events WHERE created_at < ?1",
+            [crate::repo::events::event_horizon_start().to_rfc3339()],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(old, 0, "events past the horizon were compacted with the GC");
     }
 
     // permanently_delete_page collects the page's boards (no undo can restore
