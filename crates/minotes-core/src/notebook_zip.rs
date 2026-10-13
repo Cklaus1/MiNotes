@@ -32,6 +32,13 @@
 //! emptied (a shared notebook must not bring an endpoint that receives your
 //! notes), and CSS snippets and plugins are turned off for the user to
 //! re-enable consciously. Exports leave the AI settings and run log out.
+//!
+//! **Encrypted notebooks** (PRD-encryption §4.5) stay encrypted in the archive:
+//! the snapshot keeps the data key (`VACUUM INTO` inherits it), `notebook.json`
+//! carries the key slots (and no name), there is no `notes/` and no
+//! `attachments/` (attachments are inside the database), and the top folder is
+//! "Encrypted notebook". Importing one needs its passphrase or recovery key; the
+//! connection is keyed before the integrity check, the scrub and migrations.
 
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
@@ -43,6 +50,7 @@ use uuid::Uuid;
 use zip::write::SimpleFileOptions;
 use zip::CompressionMethod;
 
+use crate::crypto::{DataKey, RecoveryKey, Secret};
 use crate::db::Database;
 use crate::error::{Error, Result};
 use crate::notebook::{
@@ -50,6 +58,8 @@ use crate::notebook::{
 };
 
 const ATTACHMENTS_DIR: &str = "attachments";
+/// The top folder of an encrypted notebook's archive.
+const ENCRYPTED_TOP: &str = "Encrypted notebook";
 const MIRROR_ATTACHMENTS: &str = "_attachments";
 
 fn zip_err(e: zip::result::ZipError) -> Error {
@@ -76,6 +86,12 @@ pub struct ExportSummary {
 /// database at `staging/notebook.minotes`, checked against the live row counts.
 /// Works on a read-only connection too.
 pub fn snapshot(conn: &rusqlite::Connection, staging: &Path) -> Result<PathBuf> {
+    snapshot_keyed(conn, staging, None)
+}
+
+/// [`snapshot`] of an encrypted notebook's connection (`key` = its data key; the
+/// copy is encrypted with the same key).
+pub fn snapshot_keyed(conn: &rusqlite::Connection, staging: &Path, key: Option<&DataKey>) -> Result<PathBuf> {
     fs::create_dir_all(staging).map_err(|e| io_err("Cannot create", staging, e))?;
     let target = staging.join(DB_FILE);
     let _ = fs::remove_file(&target);
@@ -91,8 +107,8 @@ pub fn snapshot(conn: &rusqlite::Connection, staging: &Path) -> Result<PathBuf> 
         let _ = conn.execute_batch("PRAGMA query_only=ON");
     }
     r?;
-    notebook::verify_copy(&target, &counts)?;
-    strip_device_private(&target)?;
+    notebook::verify_copy_keyed(&target, &counts, key)?;
+    strip_device_private(&target, key)?;
     Ok(target)
 }
 
@@ -103,8 +119,11 @@ const EXPORT_EMPTIED_TABLES: &[&str] = &["ai_runs", "ai_settings"];
 
 /// Empty [`EXPORT_EMPTIED_TABLES`] in a snapshot and VACUUM it, so the deleted
 /// rows don't linger in free pages of the archived file.
-fn strip_device_private(snapshot_db: &Path) -> Result<()> {
+fn strip_device_private(snapshot_db: &Path, key: Option<&DataKey>) -> Result<()> {
     let conn = rusqlite::Connection::open(snapshot_db)?;
+    if let Some(k) = key {
+        crate::db::apply_key(&conn, k)?;
+    }
     conn.execute_batch("PRAGMA trusted_schema=OFF;")?;
     let mut changed = false;
     for t in EXPORT_EMPTIED_TABLES {
@@ -161,14 +180,27 @@ pub fn write_zip<W: Write + Seek>(
     staging: &Path,
     out: W,
 ) -> Result<ExportSummary> {
-    let top = crate::repo::export::sanitize_component(&meta.name);
+    let encrypted = meta.encryption.is_some();
+    // An encrypted archive names nothing: no title in its paths or notebook.json.
+    let top = if encrypted {
+        ENCRYPTED_TOP.to_string()
+    } else {
+        crate::repo::export::sanitize_component(&meta.name)
+    };
     let mut zw = zip::ZipWriter::new(out);
     let deflate = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
     let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
     let big = |len: u64| len >= u32::MAX as u64 / 2;
 
     // notebook.json
-    let json = serde_json::to_string_pretty(meta)? + "\n";
+    let json = if encrypted {
+        let mut m = meta.clone();
+        m.name.clear();
+        m.format_version = notebook::ENCRYPTED_FORMAT_VERSION;
+        serde_json::to_string_pretty(&m)? + "\n"
+    } else {
+        serde_json::to_string_pretty(meta)? + "\n"
+    };
     zw.start_file(format!("{top}/{META_FILE}"), deflate).map_err(zip_err)?;
     zw.write_all(json.as_bytes()).map_err(|e| io_err("Cannot write", Path::new(META_FILE), e))?;
 
@@ -182,6 +214,12 @@ pub fn write_zip<W: Write + Seek>(
     // notes/: rendered from the snapshot (current even when the mirror is off).
     // Links into _attachments/ are rewritten, but no files are copied there.
     let notes = staging.join(NOTES_DIR);
+    if encrypted {
+        let mut out = zw.finish().map_err(zip_err)?;
+        let bytes = out.stream_position().unwrap_or(0);
+        out.flush().map_err(|e| io_err("Cannot write", Path::new("zip"), e))?;
+        return Ok(ExportSummary { name: meta.name.clone(), pages: 0, attachments: 0, bytes });
+    }
     let pages = {
         let db = Database::open_read_only(snapshot_db)?;
         db.set_attachments_dir(staging.join(".no-attachments"));
@@ -232,8 +270,13 @@ pub fn write_zip<W: Write + Seek>(
 /// next to it under a temporary name, then renamed into place).
 pub fn export_to_file(conn: &rusqlite::Connection, nb: &Notebook, dest: &Path) -> Result<ExportSummary> {
     let staging = staging_dir(dest.parent().unwrap_or(Path::new(".")))?;
+    let key = if nb.is_encrypted() {
+        Some(crate::encryption::unlocked_key(&nb.key).ok_or_else(|| Error::Locked(nb.name.clone()))?)
+    } else {
+        None
+    };
     let res = (|| {
-        let snap = snapshot(conn, &staging)?;
+        let snap = snapshot_keyed(conn, &staging, key.as_ref())?;
         write_snapshot_to_file(&snap, &export_meta(nb), attachments_of(conn).as_deref(), &staging, dest)
     })();
     let _ = fs::remove_dir_all(&staging);
@@ -370,6 +413,13 @@ pub fn import_zip(zip_path: &Path, limits: &ImportLimits) -> Result<ImportOutcom
 
 /// [`import_zip`] into the folder `parent`.
 pub fn import_zip_into(zip_path: &Path, parent: &Path, limits: &ImportLimits) -> Result<ImportOutcome> {
+    import_zip_with(zip_path, parent, limits, None)
+}
+
+/// [`import_zip_into`] with the passphrase (or recovery key) of an encrypted
+/// notebook archive. Without one, an encrypted archive is [`Error::Locked`] —
+/// the caller asks for it and tries again.
+pub fn import_zip_with(zip_path: &Path, parent: &Path, limits: &ImportLimits, secret: Option<&str>) -> Result<ImportOutcome> {
     let file = fs::File::open(zip_path).map_err(|e| io_err("Cannot read", zip_path, e))?;
     let mut ar = zip::ZipArchive::new(std::io::BufReader::new(file)).map_err(zip_err)?;
     if ar.len() > limits.max_entries {
@@ -447,7 +497,7 @@ pub fn import_zip_into(zip_path: &Path, parent: &Path, limits: &ImportLimits) ->
     fs::create_dir_all(parent).map_err(|e| io_err("Cannot create", parent, e))?;
     let staging = parent.join(format!(".minotes-import-{}", Uuid::now_v7().simple()));
     fs::create_dir_all(&staging).map_err(|e| io_err("Cannot create", &staging, e))?;
-    let res = extract_and_adopt(&mut ar, &entries, &staging, parent, &top_name, zip_path, limits);
+    let res = extract_and_adopt(&mut ar, &entries, &staging, parent, &top_name, zip_path, limits, secret);
     if res.is_err() {
         let _ = fs::remove_dir_all(&staging);
     }
@@ -463,6 +513,7 @@ fn extract_and_adopt<R: Read + Seek>(
     top_name: &str,
     zip_path: &Path,
     limits: &ImportLimits,
+    secret: Option<&str>,
 ) -> Result<ImportOutcome> {
     let mut total: u64 = 0;
     let mut skipped = Vec::new();
@@ -514,14 +565,34 @@ fn extract_and_adopt<R: Read + Seek>(
         }
     }
 
+    // ── An encrypted notebook: its slots, and the key from the secret ──
+    let staged_meta = if staging.join(META_FILE).is_file() { Some(read_meta(staging)?) } else { None };
+    let key = match staged_meta.as_ref().and_then(|m| m.encryption.as_ref()) {
+        None => None,
+        Some(info) => {
+            let archive = zip_path.file_name().and_then(|n| n.to_str()).unwrap_or("archive").to_string();
+            let secret = secret.filter(|s| !s.is_empty()).ok_or(Error::Locked(archive))?;
+            Some(match info.unlock(Secret::Passphrase(secret)) {
+                Err(Error::WrongPassphrase) => match RecoveryKey::parse(secret) {
+                    Ok(rk) => info.unlock(Secret::Recovery(&rk))?,
+                    Err(_) => return Err(Error::WrongPassphrase),
+                },
+                other => other?,
+            })
+        }
+    };
+
     // ── The database: intact, and a MiNotes database ──
     let db_path = staging.join(DB_FILE);
-    check_database(&db_path)?;
+    check_database_keyed(&db_path, key.as_ref())?;
     // Normalise the schema, reset AI, turn snippets/plugins off (this also
     // brings it to this version's schema and proves it opens).
-    let scrub = scrub_untrusted_db(&db_path)?;
+    let scrub = scrub_untrusted_db_keyed(&db_path, key.as_ref())?;
     let pages = {
-        let db = Database::open(&db_path)?;
+        let db = match &key {
+            Some(k) => Database::open_encrypted(&db_path, k)?,
+            None => Database::open(&db_path)?,
+        };
         let n = db.list_pages(None)?.len();
         let _ = notebook::checkpoint(&db);
         n
@@ -540,8 +611,8 @@ fn extract_and_adopt<R: Read + Seek>(
             .map(|n| n.trim_end_matches(".zip").trim_end_matches(".minotes").to_string())
             .unwrap_or_else(|| "Imported notebook".into())
     };
-    let mut meta = if staging.join(META_FILE).is_file() {
-        read_meta(staging)?
+    let mut meta = if let Some(m) = staged_meta {
+        m
     } else {
         NotebookMeta {
             name: fallback_name.clone(),
@@ -552,6 +623,15 @@ fn extract_and_adopt<R: Read + Seek>(
             encryption: None,
         }
     };
+    if meta.encryption.is_some() {
+        // The archive names nothing; use the zip's file name.
+        meta.name = zip_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| n.trim_end_matches(".zip").trim_end_matches(".minotes").to_string())
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| ENCRYPTED_TOP.into());
+    }
     if notebook::validate_name(&meta.name).is_err() {
         let cleaned: String = meta.name.chars().map(|c| if matches!(c, '/' | '\\' | '.') || c.is_control() { '_' } else { c }).collect();
         let cleaned: String = cleaned.trim().chars().take(100).collect();
@@ -576,7 +656,9 @@ fn extract_and_adopt<R: Read + Seek>(
         dest = parent.join(format!("{} {n}", crate::repo::export::sanitize_component(&meta.name)));
         n += 1;
     }
-    fs::create_dir_all(staging.join(NOTES_DIR)).map_err(|e| io_err("Cannot create", staging, e))?;
+    if key.is_none() {
+        fs::create_dir_all(staging.join(NOTES_DIR)).map_err(|e| io_err("Cannot create", staging, e))?;
+    }
     fs::create_dir_all(staging.join(notebook::PRIVATE_DIR)).map_err(|e| io_err("Cannot create", staging, e))?;
     notebook::write_meta(staging, &meta)?;
     fs::rename(staging, &dest).map_err(|e| io_err("Cannot create", &dest, e))?;
@@ -587,13 +669,21 @@ fn extract_and_adopt<R: Read + Seek>(
             return Err(e);
         }
     };
+    if let Some(k) = key {
+        crate::encryption::remember_unlocked(&nb.key, k);
+    }
     Ok(ImportOutcome { notebook: nb, pages, attachments: n_att, skipped, renamed_from, new_id, turned_off: scrub.turned_off })
 }
 
 /// `PRAGMA integrity_check` + the tables a MiNotes database has.
 pub fn check_database(path: &Path) -> Result<()> {
+    check_database_keyed(path, None)
+}
+
+/// [`check_database`] of an encrypted database.
+pub fn check_database_keyed(path: &Path, key: Option<&DataKey>) -> Result<()> {
     let bad = |why: String| Error::InvalidInput(format!("The notebook database in the archive is damaged: {why}"));
-    let conn = open_untrusted(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|e| bad(e.to_string()))?;
+    let conn = open_untrusted(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY, key).map_err(|e| bad(e.to_string()))?;
     let check: String = conn.query_row("PRAGMA integrity_check", [], |r| r.get(0)).map_err(|e| bad(e.to_string()))?;
     if check != "ok" {
         return Err(bad(check));
@@ -616,8 +706,11 @@ pub fn check_database(path: &Path) -> Result<()> {
 /// used by the schema — triggers, views, defaults, checks — must be innocuous)
 /// and `SQLITE_DBCONFIG_DEFENSIVE` (no `writable_schema`, no direct writes to
 /// shadow tables, no other ways to corrupt the file deliberately).
-fn open_untrusted(path: &Path, flags: rusqlite::OpenFlags) -> rusqlite::Result<rusqlite::Connection> {
+fn open_untrusted(path: &Path, flags: rusqlite::OpenFlags, key: Option<&DataKey>) -> Result<rusqlite::Connection> {
     let conn = rusqlite::Connection::open_with_flags(path, flags | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX)?;
+    if let Some(k) = key {
+        crate::db::apply_key(&conn, k)?;
+    }
     conn.execute_batch("PRAGMA trusted_schema=OFF;")?;
     conn.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true)?;
     Ok(conn)
@@ -698,6 +791,11 @@ pub struct ScrubReport {
 ///
 /// All of it runs with `trusted_schema=OFF` and SQLite's defensive mode.
 pub fn scrub_untrusted_db(path: &Path) -> Result<ScrubReport> {
+    scrub_untrusted_db_keyed(path, None)
+}
+
+/// [`scrub_untrusted_db`] of an encrypted database.
+pub fn scrub_untrusted_db_keyed(path: &Path, key: Option<&DataKey>) -> Result<ScrubReport> {
     let refuse = |why: String| Error::InvalidInput(format!("This notebook can't be imported safely: {why}"));
     let (canon, canon_version) = canonical_schema()?;
     let mut report = ScrubReport::default();
@@ -705,7 +803,7 @@ pub fn scrub_untrusted_db(path: &Path) -> Result<ScrubReport> {
 
     // 1. Structure — before migrations run (they write, and writes fire triggers).
     {
-        let conn = open_untrusted(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE).map_err(|e| refuse(e.to_string()))?;
+        let conn = open_untrusted(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE, key).map_err(|e| refuse(e.to_string()))?;
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
         if version > canon_version {
             return Err(refuse(format!(
@@ -757,7 +855,11 @@ pub fn scrub_untrusted_db(path: &Path) -> Result<ScrubReport> {
 
     // 2. Bring it to this version's schema, then reset what must not travel.
     {
-        let db = Database::open(path).map_err(|e| refuse(e.to_string()))?;
+        let db = match key {
+            Some(k) => Database::open_encrypted(path, k),
+            None => Database::open(path),
+        }
+        .map_err(|e| refuse(e.to_string()))?;
         crate::ai::ensure_schema(&db).map_err(|e| refuse(e.to_string()))?;
         db.conn.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true)?;
         // Canonical triggers and indexes still missing (one made by a
@@ -866,6 +968,55 @@ mod tests {
         let p = home.path().join("plain.minotes");
         drop(Database::open(&p).unwrap());
         fs::read(&p).unwrap()
+    }
+
+    #[test]
+    fn encrypted_notebook_round_trips_encrypted_and_needs_its_passphrase() {
+        use crate::encryption::{self, tests::{FAST, PASS}};
+        let home = FakeHome::new();
+        let (nb, rk) = encryption::create_in_folder_with(&home.path().join("MiNotes/Vault"), "Vault", PASS, FAST).unwrap();
+        let db = nb.open_db().unwrap();
+        let p = db.create_page("Narwhal Title", None, false, None, "test").unwrap();
+        db.create_block(&p.id, "narwhal block", None, None, "test").unwrap();
+        let st = db.store_attachment_bytes("pic.png", Some("image/png"), b"\x89PNG narwhal bytes").unwrap();
+        db.create_block(&p.id, &st.attachment.markdown(), None, None, "test").unwrap();
+        let zip = home.path().join("Vault backup.minotes.zip");
+        export_to_file(&db.conn, &nb, &zip).unwrap();
+        drop(db);
+
+        // Nothing readable in the archive: no name, no notes/, no attachment files.
+        let raw = fs::read(&zip).unwrap();
+        for m in [&b"Narwhal"[..], b"narwhal", b"Vault\""] {
+            assert!(!raw.windows(m.len()).any(|w| w == m), "zip leaks {}", String::from_utf8_lossy(m));
+        }
+        let mut ar = zip::ZipArchive::new(fs::File::open(&zip).unwrap()).unwrap();
+        let names: Vec<String> = (0..ar.len()).map(|i| ar.by_index(i).unwrap().name().unwrap().to_string()).collect();
+        assert_eq!(names, vec!["Encrypted notebook/notebook.json".to_string(), "Encrypted notebook/notebook.minotes".to_string()]);
+
+        // Import: locked without a secret, refused with a wrong one.
+        assert!(matches!(import_zip_with(&zip, &home.path().join("MiNotes"), &ImportLimits::default(), None), Err(Error::Locked(_))));
+        assert!(matches!(
+            import_zip_with(&zip, &home.path().join("MiNotes"), &ImportLimits::default(), Some("not the passphrase")),
+            Err(Error::WrongPassphrase)
+        ));
+        let out = import_zip_with(&zip, &home.path().join("MiNotes"), &ImportLimits::default(), Some(PASS)).unwrap();
+        assert_eq!(out.notebook.name, "Vault backup");
+        assert!(out.notebook.is_encrypted());
+        let db2 = out.notebook.open_db().unwrap();
+        let page = db2.get_page_by_title("Narwhal Title").unwrap().unwrap();
+        assert_eq!(db2.get_page_blocks(&page.id).unwrap().len(), 2);
+        assert_eq!(db2.attachment_bytes(&st.attachment.hash).unwrap().unwrap(), b"\x89PNG narwhal bytes");
+        drop(db2);
+        // The recovery key works as the secret too; still nothing in plaintext on disk.
+        let out2 = import_zip_with(&zip, &home.path().join("MiNotes"), &ImportLimits::default(), Some(&rk.display())).unwrap();
+        assert!(out2.notebook.is_encrypted());
+        for root in [out.notebook.root().unwrap(), out2.notebook.root().unwrap()] {
+            assert!(!root.join(notebook::NOTES_DIR).exists());
+            for f in ["notebook.minotes", "notebook.json"] {
+                let b = fs::read(root.join(f)).unwrap();
+                assert!(!b.windows(7).any(|w| w == b"Narwhal"), "{f}");
+            }
+        }
     }
 
     #[test]
