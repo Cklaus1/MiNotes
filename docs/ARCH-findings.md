@@ -66,10 +66,10 @@ And one process gap that makes all of this riskier: **there is no CI** (X-1).
 | F-6 | Run git with hooks/fsmonitor/ext protocol disabled and `--no-verify`; don't auto-sync folders this machine didn't set up | S |
 | F-4, F-5 | Refuse symlinks in the mirror (lstat everywhere, canonical containment); `core.symlinks=false` | S |
 | B-1, F-16 | Scrub imported zip notebooks: AI settings off, no transcripts/snippets/plugins, drop unknown triggers/views, `trusted_schema=OFF`; exclude `ai_runs` from export | M |
-| C-1 | Bound the event log and stop GC from counting events no one can undo, so trash and attachments are actually freed | M |
+| C-1 | **Fixed.** Bound the event log and stop GC from counting events no one can undo, so trash and attachments are actually freed | M |
 | U-1 | Save barrier before notebook switch (flush editor + whiteboard) | S |
 | B-2 | AI Ask must respect read-only sessions | S |
-| C-3 | `BEGIN IMMEDIATE` for outermost transactions + bounded busy retry | S |
+| C-3 | **Fixed.** `BEGIN IMMEDIATE` for outermost transactions + bounded busy retry | S |
 | B-14 | Dev-only OpenRouter URL override out of release builds | S |
 | B-5 | Attachment open: allowlist of safe types instead of a denylist | S |
 
@@ -105,8 +105,8 @@ code splitting (U-14), accessibility (U-15), whiteboard conflict handling
 | B-2 | High | Verified | AI Ask writes to a notebook open read-only (owned by another window) | S |
 | B-3 | High | Verified | Monthly AI cost cap can be exceeded (parallel runs, unknown prices, lost usage, per-notebook) | M |
 | B-4 | High | Verified | ~139 sync commands on the UI thread share one DB mutex held by background work | M |
-| C-1 | High | Verified | Event log never pruned; it pins whiteboard/attachment GC forever | M |
-| C-3 | High | Verified | Deferred transactions: concurrent writers fail instantly with "database is locked" | S |
+| C-1 | High | Verified | **Fixed:** Event log never pruned; it pins whiteboard/attachment GC forever | M |
+| C-3 | High | Verified | **Fixed:** Deferred transactions: concurrent writers fail instantly with "database is locked" | S |
 | C-4 | High | Verified | Migrations not transactional, no downgrade guard, DDL outside versioning | M |
 | C-5 | High | Verified | Version restore is non-atomic and leaves links/sync state wrong | M |
 | U-1 | High | Likely | Notebook switch doesn't flush edits; the unmount save lands in the other notebook | S–M |
@@ -126,7 +126,7 @@ code splitting (U-14), accessibility (U-15), whiteboard conflict handling
 | B-9 | Medium | Verified | Startup DB failure panics with no window | M |
 | B-10 | Medium | Verified | `lib.rs` god module, string errors, duplicated guards | M |
 | B-11 | Medium | Verified | CLI re-implements session logic and ignores the app's lock | M |
-| C-2 | Medium | Verified | Backend `undo_last` is unused and wrong (cross-actor, no-ops, data loss) | S (remove) |
+| C-2 | Medium | Verified | **Fixed (removed):** Backend `undo_last` is unused and wrong (cross-actor, no-ops, data loss) | S (remove) |
 | C-6 | Medium | Verified | Renaming a page doesn't backfill links to the new title | S |
 | C-7 | Medium | Verified | Title freed from trash leaves link rows on the trashed page | S |
 | C-8 | Medium | Verified | Core doesn't own sibling ordering (no tie-break, precision exhaustion) | M |
@@ -318,6 +318,13 @@ doesn't apply (proof: "database is locked after 0.00 s"). The CLI writing while
 the app runs intermittently fails the app's next edit. **Fix:** outermost tx
 uses `BEGIN IMMEDIATE` (savepoints for nested), bounded retry at the command
 boundary, two-connection test.
+*Fixed:* the outermost `Database::tx` (connection in autocommit) begins with
+`BEGIN IMMEDIATE`; nested calls keep savepoints; rollback-on-drop unchanged.
+Only the `BEGIN` is retried (3 attempts, each honouring `busy_timeout`) — the
+body never re-runs. `busy_timeout` is set first on every connection (before
+the WAL switch); read-only connections get a deferred `BEGIN`. The CLI's own
+transactions (`block batch`, `reindex`) are `IMMEDIATE` too. Two-connection
+tests cover read→concurrent commit→write and an interleaved CLI writer.
 
 **C-13 / B-10 / B-11 Structure.** `Database` is ~204 methods over 27 files with a
 public `conn`; errors have no `Io`/`Busy`/`Conflict` variants and reach the UI
@@ -339,11 +346,25 @@ adopted in the import work from the existing whiteboard rule; both inherit this
 bug.)* **Fix:** bound the undo horizon (last N user events / 30 days) and count
 only events inside it; compact older events except what sync needs; skip no-op
 updates; stop logging derived link rows.
+*Fixed* (with Q2 decided: the event log is a bounded change feed for sync, not
+an undo system). Rule: GC protects a board/attachment referenced by any block
+row (live, archived **or in the Trash**), a template, or the content of a block
+deleted/edited within `EVENT_HORIZON_DAYS` (30) — far longer than the frontend
+session undo (`restore_blocks`) needs; `undone` is no longer read. GC still runs
+only after empty-trash / permanent deletes. `compact_events(older_than)` deletes
+events older than the horizon (never inside it; callers with an older sync
+marker can keep more); sync's `pages_modified_since`/`folders_modified_since`
+only look back to the current cycle or a held deletion, inside the horizon. It
+runs at notebook open and with every GC. `update_block` with unchanged content
+writes nothing; `link.created` events are no longer emitted (nothing read them).
 
 **C-2 Backend `undo_last` is unused and wrong.** It undoes other actors' work
 (sync, import, outside edits), silently no-ops moves/renames/properties, breaks
 links after a rename, and loses properties and cards when restoring a delete.
 **Fix:** remove it (and the `undone` coupling) unless a real design replaces it.
+*Fixed:* removed (`undo_last`, the Tauri `undo` command, `api.undo`, the mock
+handler); GC no longer reads `undone`. The column stays (dropping it needs a
+table-rebuild migration for no gain); nothing writes or reads it.
 
 **U-4 Frontend undo is one global stack.** Ctrl+Z outside an editor undoes the
 top action even if it belongs to another page, with no message; text edits are
@@ -515,6 +536,8 @@ each can land incrementally behind the existing interfaces.
    If yes, F-4/F-5/F-6 are P0 blockers for that use, not just hardening.
 2. Keep the backend event log as the future undo/history source (then design it
    properly) or reduce it to what sync needs (then delete `undo_last`)?
+   **Decided:** reduce it to a bounded change feed for sync; `undo_last` deleted
+   (C-1, C-2).
 3. Remote images: off by default for imported/synced content only, or for all
    notes?
 4. CI provider and budget for nightly real-app journeys (needs a Linux runner

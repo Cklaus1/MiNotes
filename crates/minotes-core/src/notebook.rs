@@ -974,6 +974,7 @@ pub fn table_row_counts(conn: &rusqlite::Connection) -> Result<BTreeMap<String, 
 /// `PRAGMA integrity_check` and per-table row counts of `copy` against `expected`.
 pub fn verify_copy(copy: &Path, expected: &BTreeMap<String, i64>) -> Result<()> {
     let conn = rusqlite::Connection::open_with_flags(copy, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    conn.busy_timeout(std::time::Duration::from_secs(5))?;
     let check: String = conn.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
     if check != "ok" {
         return Err(Error::InvalidInput(format!("Copied database failed its integrity check: {check}")));

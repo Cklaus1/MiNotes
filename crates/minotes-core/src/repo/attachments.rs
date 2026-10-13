@@ -503,21 +503,24 @@ impl Database {
     }
 
     /// Hashes something can still bring back: block content (live, trashed,
-    /// archived pages alike), templates, and not-yet-undone events whose undo
-    /// restores content (the whiteboard rule, see `gc_whiteboards`).
+    /// archived pages alike — so the Trash is covered), templates, and content
+    /// of blocks deleted or edited inside the event horizon, which a session
+    /// undo could restore (the whiteboard rule, see `gc_whiteboards`).
     pub(crate) fn referenced_attachment_hashes(&self) -> Result<HashSet<String>> {
         let mut referenced = HashSet::new();
+        let horizon = crate::repo::events::event_horizon_start().to_rfc3339();
         for sql in [
             "SELECT content FROM blocks WHERE content LIKE '%attachment:%'",
             "SELECT content FROM templates WHERE content LIKE '%attachment:%'",
             "SELECT payload FROM events
-              WHERE undone = 0 AND event_type = 'block.deleted' AND payload LIKE '%attachment:%'",
+              WHERE created_at >= ?1 AND event_type = 'block.deleted' AND payload LIKE '%attachment:%'",
             "SELECT json_extract(payload, '$.previous_content') FROM events
-              WHERE undone = 0 AND event_type = 'block.updated' AND json_valid(payload)
+              WHERE created_at >= ?1 AND event_type = 'block.updated' AND json_valid(payload)
                 AND json_extract(payload, '$.previous_content') LIKE '%attachment:%'",
         ] {
             let mut stmt = self.conn.prepare(sql)?;
-            for text in stmt.query_map([], |r| r.get::<_, String>(0))? {
+            let params = crate::repo::whiteboards::horizon_params(&stmt, &horizon);
+            for text in stmt.query_map(rusqlite::params_from_iter(params), |r| r.get::<_, String>(0))? {
                 referenced.extend(attachment_hashes(&text?));
             }
         }
@@ -742,7 +745,7 @@ mod tests {
         assert_eq!(unrewrite_mirror_links(&root), md);
     }
 
-    // GC keeps attachments referenced by live/trashed pages and undo-able events,
+    // GC keeps attachments referenced by live/trashed pages and recent deletions,
     // removes the rest (rows and files) — but never one stored moments ago.
     #[test]
     fn gc_follows_the_whiteboard_rule() {
@@ -777,6 +780,16 @@ mod tests {
         assert!(db.get_attachment(&trashed.hash).unwrap().is_none());
         assert!(db.attachment_file(&trashed.hash).is_none());
         assert!(db.get_attachment(&live.hash).unwrap().is_some());
+        assert!(db.attachment_file(&undo.hash).is_some(), "deleted block still inside the horizon");
+
+        // Once the deletion is older than the event horizon, the next
+        // empty-trash collects its attachment (and compacts the old events).
+        let old = (Utc::now() - chrono::Duration::days(crate::repo::events::EVENT_HORIZON_DAYS + 1)).to_rfc3339();
+        db.conn.execute("UPDATE events SET created_at = ?1", [&old]).unwrap();
+        db.empty_trash("user").unwrap();
+        assert!(db.get_attachment(&undo.hash).unwrap().is_none());
+        assert!(db.attachment_file(&undo.hash).is_none());
+        assert!(db.attachment_file(&live.hash).is_some());
     }
 
     #[test]
