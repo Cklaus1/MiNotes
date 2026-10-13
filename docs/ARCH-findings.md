@@ -62,9 +62,9 @@ And one process gap that makes all of this riskier: **there is no CI** (X-1).
 
 | ID | Fix | Effort |
 |---|---|---|
-| F-1 | Flush the mirror before enabling sync; protect recent edits; park removed blocks in Trash | S |
-| F-6 | Run git with hooks/fsmonitor/ext protocol disabled and `--no-verify`; don't auto-sync folders this machine didn't set up | S |
-| F-4, F-5 | Refuse symlinks in the mirror (lstat everywhere, canonical containment); `core.symlinks=false` | S |
+| F-1 | **Fixed** (4f43d3a). Flush the mirror before enabling sync; protect recent edits; park removed blocks in Trash | S |
+| F-6 | **Fixed** (4f43d3a). Run git with hooks/fsmonitor/ext protocol disabled and `--no-verify`; don't auto-sync folders this machine didn't set up | S |
+| F-4, F-5 | **Fixed** (4f43d3a). Refuse symlinks in the mirror (lstat everywhere, canonical containment); `core.symlinks=false` | S |
 | B-1, F-16 | Scrub imported zip notebooks: AI settings off, no transcripts/snippets/plugins, drop unknown triggers/views, `trusted_schema=OFF`; exclude `ai_runs` from export | M |
 | C-1 | Bound the event log and stop GC from counting events no one can undo, so trash and attachments are actually freed | M |
 | U-1 | Save barrier before notebook switch (flush editor + whiteboard) | S |
@@ -95,11 +95,11 @@ code splitting (U-14), accessibility (U-15), whiteboard conflict handling
 
 | ID | Sev | Conf | Title | Effort |
 |---|---|---|---|---|
-| F-1 | **Critical** | Verified | Enabling git sync reverts unmirrored edits and hard-deletes new blocks | S |
+| F-1 | **Critical** | **Fixed** | Enabling git sync reverts unmirrored edits and hard-deletes new blocks | S |
 | F-2 | High | Verified | Remote edit silently discarded when the page was edited locally during sync | M |
 | F-3 | High | Verified | Dropped-in markdown rewritten lossily (YAML lists, code fences), no copy kept | M |
-| F-4 | High | Verified | Symlinked `.md` in the mirror is imported and re-written as a real file (exfiltration via a shared repo) | S |
-| F-6 | High | Likely | Git runs repo-local hooks/fsmonitor in notebook folders the user opened | S |
+| F-4 | High | **Fixed** | Symlinked `.md` in the mirror is imported and re-written as a real file (exfiltration via a shared repo) | S |
+| F-6 | High | **Fixed** | Git runs repo-local hooks/fsmonitor in notebook folders the user opened | S |
 | F-7 | High | Verified | Block properties are not in the markdown, so never sync | M |
 | B-1 | High | Likely | Imported notebook zip carries AI endpoint, CSS snippets, plugins, triggers | M |
 | B-2 | High | Verified | AI Ask writes to a notebook open read-only (owned by another window) | S |
@@ -112,7 +112,7 @@ code splitting (U-14), accessibility (U-15), whiteboard conflict handling
 | U-1 | High | Likely | Notebook switch doesn't flush edits; the unmount save lands in the other notebook | S–M |
 | U-2 | High | Verified | Open page never refreshes after outside writes; stale content can overwrite them | M |
 | U-4 | High | Likely | Undo is one global stack: Ctrl+Z can undo invisible changes on other pages | M–L |
-| F-5 | Medium | Verified | Mirror writes and prunes through symlinked directories | S |
+| F-5 | Medium | **Fixed** | Mirror writes and prunes through symlinked directories | S |
 | F-8 | Medium | Likely | Two markdown importers with different safety policies | M |
 | F-9 | Medium | Verified | "Take over" leaves two live writers; lock is check-then-write | M |
 | F-10 | Medium | Likely | Lost mirror state silently disables outside-edit protection; writes not durable | S–M |
@@ -167,6 +167,18 @@ whose mirror write failed, and on Android (mirror off unless sync is on) every
 edit since sync was last disabled. **Fix:** full `mirror::run` (with
 outside-edit import) under FS_LOCK + DB lock first; pass
 `protect_modified_after`; send removals to the Trash sink; regression test.
+
+> **Fixed** (4f43d3a). `enable_in_dir` now takes the mirror target and runs:
+> full mirror pass (outside edits imported first) + commit under FS_LOCK and the
+> DB lock → pull → import → mirror pass → commit → push. The import protects
+> pages edited after the flush (`protect_modified_after`) **and every page whose
+> file the pull did not change** (`SyncOptions::protect_pages`), so a file older
+> than the database can never win — the rule that also covers Android and
+> mirror-off notebooks. Pull deletions go to the Trash under the mass-delete guard;
+> blocks the pull removed are parked in a Trash page "<title> (removed by sync …)"
+> (`SyncOptions::park_removed`). Tests: `test_enable_keeps_unmirrored_edits`,
+> `test_reenable_after_weeks_with_mirror_off_keeps_the_database`,
+> `test_enable_imports_the_pull_and_parks_removed_blocks`.
 
 **F-2 Remote edit discarded when the page was edited locally during the network
 phase.** *High, Verified.* Protected pages are skipped (`repo/sync.rs:846`) but
@@ -245,6 +257,20 @@ who can push to a shared sync repo can commit such a link. **Fix:**
 `symlink_metadata` everywhere, refuse symlinks, canonical `starts_with(root)`
 before every write/rename, `core.symlinks=false` for the sync repo.
 
+> **Fixed** (4f43d3a). An `lstat` walk below the mirror root (`export::symlink_below`,
+> `read_below`, `link_in_the_way`) guards every read (outside-edit candidates incl.
+> watcher and tracked paths, `adopt_pulled_files`, sync import, folder markers,
+> manifest, whiteboard and attachment sidecars) and every write, mkdir, prune and
+> `.minotes-trash` move (full and incremental mirror, export, conflict copies).
+> Linked files are left untouched and reported once as "skipped: symbolic link";
+> `atomic_write` refuses to replace a link and creates its temp file exclusively.
+> The mirror root itself may be a link. `core.symlinks=false` is passed on every git
+> run and persisted in the repo (`git_cmd::harden_repo`, on enable and every
+> cycle). Tests: `outside::tests::symlinked_*`, `page_file_replaced_by_a_symlink_*`,
+> `prune_never_moves_files_through_a_symlinked_trash_dir`,
+> `atomic_write_refuses_to_replace_a_symlink`,
+> `sync_manager::tests::test_symlink_from_a_shared_remote_is_never_followed`.
+
 **F-6 Git hooks and config from the folder run.** `run_git_timeout`
 (`git_cmd.rs:375`) passes only `core.quotePath=off`; no `core.hooksPath`,
 `core.fsmonitor` or `--no-verify`. The PRD promise "copy the folder to another
@@ -253,6 +279,23 @@ machine and it just works" means a shared folder with
 **Fix:** always `-c core.hooksPath=/dev/null -c core.fsmonitor=false
 -c protocol.ext.allow=never`, `commit --no-verify`; ask before enabling sync for
 a folder this machine didn't create.
+
+> **Fixed** (4f43d3a). Every git run gets `-c core.hooksPath=/dev/null` (Windows:
+> an empty dir in `~/.minotes`), `core.fsmonitor=false`, `protocol.ext.allow=never`,
+> `core.symlinks=false`, `commit.gpgSign=false`; `commit`/`push` use `--no-verify`;
+> diffs use `--no-ext-diff --no-textconv`. The user's global config is not
+> overridden (`core.sshCommand`, credential helpers, askpass, proxies keep working).
+> Trust: a folder notebook whose own `sync-config.json` says enabled but which has
+> no token recorded in this machine's `~/.minotes/sync-trust.json` is not synced
+> (`full_sync_with` returns `needs_confirmation`; the app shows a "Sync it here /
+> Not now" banner). Confirming — or turning sync on yourself — strips
+> command-running keys from that repo's `.git/config` (`core.fsmonitor`,
+> `core.sshCommand`, `credential.*helper`, `filter.*`, `merge.*.driver`,
+> `diff.*.textconv`, `include*`, `remote.*.uploadpack`, …; `git_cmd::is_command_config_key`)
+> and records the token. Legacy notebooks keep their sync config in `~/.minotes`, so
+> they count as set up here. Tests: `test_sync_never_runs_repo_hooks_or_fsmonitor`
+> (hooks + fsmonitor writing a marker; verified they do run under plain git),
+> `test_copied_folder_sync_needs_confirmation`, desktop journey D10.
 
 **B-1 / F-16 An imported notebook zip is trusted wholesale.** AI settings live in
 the notebook DB (`ai/settings.rs`), a "local" endpoint may be any `https://` URL
@@ -512,7 +555,16 @@ each can land incrementally behind the existing interfaces.
 ## 7. Open questions
 
 1. Is git sync with a **shared** remote (team or family repo) a supported use?
-   If yes, F-4/F-5/F-6 are P0 blockers for that use, not just hardening.
+   Two different threat cases, both now fixed:
+   - **Shared remote** (anyone with push access): git transfers only the tree, so
+     the risk is content — symlinks and paths in commits (F-4, F-5). Git never
+     transfers `.git/hooks` or `.git/config`, so a remote cannot plant hooks.
+   - **Shared or copied folder** (a notebook folder from another computer, a
+     shared drive, a zip of the folder): its `notes/.git/` carries someone else's
+     hooks and repo-local config (F-6). That is why such a folder now asks once
+     before it syncs, and why hooks/fsmonitor are disabled on every git run.
+   Whether a shared remote is a *supported* use (permissions, review of others'
+   pushes) is still a product decision; it is no longer a security blocker.
 2. Keep the backend event log as the future undo/history source (then design it
    properly) or reduce it to what sync needs (then delete `undo_last`)?
 3. Remote images: off by default for imported/synced content only, or for all
