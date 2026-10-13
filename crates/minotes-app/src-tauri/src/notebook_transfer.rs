@@ -8,7 +8,6 @@
 
 use std::path::{Component, Path, PathBuf};
 
-use minotes_core::db::Database;
 use minotes_core::notebook::{self, NotebookInfo};
 use minotes_core::notebook_zip::{self, ImportLimits};
 use serde::Serialize;
@@ -126,12 +125,20 @@ pub fn export_notebook_zip(
     let staging = notebook_zip::staging_dir(&staging_parent(&app)).map_err(|e| e.to_string())?;
     let res = (|| -> Result<ZipExportOut, String> {
         // A consistent snapshot, holding the database only for VACUUM INTO.
-        let (snap, attachments) = if nb.key == open.key {
-            let db = state.db.lock().map_err(|e| e.to_string())?;
-            (notebook_zip::snapshot(&db.conn, &staging).map_err(|e| e.to_string())?, notebook_zip::attachments_of(&db.conn))
+        // An encrypted notebook stays encrypted in the archive (same key).
+        let key = if nb.is_encrypted() {
+            Some(minotes_core::encryption::unlocked_key(&nb.key).ok_or_else(|| {
+                format!("{}: Notebook \u{201c}{}\u{201d} is locked", crate::LOCKED_ERROR, nb.name)
+            })?)
         } else {
-            let db = Database::open_read_only(&nb.db_path()).map_err(|e| e.to_string())?;
-            (notebook_zip::snapshot(&db.conn, &staging).map_err(|e| e.to_string())?, notebook_zip::attachments_of(&db.conn))
+            None
+        };
+        let (snap, attachments) = if nb.key == open.key {
+            let db = state.db_guard()?;
+            (notebook_zip::snapshot_keyed(&db.conn, &staging, key.as_ref()).map_err(|e| e.to_string())?, notebook_zip::attachments_of(&db.conn))
+        } else {
+            let db = nb.open_read_only(5000).map_err(|e| e.to_string())?;
+            (notebook_zip::snapshot_keyed(&db.conn, &staging, key.as_ref()).map_err(|e| e.to_string())?, notebook_zip::attachments_of(&db.conn))
         };
         let meta = notebook_zip::export_meta(&nb);
         let (summary, shown) = match target {
@@ -165,7 +172,7 @@ pub fn export_notebook_zip(
 /// `source` is what the open picker returned: a path, or on Android a
 /// `content://` URI. Does not switch to it.
 #[tauri::command(async)]
-pub fn import_notebook_zip(app: AppHandle, source: String) -> Result<ZipImportOut, String> {
+pub fn import_notebook_zip(app: AppHandle, source: String, passphrase: Option<String>) -> Result<ZipImportOut, String> {
     let limits = ImportLimits::default();
     let source = source.trim().to_string();
     let staging = notebook_zip::staging_dir(&staging_parent(&app)).map_err(|e| e.to_string())?;
@@ -177,7 +184,14 @@ pub fn import_notebook_zip(app: AppHandle, source: String) -> Result<ZipImportOu
         } else {
             validate_zip_source(&source, &limits)?
         };
-        let out = notebook_zip::import_zip(&zip_path, &limits).map_err(|e| e.to_string())?;
+        // An encrypted notebook archive needs its passphrase (or recovery key):
+        // without one the UI gets NOTEBOOK_LOCKED and asks.
+        let out = notebook_zip::import_zip_with(&zip_path, &notebook::notebooks_dir(), &limits, passphrase.as_deref())
+            .map_err(|e| match e {
+                minotes_core::error::Error::Locked(_) => format!("{}: This notebook archive is encrypted", crate::LOCKED_ERROR),
+                minotes_core::error::Error::WrongPassphrase => "WRONG_PASSPHRASE: Wrong passphrase".to_string(),
+                other => other.to_string(),
+            })?;
         Ok(ZipImportOut {
             notebook: notebook::info(&out.notebook),
             pages: out.pages,

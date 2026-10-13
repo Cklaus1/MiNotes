@@ -204,7 +204,7 @@ pub async fn save_remote_image(state: State<'_, AppState>, url: String) -> Resul
     let origin = test_origin();
     let (bytes, mime) = fetch_image(&url, origin.as_ref(), MAX_REMOTE_IMAGE_BYTES).await?;
     let name = image_file_name(&url, mime);
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     db.store_attachment_bytes(&name, Some(mime), &bytes).map(|s| s.attachment).map_err(|e| e.to_string())
 }
 

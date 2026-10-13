@@ -365,6 +365,9 @@ fn convert(nb: &Notebook, op: ConvertOp, from: Option<&DataKey>, to: Option<&Dat
             match op {
                 ConvertOp::Encrypt => {
                     conv.import_attachment_files_into_db(&store)?;
+                    // PRD-plugin-architecture §6.2: plugins (and CSS snippets) are
+                    // off in an encrypted notebook until re-enabled knowingly.
+                    conv.conn.execute_batch("UPDATE plugins SET enabled = 0; UPDATE css_snippets SET enabled = 0;")?;
                 }
                 ConvertOp::Decrypt => {
                     conv.export_attachment_blobs(&store)?;
@@ -697,6 +700,9 @@ pub(crate) mod tests {
         db.save_whiteboard("wb1", r#"{"elements":[{"text":"BoardWombat"}]}"#).unwrap();
         let a = db.store_attachment_bytes("x.txt", None, b"AttachWombat bytes").unwrap().attachment;
         db.create_block(&p.id, &a.markdown(), None, None, "user").unwrap();
+        db.conn
+            .execute("INSERT INTO css_snippets (id, name, css, enabled, created_at) VALUES ('s1', 'snip', 'body{}', 1, 't')", [])
+            .unwrap();
         drop(db);
         let notes = nb.mirror_dir();
         std::fs::create_dir_all(notes.join(".git")).unwrap();
@@ -764,6 +770,8 @@ pub(crate) mod tests {
             assert!(!nb.root().unwrap().join("attachments").exists());
             assert!(!marker_path(nb.root().unwrap()).exists());
             assert_no_plaintext(home);
+            let enabled: i64 = nb.open_db().unwrap().conn.query_row("SELECT enabled FROM css_snippets", [], |r| r.get(0)).unwrap();
+            assert_eq!(enabled, 0, "CSS snippets are turned off when a notebook is encrypted");
             // The recovery key and the passphrase both open it.
             lock(&nb);
             unlock(&nb, Secret::Recovery(&rk)).unwrap();
