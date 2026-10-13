@@ -192,7 +192,7 @@ pub fn commit_all(dir: &Path, message: &str) -> Result<bool> {
     }
 
     // Commit
-    let (stdout, stderr, ok) = run_git(dir, &["commit", "--no-verify", "-m", message])?;
+    let (stdout, stderr, ok) = run_git_committing(dir, &["commit", "--no-verify", "-m", message])?;
     if !ok {
         // "nothing to commit" is not an error (can appear in stdout or stderr)
         if stderr.contains("nothing to commit") || stdout.contains("nothing to commit") {
@@ -209,7 +209,7 @@ pub fn commit_all(dir: &Path, message: &str) -> Result<bool> {
 pub fn pull_rebase(dir: &Path) -> Result<bool> {
     let branch = require_branch(dir)?;
     let (stdout, stderr, ok) =
-        run_git(dir, &["pull", "--rebase", "--no-edit", "origin", &branch])?;
+        run_git_committing(dir, &["pull", "--rebase", "--no-edit", "origin", &branch])?;
     if !ok {
         if rebase_in_progress(dir)
             || stderr.contains("CONFLICT")
@@ -345,13 +345,13 @@ pub fn auto_resolve_conflicts(dir: &Path) -> Result<Vec<String>> {
             return Err(abort_with(dir, "Conflicts remain after auto-resolve; rebase aborted".into()));
         }
 
-        let (_, stderr, ok) = run_git(dir, &["rebase", "--continue"])?;
+        let (_, stderr, ok) = run_git_committing(dir, &["rebase", "--continue"])?;
         if !ok && rebase_in_progress(dir) && unmerged_files(dir)?.is_empty() {
             // The step may have become empty after resolution: skip it only if
             // there is genuinely nothing staged; otherwise give up safely.
             let (_, _, clean) = run_git(dir, &["diff", "--cached", "--quiet", "--no-ext-diff", "--no-textconv"])?;
             if clean {
-                let _ = run_git(dir, &["rebase", "--skip"])?;
+                let _ = run_git_committing(dir, &["rebase", "--skip"])?;
             } else {
                 return Err(abort_with(dir, format!("git rebase --continue failed: {}", stderr.trim())));
             }
@@ -516,6 +516,46 @@ fn safety_args() -> Vec<String> {
     ]
 }
 
+/// Name and address for MiNotes' own commits when the user has no git identity
+/// (no `user.name` / `user.email` in the repo, global or system config, nor in
+/// the `GIT_AUTHOR_*` / `GIT_COMMITTER_*` / `EMAIL` environment). Git would
+/// otherwise refuse to commit ("unable to auto-detect email address") on a
+/// machine whose hostname has no domain. Nothing personal is guessed: the name
+/// is "MiNotes", the address `minotes@<hostname>.local`. A configured identity
+/// always wins.
+fn fallback_identity(dir: &Path) -> Vec<String> {
+    let configured = |key: &str, envs: &[&str]| {
+        envs.iter().any(|e| std::env::var(e).map(|v| !v.trim().is_empty()).unwrap_or(false))
+            || run_git(dir, &["config", "--get", key]).map(|(o, _, ok)| ok && !o.trim().is_empty()).unwrap_or(false)
+    };
+    let mut out = Vec::new();
+    if !configured("user.name", &["GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"]) {
+        out.push("-c".to_string());
+        out.push("user.name=MiNotes".to_string());
+    }
+    if !configured("user.email", &["GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL", "EMAIL"]) {
+        let host: String = get_hostname()
+            .to_ascii_lowercase()
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '-' })
+            .collect();
+        let host = host.trim_matches('-');
+        let host = if host.is_empty() { "localhost" } else { host };
+        out.push("-c".to_string());
+        out.push(format!("user.email=minotes@{host}.local"));
+    }
+    out
+}
+
+/// [`run_git`] for commands that make commits (commit, pull --rebase, rebase
+/// --continue/--skip): with [`fallback_identity`] when the user has none.
+fn run_git_committing(dir: &Path, args: &[&str]) -> Result<(String, String, bool)> {
+    let ident = fallback_identity(dir);
+    let mut all: Vec<&str> = ident.iter().map(String::as_str).collect();
+    all.extend_from_slice(args);
+    run_git(dir, &all)
+}
+
 /// Run a git command in the given directory. Returns (stdout, stderr, success).
 pub(crate) fn run_git(dir: &Path, args: &[&str]) -> Result<(String, String, bool)> {
     run_git_timeout(dir, args, GIT_TIMEOUT)
@@ -635,6 +675,47 @@ pub(crate) mod tests {
             devs.push(d);
         }
         (remote, devs.remove(0), devs.remove(0))
+    }
+
+    // A machine with no git identity at all (no global/system config, nothing in
+    // the environment, a hostname without a domain): MiNotes' commits still work
+    // under a neutral fallback identity, and a configured identity always wins.
+    #[test]
+    fn test_commit_without_any_git_identity() {
+        if !git_available() {
+            return;
+        }
+        let _home = crate::notebook::tests::FakeHome::new(); // empty HOME: no ~/.gitconfig
+        let saved: Vec<(&str, Option<std::ffi::OsString>)> =
+            ["GIT_CONFIG_NOSYSTEM", "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "EMAIL", "XDG_CONFIG_HOME"]
+                .into_iter()
+                .map(|k| (k, std::env::var_os(k)))
+                .collect();
+        std::env::set_var("GIT_CONFIG_NOSYSTEM", "1");
+        for (k, _) in &saved[1..] {
+            std::env::remove_var(k);
+        }
+        let dir = tempfile::tempdir().unwrap();
+        init_repo(dir.path()).unwrap();
+        std::fs::write(dir.path().join("a.md"), "x").unwrap();
+        let r = commit_all(dir.path(), "first");
+        let (log, _, _) = run_git(dir.path(), &["log", "-1", "--format=%an <%ae>"]).unwrap();
+        // Configured identity wins.
+        run_git(dir.path(), &["config", "user.name", "Real Person"]).unwrap();
+        run_git(dir.path(), &["config", "user.email", "real@example.com"]).unwrap();
+        std::fs::write(dir.path().join("b.md"), "y").unwrap();
+        let r2 = commit_all(dir.path(), "second");
+        let (log2, _, _) = run_git(dir.path(), &["log", "-1", "--format=%an <%ae>"]).unwrap();
+        for (k, v) in saved {
+            match v {
+                Some(v) => std::env::set_var(k, v),
+                None => std::env::remove_var(k),
+            }
+        }
+        assert!(r.unwrap(), "commit with no identity configured");
+        assert!(log.trim().starts_with("MiNotes <minotes@") && log.trim().ends_with(".local>"), "{log}");
+        assert!(r2.unwrap());
+        assert_eq!(log2.trim(), "Real Person <real@example.com>");
     }
 
     #[test]
