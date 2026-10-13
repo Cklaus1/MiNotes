@@ -727,7 +727,7 @@ fn has_multiple_statements(sql: &str) -> bool {
 /// Key a fresh connection (before any other statement) and prove the key reads
 /// the file. Uses `sqlite3_key_v2` with SQLCipher's raw-key literal `x'…'` from a
 /// zeroizing buffer — no SQL text with the key in it.
-fn apply_key(conn: &Connection, key: &DataKey) -> Result<()> {
+pub(crate) fn apply_key(conn: &Connection, key: &DataKey) -> Result<()> {
     let lit = key.sqlcipher_literal();
     let rc = unsafe {
         rusqlite::ffi::sqlite3_key_v2(
