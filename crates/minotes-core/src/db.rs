@@ -251,13 +251,16 @@ pub struct Database {
     /// Where this database's attachment store lives when it can't be derived
     /// from the file path (in-memory databases, tests). See `attachments_dir`.
     pub(crate) attachments_override: std::cell::RefCell<Option<std::path::PathBuf>>,
+    /// Opened with a data key (SQLCipher). Attachments then live inside the
+    /// database, never as files (PRD-encryption §4.5).
+    pub(crate) encrypted: bool,
     // ── End import ──
 }
 
 impl Database {
     pub fn open(path: &Path) -> Result<Self> {
         let conn = Connection::open(path)?;
-        let db = Self { conn, attachments_override: Default::default() };
+        let db = Self { conn, attachments_override: Default::default(), encrypted: false };
         db.init()?;
         Ok(db)
     }
@@ -281,7 +284,12 @@ impl Database {
         conn.execute_batch(&format!(
             "PRAGMA busy_timeout={busy_timeout_ms}; PRAGMA query_only=ON; PRAGMA foreign_keys=ON; PRAGMA trusted_schema=OFF;"
         ))?;
-        Ok(Self { conn, attachments_override: Default::default() })
+        Ok(Self { conn, attachments_override: Default::default(), encrypted: false })
+    }
+
+    /// Was this database opened with a data key (an encrypted notebook)?
+    pub fn is_encrypted(&self) -> bool {
+        self.encrypted
     }
 
     /// Is this connection read-only (see [`open_read_only`](Self::open_read_only))?
@@ -308,7 +316,7 @@ impl Database {
             OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_URI | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )?;
         apply_key(&conn, key)?;
-        let db = Self { conn, attachments_override: Default::default() };
+        let db = Self { conn, attachments_override: Default::default(), encrypted: true };
         db.init()?;
         Ok(db)
     }
@@ -320,7 +328,7 @@ impl Database {
         }
         let conn = Connection::open(path)?;
         apply_key(&conn, key)?;
-        let db = Self { conn, attachments_override: Default::default() };
+        let db = Self { conn, attachments_override: Default::default(), encrypted: true };
         db.init()?;
         Ok(db)
     }
@@ -337,12 +345,12 @@ impl Database {
         conn.execute_batch(&format!(
             "PRAGMA busy_timeout={busy_timeout_ms}; PRAGMA query_only=ON; PRAGMA foreign_keys=ON; PRAGMA trusted_schema=OFF; PRAGMA temp_store=MEMORY;"
         ))?;
-        Ok(Self { conn, attachments_override: Default::default() })
+        Ok(Self { conn, attachments_override: Default::default(), encrypted: true })
     }
 
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
-        let db = Self { conn, attachments_override: Default::default() };
+        let db = Self { conn, attachments_override: Default::default(), encrypted: false };
         db.init()?;
         Ok(db)
     }
