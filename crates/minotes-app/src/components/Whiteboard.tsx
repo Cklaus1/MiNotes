@@ -3,6 +3,7 @@ import { isTauri, savePngToDownloads } from "../lib/api";
 import { loadWhiteboard, persistWhiteboard } from "../lib/whiteboardUtils";
 import { showToast } from "../lib/toast";
 import { registerFlush } from "../lib/pendingEdits";
+import { isRemoteSrc } from "../lib/remoteImages";
 
 interface StickyNote {
   id: string;
@@ -444,7 +445,9 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
       let htmlImg = loadedImagesRef.current.get(img.id);
       if (!htmlImg) {
         htmlImg = new Image();
-        htmlImg.src = img.dataUrl;
+        // Whiteboard images are embedded data: URLs; a web address (synced or
+        // imported board data) is never loaded (remote images, ARCH B-6).
+        if (!isRemoteSrc(img.dataUrl)) htmlImg.src = img.dataUrl;
         loadedImagesRef.current.set(img.id, htmlImg);
         htmlImg.onload = () => requestRedraw();
         htmlImg.onerror = () => { loadedImagesRef.current.delete(img.id); };

@@ -3277,6 +3277,131 @@ step "If a save fails, the switch is refused and I'm told why"
 R=$(ev "(async()=>{$A63 const pe=await import('/src/lib/pendingEdits.ts');const un=pe.registerFlush(()=>Promise.reject(new Error('disk full63')));let msg='no error';try{await window.__MINOTES__.switchNotebook('$OKEY63')}catch(e){msg=String(e&&e.message||e)}finally{un()}return msg+'|'+(await api.getNotebookSession()).key})()" | tr -d '"')
 [[ "$R" == *"disk full63"*"|$HOME63" ]] && pass "Switch refused, still in the home notebook ($R)" || fail "Failed save didn't stop the switch" "$R"
 [[ "$(cur63)" == "$HOME63" ]] && pass "Home notebook open" || fail "End notebook" "$(cur63)"
+journey "64. A note with web images doesn't phone home until I say so"
+# Remote images are blocked by default (Settings → Privacy → Remote images: Ask).
+# A placeholder shows the alt text and host; one bar offers "Load images" (this
+# page, this session) and "Always for this notebook". Loading goes through the
+# backend (fetch_remote_image), never an <img src="https://…">. "Save to
+# notebook" stores the image as an attachment. Desktop mode serves the image from
+# a local server via the debug-only MINOTES_TEST_IMAGE_ORIGIN (the SSRF guard
+# refuses loopback otherwise).
+# ═══════════════════════════════════════════════
+A64="const api=await import('/src/lib/api.ts');const ri=await import('/src/lib/remoteImages.ts');"
+WEBIMG64="[...document.querySelectorAll('img')].filter(i=>/^(https?:)?\\/\\//i.test(i.getAttribute('src')||'')).length"
+STATE64="[...document.querySelectorAll('.block .remote-img')].map(e=>e.getAttribute('data-remote-state')).join(',')"
+SRV64=""
+if [[ "$BACKEND" == "desktop" ]]; then
+  IMGDIR64="$DC_STATE/img64"; rm -rf "$IMGDIR64"; mkdir -p "$IMGDIR64"
+  python3 - "$IMGDIR64" <<'PY'
+import sys, zlib, struct
+w, h = 48, 32
+raw = b"".join(b"\x00" + bytes([0x3b, 0x82, 0xf6]) * w for _ in range(h))
+ch = lambda t, d: struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xffffffff)
+png = b"\x89PNG\r\n\x1a\n" + ch(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)) + ch(b"IDAT", zlib.compress(raw)) + ch(b"IEND", b"")
+for n in ("harbour64.png", "pier64.png", "fresh64.png"):
+    open(f"{sys.argv[1]}/{n}", "wb").write(png)
+PY
+  PORT64=$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1])')
+  (cd "$IMGDIR64" && exec python3 -m http.server "$PORT64" --bind 127.0.0.1) >"$IMGDIR64/server.log" 2>&1 &
+  SRV64=$!
+  export MINOTES_TEST_IMAGE_ORIGIN="http://127.0.0.1:$PORT64"
+  "$DC" restart >/dev/null 2>&1; "$DC" wait 'window.__MINOTES__ && typeof window.__MINOTES__.navigateTo === "function"' 30 >/dev/null 2>&1; sleep 1
+  IMGBASE64="http://127.0.0.1:$PORT64"
+else
+  IMGBASE64="https://images.example.com"
+fi
+hits64() { [[ -n "$SRV64" ]] && { grep -c "GET /$1" "$IMGDIR64/server.log" 2>/dev/null || true; } || echo 0; }
+api "closePanel()" >/dev/null; sleep 0.3
+ev "(async()=>{const s=await import('/src/lib/settings.ts');s.updateSettings({remoteImages:'ask'});const ri=await import('/src/lib/remoteImages.ts');ri.setNotebookAlways(false);return 1})()" >/dev/null
+ev "(async()=>{$A64 const p=await api.createPage('Remote64');await api.createBlock(p.id,'Trip photo ![Harbour at dusk]($IMGBASE64/harbour64.png)');await api.createBlock(p.id,'Just text');const q=await api.createPage('Remote64b');await api.createBlock(q.id,'![Pier]($IMGBASE64/pier64.png)');return 1})()" >/dev/null
+api "navigateTo('Remote64')" >/dev/null; sleep 2
+
+step "The web image is a placeholder with its alt text and host"
+for _ in $(seq 1 10); do R=$(ev "$STATE64" | tr -d '"'); [[ "$R" == "blocked" ]] && break; sleep 0.5; done
+[[ "$R" == "blocked" ]] && pass "Placeholder, blocked" || fail "Placeholder state" "$R"
+R=$(ev "document.querySelector('.block .remote-img')?.innerText.replace(/\\s+/g,' ')||''" | tr -d '"')
+HOST64="${IMGBASE64#*://}"
+[[ "$R" == *"Harbour at dusk"*"$HOST64"* ]] && pass "Shows 'Harbour at dusk · $HOST64'" || fail "Placeholder text" "$R"
+R=$(ev "$WEBIMG64" | tr -d '"')
+[[ "$R" == "0" && "$(hits64 harbour64)" == "0" ]] && pass "No <img> points at the web; nothing was requested" || fail "Web image in DOM" "imgs=$R hits=$(hits64 harbour64)"
+
+step "One small bar: Load images · Always for this notebook"
+R=$(ev "[...document.querySelectorAll('[data-testid=remote-images-bar]')].map(b=>b.innerText.replace(/\\s+/g,' ')).join(' | ')" | tr -d '"')
+[[ "$R" == *"Remote images blocked on this page"*"Load images"*"Always for this notebook"* && "$R" != *"|"* ]] && pass "Bar: $R" || fail "Bar" "$R"
+ss "64-blocked"
+
+step "Editing the block keeps it blocked"
+api "focusBlock(0)" >/dev/null; sleep 1
+R=$(ev "(document.querySelector('.ProseMirror-focused .remote-img')||document.querySelector('.block .ProseMirror .remote-img'))?.getAttribute('data-remote-state')+'|'+($WEBIMG64)" | tr -d '"')
+[[ "$R" == "blocked|0" ]] && pass "Placeholder in the live editor too" || fail "Live editor" "$R"
+press "Escape"; sleep 0.8
+R=$(ev "(async()=>{$A64 const t=await api.getPageTree('Remote64');return t.blocks[0].content})()" | tr -d '"')
+[[ "$R" == *"![Harbour at dusk]($IMGBASE64/harbour64.png)"* ]] && pass "The markdown is unchanged" || fail "Block content" "$R"
+
+if [[ "$BACKEND" == "browser" ]]; then
+  step "A link preview's og:image is not loaded either"
+  ev "(async()=>{$A64 const t=await api.getPageTree('Remote64');await api.createBlock(t.page.id,'{{link-preview:https://news.example.com/story?og-image=1}}');return 1})()" >/dev/null
+  api "navigateTo('Remote64b')" >/dev/null; sleep 1; api "navigateTo('Remote64')" >/dev/null; sleep 2
+  for _ in $(seq 1 10); do R=$(ev "document.querySelector('.link-preview-card .remote-img')?.getAttribute('data-remote-state')||'none'" | tr -d '"'); [[ "$R" == "blocked" ]] && break; sleep 0.5; done
+  [[ "$R" == "blocked" && "$(ev "$WEBIMG64" | tr -d '"')" == "0" ]] && pass "og:image held back (card shows text only)" || fail "OG image" "$R"
+fi
+
+step "Load images: they appear, fetched by the backend"
+ev "document.querySelector('[data-testid=remote-images-load]')?.click()" >/dev/null
+for _ in $(seq 1 20); do R=$(ev "(()=>{const i=document.querySelector('.block .remote-img img');return i?(i.src.split(':')[0]+':'+i.naturalWidth):'none'})()" | tr -d '"'); [[ "$R" == "blob:48" ]] && break; sleep 0.5; done
+[[ "$R" == "blob:48" ]] && pass "Image shown from a blob: URL (48 px wide)" || fail "Load images" "$R"
+[[ "$(ev "$WEBIMG64" | tr -d '"')" == "0" ]] && pass "Still no <img> with a web address" || fail "Web img after load" "$(ev "$WEBIMG64")"
+[[ -z "$SRV64" || "$(hits64 harbour64)" == "1" ]] && pass "Fetched once (server: $(hits64 harbour64))" || fail "Server hits" "$(hits64 harbour64)"
+if [[ "$BACKEND" == "browser" ]]; then
+  R=$(ev "document.querySelector('.link-preview-card .remote-img')?.getAttribute('data-remote-state')" | tr -d '"')
+  [[ "$R" == "loaded" ]] && pass "…and the link preview's image" || fail "OG after load" "$R"
+fi
+R=$(ev "document.querySelector('[data-testid=remote-images-bar]')?.innerText.replace(/\\s+/g,' ')||''" | tr -d '"')
+[[ "$R" == *"Save to notebook"* ]] && pass "Bar now offers Save to notebook" || fail "Loaded bar" "$R"
+ss "64-loaded"
+
+step "Loading was for that page only"
+api "navigateTo('Remote64b')" >/dev/null; sleep 2
+for _ in $(seq 1 10); do R=$(ev "$STATE64" | tr -d '"'); [[ -n "$R" ]] && break; sleep 0.5; done
+[[ "$R" == "blocked" && "$(hits64 pier64)" == "0" ]] && pass "Another page's image stays blocked" || fail "Other page" "$R hits=$(hits64 pier64)"
+
+step "Always for this notebook — loads, and is remembered"
+ev "document.querySelector('[data-testid=remote-images-always]')?.click()" >/dev/null
+for _ in $(seq 1 20); do R=$(ev "$STATE64" | tr -d '"'); [[ "$R" == "loaded" ]] && break; sleep 0.5; done
+[[ "$R" == "loaded" ]] && pass "Loaded without asking again" || fail "Always" "$R"
+R=$(ev "(async()=>{$A64 const k=await api.getCurrentNotebook();return String(JSON.parse(localStorage.getItem('minotes-remote-images-notebooks')||'[]').includes(k))})()" | tr -d '"')
+[[ "$R" == "true" ]] && pass "Stored for this notebook" || fail "Not stored" "$R"
+ev "location.reload()" >/dev/null 2>&1; sleep 4
+for _ in $(seq 1 30); do [[ "$(ev "String(!!(window.__MINOTES__&&window.__MINOTES__.navigateTo))" | tr -d '"')" == "true" ]] && break; sleep 0.5; done
+sleep 1
+ev "(async()=>{$A64 if(!(await api.listPages(1000)).some(p=>p.title==='Fresh64')){const p=await api.createPage('Fresh64');await api.createBlock(p.id,'![Fresh]($IMGBASE64/fresh64.png)');}return 1})()" >/dev/null
+api "navigateTo('Fresh64')" >/dev/null; sleep 2
+for _ in $(seq 1 20); do R=$(ev "$STATE64" | tr -d '"'); [[ "$R" == "loaded" ]] && break; sleep 0.5; done
+B=$(ev "document.querySelectorAll('[data-testid=remote-images-load]').length" | tr -d '"')
+[[ "$R" == "loaded" && "$B" == "0" ]] && pass "After a reload: loads straight away, no Load button" || fail "Persisted always" "$R load-buttons=$B"
+api "openSettings()" >/dev/null; sleep 1
+R=$(ev "(()=>{const s=document.querySelector('[data-testid=remote-images-mode]');const c=document.querySelector('[data-testid=remote-images-notebook]');return (s?s.value:'none')+'|'+(c?c.checked:'none')})()" | tr -d '"')
+[[ "$R" == "ask|true" ]] && pass "Settings: Remote images = Ask, Always in this notebook = on" || fail "Settings UI" "$R"
+ss "64-settings"
+api "closePanel()" >/dev/null; press "Escape"; sleep 0.5
+
+step "Save to notebook keeps a copy as an attachment"
+api "navigateTo('Fresh64')" >/dev/null; sleep 2
+ev "document.querySelector('[data-testid=remote-images-save]')?.click()" >/dev/null
+for _ in $(seq 1 20); do R=$(ev "(async()=>{$A64 const t=await api.getPageTree('Fresh64');return t.blocks[0].content})()" | tr -d '"'); [[ "$R" == *attachment:* ]] && break; sleep 0.5; done
+[[ "$R" =~ ^\!\[Fresh\]\(attachment:[0-9a-f]{64}/fresh64\.png\)$ ]] && pass "Block now references the stored copy ($R)" || fail "Save to notebook" "$R"
+for _ in $(seq 1 20); do R=$(ev "(()=>{const i=document.querySelector('.block img');return i?(i.complete+':'+i.naturalWidth+':'+!!document.querySelector('.block .remote-img')):'none'})()" | tr -d '"'); [[ "$R" == "true:48:false" ]] && break; sleep 0.5; done
+[[ "$R" == "true:48:false" ]] && pass "Shown from the attachment store, no placeholder" || fail "Saved image" "$R"
+
+step "Never: placeholders only, no bar"
+ev "(async()=>{const ri=await import('/src/lib/remoteImages.ts');ri.setRemoteImageMode('never');return 1})()" >/dev/null
+ev "(async()=>{$A64 const p=await api.createPage('Never64');await api.createBlock(p.id,'![Never]($IMGBASE64/never64.png)');return 1})()" >/dev/null
+api "navigateTo('Never64')" >/dev/null; sleep 2
+for _ in $(seq 1 10); do R=$(ev "($STATE64)+'|'+document.querySelectorAll('[data-testid=remote-images-bar]').length" | tr -d '"'); [[ "$R" == blocked* ]] && break; sleep 0.5; done
+[[ "$R" == "blocked|0" && "$(hits64 never64)" == "0" ]] && pass "Blocked, no bar ($R)" || fail "Never" "$R hits=$(hits64 never64)"
+ev "(async()=>{const ri=await import('/src/lib/remoteImages.ts');ri.setRemoteImageMode('ask');ri.setNotebookAlways(false);return 1})()" >/dev/null
+if [[ -n "$SRV64" ]]; then kill "$SRV64" 2>/dev/null; wait "$SRV64" 2>/dev/null; fi
+unset MINOTES_TEST_IMAGE_ORIGIN
 
 # ═══════════════════════════════════════════════
 close_app

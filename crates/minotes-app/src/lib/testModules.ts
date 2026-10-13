@@ -16,6 +16,7 @@ import * as mockBackend from "./mockBackend";
 import * as undoStack from "./undoStack";
 import * as undoManager from "./undoManager";
 import * as pendingEdits from "./pendingEdits";
+import * as remoteImages from "./remoteImages";
 import { registerTestApi } from "./testApi";
 
 registerTestApi({
@@ -28,5 +29,6 @@ registerTestApi({
     "/src/lib/undoStack.ts": undoStack,
     "/src/lib/undoManager.ts": undoManager,
     "/src/lib/pendingEdits.ts": pendingEdits,
+    "/src/lib/remoteImages.ts": remoteImages,
   },
 } as any);

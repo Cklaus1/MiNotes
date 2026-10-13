@@ -1453,7 +1453,8 @@ const handlers: Record<string, (args: any) => any> = {
   fetch_og_metadata: ({ url }: { url: string }) => ({
     title: new URL(url).hostname + " — Page Title",
     description: "A brief description of the linked page content.",
-    image: "",
+    // Pages whose URL asks for one get an og:image (remote: blocked until allowed).
+    image: /[?&]og-image\b/.test(url) ? new URL("/og-image.png", url).href : "",
   }),
 
   // A block with its page title (block refs navigate with it), or null.
@@ -1853,7 +1854,7 @@ function resolveNotebookLink(it: { block_id?: string | null; notebook: string; p
 // ── Argument validation, as Tauri does before the Rust command runs ──
 // Generated from the #[tauri::command] signatures in src-tauri/src/lib.rs:
 // non-Option params are required; params the command parses as a UUID must be one.
-const REQUIRED_ARGS: Record<string, string[]> = {"get_page_tree":["titleOrId"],"create_page":["title"],"delete_page":["id"],"rename_page":["id","newTitle"],"create_block":["pageId","content"],"update_block":["id","content"],"delete_block":["id"],"search_blocks":["query"],"get_backlinks":["pageId"],"get_unlinked_references":["pageId"],"run_query":["sql"],"create_folder":["name"],"move_page_to_folder":["pageId"],"reorder_page":["id","newPosition"],"set_property":["entityId","entityType","key","value"],"get_properties":["entityId"],"get_inherited_properties":["blockId"],"delete_property":["entityId","key"],"delete_folder":["id"],"update_folder_appearance":["id"],"rename_folder":["id","newName"],"create_card":["blockId","cardType"],"review_card":["cardId","rating"],"delete_card":["cardId"],"add_favorite":["pageId"],"remove_favorite":["pageId"],"reorder_favorite":["pageId","newPosition"],"add_alias":["pageId","alias"],"remove_alias":["alias"],"get_aliases":["pageId"],"create_template":["name","content"],"apply_template":["pageId","templateName"],"delete_template":["name"],"publish_site":["outputDir"],"move_block":["id","newParent","position"],"reorder_block":["id","position"],"reparent_block":["id"],"register_plugin":["name","version"],"enable_plugin":["name"],"disable_plugin":["name"],"uninstall_plugin":["name"],"switch_notebook":["key"],"create_highlight":["pdfPath","pageNum","x","y","width","height","color"],"get_highlights":["pdfPath"],"update_highlight_note":["id","note"],"delete_highlight":["id"],"search_highlights":["query"],"sync_page":["pageId"],"get_version_history":["pageId"],"restore_version":["pageId","versionHash"],"plugin_storage_get":["pluginName","key"],"plugin_storage_set":["pluginName","key","value"],"add_css_snippet":["name","css","source"],"toggle_css_snippet":["name"],"delete_css_snippet":["name"],"update_css_snippet":["name","css"],"clip_content":["title","content"],"save_png_to_downloads":["filename","data"],"read_pdf_file":["path"],"read_file_base64":["path"],"fetch_og_metadata":["url"],"get_block":["id"],"get_blocks":["ids"],"get_properties_batch":["entityIds"],"archive_page":["id"],"unarchive_page":["id"],"archive_folder":["id"],"unarchive_folder":["id"],"trash_page":["id"],"trash_folder":["id"],"restore_from_trash":["id","itemType"],"permanently_delete":["id","itemType"],"get_whiteboard":["id"],"save_whiteboard":["id","data"],"restore_blocks":["blocks"],"default_notebook_location":["name"],"create_notebook":["name"],"open_notebook_folder":["path"],"locate_notebook":["key","path"],"rename_notebook":["key","name"],"delete_notebook":["key"],"forget_notebook":["key"],"move_notebook_to_folder":["path"],"git_sync_resolve_deletions":["action"],"search_other_notebooks":["query"],"resolve_notebook_links":["links"],"list_notebook_pages":["notebook","query"],"import_notebook_zip":["source"]};
+const REQUIRED_ARGS: Record<string, string[]> = {"get_page_tree":["titleOrId"],"create_page":["title"],"delete_page":["id"],"rename_page":["id","newTitle"],"create_block":["pageId","content"],"update_block":["id","content"],"delete_block":["id"],"search_blocks":["query"],"get_backlinks":["pageId"],"get_unlinked_references":["pageId"],"run_query":["sql"],"create_folder":["name"],"move_page_to_folder":["pageId"],"reorder_page":["id","newPosition"],"set_property":["entityId","entityType","key","value"],"get_properties":["entityId"],"get_inherited_properties":["blockId"],"delete_property":["entityId","key"],"delete_folder":["id"],"update_folder_appearance":["id"],"rename_folder":["id","newName"],"create_card":["blockId","cardType"],"review_card":["cardId","rating"],"delete_card":["cardId"],"add_favorite":["pageId"],"remove_favorite":["pageId"],"reorder_favorite":["pageId","newPosition"],"add_alias":["pageId","alias"],"remove_alias":["alias"],"get_aliases":["pageId"],"create_template":["name","content"],"apply_template":["pageId","templateName"],"delete_template":["name"],"publish_site":["outputDir"],"move_block":["id","newParent","position"],"reorder_block":["id","position"],"reparent_block":["id"],"register_plugin":["name","version"],"enable_plugin":["name"],"disable_plugin":["name"],"uninstall_plugin":["name"],"switch_notebook":["key"],"create_highlight":["pdfPath","pageNum","x","y","width","height","color"],"get_highlights":["pdfPath"],"update_highlight_note":["id","note"],"delete_highlight":["id"],"search_highlights":["query"],"sync_page":["pageId"],"get_version_history":["pageId"],"restore_version":["pageId","versionHash"],"plugin_storage_get":["pluginName","key"],"plugin_storage_set":["pluginName","key","value"],"add_css_snippet":["name","css","source"],"toggle_css_snippet":["name"],"delete_css_snippet":["name"],"update_css_snippet":["name","css"],"clip_content":["title","content"],"save_png_to_downloads":["filename","data"],"read_pdf_file":["path"],"read_file_base64":["path"],"fetch_og_metadata":["url"],"fetch_remote_image":["url"],"save_remote_image":["url"],"get_block":["id"],"get_blocks":["ids"],"get_properties_batch":["entityIds"],"archive_page":["id"],"unarchive_page":["id"],"archive_folder":["id"],"unarchive_folder":["id"],"trash_page":["id"],"trash_folder":["id"],"restore_from_trash":["id","itemType"],"permanently_delete":["id","itemType"],"get_whiteboard":["id"],"save_whiteboard":["id","data"],"restore_blocks":["blocks"],"default_notebook_location":["name"],"create_notebook":["name"],"open_notebook_folder":["path"],"locate_notebook":["key","path"],"rename_notebook":["key","name"],"delete_notebook":["key"],"forget_notebook":["key"],"move_notebook_to_folder":["path"],"git_sync_resolve_deletions":["action"],"search_other_notebooks":["query"],"resolve_notebook_links":["links"],"list_notebook_pages":["notebook","query"],"import_notebook_zip":["source"]};
 const UUID_ARGS: Record<string, string[]> = {"delete_page":["id"],"rename_page":["id"],"create_block":["pageId","parentId?"],"update_block":["id"],"delete_block":["id"],"get_backlinks":["pageId"],"get_unlinked_references":["pageId"],"create_folder":["parentId?"],"move_page_to_folder":["pageId","folderId?"],"reorder_page":["id"],"set_property":["entityId"],"get_properties":["entityId"],"get_inherited_properties":["blockId"],"delete_property":["entityId"],"delete_folder":["id"],"update_folder_appearance":["id"],"rename_folder":["id"],"create_card":["blockId"],"review_card":["cardId"],"delete_card":["cardId"],"add_favorite":["pageId"],"remove_favorite":["pageId"],"reorder_favorite":["pageId"],"add_alias":["pageId"],"get_aliases":["pageId"],"apply_template":["pageId"],"move_block":["id","newParent"],"reorder_block":["id","parentId?"],"reparent_block":["id","parentId?"],"update_highlight_note":["id"],"delete_highlight":["id"],"sync_page":["pageId"],"get_version_history":["pageId"],"restore_version":["pageId"],"get_block":["id"],"archive_page":["id"],"unarchive_page":["id"],"archive_folder":["id"],"unarchive_folder":["id"],"trash_page":["id"],"trash_folder":["id"],"restore_from_trash":["id"],"permanently_delete":["id"]};
 
 /** The uuid crate's message for a malformed id (what the Tauri command returns). */
@@ -1908,3 +1909,31 @@ Object.assign(mockHandlers, createAiMockHandlers(mockHandlers));
 import { createImportMockHandlers } from "./importMock";
 Object.assign(mockHandlers, createImportMockHandlers(mockHandlers));
 // ── End import ──
+
+// ── Remote images ──
+// Browser-mode mock of fetch_remote_image / save_remote_image (src-tauri
+// remote_images.rs): the same refusals (https only, no local/private hosts), and
+// every allowed URL "downloads" the same small blue 48x32 PNG — no network.
+const MOCK_REMOTE_PNG = "iVBORw0KGgoAAAANSUhEUgAAADAAAAAgCAIAAADbtmxLAAAAMUlEQVR42u3OMQ0AAAgDsPnCHaK5cUE4mlRAUz2vREhISEhISEhISEhISEhISEjo0gI6GjKX9dtG2AAAAABJRU5ErkJggg==";
+function mockRemoteImage(url: string): Uint8Array {
+  let u: URL;
+  try { u = new URL(url); } catch { throw "Not a valid web address"; }
+  const host = u.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  if (u.protocol !== "https:" && u.protocol !== "http:") throw `Scheme '${u.protocol.replace(":", "")}' not allowed`;
+  if (host === "localhost" || host.endsWith(".localhost") || host.includes(":") ||
+      /^(127\.|10\.|0\.|169\.254\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(host)) {
+    throw "Destination address not allowed";
+  }
+  if (u.protocol !== "https:") throw "Only https:// images are loaded";
+  return Uint8Array.from(atob(MOCK_REMOTE_PNG), (c) => c.charCodeAt(0));
+}
+Object.assign(mockHandlers, {
+  fetch_remote_image: ({ url }: { url: string }) => mockRemoteImage(url),
+  save_remote_image: async ({ url }: { url: string }) => {
+    const bytes = mockRemoteImage(url);
+    const seg = decodeURIComponent(new URL(url).pathname.split("/").filter(Boolean).pop() ?? "");
+    const stem = seg.replace(/\.[^.]*$/, "").replace(/[/\\:*?"<>|]/g, "").trim() || "image";
+    return mockHandlers.store_attachment({ name: `${stem}.png`, mime: "image/png", bytes });
+  },
+});
+// ── End remote images ──

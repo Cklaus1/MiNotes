@@ -41,7 +41,7 @@ echo "════════════════════════�
 echo "  MiNotes Desktop Journeys (real app, real backend)"
 echo "═══════════════════════════════════════════════"
 
-rm -rf "$STATE"/{persist,devA,devB,nbook,outside,xnb,zip8,barrier10,trust10,remote.git} "$STATE/results.tsv"
+rm -rf "$STATE"/{persist,devA,devB,nbook,outside,xnb,zip8,barrier10,trust10,rimg,img10,remote.git} "$STATE/results.tsv"
 if [[ -z "$DESKTOP_NO_BUILD" ]]; then
   "$DC" up --webdriver --profile persist >/dev/null || { echo "build/launch failed"; exit 1; }
 else
@@ -857,6 +857,93 @@ sleep 2
 is "After a restart it syncs without asking again" "$(ev "(async()=>{$A10 return String((await api.gitSyncStatus()).needs_confirmation)})()")" "false"
 is "…and no notice" "$(ev "String(!!document.querySelector('[data-testid=sync-confirm-banner]'))")" "false"
 fi
+
+# ═══════════════════════════════════════════════
+journey "D12. Web images in my notes stay blocked until I allow them"
+# Under the real CSP (no http:/https: in img-src) a remote image never reaches
+# the network from the webview: it's a placeholder until "Load images", then the
+# backend fetches it (SSRF-safe: public hosts only, https, ≤10 MB, image only)
+# and the page shows a blob:. The SSRF guard refuses loopback, so this journey
+# serves its image from a local server through the debug-build-only escape hatch
+# MINOTES_TEST_IMAGE_ORIGIN (exactly that one IP:port; compiled out of release
+# builds). Every other loopback address stays refused — asserted below.
+# ═══════════════════════════════════════════════
+IMG10="$STATE/img10"; rm -rf "$IMG10"; mkdir -p "$IMG10"
+python3 - "$IMG10" <<'PY'
+import sys, zlib, struct
+w, h = 48, 32
+raw = b"".join(b"\x00" + bytes([0xf6, 0x82, 0x3b]) * w for _ in range(h))
+ch = lambda t, d: struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xffffffff)
+png = b"\x89PNG\r\n\x1a\n" + ch(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)) + ch(b"IDAT", zlib.compress(raw)) + ch(b"IEND", b"")
+for n in ("harbour.png", "sneaky.png", "csp.png"):
+    open(f"{sys.argv[1]}/{n}", "wb").write(png)
+open(f"{sys.argv[1]}/page.html", "w").write("<html><title>not an image</title></html>")
+PY
+PORT10=$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1])')
+(cd "$IMG10" && exec python3 -m http.server "$PORT10" --bind 127.0.0.1) >"$IMG10/server.log" 2>&1 &
+SRV10=$!
+ORIGIN10="http://127.0.0.1:$PORT10"
+export MINOTES_TEST_IMAGE_ORIGIN="$ORIGIN10"
+hits10() { local n; n=$(grep -c "GET /$1" "$IMG10/server.log" 2>/dev/null); echo "${n:-0}"; }
+A10="const api=await import('/src/lib/api.ts');"
+STATE10="[...document.querySelectorAll('.block .remote-img')].map(e=>e.getAttribute('data-remote-state')).join(',')"
+WEBIMG10="[...document.querySelectorAll('img')].filter(i=>/^(https?:)?\\/\\//i.test(i.getAttribute('src')||'')).length"
+device rimg || true
+
+step "A page with two web images opens with placeholders"
+ev "(async()=>{$A10 const p=await api.createPage('Web Images');await api.createBlock(p.id,'![Harbour]($ORIGIN10/harbour.png)');await api.createBlock(p.id,'![Sneaky](http://localhost:$PORT10/sneaky.png)');return 1})()" >/dev/null
+api "navigateTo('Web Images')" >/dev/null; waitfor "window.__MINOTES__.getCurrentPage()==='Web Images'"
+waitfor "document.querySelectorAll('.block .remote-img[data-remote-state=blocked]').length===2" 10
+is "Both blocked" "$(ev "$STATE10")" "blocked,blocked"
+is "No <img> with a web address" "$(ev "$WEBIMG10")" "0"
+is "The bar offers Load images" "$(ev "String(!!document.querySelector('[data-testid=remote-images-load]'))")" "true"
+is "Nothing reached the server" "$(hits10 '')" "0"
+"$DC" wshot "d12-blocked" >/dev/null
+
+step "The CSP itself blocks web images (even if some path missed the placeholder)"
+R=$("$DC" js "const v=[];const h=e=>v.push(e.effectiveDirective);document.addEventListener('securitypolicyviolation',h);const load=u=>new Promise(r=>{const i=new Image();i.onload=()=>r('loaded');i.onerror=()=>r('blocked');setTimeout(()=>r('timeout'),4000);i.src=u;});const a=await load('$ORIGIN10/csp.png');const b=await load('https://example.com/csp.png');await new Promise(r=>setTimeout(r,300));document.removeEventListener('securitypolicyviolation',h);return a+','+b+','+v.includes('img-src')" 2>&1 | tr -d '"')
+is "http://127.0.0.1 and https:// <img> both refused by img-src" "$R" "blocked,blocked,true"
+is "…and the server saw no request" "$(hits10 csp.png)" "0"
+"$DC" errors --clear >/dev/null 2>&1   # those violations were deliberate
+
+step "The backend refuses everything but the test origin"
+R=$("$DC" js "const out=[];for(const u of ['http://localhost:$PORT10/sneaky.png','http://127.0.0.2:$PORT10/sneaky.png','http://[::1]:$PORT10/sneaky.png','http://169.254.169.254/latest/meta-data','file:///etc/passwd','$ORIGIN10/page.html']){try{await invoke('fetch_remote_image',{url:u});out.push('LOADED '+u)}catch(e){out.push(String(e).includes('not allowed')||String(e).includes('Not an image')||String(e).includes('Not a valid')?'refused':'other:'+e)}}return out.join(',')" 2>&1 | tr -d '"')
+is "localhost, 127.0.0.2, [::1], metadata IP, file:, an HTML page" "$R" "refused,refused,refused,refused,refused,refused"
+is "No request for sneaky.png" "$(hits10 sneaky.png)" "0"
+
+step "Load images: the allowed one appears via the backend, the loopback one stays out"
+"$DC" wclick "[data-testid=remote-images-load]" >/dev/null
+waitfor "(()=>{const i=document.querySelector('.block .remote-img img');return i&&i.complete&&i.naturalWidth===48})()" 15 \
+  && pass "Harbour shown (48 px, from a blob:)" || fail "Load" "$(ev "$STATE10")"
+is "States: loaded, error" "$(ev "$STATE10")" "loaded,error"
+[[ "$(ev "document.querySelectorAll('.block .remote-img')[1]?.title||''")" == *"not allowed"* ]] \
+  && pass "The refused one says why on hover" || fail "Error tooltip" "$(ev "document.querySelectorAll('.block .remote-img')[1]?.title")"
+is "Still no <img> with a web address" "$(ev "$WEBIMG10")" "0"
+is "Server: one request for harbour.png, none for sneaky.png" "$(hits10 harbour.png),$(hits10 sneaky.png)" "1,0"
+"$DC" wshot "d12-loaded" >/dev/null
+
+step "Always for this notebook survives a restart"
+ev "(async()=>{const r=await import('/src/lib/remoteImages.ts');r.setNotebookAlways(true);return 1})()" >/dev/null
+"$DC" restart >/dev/null && waitfor "window.__MINOTES__ && !!window.__MINOTES__.navigateTo" 30
+api "navigateTo('Web Images')" >/dev/null; waitfor "window.__MINOTES__.getCurrentPage()==='Web Images'"
+waitfor "document.querySelector('.block .remote-img')?.getAttribute('data-remote-state')==='loaded'" 15 \
+  && pass "Loads straight away after restart" || fail "Always after restart" "$(ev "$STATE10")"
+is "No Load button" "$(ev "String(document.querySelectorAll('[data-testid=remote-images-load]').length)")" "0"
+
+step "Save to notebook: the image is kept and works offline"
+"$DC" wclick "[data-testid=remote-images-save]" >/dev/null
+waitfor "(async()=>{$A10 const t=await api.getPageTree('Web Images');return t.blocks[0].content.startsWith('![Harbour](attachment:')})()" 15
+R=$(blocks_of 'Web Images')
+[[ "$R" =~ ^\!\[Harbour\]\(attachment:[0-9a-f]{64}/harbour\.png\)\ ¦\ \!\[Sneaky\]\(http://localhost: ]] \
+  && pass "Block points at the attachment; the refused one is left as it was" || fail "Saved block" "$R"
+kill "$SRV10" 2>/dev/null; wait "$SRV10" 2>/dev/null
+"$DC" restart >/dev/null && waitfor "window.__MINOTES__ && !!window.__MINOTES__.navigateTo" 30
+api "navigateTo('Web Images')" >/dev/null; waitfor "window.__MINOTES__.getCurrentPage()==='Web Images'"
+waitfor "[...document.querySelectorAll('.block img')].some(i=>i.complete&&i.naturalWidth===48&&i.src.includes('attachment'))" 15 \
+  && pass "Shown from attachment:// with the server gone" || fail "Offline image" "$(ev "[...document.querySelectorAll('.block img')].map(i=>i.src+':'+i.naturalWidth).join(' ')")"
+"$DC" wshot "d12-saved" >/dev/null
+ev "(async()=>{const r=await import('/src/lib/remoteImages.ts');r.setNotebookAlways(false);return 1})()" >/dev/null
+unset MINOTES_TEST_IMAGE_ORIGIN
 
 # ═══════════════════════════════════════════════
 echo ""

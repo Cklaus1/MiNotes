@@ -23,6 +23,9 @@ export interface MiNotesSettings {
   ai: AiSettings;
   /** Search (Ctrl+K) also looks in every other notebook (default: off) */
   searchAllNotebooks: boolean;
+  /** Images from the web in notes: never load, ask per page (default), always load.
+   *  Loading goes through the backend (lib/remoteImages.ts), never the webview. */
+  remoteImages: "never" | "ask" | "always";
 }
 
 const STORAGE_KEY = "minotes-settings";
@@ -37,6 +40,7 @@ const DEFAULTS: MiNotesSettings = {
     todoExtraction: true,
   },
   searchAllNotebooks: false,
+  remoteImages: "ask",
 };
 
 export function getSettings(): MiNotesSettings {

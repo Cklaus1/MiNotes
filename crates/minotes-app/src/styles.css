@@ -6244,3 +6244,68 @@ img.img-broken {
   color: var(--text-muted);
   font-size: 12px;
 }
+
+/* ── Remote images (lib/remoteImages.ts): blocked until allowed ── */
+.remote-img {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  vertical-align: middle;
+}
+.remote-img[data-remote-state="blocked"],
+.remote-img[data-remote-state="loading"],
+.remote-img[data-remote-state="error"],
+.remote-img:not([data-remote-state]) {
+  gap: 6px;
+  padding: 4px 10px;
+  margin: 0.2em 0;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  background: var(--bg-secondary);
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+.remote-img[data-remote-state="error"] { border-color: var(--text-error, #f38ba8); }
+.remote-img-label { display: inline-flex; gap: 6px; min-width: 0; }
+.remote-img-label::before { content: "\25A3"; opacity: 0.7; }
+.remote-img-alt {
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 28em;
+}
+.remote-img-host::before { content: "· "; }
+.remote-img[data-remote-state="loading"] .remote-img-label { opacity: 0.6; }
+.remote-img[data-remote-state="loaded"] .remote-img-label { display: none; }
+.remote-img > img { max-width: 100%; border-radius: 6px; }
+/* Link-preview cards: no placeholder box, just no image until allowed. */
+.link-preview-card .remote-img:not([data-remote-state="loaded"]) { display: none; }
+.link-preview-card .remote-img > img { width: 120px; min-height: 80px; height: 100%; object-fit: cover; border-radius: 0; }
+
+.remote-images-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 24px 10px;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.remote-images-bar-sep { color: var(--text-muted); }
+.remote-images-bar-btn {
+  background: none;
+  border: none;
+  padding: 2px;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+.remote-images-bar-btn:hover:not(:disabled) { text-decoration: underline; }
+.remote-images-bar-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 3px; }
+.remote-images-bar-btn:disabled { opacity: 0.6; cursor: default; }

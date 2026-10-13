@@ -749,6 +749,17 @@ export interface OgMetadata {
 export const fetchOgMetadata = (url: string) =>
   invoke<OgMetadata>("fetch_og_metadata", { url });
 
+// Remote images (lib/remoteImages.ts): the webview never loads them itself; the
+// backend fetches through the SSRF-safe client (https, public hosts, 10 MB, image only).
+export async function fetchRemoteImage(url: string): Promise<Uint8Array> {
+  if (isTauri) return new Uint8Array(await tauriInvoke<ArrayBuffer>("fetch_remote_image", { url }));
+  return invoke<Uint8Array>("fetch_remote_image", { url });
+}
+
+/** Fetch a remote image into the notebook's attachment store ("Save to notebook"). */
+export const saveRemoteImage = (url: string) =>
+  invoke<Attachment>("save_remote_image", { url });
+
 // Feature 9: Block Transclusion — get single block by ID
 export const getBlock = (id: string) =>
   invoke<BlockWithPage | null>("get_block", { id });

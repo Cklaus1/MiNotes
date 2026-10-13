@@ -28,6 +28,7 @@ import { executeUndo } from "./lib/undoManager";
 import { undoStack } from "./lib/undoStack";
 import { showToast, showUndoToast } from "./lib/toast";
 import { installBrokenImageHints } from "./lib/brokenImages";
+import { installRemoteImages } from "./lib/remoteImages";
 import { pageAsText } from "./lib/pageText";
 import { pageTitleConflict } from "./lib/pageNames";
 import { getRecentPages } from "./lib/recentFiles";
@@ -672,6 +673,7 @@ export default function App() {
     initTestApi();
     initTheme();
     installBrokenImageHints();
+    installRemoteImages();
     loadEnabledSnippets();
   }, []);
 
