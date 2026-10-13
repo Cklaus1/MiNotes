@@ -72,6 +72,14 @@ names are safe. Tauri commands are async and check that the active notebook is s
 the one being synced, so switching notebooks mid-sync aborts instead of importing
 into the wrong notebook.
 
+**Enabling** sync runs the same phases with a stricter import: first a full mirror
+pass (outside edits imported first) writes the database out and commits it; after
+the pull, only pages whose file the pull changed are imported (every other page
+keeps the database's version), and blocks the pull removed go to a Trash page
+"<title> (removed by sync …)". So files older than the database — the mirror's
+debounce, a failed pass, a mirror that was off (Android, or switched off) — can
+never revert it.
+
 ### 3.2 Files on disk
 
 ```
@@ -275,6 +283,8 @@ Rejected:
 | History rewrite | Never force-pushes. Conflicts resolved by keeping both. |
 | Plaintext on the remote | User's choice of remote. Encrypted notebooks sync only encrypted files (§3.6). Converting a notebook to encrypted warns that old commits still hold plaintext. |
 | Hung git (auth prompt, dead network) | 120 s watchdog, low-speed abort, no TTY. |
+| Hooks / config of a copied folder | Git never transfers `.git/hooks` or `.git/config`, but a copied notebook folder carries them. Every git run overrides `core.hooksPath` (none), `core.fsmonitor=false`, `protocol.ext.allow=never`, `core.symlinks=false`, `commit.gpgSign=false`; commits and pushes use `--no-verify`. A folder whose sync was set up on another computer is not synced on open: the user confirms once, which removes command-running keys (`core.sshCommand`, `credential.helper`, filters, …) from its `.git/config` and records the folder in this machine's `~/.minotes/sync-trust.json`. The user's global git config is never overridden. |
+| Symbolic links from a shared remote | Checked out as plain files (`core.symlinks=false`); the mirror and both importers never read or write through a link (lstat walk below the mirror root) and report a linked file once as "skipped: symbolic link". |
 
 ## 9. Open questions
 

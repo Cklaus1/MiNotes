@@ -1,5 +1,29 @@
 //! System git wrapper — calls the `git` binary via `std::process::Command`.
 //! No libgit2, no native deps. Inherits the user's SSH keys, credential helpers, and .gitconfig.
+//!
+//! ## What a sync repo may NOT make git do (F-6)
+//!
+//! A notebook folder can come from elsewhere (copied from another computer, a
+//! shared drive, a zip). Its `notes/.git/` then carries someone else's hooks and
+//! repo-local config — git never transfers those through a remote, so this is
+//! about copied folders. Every git run here therefore overrides, on the command
+//! line (which beats every config file):
+//!
+//! - `core.hooksPath` → `/dev/null` (Windows: an empty directory in MiNotes' own
+//!   state dir): no hook in `.git/hooks/` ever runs; commits and pushes also pass
+//!   `--no-verify`.
+//! - `core.fsmonitor=false`: no fsmonitor command from the repo config.
+//! - `protocol.ext.allow=never`: an `ext::<command>` remote URL can't run anything.
+//! - `core.symlinks=false`: links in the tree are checked out as plain files
+//!   (see the symlink rules in `repo::export`).
+//! - `commit.gpgSign=false`: no `gpg.program` from the repo config (sync commits
+//!   are machine-made; signing them was never a promise).
+//!
+//! Deliberately NOT overridden, so the user's own (global) setup keeps working:
+//! `core.sshCommand`, `credential.helper`, `core.askPass`, proxies, the remote URL.
+//! Those can also be set repo-locally, so a folder this machine did not set up
+//! has them removed from `.git/config` before its first sync (see
+//! [`strip_untrusted_config`]); a repo set up here keeps its own settings.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -120,7 +144,7 @@ pub fn commit_exists(dir: &Path, rev: &str) -> bool {
 /// Paths (relative, NUL-safe, unquoted) deleted between two commits.
 pub fn deleted_files_between(dir: &Path, old: &str, new: &str) -> Result<Vec<String>> {
     let (stdout, stderr, ok) =
-        run_git(dir, &["diff", "--name-status", "-z", "--no-renames", old, new])?;
+        run_git(dir, &["diff", "--name-status", "-z", "--no-renames", "--no-ext-diff", "--no-textconv", old, new])?;
     if !ok {
         return Err(Error::Git(format!("git diff failed: {stderr}")));
     }
@@ -137,7 +161,8 @@ pub fn deleted_files_between(dir: &Path, old: &str, new: &str) -> Result<Vec<Str
 
 /// Paths (relative, NUL-safe, unquoted) added, modified or deleted between two commits.
 pub fn changed_files_between(dir: &Path, old: &str, new: &str) -> Result<Vec<String>> {
-    let (stdout, stderr, ok) = run_git(dir, &["diff", "--name-only", "-z", "--no-renames", old, new])?;
+    let (stdout, stderr, ok) =
+        run_git(dir, &["diff", "--name-only", "-z", "--no-renames", "--no-ext-diff", "--no-textconv", old, new])?;
     if !ok {
         return Err(Error::Git(format!("git diff failed: {stderr}")));
     }
@@ -161,13 +186,13 @@ pub fn commit_all(dir: &Path, message: &str) -> Result<bool> {
 
     // Check if there's anything to commit. `git diff --cached --quiet` exits 0 when
     // the index is CLEAN (no staged changes) and 1 when there ARE staged changes.
-    let (_, _, clean) = run_git(dir, &["diff", "--cached", "--quiet"])?;
+    let (_, _, clean) = run_git(dir, &["diff", "--cached", "--quiet", "--no-ext-diff", "--no-textconv"])?;
     if clean {
         return Ok(false); // nothing staged → nothing to commit
     }
 
     // Commit
-    let (stdout, stderr, ok) = run_git(dir, &["commit", "-m", message])?;
+    let (stdout, stderr, ok) = run_git(dir, &["commit", "--no-verify", "-m", message])?;
     if !ok {
         // "nothing to commit" is not an error (can appear in stdout or stderr)
         if stderr.contains("nothing to commit") || stdout.contains("nothing to commit") {
@@ -206,7 +231,7 @@ pub fn pull_rebase(dir: &Path) -> Result<bool> {
 /// to push yet (no commits on the branch).
 pub fn push(dir: &Path) -> Result<bool> {
     let branch = require_branch(dir)?;
-    let (_, stderr, ok) = run_git(dir, &["push", "origin", &branch])?;
+    let (_, stderr, ok) = run_git(dir, &["push", "--no-verify", "origin", &branch])?;
     if !ok {
         if stderr.contains("rejected") || stderr.contains("non-fast-forward") {
             return Err(Error::Git("push_rejected".to_string()));
@@ -221,7 +246,7 @@ pub fn push(dir: &Path) -> Result<bool> {
 
 /// Unmerged (conflicted) paths — NUL-separated so non-ASCII names aren't quoted.
 fn unmerged_files(dir: &Path) -> Result<Vec<String>> {
-    let (stdout, _, _) = run_git(dir, &["diff", "--name-only", "-z", "--diff-filter=U"])?;
+    let (stdout, _, _) = run_git(dir, &["diff", "--name-only", "-z", "--diff-filter=U", "--no-ext-diff"])?;
     let mut v: Vec<String> = stdout.split('\0').filter(|s| !s.is_empty()).map(String::from).collect();
     v.dedup();
     Ok(v)
@@ -274,10 +299,17 @@ pub fn auto_resolve_conflicts(dir: &Path) -> Result<Vec<String>> {
                 } else {
                     other
                 };
+                let copy_rel = copy_path.strip_prefix(dir).unwrap_or(&copy_path).to_path_buf();
+                if let Some(link) = crate::repo::export::symlink_below(dir, &copy_rel) {
+                    return Err(abort_with(
+                        dir,
+                        format!("Not writing conflict copy {}: symbolic link at {}", copy_rel.display(), link.display()),
+                    ));
+                }
                 if let Some(parent) = copy_path.parent() {
                     let _ = std::fs::create_dir_all(parent);
                 }
-                std::fs::write(&copy_path, body.as_bytes()).map_err(|e| {
+                crate::repo::export::atomic_write(&copy_path, body.as_bytes()).map_err(|e| {
                     abort_with(dir, format!("Failed to write conflict copy {}: {e}", copy_path.display()))
                 })?;
             }
@@ -286,14 +318,16 @@ pub fn auto_resolve_conflicts(dir: &Path) -> Result<Vec<String>> {
             let (_, _, ok) = run_git(dir, &["checkout", "--theirs", "--", file])?;
             if !ok {
                 let _ = run_git(dir, &["rm", "-q", "--cached", "--ignore-unmatch", "--", file])?;
-                let _ = std::fs::remove_file(dir.join(file));
+                if crate::repo::export::symlink_below(dir, Path::new(file).parent().unwrap_or(Path::new(""))).is_none() {
+                    let _ = std::fs::remove_file(dir.join(file));
+                }
             }
             all_resolved.push(file.clone());
         }
 
         // Never commit conflict markers.
         for file in &conflicted {
-            if let Ok(text) = std::fs::read_to_string(dir.join(file)) {
+            if let Ok(text) = crate::repo::export::read_text_below(dir, Path::new(file)) {
                 if has_conflict_markers(&text) {
                     return Err(abort_with(
                         dir,
@@ -315,7 +349,7 @@ pub fn auto_resolve_conflicts(dir: &Path) -> Result<Vec<String>> {
         if !ok && rebase_in_progress(dir) && unmerged_files(dir)?.is_empty() {
             // The step may have become empty after resolution: skip it only if
             // there is genuinely nothing staged; otherwise give up safely.
-            let (_, _, clean) = run_git(dir, &["diff", "--cached", "--quiet"])?;
+            let (_, _, clean) = run_git(dir, &["diff", "--cached", "--quiet", "--no-ext-diff", "--no-textconv"])?;
             if clean {
                 let _ = run_git(dir, &["rebase", "--skip"])?;
             } else {
@@ -362,7 +396,125 @@ pub fn get_hostname() -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
+/// Make an existing (or new) sync repo safe to run git in: links in the tree
+/// are checked out as plain files from now on (`core.symlinks=false`, persisted
+/// so a manual `git checkout` in the folder behaves the same). Cheap and
+/// idempotent; called on enable and before every sync cycle.
+pub fn harden_repo(dir: &Path) -> Result<()> {
+    let (cur, _, _) = run_git(dir, &["config", "--local", "--get", "core.symlinks"])?;
+    if cur.trim() != "false" {
+        let (_, stderr, ok) = run_git(dir, &["config", "--local", "core.symlinks", "false"])?;
+        if !ok {
+            return Err(Error::Git(format!("git config failed: {}", stderr.trim())));
+        }
+    }
+    Ok(())
+}
+
+/// Repo-local config keys that make git run a program (or pull in another
+/// config file). A folder this machine did not set up must not bring them.
+pub fn is_command_config_key(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    let parts: Vec<&str> = n.split('.').collect();
+    let first = parts.first().copied().unwrap_or("");
+    let last = parts.last().copied().unwrap_or("");
+    matches!(
+        n.as_str(),
+        "core.fsmonitor"
+            | "core.hookspath"
+            | "core.sshcommand"
+            | "core.askpass"
+            | "core.gitproxy"
+            | "core.pager"
+            | "core.editor"
+            | "core.alternaterefscommand"
+            | "sequence.editor"
+            | "diff.external"
+            | "gpg.program"
+            | "uploadpack.packobjectshook"
+            | "credential.helper"
+    ) || first == "include"
+        || first == "includeif"
+        || first == "pager"
+        || first == "alias"
+        || (first == "credential" && last == "helper")
+        || (first == "gpg" && last == "program")
+        || (first == "filter" && matches!(last, "clean" | "smudge" | "process"))
+        || (first == "merge" && last == "driver")
+        || (first == "diff" && matches!(last, "command" | "textconv"))
+        || (first == "remote" && matches!(last, "uploadpack" | "receivepack" | "proxy"))
+        || (first == "http" && last == "proxy")
+}
+
+/// Remove [`is_command_config_key`] keys from the repo's own `.git/config`
+/// (never the user's global config). For a sync folder this machine did not
+/// set up — copied from elsewhere — before its first sync here. Returns the
+/// keys removed.
+pub fn strip_untrusted_config(dir: &Path) -> Result<Vec<String>> {
+    let (out, _, ok) = run_git(dir, &["config", "--local", "--no-includes", "--name-only", "--list"])?;
+    if !ok {
+        return Ok(vec![]);
+    }
+    let mut removed: Vec<String> = Vec::new();
+    for name in out.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        if is_command_config_key(name) && !removed.iter().any(|r| r.eq_ignore_ascii_case(name)) {
+            let (_, stderr, ok) = run_git(dir, &["config", "--local", "--unset-all", name])?;
+            if !ok && !stderr.trim().is_empty() {
+                return Err(Error::Git(format!("Could not remove {name} from the sync folder's git config: {}", stderr.trim())));
+            }
+            removed.push(name.to_string());
+        }
+    }
+    if !removed.is_empty() {
+        eprintln!("[minotes-sync] removed from {}/.git/config: {}", dir.display(), removed.join(", "));
+    }
+    Ok(removed)
+}
+
 // ── Internal helpers ──
+
+/// Where hooks are looked up: nowhere. `/dev/null` is not a directory, so no
+/// hook can exist under it (Git for Windows maps `/dev/null` too, but an empty
+/// directory in MiNotes' own state dir is used there to be certain).
+fn no_hooks_path() -> &'static str {
+    static P: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    P.get_or_init(|| {
+        #[cfg(windows)]
+        {
+            let d = crate::notebook::base_dir().join("git-no-hooks");
+            let _ = std::fs::create_dir_all(&d);
+            // Anything that appeared in it is not ours: empty it.
+            if let Ok(rd) = std::fs::read_dir(&d) {
+                for e in rd.flatten() {
+                    let _ = std::fs::remove_file(e.path());
+                }
+            }
+            d.display().to_string()
+        }
+        #[cfg(not(windows))]
+        {
+            "/dev/null".to_string()
+        }
+    })
+}
+
+/// The `-c` overrides every git run gets (see the module docs).
+fn safety_args() -> Vec<String> {
+    vec![
+        "-c".into(),
+        "core.quotePath=off".into(),
+        "-c".into(),
+        format!("core.hooksPath={}", no_hooks_path()),
+        "-c".into(),
+        "core.fsmonitor=false".into(),
+        "-c".into(),
+        "protocol.ext.allow=never".into(),
+        "-c".into(),
+        "core.symlinks=false".into(),
+        "-c".into(),
+        "commit.gpgSign=false".into(),
+    ]
+}
 
 /// Run a git command in the given directory. Returns (stdout, stderr, success).
 pub(crate) fn run_git(dir: &Path, args: &[&str]) -> Result<(String, String, bool)> {
@@ -374,7 +526,7 @@ pub(crate) fn run_git(dir: &Path, args: &[&str]) -> Result<(String, String, bool
 pub(crate) fn run_git_timeout(dir: &Path, args: &[&str], timeout: Duration) -> Result<(String, String, bool)> {
     let mut child = Command::new("git")
         .current_dir(dir)
-        .args(["-c", "core.quotePath=off"])
+        .args(safety_args())
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0") // Never prompt for credentials interactively
         .env("GIT_EDITOR", "true")

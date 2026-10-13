@@ -1612,7 +1612,9 @@ const handlers: Record<string, (args: any) => any> = {
     remote_url: null,
     branch: null,
     last_sync: null,
+    needs_confirmation: false,
   }),
+  git_sync_confirm: () => [],
 
   // AI: TODOs. Uses the shared line rules in todoExtractor.ts, which mirror the
   // Rust parse_pending_todo. Hidden (trashed/archived, also via folders) pages don't count.

@@ -182,9 +182,21 @@ fn wants_full_scan(dir: &Path, rel: &Path) -> bool {
     abs.is_dir() || (rel.extension().is_none() && !abs.exists())
 }
 
-/// Read a page file: (hash of the bytes, its text — or why it can't be imported).
-fn read_candidate(abs: &Path) -> (String, std::result::Result<String, String>) {
-    let meta = match fs::metadata(abs) {
+/// Why a symbolic link in the mirror is left alone (reported once per link).
+pub const SYMLINK_REASON: &str = "skipped: symbolic link";
+
+/// Read the page file `dir/rel`: (hash of the bytes, its text — or why it can't
+/// be imported). Nothing is followed: a symbolic link as the file or as any
+/// directory on the way is refused (it could point anywhere — `~/.ssh/id_rsa` —
+/// and what is imported gets written back as a real file and committed).
+fn read_candidate(dir: &Path, rel: &Path) -> (String, std::result::Result<String, String>) {
+    if let Some(link) = export::symlink_below(dir, rel) {
+        let target = fs::read_link(&link).map(|t| t.display().to_string()).unwrap_or_default();
+        return (format!("symlink:{}:{target}", link.display()), Err(SYMLINK_REASON.into()));
+    }
+    let abs = dir.join(rel);
+    let abs = abs.as_path();
+    let meta = match fs::symlink_metadata(abs) {
         Ok(m) => m,
         Err(e) => return (String::new(), Err(format!("cannot read: {e}"))),
     };
@@ -251,9 +263,14 @@ fn free_title(db: &Database, wanted: &str) -> Result<String> {
 /// "<base> (removed outside <time>)". Ids, children and properties travel with
 /// them; restoring that page from the Trash brings the text back.
 pub(crate) fn park_blocks_in_trash(db: &Database, base: &str, roots: &[Uuid]) -> Result<Uuid> {
+    park_blocks_as(db, base, "removed outside", roots, ACTOR)
+}
+
+/// [`park_blocks_in_trash`] with the title "<base> (<what> <time>)" and `actor`.
+pub(crate) fn park_blocks_as(db: &Database, base: &str, what: &str, roots: &[Uuid], actor: &str) -> Result<Uuid> {
     let stamp = chrono::Local::now().format("%Y-%m-%d %H.%M");
-    let title = free_title(db, &format!("{base} (removed outside {stamp})"))?;
-    let page = db.create_page(&title, None, false, None, ACTOR)?;
+    let title = free_title(db, &format!("{base} ({what} {stamp})"))?;
+    let page = db.create_page(&title, None, false, None, actor)?;
     let now = chrono::Utc::now().to_rfc3339();
     for (i, root) in roots.iter().enumerate() {
         let ids = db.block_subtree_ids(root)?;
@@ -442,7 +459,7 @@ fn changed_in_app(db: &Database, fps: &HashMap<Uuid, String>, st: &mirror::Mirro
 }
 
 fn read_manifest(dir: &Path) -> HashSet<Uuid> {
-    fs::read_to_string(dir.join(export::EXPORT_MANIFEST))
+    export::read_text_below(dir, Path::new(export::EXPORT_MANIFEST))
         .map(|s| s.lines().filter_map(|l| Uuid::parse_str(l.trim()).ok()).collect())
         .unwrap_or_default()
 }
@@ -490,7 +507,8 @@ pub fn import_outside_edits(db: &Database, target: &MirrorTarget, scope: &Scope)
         let mut set: BTreeSet<PathBuf> = scan.files.into_iter().map(|f| f.rel).collect();
         set.extend(st.pages.values().map(|e| PathBuf::from(&e.path)));
         rels = set.into_iter().collect();
-        st.rejected.retain(|k, _| dir.join(k).is_file());
+        // Keep the "reported" mark of files (and links) that are still there.
+        st.rejected.retain(|k, _| fs::symlink_metadata(dir.join(k)).map(|m| !m.is_dir()).unwrap_or(false));
     } else {
         rels.sort();
         rels.dedup();
@@ -509,7 +527,8 @@ pub fn import_outside_edits(db: &Database, target: &MirrorTarget, scope: &Scope)
         let key = rel_str(rel);
         let abs = dir.join(rel);
         let tracked_id = tracked.get(&key).copied();
-        if !abs.is_file() {
+        let linked = export::symlink_below(dir, rel).is_some();
+        if !linked && !abs.is_file() {
             if let Some(id) = tracked_id {
                 if !abs.exists() {
                     missing.push((rel.clone(), id));
@@ -518,7 +537,7 @@ pub fn import_outside_edits(db: &Database, target: &MirrorTarget, scope: &Scope)
             state_dirty |= st.rejected.remove(&key).is_some();
             continue;
         }
-        let (hash, body) = read_candidate(&abs);
+        let (hash, body) = read_candidate(dir, rel);
         if let Some(id) = tracked_id {
             if st.pages.get(&id).map(|e| e.hash == hash).unwrap_or(false) {
                 state_dirty |= st.rejected.remove(&key).is_some();
@@ -624,7 +643,7 @@ pub fn import_outside_edits(db: &Database, target: &MirrorTarget, scope: &Scope)
                         return Ok(()); // archived / trashed / held: its file is the mirror's business
                     }
                     match st.pages.get(&x).cloned() {
-                        Some(e) if !dir.join(&e.path).exists() && !moved.contains(&x) => {
+                        Some(e) if fs::symlink_metadata(dir.join(&e.path)).is_err() && !moved.contains(&x) => {
                             // Moved or renamed outside.
                             moved.insert(x);
                             if app_changed(&st, &x)? {
@@ -809,7 +828,8 @@ pub fn adopt_pulled_files(db: &Database, target: &MirrorTarget, paths: Option<&[
     let fps = mirror::page_fingerprints(db)?;
     for rel in rels {
         let key = rel_str(&rel);
-        let Ok(bytes) = fs::read(dir.join(&rel)) else { continue };
+        // A symbolic link the pull wrote is never read through.
+        let Ok(bytes) = export::read_below(dir, &rel) else { continue };
         let hash = bytes_hash(&bytes);
         if let Some(id) = tracked.get(&key) {
             if let Some(e) = st.pages.get_mut(id) {

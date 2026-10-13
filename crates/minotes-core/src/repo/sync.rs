@@ -55,7 +55,18 @@ pub struct SyncOptions {
     /// Folders whose `.minotes-folder.json` was removed upstream; moved to trash
     /// (recursively) unless the folder is still present / in use / edited locally.
     pub trash_folder_ids: Vec<Uuid>,
+    /// Pages never overwritten from their file, whatever their timestamps (e.g.
+    /// on enabling sync: every page whose file the pull did not change — the
+    /// database is newer than such a file, or equal to it).
+    pub protect_pages: HashSet<Uuid>,
+    /// Blocks a file no longer has are not deleted: they move to a page
+    /// "<title> (removed by sync …)" in the Trash (ids kept, restorable).
+    pub park_removed: bool,
 }
+
+/// Title suffix of the Trash page holding blocks an import removed (see
+/// [`SyncOptions::park_removed`]).
+pub const REMOVED_BY_SYNC: &str = "removed by sync";
 
 /// One `.md` file found under a sync dir.
 #[derive(Debug, Clone)]
@@ -251,7 +262,8 @@ impl Database {
 
         let mut files: Vec<ImportFile> = Vec::new();
         for f in &scan.files {
-            match fs::read(&f.abs) {
+            // Never through a symbolic link (the scan skips them; this re-checks).
+            match crate::repo::export::read_below(dir, &f.rel) {
                 Ok(bytes) => {
                     let text = String::from_utf8_lossy(&bytes).into_owned();
                     let content = match text.strip_prefix('\u{feff}') {
@@ -276,7 +288,7 @@ impl Database {
                                 .collect()
                         })
                         .unwrap_or_default();
-                    let mtime = fs::metadata(&f.abs).and_then(|m| m.modified()).ok();
+                    let mtime = fs::symlink_metadata(&f.abs).and_then(|m| m.modified()).ok();
                     files.push(ImportFile { rel: f.rel.clone(), stem, folder, content, fm, mtime });
                 }
                 Err(e) => {
@@ -323,10 +335,11 @@ impl Database {
             }
         }
 
-        let protected = match opts.protect_modified_after {
+        let mut protected = match opts.protect_modified_after {
             Some(t) => self.pages_modified_since(t, actor)?,
             None => HashSet::new(),
         };
+        protected.extend(opts.protect_pages.iter().copied());
 
         // Import files whose page already exists first, so renames free up titles
         // before brand-new pages claim them.
@@ -375,7 +388,20 @@ impl Database {
             let snapshot = result.clone();
             let seen_snapshot = seen.clone();
             self.conn.execute_batch("SAVEPOINT minotes_sync_page")?;
-            match self.sync_page(f, folder_id, actor, result, &mut seen, &protected, None) {
+            let imported = if opts.park_removed {
+                let mut removed: Vec<Uuid> = Vec::new();
+                self.sync_page(f, folder_id, actor, result, &mut seen, &protected, Some(&mut removed)).and_then(|()| {
+                    if removed.is_empty() {
+                        return Ok(());
+                    }
+                    let page = f.fm.id.and_then(|id| self.get_page(&id).ok().flatten());
+                    let base = page.map(|p| p.title).unwrap_or_else(|| f.stem.clone());
+                    crate::outside::park_blocks_as(self, &base, REMOVED_BY_SYNC, &removed, actor).map(|_| ())
+                })
+            } else {
+                self.sync_page(f, folder_id, actor, result, &mut seen, &protected, None)
+            };
+            match imported {
                 Ok(()) => self.conn.execute_batch("RELEASE minotes_sync_page")?,
                 Err(e) => {
                     self.conn
@@ -1190,6 +1216,9 @@ impl Database {
     pub(crate) fn import_mirror_attachments(&self, dir: &Path, result: &mut SyncResult) {
         use crate::repo::attachments::{is_valid_hash, MIRROR_DIR};
         let root = dir.join(MIRROR_DIR);
+        if crate::repo::export::is_symlink(&root) {
+            return;
+        }
         let Ok(rd) = fs::read_dir(&root) else { return };
         if self.attachments_dir().is_none() {
             return;
@@ -1197,6 +1226,10 @@ impl Database {
         for e in rd.flatten() {
             let hash = e.file_name().to_string_lossy().to_string();
             if !is_valid_hash(&hash) || self.attachment_file(&hash).is_some() {
+                continue;
+            }
+            // `DirEntry::file_type` does not follow links: a linked dir is skipped.
+            if !e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
                 continue;
             }
             let Ok(files) = fs::read_dir(e.path()) else { continue };

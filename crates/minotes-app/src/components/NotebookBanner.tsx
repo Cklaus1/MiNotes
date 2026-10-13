@@ -12,6 +12,10 @@ interface Props {
   onResolveHeld: (action: "trash" | "keep") => void;
   /** Open a page (the "(edited outside)" copy of a conflict). */
   onOpenPage?: (id: string) => void;
+  /** Git sync is on for this folder, but it was set up on another computer. */
+  syncNeedsConfirm?: boolean;
+  onConfirmSync?: () => void;
+  onDeclineSync?: () => void;
 }
 
 /** A notice about edits made to the markdown copy in another app. */
@@ -64,7 +68,7 @@ function isDismissed(kind: string, key: string): boolean {
  * the cloud-folder warning, conflicted database copies made by a file-sync
  * service, and deletions from another device that sync is holding for the user.
  */
-export default function NotebookBanner({ heldDeletions, onResolveHeld, onOpenPage }: Props) {
+export default function NotebookBanner({ heldDeletions, onResolveHeld, onOpenPage, syncNeedsConfirm, onConfirmSync, onDeclineSync }: Props) {
   const [session, setSession] = useState<api.NotebookSession | null>(null);
   const [notices, setNotices] = useState<OutsideNotice[]>([]);
   const [, force] = useState(0);
@@ -150,6 +154,21 @@ export default function NotebookBanner({ heldDeletions, onResolveHeld, onOpenPag
           ({session.conflicted_copies.join(", ")}). It was edited on two computers at once. This window uses
           <code> notebook.minotes</code>; open the copy as its own notebook to compare before deleting it.
         </span>
+      </div>,
+    );
+  }
+  if (syncNeedsConfirm && !session.read_only) {
+    banners.push(
+      <div key="sync-confirm" className="nb-banner warn" role="alert" data-testid="sync-confirm-banner">
+        <span>
+          <strong>Git sync is on for this notebook folder, but it was set up on another computer.</strong>{" "}
+          MiNotes won't sync it here until you say so. Only continue if you trust where this folder came from:
+          syncing pushes your notes to the folder's remote.
+        </span>
+        <div className="nb-banner-actions">
+          <button className="btn btn-sm" onClick={onConfirmSync} data-testid="sync-confirm">Sync it here</button>
+          <button className="btn btn-sm" onClick={onDeclineSync} data-testid="sync-decline">Not now</button>
+        </div>
       </div>,
     );
   }

@@ -533,8 +533,8 @@ fn prepare_incremental(db: &Database, target: &MirrorTarget, old: MirrorState) -
 
 /// Does `rel` still hold what the prune expects (never trash someone else's file)?
 fn holds_expected(root: &Path, op: &TrashOp) -> bool {
-    let abs = root.join(&op.rel);
-    let Ok(text) = fs::read_to_string(&abs) else { return false };
+    // Never read through (or move) a symbolic link: it is not a file we wrote.
+    let Ok(text) = export::read_text_below(root, &op.rel) else { return false };
     if let Some(h) = &op.hash {
         if content_hash(&text) != *h {
             return false; // edited outside since we wrote it: the outside-edit import decides
@@ -604,6 +604,9 @@ pub fn apply(target: &MirrorTarget, prepared: Prepared) -> Result<MirrorReport> 
                     .map_err(|e| Error::InvalidInput(format!("Cannot create {}: {e}", dir.display())))?;
                 let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%S%.3f").to_string();
                 for op in &plan.trash {
+                    if export::link_in_the_way(dir, &Path::new(export::SYNC_TRASH_DIR).join(&op.rel)) {
+                        continue; // `.minotes-trash` is a link: stale files stay where they are
+                    }
                     if holds_expected(dir, op) {
                         match move_to_sync_trash(dir, &op.rel, &stamp) {
                             Ok(()) => report.files_trashed += 1,
@@ -619,6 +622,22 @@ pub fn apply(target: &MirrorTarget, prepared: Prepared) -> Result<MirrorReport> 
                 let mut state = plan.state;
                 for (rel, content, page) in &plan.writes {
                     let abs = export::safe_join(dir, rel)?;
+                    if export::link_in_the_way(dir, rel) {
+                        // A symbolic link (file or directory) is foreign: never
+                        // written through. A page keeps its previous record.
+                        if let Some(id) = page {
+                            match plan.guard.get(id) {
+                                Some(prev) => {
+                                    state.pages.insert(*id, prev.clone());
+                                }
+                                None => {
+                                    state.pages.remove(id);
+                                }
+                            }
+                            report.guarded.push(rel_str(rel));
+                        }
+                        continue;
+                    }
                     if let Some(parent) = abs.parent() {
                         fs::create_dir_all(parent)
                             .map_err(|e| Error::InvalidInput(format!("Cannot create {}: {e}", parent.display())))?;
@@ -657,7 +676,7 @@ pub fn apply(target: &MirrorTarget, prepared: Prepared) -> Result<MirrorReport> 
                 let live: HashSet<&str> = state.folders.values().map(|f| f.path.as_str()).collect();
                 dirs.sort_by_key(|d| std::cmp::Reverse(d.components().count()));
                 for d in dirs {
-                    if !live.contains(rel_str(&d).as_str()) {
+                    if !live.contains(rel_str(&d).as_str()) && export::symlink_below(dir, &d).is_none() {
                         let _ = fs::remove_dir(dir.join(&d));
                     }
                 }
