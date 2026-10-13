@@ -27,5 +27,15 @@ Each entry: proposed severity · what · where · why deferred.
   keep them in step.
 - P2 · The recovery key panel's disabled "Continue" button looks the same as the enabled
   one (global `.btn-primary:disabled` style). `components/notebooks.css` / styles.css.
+- P2 · `session_info` reads the keychain secret (`keychain::is_remembered` → `recall`) on
+  every `get_notebook_session` for an encrypted notebook. Cache "remembered" in the
+  Session when it is set/unset; on macOS each read can mean a keychain access check.
+  `src-tauri/src/notebooks.rs` `session_info`.
+- P2 · Desktop D6 "Open report page" lands on today's journal under heavy load (1 of 3
+  full runs; passes alone): the switch's `openJournal()` can finish after the click's
+  navigation. Navigation-token check missing on that path. `App.tsx` onSwitch.
+- P3 · The idle-refresh loop fixed in E14 (watcher counting read events) likely also
+  affected plain notebooks with a non-empty WAL (1 Hz `db-changed`); worth a
+  before/after look with `scale-tour.sh` timings.
 - P3 · `export.rs` gained an `AttachmentCopy.data` field for encrypted exports — touches a
   file the concurrent F-2/F-7 work also edits; expect a small merge.
