@@ -1937,3 +1937,11 @@ Object.assign(mockHandlers, {
   },
 });
 // ── End remote images ──
+
+// ── Encrypted notebooks ──
+// Browser-mode mock of lock state and the passphrase commands — see
+// lib/encryptionMock.ts. Assigned last: it wraps every handler above with the
+// "locked notebook" refusal.
+import { createEncryptionMockHandlers } from "./encryptionMock";
+Object.assign(mockHandlers, createEncryptionMockHandlers(mockHandlers));
+// ── End encrypted notebooks ──

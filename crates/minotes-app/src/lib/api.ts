@@ -8,7 +8,12 @@ const isTauri = !!(window as any).__TAURI_INTERNALS__;
 // Unified invoke: uses Tauri when available, mock backend otherwise
 async function invoke<T>(command: string, args?: Record<string, any>): Promise<T> {
   if (isTauri) {
-    return tauriInvoke<T>(command, args);
+    try {
+      return await tauriInvoke<T>(command, args);
+    } catch (e) {
+      noticeLocked(e);
+      throw e;
+    }
   }
   // Mock backend
   const handler = mockHandlers[command];
@@ -20,8 +25,28 @@ async function invoke<T>(command: string, args?: Record<string, any>): Promise<T
     const result = handler(args ?? {});
     return result as T;
   } catch (e: any) {
-    throw e.message ?? String(e);
+    const err = e.message ?? String(e);
+    noticeLocked(err);
+    throw err;
   }
+}
+
+/** Fired when a command failed because the open notebook is locked
+ *  (PRD-encryption): the lock gate shows the unlock screen. */
+export const NOTEBOOK_LOCKED_EVENT = "minotes-notebook-locked";
+
+/** Errors the backend returns while the open (encrypted) notebook is locked. */
+export function isLockedError(e: unknown): boolean {
+  return typeof e === "string" && e.startsWith("NOTEBOOK_LOCKED");
+}
+
+/** A wrong passphrase / recovery key. */
+export function isWrongPassphrase(e: unknown): boolean {
+  return typeof e === "string" && e.startsWith("WRONG_PASSPHRASE");
+}
+
+function noticeLocked(e: unknown) {
+  if (isLockedError(e)) window.dispatchEvent(new Event(NOTEBOOK_LOCKED_EVENT));
 }
 
 export interface Page {
@@ -521,6 +546,10 @@ export interface NotebookInfo {
   modified_at: string;
   /** File-sync service the folder seems to be in (Dropbox, iCloud Drive, …). */
   cloud: string | null;
+  /** Encrypted with a passphrase (PRD-encryption). */
+  encrypted?: boolean;
+  /** Encrypted and not unlocked. */
+  locked?: boolean;
 }
 
 export interface NotebookSession {
@@ -537,6 +566,14 @@ export interface NotebookSession {
   notice: string | null;
   cloud: string | null;
   conflicted_copies: string[];
+  /** Encrypted with a passphrase (PRD-encryption). */
+  encrypted?: boolean;
+  /** Encrypted and not unlocked: only the unlock screen is shown. */
+  locked?: boolean;
+  /** "Keep unlocked on this device" is on (its key is in the keychain). */
+  remembered?: boolean;
+  /** This device has a keychain MiNotes can use. */
+  keychain_available?: boolean;
 }
 
 export interface MirrorStatus {
@@ -612,9 +649,37 @@ export interface ZipImport {
  *  backend shows the save dialog / share picker. Null when cancelled. */
 export const exportNotebookZip = (key?: string | null, dest?: string | null) =>
   invoke<ZipExport | null>("export_notebook_zip", { key: key ?? null, dest: dest ?? null });
-/** Import a notebook .zip (path, or the picker's content:// URI) as a new notebook. */
-export const importNotebookZip = (source: string) =>
-  invoke<ZipImport>("import_notebook_zip", { source });
+/** Import a notebook .zip (path, or the picker's content:// URI) as a new notebook.
+ *  An encrypted notebook's archive needs its passphrase (NOTEBOOK_LOCKED without). */
+export const importNotebookZip = (source: string, passphrase?: string | null) =>
+  invoke<ZipImport>("import_notebook_zip", { source, passphrase: passphrase ?? null });
+
+// ── Encrypted notebooks (PRD-encryption; src-tauri encryption_commands.rs) ──
+
+export interface CreatedEncrypted { notebook: NotebookInfo; recovery_key: string }
+export interface EncryptionPlan { deletes: string[]; needs_folder: boolean; has_git: boolean }
+/** New encrypted notebook (unlocked, not switched to). The recovery key is shown once. */
+export const createEncryptedNotebook = (name: string, location: string | undefined, passphrase: string) =>
+  invoke<CreatedEncrypted>("create_encrypted_notebook", { name, location: location ?? null, passphrase });
+/** Unlock the open notebook with its passphrase (or recovery key). */
+export const unlockNotebook = (secret: string, recovery: boolean, remember: boolean) =>
+  invoke<NotebookSession>("unlock_notebook", { secret, recovery, remember });
+export const lockNotebook = () => invoke<NotebookSession>("lock_notebook");
+export const changePassphrase = (currentPassphrase: string, newPassphrase: string) =>
+  invoke<void>("change_passphrase", { currentPassphrase, newPassphrase });
+/** Forgotten passphrase: returns the NEW recovery key (shown once). */
+export const recoverWithKey = (recoveryKey: string, newPassphrase: string) =>
+  invoke<string>("recover_with_key", { recoveryKey, newPassphrase });
+export const regenerateRecoveryKey = (passphrase: string) =>
+  invoke<string>("regenerate_recovery_key", { passphrase });
+export const setRememberDevice = (remember: boolean) =>
+  invoke<NotebookSession>("set_remember_device", { remember });
+export const encryptionPlan = () => invoke<EncryptionPlan>("encryption_plan");
+/** Encrypt the open notebook; returns its recovery key. */
+export const encryptNotebook = (passphrase: string) => invoke<string>("encrypt_notebook", { passphrase });
+export const decryptNotebook = (passphrase: string) => invoke<void>("decrypt_notebook", { passphrase });
+/** New data key (and recovery key, returned); remembered devices are forgotten. */
+export const rotateNotebookKey = (passphrase: string) => invoke<string>("rotate_notebook_key", { passphrase });
 /** Native picker for a notebook .zip. Null when cancelled. */
 export const pickZipNative = (title: string) =>
   invoke<string | null>("plugin:dialog|open", {
