@@ -135,26 +135,41 @@ pub fn store_dropped_files(state: State<'_, AppState>, dropped: State<'_, Droppe
     Ok(out)
 }
 
-/// Types the OS would run rather than view. Attachments arrive from imports and
-/// sync, so one click must never launch a program: these are shown in their
-/// folder instead.
-const LAUNCHABLE_EXTS: &[&str] = &[
-    "exe", "msi", "msix", "com", "scr", "bat", "cmd", "ps1", "psm1", "vbs", "vbe", "js", "jse", "wsf", "wsh",
-    "hta", "lnk", "url", "reg", "cpl", "jar", "sh", "bash", "zsh", "command", "app", "desktop", "appimage",
-    "run", "bin", "elf", "py", "pyw", "pl", "rb", "deb", "rpm", "dmg", "pkg", "scpt", "workflow", "apk",
+/// Types safe to hand to the OS default app: documents and media that are
+/// viewed, not run. Attachments arrive from imports and sync, so one click must
+/// never launch a program; anything not listed here (including no extension,
+/// HTML/SVG that open in a browser, and macro-enabled Office files) is shown in
+/// its folder instead. An allowlist, because a denylist of executable types is
+/// never complete (`.chm .pif .iso .xll .docm .jnlp .terminal …`).
+const OPENABLE_EXTS: &[&str] = &[
+    // images
+    "png", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff", "heic", "heif", "avif", "ico",
+    // documents
+    "pdf",
+    // audio
+    "mp3", "wav", "ogg", "oga", "flac", "m4a", "aac", "opus",
+    // video
+    "mp4", "m4v", "mov", "webm", "mkv", "avi",
+    // plain text
+    "txt", "md", "markdown", "csv", "tsv", "json", "log",
+    // macro-free office / OpenDocument
+    "docx", "xlsx", "pptx", "odt", "ods", "odp", "rtf",
 ];
 
-fn is_launchable(file: &Path) -> bool {
-    file.extension().and_then(|e| e.to_str()).map(|e| LAUNCHABLE_EXTS.contains(&e.to_ascii_lowercase().as_str())).unwrap_or(true)
+fn is_safe_to_open(file: &Path) -> bool {
+    file.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| OPENABLE_EXTS.contains(&e.to_ascii_lowercase().as_str()))
+        .unwrap_or(false)
 }
 
-/// Open a stored attachment with the OS default app (programs and scripts are
-/// revealed in their folder instead of run).
+/// Open a stored attachment with the OS default app when its type is on the
+/// viewing allowlist; reveal it in its folder otherwise.
 #[tauri::command]
 pub fn open_attachment(app: AppHandle, hash: String) -> Result<(), String> {
     let dir = store_dir(&app).ok_or("not ready")?;
     let file = attachments::find_file(&dir, &hash).ok_or("Attachment not found")?;
-    if is_launchable(&file) {
+    if !is_safe_to_open(&file) {
         return tauri_plugin_opener::reveal_item_in_dir(&file).map_err(|e| e.to_string());
     }
     tauri_plugin_opener::open_path(&file, None::<&str>).map_err(|e| e.to_string())
@@ -162,16 +177,20 @@ pub fn open_attachment(app: AppHandle, hash: String) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::is_launchable;
+    use super::is_safe_to_open;
     use std::path::Path;
 
     #[test]
-    fn programs_and_scripts_are_never_launched() {
-        for f in ["a.exe", "a.BAT", "a.desktop", "a.sh", "a.lnk", "a.AppImage", "noext"] {
-            assert!(is_launchable(Path::new(f)), "{f}");
+    fn only_viewable_types_are_opened() {
+        for f in [
+            "a.exe", "a.BAT", "a.desktop", "a.sh", "a.lnk", "a.AppImage", "noext", "a.chm", "a.pif", "a.iso",
+            "a.img", "a.vhd", "a.xll", "a.docm", "a.xlsm", "a.pptm", "a.jnlp", "a.appref-ms", "a.library-ms",
+            "a.terminal", "a.fileloc", "a.html", "a.svg", "a.js", "a.py", "a.pdf.exe", ".pdf",
+        ] {
+            assert!(!is_safe_to_open(Path::new(f)), "{f}");
         }
-        for f in ["a.pdf", "a.png", "a.docx", "a.mp4", "a.txt"] {
-            assert!(!is_launchable(Path::new(f)), "{f}");
+        for f in ["a.pdf", "a.PNG", "a.jpeg", "a.docx", "a.xlsx", "a.pptx", "a.odt", "a.rtf", "a.mp4", "a.mp3", "a.txt", "a.md", "a.csv", "a.json", "a.exe.pdf"] {
+            assert!(is_safe_to_open(Path::new(f)), "{f}");
         }
     }
 }
