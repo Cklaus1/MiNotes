@@ -112,7 +112,9 @@
   border-radius: 6px;
   font-size: 14px;
   letter-spacing: 0.04em;
-  word-break: break-all;
+  /* Wrap between the dash-separated groups, never inside one. */
+  word-break: normal;
+  overflow-wrap: anywhere;
   user-select: all;
   background: var(--bg-secondary);
 }
