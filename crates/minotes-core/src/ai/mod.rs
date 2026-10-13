@@ -85,8 +85,25 @@ impl From<crate::error::Error> for AiError {
     }
 }
 
-/// Create the AI tables (idempotent; safe on every open).
+/// Does this database have the AI tables yet?
+pub(crate) fn has_schema(db: &Database) -> bool {
+    db.conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('ai_settings', 'ai_runs')",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .map(|n| n == 2)
+        .unwrap_or(false)
+}
+
+/// Create the AI tables (idempotent; safe on every open). A no-op on a
+/// read-only connection (a notebook another instance owns): readers then see
+/// default settings / no runs when the tables are missing.
 pub fn ensure_schema(db: &Database) -> Result<(), AiError> {
+    if db.is_read_only() {
+        return Ok(());
+    }
     db.conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS ai_settings (
              key   TEXT PRIMARY KEY,
@@ -214,15 +231,24 @@ pub fn status(db: &Database, key: KeyStatus) -> Result<AiStatus, AiError> {
         } else {
             format!("No OS keychain is available here. Set {OPENROUTER_KEY_ENV} in the environment and restart MiNotes.")
         }),
+        ProviderKind::Local if !settings.local.endpoint_confirmed() => Some(format!(
+            "Confirm the custom endpoint {} in AI settings: it is not on this computer.",
+            settings.local.remote_host().unwrap_or_default()
+        )),
         _ if model.is_none() => Some("Choose a model.".to_string()),
         _ => None,
     };
     let data_notice = match settings.provider {
         ProviderKind::Off => "AI is off: no note content leaves this device.".to_string(),
-        ProviderKind::Local => format!(
-            "Your notes in {scope_label} are sent only to the local model server at {} when you use AI features.",
-            settings.local.base_url
-        ),
+        ProviderKind::Local => match settings.local.remote_host() {
+            None => format!(
+                "Your notes in {scope_label} are sent only to the local model server at {} when you use AI features.",
+                settings.local.base_url
+            ),
+            Some(host) => format!(
+                "Your notes in {scope_label} are sent to {host}, a custom endpoint that is NOT on this computer, when you use AI features."
+            ),
+        },
         _ => {
             let who = model
                 .as_ref()
@@ -255,6 +281,9 @@ fn month_start() -> String {
 /// USD spent on AI runs since the start of this calendar month (UTC).
 pub fn month_spend(db: &Database) -> Result<f64, AiError> {
     ensure_schema(db)?;
+    if !has_schema(db) {
+        return Ok(0.0);
+    }
     Ok(db.conn.query_row(
         "SELECT COALESCE(SUM(cost_usd), 0) FROM ai_runs WHERE started_at >= ?1",
         [month_start()],
@@ -283,6 +312,9 @@ pub struct RunRecord {
 
 pub fn list_runs(db: &Database, limit: i64) -> Result<Vec<RunRecord>, AiError> {
     ensure_schema(db)?;
+    if !has_schema(db) {
+        return Ok(Vec::new());
+    }
     let mut stmt = db.conn.prepare(
         "SELECT id, task, scope, provider, model, input_tokens, output_tokens, cached_tokens, tool_calls,
                 cost_usd, started_at, finished_at, outcome, error, transcript IS NOT NULL
@@ -372,22 +404,28 @@ pub struct RunOutput {
     pub cap_usd: f64,
 }
 
+/// The `ai_runs` row of one run. On a read-only connection (the notebook is
+/// owned by another MiNotes window) nothing is written: asking only reads notes.
 struct RunLog<'a> {
-    db: &'a Database,
+    db: Option<&'a Database>,
     id: String,
 }
 
 impl<'a> RunLog<'a> {
     fn start(db: &'a Database, task: &str, scope: &str, provider: &str, model: &str) -> Result<Self, AiError> {
         let id = Uuid::now_v7().to_string();
+        if db.is_read_only() {
+            return Ok(Self { db: None, id });
+        }
         db.conn.execute(
             "INSERT INTO ai_runs(id, task, scope, provider, model, started_at) VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
             rusqlite::params![id, task, scope, provider, model, Utc::now().to_rfc3339()],
         )?;
-        Ok(Self { db, id })
+        Ok(Self { db: Some(db), id })
     }
     fn finish(&self, usage: &Usage, cost: f64, tool_calls: u32, outcome: &str, error: Option<&str>, transcript: Option<String>) {
-        let _ = self.db.conn.execute(
+        let Some(db) = self.db else { return };
+        let _ = db.conn.execute(
             "UPDATE ai_runs SET input_tokens = ?2, output_tokens = ?3, cached_tokens = ?4, tool_calls = ?5,
                     cost_usd = ?6, finished_at = ?7, outcome = ?8, error = ?9, transcript = ?10
              WHERE id = ?1",
@@ -663,7 +701,17 @@ pub fn provider_for(settings: &AiSettings, api_key: Option<String>) -> Result<Bo
             })?;
             Ok(Box::new(provider::OpenAiCompatClient::openrouter(key)))
         }
-        ProviderKind::Local => Ok(Box::new(provider::OpenAiCompatClient::local(&settings.local.base_url))),
+        ProviderKind::Local => {
+            // Settings can arrive without passing validation (an older or an
+            // imported notebook): a custom endpoint is used only once confirmed.
+            if !settings.local.endpoint_confirmed() {
+                return Err(AiError::NotConfigured(format!(
+                    "Confirm the custom endpoint {} in AI settings: it is not on this computer.",
+                    settings.local.remote_host().unwrap_or_default()
+                )));
+            }
+            Ok(Box::new(provider::OpenAiCompatClient::local(&settings.local.base_url)))
+        }
         ProviderKind::Mock => Err(AiError::NotConfigured("The mock provider is for tests only.".into())),
     }
 }

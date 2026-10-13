@@ -65,13 +65,13 @@ And one process gap that makes all of this riskier: **there is no CI** (X-1).
 | F-1 | Flush the mirror before enabling sync; protect recent edits; park removed blocks in Trash | S |
 | F-6 | Run git with hooks/fsmonitor/ext protocol disabled and `--no-verify`; don't auto-sync folders this machine didn't set up | S |
 | F-4, F-5 | Refuse symlinks in the mirror (lstat everywhere, canonical containment); `core.symlinks=false` | S |
-| B-1, F-16 | Scrub imported zip notebooks: AI settings off, no transcripts/snippets/plugins, drop unknown triggers/views, `trusted_schema=OFF`; exclude `ai_runs` from export | M |
+| B-1, F-16 | **Fixed.** Scrub imported zip notebooks: AI settings off, no transcripts/snippets/plugins, drop unknown triggers/views, `trusted_schema=OFF`; exclude `ai_runs` from export | M |
 | C-1 | Bound the event log and stop GC from counting events no one can undo, so trash and attachments are actually freed | M |
 | U-1 | Save barrier before notebook switch (flush editor + whiteboard) | S |
-| B-2 | AI Ask must respect read-only sessions | S |
+| B-2 | **Fixed.** AI Ask must respect read-only sessions | S |
 | C-3 | `BEGIN IMMEDIATE` for outermost transactions + bounded busy retry | S |
-| B-14 | Dev-only OpenRouter URL override out of release builds | S |
-| B-5 | Attachment open: allowlist of safe types instead of a denylist | S |
+| B-14 | **Fixed.** Dev-only OpenRouter URL override out of release builds | S |
+| B-5 | **Fixed.** Attachment open: allowlist of safe types instead of a denylist | S |
 
 ### P1: next (correctness and trust)
 
@@ -101,8 +101,8 @@ code splitting (U-14), accessibility (U-15), whiteboard conflict handling
 | F-4 | High | Verified | Symlinked `.md` in the mirror is imported and re-written as a real file (exfiltration via a shared repo) | S |
 | F-6 | High | Likely | Git runs repo-local hooks/fsmonitor in notebook folders the user opened | S |
 | F-7 | High | Verified | Block properties are not in the markdown, so never sync | M |
-| B-1 | High | Likely | Imported notebook zip carries AI endpoint, CSS snippets, plugins, triggers | M |
-| B-2 | High | Verified | AI Ask writes to a notebook open read-only (owned by another window) | S |
+| B-1 | High | Fixed | Imported notebook zip carries AI endpoint, CSS snippets, plugins, triggers | M |
+| B-2 | High | Fixed | AI Ask writes to a notebook open read-only (owned by another window) | S |
 | B-3 | High | Verified | Monthly AI cost cap can be exceeded (parallel runs, unknown prices, lost usage, per-notebook) | M |
 | B-4 | High | Verified | ~139 sync commands on the UI thread share one DB mutex held by background work | M |
 | C-1 | High | Verified | Event log never pruned; it pins whiteboard/attachment GC forever | M |
@@ -119,7 +119,7 @@ code splitting (U-14), accessibility (U-15), whiteboard conflict handling
 | F-11 | Medium | Verified | Whiteboards: last-writer-wins by wall clock across devices | M |
 | F-12 | Medium | Likely | Re-rendering a just-saved outside file churns block ids | M |
 | F-13 | Medium | Verified | No single markdown codec (3 parsers, 2 frontmatter readers, a legacy importer) | M |
-| B-5 | Medium | Verified | `open_attachment` denylist misses many dangerous types | S |
+| B-5 | Medium | Fixed | `open_attachment` denylist misses many dangerous types | S |
 | B-6 / U-16 | Medium | Likely | Remote `https:` images load from notes (tracking pixels); inline CSS snippets | M |
 | B-7 / U-8 | Medium | Verified | No IPC authorization; test API, module exposure and picker bypass ship in production | L / S |
 | B-8 | Medium | Likely | On Windows, data falls into the working directory | S |
@@ -147,7 +147,7 @@ code splitting (U-14), accessibility (U-15), whiteboard conflict handling
 | F-14 | Low | Suspected | Interrupted sync phase 3 makes pulled files look like outside edits | S |
 | F-15 | Low | Verified | Full passes and `git commit` under the DB lock; `.minotes-trash` grows forever | S–M |
 | B-13 | Low | Verified | Cross-notebook link resolution holds the DB lock while opening other notebooks | S |
-| B-14 | Low | Verified | Release build honours a dev-only OpenRouter URL override (key goes with it) | S |
+| B-14 | Low | Fixed | Release build honours a dev-only OpenRouter URL override (key goes with it) | S |
 | B-15 | Low | Verified | `attachment://` reads whole files into memory | S |
 | U-11 | Low | Verified | Tauri `listen()` leaks when cleanup runs before it resolves | S |
 | U-12 | Low | Verified | Search results overwritten by a slower older query | S |
@@ -266,12 +266,32 @@ earlier assessment during the Android merge that a hostile imported database
 compare `sqlite_master` to the canonical schema and drop unknown
 triggers/views, set `trusted_schema=OFF`; exclude `ai_runs` from export; a
 non-loopback "local" endpoint becomes a separately confirmed "custom endpoint".
+**Fixed:** `notebook_zip::scrub_untrusted_db` runs after the integrity check and
+before migrations or registration, on connections with `trusted_schema=OFF` and
+`SQLITE_DBCONFIG_DEFENSIVE`. It compares `sqlite_master` with the canonical
+schema of a fresh database: a canonical name used by another object kind, an
+unknown virtual table or a newer schema version refuses the import; every
+non-canonical trigger, view and index (by name and SQL) is dropped and the
+canonical ones restored; the result must equal the canonical set. AI settings
+are cleared (provider Off) and `ai_runs` emptied; CSS snippets and plugins are
+kept but disabled (re-enable knowingly); `plugin_storage` is deleted
+(plugin-private, un-namespaced). The import toast lists what was turned off.
+Export empties `ai_runs` and `ai_settings` in the snapshot and VACUUMs it.
+`Database::open`/`open_read_only` set `trusted_schema=OFF` on every connection
+(the FTS5 triggers are unaffected). A "local" endpoint whose host is not
+loopback (127.0.0.0/8, ::1, localhost) must carry
+`local.confirmed_remote_host` equal to that host — set by the AI settings
+checkbox "Send my notes to <host>" under a warning — or saving fails, and
+`provider_for` refuses unvalidated settings too; the data notice names the
+host as not on this computer. Loopback setups need no flag.
 
 **B-5 Attachment launch denylist.** The list added in this project
 (`import_commands.rs`) misses `.chm .pif .iso .img .vhd .xll .docm .xlsm .pptm
 .jnlp .appref-ms .library-ms .terminal .fileloc` and more. **Fix:** allowlist
 (images, PDF, audio/video, plain text, macro-free office); reveal everything
-else.
+else. **Fixed:** `open_attachment` opens only an allowlist (images, PDF,
+audio/video, txt/md/csv/tsv/json/log, docx/xlsx/pptx/odt/ods/odp/rtf); any other
+type, HTML/SVG and no extension are revealed in their folder.
 
 **B-6 / U-16 Remote content.** CSP `img-src … https:` plus `staticRender`
 keeping `https:` image sources and OG preview images means imported or synced
@@ -296,7 +316,9 @@ restrict file reads to picked paths and the notebook's stores, before any
 plugin work.
 
 **B-14** `MINOTES_AI_OPENROUTER_URL` (documented dev-only) is honoured in release
-and receives the bearer key; gate on `debug_assertions`.
+and receives the bearer key; gate on `debug_assertions`. **Fixed:** the
+override is compiled only into debug builds (tests and desktop-check use debug
+builds); release builds always use `https://openrouter.ai/api/v1`.
 
 ### 4.4 Concurrency and responsiveness
 
@@ -426,7 +448,10 @@ trapping.
 
 **B-2** `ai_ask` opens the DB read-write (`ai_commands.rs:186`) even when the
 session is read-only, runs migrations and writes `ai_runs` into a notebook
-another instance owns. **B-3** the cap is read once per run, so parallel runs
+another instance owns. **Fixed:** in a read-only window Ask still works (it
+only reads notes) on `Database::open_read_only` (no migrations); `ai::run`
+skips the run log and `ensure_schema` is a no-op on read-only connections
+(missing AI tables read as defaults); the model catalogue isn't cached there. **B-3** the cap is read once per run, so parallel runs
 each spend up to the cap (proof: $12 against $5); unknown model prices count as
 $0 (40 calls recorded $0); a failed stream loses billed usage; settings are per
 notebook while the key is global, so N notebooks give N× the cap. **Fix:** an

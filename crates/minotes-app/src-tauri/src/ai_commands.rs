@@ -3,9 +3,10 @@
 //! - The OpenRouter key lives in the OS keychain (`keyring`); if no keychain
 //!   is available nothing is stored and `OPENROUTER_API_KEY` is used instead.
 //!   The key is never returned to the webview — only a `KeyStatus`.
-//! - `ai_ask` runs on a background thread with its own read connection to the
-//!   active graph (so the UI's DB lock is never held during network calls)
-//!   and streams progress as `ai://event` events.
+//! - `ai_ask` runs on a background thread with its own connection to the
+//!   active notebook (so the UI's DB lock is never held during network calls)
+//!   and streams progress as `ai://event` events. In a read-only window that
+//!   connection is read-only too and the run is not logged.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -159,7 +160,12 @@ pub async fn ai_list_models(state: State<'_, AppState>, refresh: Option<bool>) -
         match fetched {
             Ok(models) => {
                 let db = state.db.lock().map_err(|e| e.to_string())?;
-                cat = Some(catalog::store(&db, models).map_err(err)?);
+                if db.is_read_only() {
+                    // Not cached in a notebook this window doesn't own.
+                    cat = Some(catalog::Catalog { fetched_at: chrono::Utc::now().to_rfc3339(), models });
+                } else {
+                    cat = Some(catalog::store(&db, models).map_err(err)?);
+                }
             }
             Err(e) => error = Some(e.to_string()),
         }
@@ -203,12 +209,13 @@ pub fn ai_ask(
     let current_page = current_page_id.and_then(|p| uuid::Uuid::parse_str(&p).ok());
     let cancel = Arc::new(AtomicBool::new(false));
     runtime().cancels.lock().unwrap().insert(conv_id.clone(), cancel.clone());
-    // The open notebook's database (a legacy graph or a notebook folder).
-    let path = {
+    // The open notebook's database (a legacy graph or a notebook folder), and
+    // whether this window only has it read-only (another instance holds it).
+    let (path, read_only) = {
         use tauri::Manager;
         let state = app.state::<super::AppState>();
         let s = state.session.lock().map_err(|e| e.to_string())?;
-        s.notebook.db_path()
+        (s.notebook.db_path(), s.held_by.is_some())
     };
     let id = conv_id.clone();
     std::thread::spawn(move || {
@@ -216,7 +223,10 @@ pub fn ai_ask(
             let _ = app.emit("ai://event", EventPayload { conversation_id: id.clone(), event });
         };
         let result = (|| -> Result<RunOutput, AiError> {
-            let db = Database::open(&path).map_err(|e| AiError::Internal(e.to_string()))?;
+            // Asking only reads notes, so a read-only window may ask too: its
+            // connection runs no migrations and the run is not logged.
+            let db = if read_only { Database::open_read_only(&path) } else { Database::open(&path) }
+                .map_err(|e| AiError::Internal(e.to_string()))?;
             let settings = ai::load_settings(&db)?;
             let model = ai::resolve_model(&db, &settings, TaskClass::Interactive)?;
             let provider = ai::provider_for(&settings, current_key().0)?;

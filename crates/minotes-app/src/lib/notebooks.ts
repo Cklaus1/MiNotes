@@ -208,7 +208,8 @@ export async function importNotebookFromZip(): Promise<api.ZipImport | null> {
     notebooksChanged();
     const renamed = r.renamed_from ? ` as “${r.notebook.name}” (“${r.renamed_from}” already exists)` : ` “${r.notebook.name}”`;
     const skipped = r.skipped.length ? ` ${r.skipped.length} damaged file(s) were left out.` : "";
-    showToast(`Imported notebook${renamed}: ${count(r.pages, "page")}, ${count(r.attachments, "file")}.${skipped}`);
+    const off = r.turned_off?.length ? ` Turned off for safety: ${r.turned_off.join(", ")}.` : "";
+    showToast(`Imported notebook${renamed}: ${count(r.pages, "page")}, ${count(r.attachments, "file")}.${skipped}${off}`);
     return r;
   } catch (e) {
     showToast(`Couldn't import that notebook: ${errorMessage(e)}`);

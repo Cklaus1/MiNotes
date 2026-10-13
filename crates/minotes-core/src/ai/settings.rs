@@ -107,6 +107,12 @@ pub struct LocalSettings {
     /// Whether the local model handles tool calling. When false (or when the
     /// server rejects `tools`), Ask falls back to retrieval-then-answer.
     pub supports_tools: bool,
+    /// A `base_url` that is not on this computer (not loopback) is a "custom
+    /// endpoint": notes leave the device. The UI sets this to that endpoint's
+    /// host only after the user confirmed "Notes will be sent to <host>"; it
+    /// must equal the current host, so pointing the URL elsewhere needs a new
+    /// confirmation. Loopback endpoints don't need it.
+    pub confirmed_remote_host: Option<String>,
 }
 
 impl Default for LocalSettings {
@@ -115,8 +121,60 @@ impl Default for LocalSettings {
             base_url: "http://localhost:11434/v1".into(),
             model: String::new(),
             supports_tools: true,
+            confirmed_remote_host: None,
         }
     }
+}
+
+impl LocalSettings {
+    /// The endpoint's host when it is NOT on this computer (`None` for
+    /// loopback endpoints, and for URLs without a host).
+    pub fn remote_host(&self) -> Option<String> {
+        endpoint_host(&self.base_url).filter(|h| !is_loopback_host(h))
+    }
+
+    /// Is the endpoint usable as configured: loopback, or a custom endpoint
+    /// the user confirmed for exactly this host?
+    pub fn endpoint_confirmed(&self) -> bool {
+        match self.remote_host() {
+            None => true,
+            Some(h) => self.confirmed_remote_host.as_deref().map(|c| c.trim().to_ascii_lowercase()) == Some(h),
+        }
+    }
+}
+
+/// The host of an `http(s)://` URL, lower-cased, without port, user info or
+/// IPv6 brackets. `None` when there is no recognisable host.
+pub fn endpoint_host(url: &str) -> Option<String> {
+    let u = url.trim();
+    let rest = u.split_once("://").map(|(_, r)| r)?;
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    if authority.chars().any(|c| c.is_whitespace() || c == '\\') {
+        return None;
+    }
+    let hostport = authority.rsplit_once('@').map(|(_, h)| h).unwrap_or(authority);
+    let host = if let Some(v6) = hostport.strip_prefix('[') {
+        v6.split_once(']')?.0
+    } else {
+        hostport.split(':').next().unwrap_or("")
+    };
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    (!host.is_empty()).then_some(host)
+}
+
+/// `localhost`, `*.localhost`, 127.0.0.0/8 and ::1 (also IPv4-mapped).
+pub fn is_loopback_host(host: &str) -> bool {
+    let h = host.trim().trim_start_matches('[').trim_end_matches(']').trim_end_matches('.').to_ascii_lowercase();
+    if h == "localhost" || h.ends_with(".localhost") {
+        return true;
+    }
+    if let Ok(ip) = h.parse::<std::net::Ipv4Addr>() {
+        return ip.is_loopback();
+    }
+    if let Ok(ip) = h.parse::<std::net::Ipv6Addr>() {
+        return ip.is_loopback() || ip.to_ipv4_mapped().map(|v4| v4.is_loopback()).unwrap_or(false);
+    }
+    false
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -177,6 +235,17 @@ impl AiSettings {
             if !(u.starts_with("http://") || u.starts_with("https://")) {
                 return Err(AiError::InvalidInput("Local endpoint must start with http:// or https://".into()));
             }
+            if endpoint_host(u).is_none() {
+                return Err(AiError::InvalidInput("The endpoint URL has no host name".into()));
+            }
+            if let Some(host) = self.local.remote_host() {
+                if !self.local.endpoint_confirmed() {
+                    return Err(AiError::InvalidInput(format!(
+                        "{host} is not on this computer: your notes would be sent to it. \
+                         Confirm the custom endpoint in AI settings first."
+                    )));
+                }
+            }
         }
         if self.scope.kind == ScopeKind::Folders && self.scope.folder_ids.is_empty() {
             return Err(AiError::InvalidInput("Pick at least one folder for the AI scope".into()));
@@ -204,6 +273,9 @@ pub fn save_settings(db: &Database, settings: &AiSettings) -> Result<(), AiError
 
 pub(crate) fn get_value(db: &Database, key: &str) -> Result<Option<String>, AiError> {
     use rusqlite::OptionalExtension;
+    if !super::has_schema(db) {
+        return Ok(None); // read-only connection to a notebook that never used AI
+    }
     db.conn
         .query_row("SELECT value FROM ai_settings WHERE key = ?1", [key], |r| r.get(0))
         .optional()

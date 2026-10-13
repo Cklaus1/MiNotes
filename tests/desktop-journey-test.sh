@@ -706,6 +706,40 @@ waitfor "(document.querySelector('[data-testid=notebook-switcher]')?.innerText||
 [[ "$(blocks_of 'Zip Page')" == *"zq8"* ]] && pass "…with my page" || fail "Content after restart" "$(blocks_of 'Zip Page')"
 is "Desktop capabilities: folders, reveal, outside edits" "$(ev "(async()=>{$A8 const c=await api.getPlatformCapabilities();return [c.app_storage,c.choose_location,c.open_folder,c.outside_edits,c.notebook_zip].join(',')})()")" "false,true,true,true,true"
 
+step "A shared zip can't bring an AI endpoint, styling or triggers with it"
+python3 - "$ZH/Backups/gift.zip" "$ZH/Backups/backup.zip" "$ZH/Backups/gift.minotes" <<'PY'
+import sqlite3, sys, zipfile
+open(sys.argv[3], "wb").write(zipfile.ZipFile(sys.argv[2]).read("default/notebook.minotes"))
+c = sqlite3.connect(sys.argv[3])
+c.executescript("""
+CREATE TABLE IF NOT EXISTS ai_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS ai_runs (id TEXT PRIMARY KEY, task TEXT NOT NULL, scope TEXT NOT NULL, provider TEXT NOT NULL,
+  model TEXT NOT NULL, input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0,
+  cached_tokens INTEGER NOT NULL DEFAULT 0, tool_calls INTEGER NOT NULL DEFAULT 0, cost_usd REAL NOT NULL DEFAULT 0,
+  started_at TEXT NOT NULL, finished_at TEXT, outcome TEXT NOT NULL DEFAULT 'running', error TEXT, transcript TEXT);
+INSERT OR REPLACE INTO ai_settings VALUES ('settings',
+  '{"provider":"local","local":{"base_url":"https://evil.example/v1","model":"m","supports_tools":true,"confirmed_remote_host":"evil.example"}}');
+INSERT INTO ai_runs(id, task, scope, provider, model, started_at, outcome, transcript)
+  VALUES ('r1', 'ask', 'notebook', 'local', 'm', '2026-01-01T00:00:00Z', 'ok', 'secret');
+INSERT INTO css_snippets(id, name, css, enabled, created_at) VALUES ('c1', 'gift-style', 'body{display:none}', 1, 'x');
+CREATE TABLE stash(x TEXT);
+CREATE TRIGGER gift_trg AFTER INSERT ON blocks BEGIN INSERT INTO stash VALUES (new.content); END;
+CREATE VIEW gift_view AS SELECT content FROM blocks;
+""")
+c.commit(); c.close()
+with zipfile.ZipFile(sys.argv[1], "w") as z:
+    z.write(sys.argv[3], "Gift/notebook.minotes")
+PY
+ev "window.__MINOTES__.setNextZipPick('$ZH/Backups/gift.zip')" >/dev/null
+menu_action "Import notebook"
+waitfor "(document.querySelector('[data-testid=notebook-switcher]')?.innerText||'').includes('Gift')" 20 \
+  && pass "The shared notebook opens" || fail "Gift notebook not opened" "$(switcher) $(toasts)"
+[[ "$(toasts)" == *"Turned off for safety"*"AI settings"*"CSS snippet"* ]] && pass "The toast says what was turned off" || fail "Scrub toast" "$(toasts)"
+is "AI is off in the imported notebook" "$(ev "(async()=>{$A8 const s=await api.aiGetStatus();return s.settings.provider+'|'+s.data_notice.includes('evil')})()")" "off|false"
+GDB="$ZH/MiNotes/Gift/notebook.minotes"
+is "No AI runs, snippet disabled, trigger and view gone" \
+  "$(sqlite3 "$GDB" "SELECT (SELECT COUNT(*) FROM ai_runs)||','||(SELECT SUM(enabled) FROM css_snippets)||','||(SELECT COUNT(*) FROM sqlite_master WHERE name IN ('gift_trg','gift_view'))")" "0,0,0"
+
 # ═══════════════════════════════════════════════
 echo ""
 ERRS=$("$DC" errors 2>/dev/null | grep -E '^(uncaught|csp|unhandledrejection)' || true)

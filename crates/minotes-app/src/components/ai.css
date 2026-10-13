@@ -267,3 +267,13 @@
 }
 .ai-settings-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
 .ai-settings-actions .btn { padding: 6px 14px; font-size: 13px; }
+
+.ai-remote-warning {
+  margin: 4px 0 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--danger);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.ai-remote-warning p { margin: 0 0 6px; }

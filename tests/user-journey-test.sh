@@ -2661,6 +2661,26 @@ ai_click "[data-testid=ai-setup]" > /dev/null; sleep 1
 NOTICE=$(ev "document.querySelector('[data-testid=ai-data-notice]')?.textContent" | tr -d '"')
 [[ "$NOTICE" == *"no note content leaves this device"* ]] && pass "Settings open; off = nothing leaves the device" || fail "AI settings/notice missing" "$NOTICE"
 
+step "A 'local' endpoint that isn't on this computer needs my explicit confirmation"
+ai_click "[data-testid=ai-provider-local]" > /dev/null; sleep 0.5
+ai_type "[data-testid=ai-local-model]" "llama3.1"
+WARN0=$(ev "!!document.querySelector('[data-testid=ai-remote-warning]')" | tr -d '"')
+ai_type "[data-testid=ai-local-url]" "https://ai.example.com/v1"; sleep 0.3
+WARN=$(ev "document.querySelector('[data-testid=ai-remote-warning]')?.textContent" | tr -d '"')
+NOTICE=$(ev "document.querySelector('[data-testid=ai-data-notice]')?.textContent" | tr -d '"')
+[[ "$WARN0" == "false" && "$WARN" == *"Notes will be sent to ai.example.com"* && "$NOTICE" == *"ai.example.com"*"NOT on this computer"* ]] \
+  && pass "Custom endpoint: warning names the host; notice says notes leave this computer" || fail "Custom endpoint warning" "w0=$WARN0 w=$WARN n=$NOTICE"
+ai_click "[data-testid=ai-save]" > /dev/null; sleep 0.5
+ERR=$(ev "document.querySelector('[data-testid=ai-settings] .ai-error')?.textContent" | tr -d '"')
+[[ "$ERR" == *"not on this computer"* ]] && pass "Saving without confirmation is refused" || fail "Unconfirmed custom endpoint saved" "$ERR"
+ai_click "[data-testid=ai-remote-confirm]" > /dev/null; sleep 0.3
+ai_click "[data-testid=ai-save]" > /dev/null; sleep 0.5
+SAVED=$(ev "document.querySelector('[data-testid=ai-settings] .ai-saved')?.textContent" | tr -d '"')
+[[ "$SAVED" == *"Saved"* ]] && pass "Confirmed custom endpoint saves" || fail "Confirmed endpoint not saved" "$SAVED"
+ai_type "[data-testid=ai-local-url]" "http://localhost:11434/v1"; sleep 0.3
+WARN=$(ev "!!document.querySelector('[data-testid=ai-remote-warning]')" | tr -d '"')
+[[ "$WARN" == "false" ]] && pass "Loopback endpoint needs no confirmation" || fail "Loopback endpoint warned" "$WARN"
+
 step "Choose OpenRouter, store a key, keep the recommended model"
 ai_click "[data-testid=ai-provider-openrouter]" > /dev/null; sleep 1
 ai_type "[data-testid=ai-key-input]" "sk-or-test-key"
