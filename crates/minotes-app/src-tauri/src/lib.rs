@@ -1474,6 +1474,23 @@ fn list_pending_todos_with_page_ids(db: tauri::State<AppState>) -> Result<Vec<se
 
 // ── Whiteboards (DB-backed storage; keyed by the id in `{{whiteboard:<id>}}`) ──
 
+/// UI state that names content (recent pages), kept in the notebook's database
+/// for encrypted notebooks (PRD-encryption §4.5). Null when never set.
+#[tauri::command]
+fn get_ui_state(state: State<'_, AppState>, key: String) -> Result<Option<String>, String> {
+    let db = state.db_guard()?;
+    db.get_ui_state(&key).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_ui_state(state: State<'_, AppState>, key: String, value: String) -> Result<(), String> {
+    if state.session.lock().map_err(|e| e.to_string())?.held_by.is_some() {
+        return Ok(()); // read-only window: not remembered
+    }
+    let db = state.db_guard()?;
+    db.set_ui_state(&key, &value).map_err(|e| e.to_string())
+}
+
 /// Returns the whiteboard's JSON data, or null if it has never been saved.
 #[tauri::command]
 fn get_whiteboard(state: State<'_, AppState>, id: String) -> Result<Option<String>, String> {
@@ -1725,6 +1742,8 @@ pub fn run() {
             list_pending_todos,
             list_pending_todos_with_page_ids,
             get_whiteboard,
+            get_ui_state,
+            set_ui_state,
             save_whiteboard,
             gc_whiteboards,
             restore_blocks,

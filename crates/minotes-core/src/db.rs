@@ -595,6 +595,12 @@ impl Database {
                      tokenize='unicode61 remove_diacritics 2');
                  INSERT INTO blocks_fts(blocks_fts) VALUES('rebuild');
                  ALTER TABLE trash ADD COLUMN original_title TEXT;"),
+            // v5: UI state that names content (recent page titles) for notebooks
+            // whose webview storage must stay content-free (PRD-encryption §4.5).
+            (5, "CREATE TABLE IF NOT EXISTS ui_state (
+                     key        TEXT PRIMARY KEY,
+                     value      TEXT NOT NULL,
+                     updated_at TEXT NOT NULL);"),
         ];
 
         let current: i64 = self
