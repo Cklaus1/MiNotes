@@ -1,0 +1,113 @@
+# Nightly: the REAL desktop app (Tauri/WebKitGTK, real Rust backend, production
+# CSP) on a virtual display — the desktop journeys (restart persistence, real
+# typing, CLI interop, two-device git sync, ...) and the browser journeys run
+# against the real backend. Same scripts as .claude/skills/desktop-check.
+name: Nightly desktop journeys
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  # Private display / WebDriver port for desktop.sh (nothing else runs here).
+  DESKTOP_CHECK_DISPLAY: "97"
+  DESKTOP_CHECK_WD_PORT: "4455"
+
+jobs:
+  desktop:
+    name: Real-app journeys
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install build libraries, Xvfb, WebKitWebDriver and tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config file patchelf libssl-dev libxdo-dev \
+            libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev libsoup-3.0-dev \
+            libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev libdbus-1-dev \
+            webkit2gtk-driver xvfb x11-utils xdotool imagemagick dbus \
+            libegl-mesa0 libgl1-mesa-dri sqlite3 python3 git
+
+      - name: Git identity for the sync journeys
+        # The app runs under scratch HOMEs, so set it system-wide. Runners have
+        # no identity and a domain-less hostname, so `git commit` can't guess one.
+        run: |
+          sudo git config --system user.name "MiNotes CI"
+          sudo git config --system user.email "ci@minotes.invalid"
+
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: desktop
+
+      - name: Install tauri-driver
+        run: command -v tauri-driver || cargo install tauri-driver --locked
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: crates/minotes-app/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: crates/minotes-app
+        run: npm ci
+
+      - name: Desktop journeys (builds the debug app + CLI)
+        env:
+          DESKTOP_CHECK_DIR: ${{ runner.temp }}/desktop-journeys
+        run: |
+          set -o pipefail
+          bash tests/desktop-journey-test.sh 2>&1 | tee "$RUNNER_TEMP/desktop-journeys.log"
+
+      - name: Browser journeys against the real backend
+        if: success() || failure()
+        env:
+          JOURNEY_BACKEND: desktop
+          DESKTOP_NO_BUILD: "1"
+          DESKTOP_CHECK_DIR: ${{ runner.temp }}/desktop-check
+        run: |
+          set -o pipefail
+          bash tests/user-journey-test.sh 2>&1 | tee "$RUNNER_TEMP/real-backend-journeys.log"
+
+      - name: Shut down the app and display
+        if: always()
+        run: |
+          DESKTOP_CHECK_DIR="$RUNNER_TEMP/desktop-journeys" .claude/skills/desktop-check/desktop.sh down || true
+          DESKTOP_CHECK_DIR="$RUNNER_TEMP/desktop-check" .claude/skills/desktop-check/desktop.sh down || true
+
+      - name: Upload screenshots, logs and desktop-check state
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: desktop-journeys-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/*.log
+            ${{ runner.temp }}/desktop-journeys/*.log
+            ${{ runner.temp }}/desktop-journeys/*.tsv
+            ${{ runner.temp }}/desktop-journeys/shots/
+            ${{ runner.temp }}/desktop-check/*.log
+            ${{ runner.temp }}/desktop-check/*.tsv
+            ${{ runner.temp }}/desktop-check/shots/
+            ${{ runner.temp }}/desktop-check/journey-shots/
+          retention-days: 14
+          if-no-files-found: ignore

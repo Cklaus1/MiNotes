@@ -1,0 +1,169 @@
+# Per-push checks: Rust tests, frontend type-check + build, the browser user
+# journeys (headless Chrome + mock backend) and dependency audits.
+# Reproduce any job locally with the same commands (see CLAUDE.md "CI").
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  NODE_VERSION: "22"
+
+jobs:
+  rust:
+    name: Rust (check + test)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Tauri / WebKitGTK build libraries
+        # Tauri 2 Linux prerequisites, plus libdbus for keyring (sync-secret-service).
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config file patchelf libssl-dev libxdo-dev \
+            libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev libsoup-3.0-dev \
+            libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev libdbus-1-dev
+
+      - name: Git identity for sync tests
+        # Runners have no git identity and their hostname has no domain, so
+        # `git commit` cannot auto-detect one. Developer machines always have one.
+        run: |
+          sudo git config --system user.name "MiNotes CI"
+          sudo git config --system user.email "ci@minotes.invalid"
+
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+          rustc --version
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - name: cargo check (app + CLI)
+        run: cargo check --locked -p minotes-app -p minotes-cli
+
+      - name: cargo test
+        run: cargo test --workspace --locked
+
+  frontend:
+    name: Frontend (tsc + vite build)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: crates/minotes-app
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: crates/minotes-app/package-lock.json
+
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npx vite build
+
+  journeys:
+    name: Browser journeys (mock backend)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      JOURNEY_PORT: "1591"
+      AGENT_BROWSER_VERSION: "0.22.1"
+      # Headless Chrome can hang on 2D-canvas drawing with GPU paths enabled.
+      AGENT_BROWSER_ARGS: --disable-gpu,--disable-software-rasterizer
+      AGENT_BROWSER_SESSION: ci-journeys
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: crates/minotes-app/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: crates/minotes-app
+        run: npm ci
+
+      - name: Install agent-browser + Chrome for Testing
+        run: |
+          npm install -g "agent-browser@${AGENT_BROWSER_VERSION}"
+          agent-browser install
+          agent-browser --version
+
+      - name: Start the Vite dev server
+        working-directory: crates/minotes-app
+        run: |
+          nohup npx vite --port "$JOURNEY_PORT" --strictPort >"$RUNNER_TEMP/vite.log" 2>&1 &
+          for _ in $(seq 1 60); do
+            curl -sf "http://localhost:$JOURNEY_PORT/" >/dev/null && exit 0
+            sleep 1
+          done
+          echo "vite did not start:"; cat "$RUNNER_TEMP/vite.log"; exit 1
+
+      - name: Run user journeys
+        run: |
+          set -o pipefail
+          JOURNEY_URL="http://localhost:$JOURNEY_PORT" bash tests/user-journey-test.sh 2>&1 | tee "$RUNNER_TEMP/journeys.log"
+
+      - name: Close the browser
+        if: always()
+        run: agent-browser close || true
+
+      - name: Upload screenshots and logs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: browser-journeys-${{ github.run_attempt }}
+          path: |
+            tests/screenshots/journey/
+            ${{ runner.temp }}/journeys.log
+            ${{ runner.temp }}/vite.log
+          retention-days: 14
+          if-no-files-found: ignore
+
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
+        with:
+          tool: cargo-audit
+
+      - name: cargo audit
+        run: cargo audit
+
+      - name: npm audit (production dependencies)
+        # Runs even when cargo audit failed, so both reports are always visible.
+        # Uses the runner's preinstalled npm; only package-lock.json is read.
+        if: success() || failure()
+        working-directory: crates/minotes-app
+        run: npm audit --omit=dev --audit-level=high

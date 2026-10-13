@@ -10,7 +10,10 @@
 # ═══════════════════════════════════════════════════════════
 
 AB="agent-browser"
-URL="http://localhost:1420"
+# JOURNEY_URL: where the Vite dev server runs (browser mode). Default is the
+# usual dev port; point it elsewhere for a parallel run or CI, e.g.
+#   JOURNEY_URL=http://localhost:1591 bash tests/user-journey-test.sh
+URL="${JOURNEY_URL:-http://localhost:1420}"
 # JOURNEY_BACKEND=browser (default): headless Chrome + Vite dev server + mock backend.
 # JOURNEY_BACKEND=desktop: the REAL desktop app (Tauri/WebKitGTK + Rust backend,
 #   production CSP) through .claude/skills/desktop-check — same journeys, real data layer.
@@ -3434,4 +3437,5 @@ echo ""
 echo "Screenshots: $SSDIR/"
 echo "═══════════════════════════════════════════════"
 
-exit $F
+# Exit codes wrap at 256; never report success for 256 failures.
+exit $(( F > 255 ? 255 : F ))
