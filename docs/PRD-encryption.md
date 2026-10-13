@@ -1,6 +1,6 @@
 # PRD: Notebook Encryption
 
-Status: in progress (build-loop 2026-10-13; see §10) · Owner: Chris Klaus · Rewritten 2026-10-10
+Status: built except encrypted sync (step 5, blocked) — see §10 · Owner: Chris Klaus · Rewritten 2026-10-10
 
 > **Supersedes the per-folder design.** The earlier version of this PRD encrypted
 > individual fields (block content, page titles, property values) per Project
@@ -352,5 +352,36 @@ encrypted notebooks; 4b webview storage (`ui_state`) and legacy whiteboard copie
 
 ## 10. Build status (build-loop 2026-10-13)
 
-See `tasks/build-loop.md` (DAG) and `tasks/todo.md` (progress). Updated at the end
-of the run.
+Harness: `tasks/build-loop.md` (DAG), `tasks/todo.md`, `tasks/lessons.md`,
+`tasks/opportunities.md`.
+
+| Step | Status | Where |
+|---|---|---|
+| 1 SQLCipher (`bundled-sqlcipher-vendored-openssl`) | Built. Plaintext notebooks unchanged (interop with stock `sqlite3` both ways). Linux, Windows-gnu CLI cross-build and the Android x86_64 APK build (needs `RANLIB_<target>` = NDK `llvm-ranlib`, see CLAUDE.md). | workspace `Cargo.toml` |
+| 2 Keys, slots, recovery key, strength rule | Built | `core/src/crypto.rs` |
+| 2 Encrypted open/create, unlocked-key cache, notebook-level ops | Built | `core/src/db.rs`, `core/src/encryption.rs`, `core/src/notebook.rs` |
+| 2b Attachments inside the database | Built | `core/src/repo/attachments.rs` |
+| 2c Notebook zip stays encrypted | Built | `core/src/notebook_zip.rs` |
+| Keychain ("keep unlocked") | Built (desktop; Android: unavailable) | `core/src/keychain.rs` |
+| Encrypt / decrypt / rotate, resumable | Built | `core/src/encryption.rs` |
+| 3 App commands, locked state | Built | `src-tauri/src/encryption_commands.rs`, `lib.rs` (`db_guard`) |
+| 4 UI: unlock screen, create, Security settings, lock / auto-lock | Built | `components/LockGate.tsx`, `EncryptionDialogs.tsx`, `SecuritySettings.tsx` |
+| 4b Webview storage (`ui_state`) | Built | `lib/webviewState.ts`, `core/src/repo/ui_state.rs` |
+| 5 Encrypted mirror + git sync | **Not started — blocked on a dependency**: it waits for the F-2/F-7 sync fixes on main (same files). Until then sync is off for encrypted notebooks. | — |
+| 6 CLI (keychain → `MINOTES_PASSPHRASE` → prompt; `notebook create --encrypt`, `encrypt`, `decrypt`) | Built | `minotes-cli/src/unlock.rs` |
+| 7 Mock backend | Built | `lib/encryptionMock.ts` |
+
+Tests: core 368 (about 40 encryption-specific: slots, keys, no plaintext in db or
+WAL, conversion with a simulated crash at every step, zip round trip, attachments,
+mirror refusal, leak scan of a converted notebook), CLI 19, browser journey 65
+(15 assertions), desktop journey D13 (22 assertions, including the leak scan of
+the whole scratch HOME, TMPDIR and app log).
+
+Overhead (§7 scale run, measured with a core micro-benchmark, release build, 20k
+blocks): writes +13 % (dominated by fsync), 300 searches +0 %, 500 page reads +3 %
+— inside the ~15 % budget. The full `scale-tour.sh` run on an encrypted notebook
+was not done.
+
+Not built / deferred (see `tasks/opportunities.md`): encrypted sync (step 5),
+biometric / Android Keystore (Q4), OS screen-lock detection for auto-lock, the CI
+leak test (needs-human: no CI).
