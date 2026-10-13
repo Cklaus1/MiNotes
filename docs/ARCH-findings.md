@@ -120,7 +120,7 @@ code splitting (U-14), accessibility (U-15), whiteboard conflict handling
 | F-12 | Medium | Likely | Re-rendering a just-saved outside file churns block ids | M |
 | F-13 | Medium | Verified | No single markdown codec (3 parsers, 2 frontmatter readers, a legacy importer) | M |
 | B-5 | Medium | Verified | `open_attachment` denylist misses many dangerous types | S |
-| B-6 / U-16 | Medium | Likely | Remote `https:` images load from notes (tracking pixels); inline CSS snippets | M |
+| B-6 / U-16 | Medium | Likely | Remote `https:` images load from notes (tracking pixels); inline CSS snippets — **Fixed** (remote images; CSS snippets still open) | M |
 | B-7 / U-8 | Medium | Verified | No IPC authorization; test API, module exposure and picker bypass ship in production | L / S |
 | B-8 | Medium | Likely | On Windows, data falls into the working directory | S |
 | B-9 | Medium | Verified | Startup DB failure panics with no window | M |
@@ -279,6 +279,26 @@ notes phone home on open. CSS snippets are inline (`style-src 'unsafe-inline'`).
 **Fix:** "Load remote images" setting (off for imported content) or a caching
 image proxy through the existing SSRF-safe resolver; drop `https:` from
 `img-src`.
+**Status: Fixed (remote images), 2026-10-12.** Remote images are blocked in all
+notes by default (§7 Q3). Settings → Privacy → Remote images: Never / Ask
+(default) / Always, plus "Always load in this notebook" (kept in app storage,
+keyed by notebook, so an imported or shared notebook can't grant it to itself).
+A web image renders as a placeholder (alt + host) — in the static render, the
+live editor and link-preview og:images; whiteboard image elements with a web
+address are never loaded. With Ask the page shows one bar, "Remote images
+blocked on this page — Load images · Always for this notebook" (Load = this page
+for the session). Loading goes through the backend: `fetch_remote_image`
+(`src-tauri/src/remote_images.rs`) reuses the link-preview SSRF client
+(`SafeResolver`, per-hop redirect checks, no proxy) plus https only, 10 MB cap
+(Content-Length and streamed), 15 s timeout, `image/*` content type and a
+magic-byte check; the page shows the bytes as a `blob:`. "Save to notebook"
+(`save_remote_image`) stores the image in the attachment store and rewrites the
+block to `attachment:<hash>/<name>`, so it works offline. `https:` is gone from
+`img-src` in `csp` and `devCsp`. Tests: `remote_images` unit tests, user
+journey 63, desktop journey D10 (local image server via the debug-build-only
+`MINOTES_TEST_IMAGE_ORIGIN`; release builds compile it out). Still open: CSS
+snippets under `style-src 'unsafe-inline'`; images in panels outside a page
+(e.g. sidebar previews) stay placeholders unless Always is on.
 
 **B-7 / U-8 No authorization on IPC; test hooks ship.** Any script in the
 webview can call all ~150 commands (no AppManifest command ACL); legacy plugin
@@ -515,7 +535,8 @@ each can land incrementally behind the existing interfaces.
    If yes, F-4/F-5/F-6 are P0 blockers for that use, not just hardening.
 2. Keep the backend event log as the future undo/history source (then design it
    properly) or reduce it to what sync needs (then delete `undo_last`)?
-3. Remote images: off by default for imported/synced content only, or for all
-   notes?
+3. ~~Remote images: off by default for imported/synced content only, or for all
+   notes?~~ **Decided (2026-10-12):** blocked for all notes by default;
+   Never/Ask/Always; per-notebook always. Implemented, see B-6 / U-16.
 4. CI provider and budget for nightly real-app journeys (needs a Linux runner
    with Xvfb; ~25 min per run).

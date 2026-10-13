@@ -20,6 +20,7 @@ import { showToast } from "../lib/toast";
 import { suggestLinks, type LinkSuggestion } from "../lib/linkSuggestions";
 import { prefetchBlockProperties } from "../lib/blockProperties";
 import { getSettingsCached } from "../lib/cachedSettings";
+import RemoteImageBar from "./RemoteImageBar";
 
 /**
  * Big pages render progressively: the first INITIAL_RENDER blocks at once, the
@@ -1718,7 +1719,7 @@ export default function PageView({
 
   return (
     <div className="page-view-wrapper">
-    <div className="page-view">
+    <div className="page-view" data-remote-scope={page.id}>
       <div className="main-header">
         {editingTitle && !page.is_journal ? (
           <input
@@ -1783,6 +1784,8 @@ export default function PageView({
           ℹ
         </button>
       </div>
+
+      <RemoteImageBar pageId={page.id} blocks={blocks} onRewriteBlock={handleBlockUpdate} />
 
       {/* Show existing aliases inline (compact, no add button — use ⚙ properties to add) */}
       {aliases.length > 0 && (

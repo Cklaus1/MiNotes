@@ -16,6 +16,7 @@ mod notebooks;
 mod cross_notebook;
 mod platform;
 mod security;
+mod remote_images;
 // ── Import / attachments ──
 mod import_commands;
 // ── End import ──
@@ -1147,38 +1148,11 @@ const OG_MAX_BODY_BYTES: usize = 1024 * 1024;
 const OG_MAX_REDIRECTS: usize = 3;
 
 async fn fetch_og_inner(url: &str) -> std::result::Result<OgMetadata, Box<dyn std::error::Error>> {
-    // SECURITY (SSRF): only http/https to public addresses. `SafeResolver` filters DNS
-    // results so reqwest only ever connects to validated public IPs (no rebinding
-    // window); IP-literal hosts are checked by `check_outbound_url`. Redirects are
-    // followed manually so every hop is re-validated. Body read is capped at 1 MB.
-    // Proxies are disabled so the resolver (not a proxy) decides the destination.
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .redirect(reqwest::redirect::Policy::none())
-        .dns_resolver(std::sync::Arc::new(security::SafeResolver))
-        .no_proxy()
-        .build()?;
-
-    let mut current = reqwest::Url::parse(url)?;
-    let mut hops = 0;
-    let mut resp = loop {
-        security::check_outbound_url(&current)?;
-        let resp = client.get(current.clone()).send().await?;
-        if resp.status().is_redirection() {
-            hops += 1;
-            if hops > OG_MAX_REDIRECTS {
-                return Err("too many redirects".into());
-            }
-            let loc = resp
-                .headers()
-                .get(reqwest::header::LOCATION)
-                .and_then(|v| v.to_str().ok())
-                .ok_or("redirect without Location")?;
-            current = current.join(loc)?;
-            continue;
-        }
-        break resp;
-    };
+    // SECURITY (SSRF): only http/https to public addresses, every redirect hop
+    // re-validated, no proxies — see `remote_images::safe_get`. Body capped at 1 MB.
+    let client = remote_images::safe_client(std::time::Duration::from_secs(5))?;
+    let mut resp = remote_images::safe_get(&client, url, OG_MAX_REDIRECTS, false, None).await?;
+    let resp_url = resp.url().clone();
 
     let mut body: Vec<u8> = Vec::new();
     while let Some(chunk) = resp.chunk().await? {
@@ -1231,6 +1205,11 @@ async fn fetch_og_inner(url: &str) -> std::result::Result<OgMetadata, Box<dyn st
         }
     }
 
+    // A relative og:image is relative to the page; the frontend loads it (only when
+    // remote images are allowed) through `fetch_remote_image`.
+    if !image.is_empty() {
+        image = resp_url.join(&image).map(|u| u.to_string()).unwrap_or_default();
+    }
     Ok(OgMetadata { title, description, image })
 }
 
@@ -1679,6 +1658,8 @@ pub fn run() {
             read_file_base64,
             read_pdf_file,
             fetch_og_metadata,
+            remote_images::fetch_remote_image,
+            remote_images::save_remote_image,
             get_block,
             get_blocks,
             archive_page,

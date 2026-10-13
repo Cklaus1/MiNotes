@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import NotebookSettings from "./NotebookSettings";
+import RemoteImageSettings from "./RemoteImageSettings";
 import { prettyPath } from "../lib/notebooks";
 import { getSettings, updateSettings, type MiNotesSettings } from "../lib/settings";
 import { getTheme, setTheme } from "../lib/theme";
@@ -191,6 +192,9 @@ export default function SettingsPanel({ open, onClose, syncError, onSyncRetry, o
 
         {/* Notebook: location + markdown copy (mirror) status */}
         <NotebookSettings />
+
+        {/* Privacy: remote images (blocked by default) */}
+        <RemoteImageSettings />
 
         {/* Sync & Backup */}
         {gitInstalled && (

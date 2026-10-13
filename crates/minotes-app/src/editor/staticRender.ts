@@ -9,11 +9,13 @@
  * cached by markdown. No HTML string is ever inserted into the page: the DOM is
  * built by ProseMirror from the schema (markdown `html` is off), and the clone is
  * still sanitised (event-handler attributes, script/embedding elements and
- * javascript:/vbscript:/non-image data: URLs are dropped) before it is used.
+ * javascript:/vbscript:/non-image data: URLs and web-address image srcs are
+ * dropped) before it is used. Remote images are placeholders: lib/remoteImages.ts.
  */
 import { Editor, createDocument } from "@tiptap/core";
 import { EditorState } from "@tiptap/pm/state";
 import { createBlockExtensions } from "./blockExtensions";
+import { isRemoteSrc } from "../lib/remoteImages";
 
 let renderer: Editor | null = null;
 let rootClass = "tiptap ProseMirror block-editor-prosemirror";
@@ -66,7 +68,10 @@ function sanitize(root: Node) {
     if (BLOCKED_TAGS.has(el.tagName.toUpperCase())) { el.remove(); continue; }
     for (const attr of [...el.attributes]) {
       const name = attr.name.toLowerCase();
-      if (name.startsWith("on") || name === "srcdoc" || name === "formaction") { el.removeAttribute(attr.name); continue; }
+      if (name.startsWith("on") || name === "srcdoc" || name === "formaction" || name === "srcset") { el.removeAttribute(attr.name); continue; }
+      // Remote images render as placeholders (lib/remoteImages.ts); an <img> that
+      // still points at the web would load it behind the user's back.
+      if (name === "src" && isRemoteSrc(attr.value)) { el.removeAttribute(attr.name); continue; }
       if ((name === "href" || name === "src" || name === "xlink:href" || name === "action") &&
           unsafeUrl(attr.value, name === "src" && el.tagName === "IMG")) {
         el.removeAttribute(attr.name);

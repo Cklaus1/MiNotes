@@ -28,6 +28,7 @@ import { TaskListInputRule } from "./taskListInputRule";
 // ── Import / attachments ──
 import { displaySrc } from "../lib/attachments";
 // ── End import ──
+import { isRemoteSrc, remoteHost } from "../lib/remoteImages";
 
 const lowlight = createLowlight(common);
 
@@ -123,7 +124,8 @@ export function createBlockExtensions(cb: BlockExtensionCallbacks) {
           ...this.parent?.(),
           src: {
             default: null,
-            parseHTML: (el: HTMLElement) => el.getAttribute("data-attachment-src") || el.getAttribute("src"),
+            parseHTML: (el: HTMLElement) =>
+              el.getAttribute("data-attachment-src") || el.getAttribute("data-remote-src") || el.getAttribute("src"),
             renderHTML: (attrs: { src?: string | null }) => {
               const src = attrs.src ?? "";
               return src.startsWith("attachment:")
@@ -132,6 +134,36 @@ export function createBlockExtensions(cb: BlockExtensionCallbacks) {
             },
           },
         };
+      },
+      // ── Remote images (lib/remoteImages.ts): a web address never becomes an
+      // <img src>; it renders as a placeholder that remoteImages fills with a
+      // backend-fetched blob: image once remote images are allowed. ──
+      parseHTML() {
+        return [
+          ...(this.parent?.() ?? []),
+          {
+            tag: "span.remote-img[data-remote-src]",
+            getAttrs: (el: HTMLElement) => ({ alt: el.getAttribute("data-alt"), title: el.getAttribute("data-title") }),
+          },
+        ];
+      },
+      renderHTML({ node, HTMLAttributes }) {
+        const src: string = node.attrs.src ?? "";
+        if (!isRemoteSrc(src)) return ["img", mergeAttributes(this.options.HTMLAttributes, HTMLAttributes)];
+        const alt: string = node.attrs.alt ?? "";
+        return [
+          "span",
+          {
+            class: "remote-img",
+            "data-remote-src": src,
+            "data-alt": alt,
+            "data-title": node.attrs.title ?? "",
+            contenteditable: "false",
+          },
+          ["span", { class: "remote-img-label" },
+            ["span", { class: "remote-img-alt" }, alt || "Image"],
+            ["span", { class: "remote-img-host" }, remoteHost(src)]],
+        ];
       },
     }).configure({ inline: false, allowBase64: true }),
     Typography,

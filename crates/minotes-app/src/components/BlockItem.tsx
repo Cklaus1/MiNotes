@@ -19,6 +19,7 @@ import TableToolbar from "../editor/TableToolbar";
 import { runTableAction, isInTable, type TableAction } from "../editor/tables";
 import { useIsFlashcard, makeFlashcard, removeFlashcard, FLASHCARD_HINT } from "../lib/cards";
 import { showToast } from "../lib/toast";
+import { isRemoteSrc } from "../lib/remoteImages";
 import "../editor/editor.css";
 
 // Lazy-load CM6 editor — only downloaded when obsidianEditorEnabled
@@ -745,13 +746,10 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
               target="_blank"
               rel="noopener noreferrer"
             >
-              {ogMeta?.image && (
-                <img
-                  className="link-preview-image"
-                  src={ogMeta.image}
-                  alt=""
-                  onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
-                />
+              {/* Remote images are never loaded by the webview: a placeholder that
+                  lib/remoteImages fills through the backend once allowed. */}
+              {isRemoteSrc(ogMeta?.image) && (
+                <span className="remote-img link-preview-image" data-remote-src={ogMeta!.image} data-alt="" />
               )}
               <div className="link-preview-body">
                 <div className="link-preview-title">
