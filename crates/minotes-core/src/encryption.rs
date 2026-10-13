@@ -672,6 +672,22 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn the_mirror_refuses_an_encrypted_database_whoever_asks() {
+        with_home(|home| {
+            let (nb, _rk) = new_encrypted(home, "NoMirror");
+            let db = nb.open_db().unwrap();
+            let p = db.create_page("Mirrored?", None, false, None, "user").unwrap();
+            let a = db.store_attachment_bytes("x.txt", None, b"attached").unwrap().attachment;
+            db.create_block(&p.id, &a.markdown(), None, None, "user").unwrap();
+            // Even with an explicit target (the app's switch flush once did this).
+            let target = crate::mirror::MirrorTarget::for_notebook(&nb);
+            assert!(crate::mirror::run(&db, &target, true).is_err());
+            assert!(crate::mirror::prepare(&db, &target, true).is_err());
+            assert!(!nb.mirror_dir().exists(), "no notes/ written");
+        });
+    }
+
+    #[test]
     fn cross_notebook_reads_follow_the_lock() {
         with_home(|home| {
             let (nb, _rk) = new_encrypted(home, "Cross");

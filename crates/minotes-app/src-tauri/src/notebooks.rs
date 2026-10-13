@@ -354,7 +354,11 @@ pub fn start_mirror_worker(app: &AppHandle) -> MirrorWorker {
                     due = Some((now + MIRROR_DEBOUNCE).min(first + MIRROR_MAX_WAIT));
                     checkpoint_at = None;
                     set_pending(&handle, true);
-                    continue;
+                    // A steady stream of changes must not postpone the pass past
+                    // MIRROR_MAX_WAIT: only wait while the deadline is ahead.
+                    if due.is_some_and(|t| t > Instant::now()) {
+                        continue;
+                    }
                 }
                 Some(MirrorMsg::Full) => {
                     full = true;
@@ -473,6 +477,15 @@ pub fn start_db_watch(app: &AppHandle) -> DbWatch {
             };
             let Some(Ok(event)) = res else { continue };
             let event: notify::Event = event;
+            // Reads are not changes. (SQLite reading the WAL — and every read of an
+            // encrypted database, which SQLCipher never memory-maps — raises access
+            // events; counting them made each UI refresh trigger the next one.)
+            // (Closing after a write is still a change.)
+            if let notify::EventKind::Access(k) = event.kind {
+                if !matches!(k, notify::event::AccessKind::Close(notify::event::AccessMode::Write)) {
+                    continue;
+                }
+            }
             let Some(state) = app_handle.try_state::<AppState>() else { continue };
             let db_path = match state.session.lock() {
                 Ok(s) => s.notebook.db_path(),
@@ -642,7 +655,9 @@ pub fn switch_to(app: &AppHandle, state: &AppState, nb: Notebook, force: bool) -
         let old_ro = state.session.lock().map_err(|e| e.to_string())?.held_by.is_some();
         // Flush what the old notebook's mirror hasn't written yet — unless a
         // sync is busy in that folder (its next open does a full pass anyway).
-        if !old_ro && old.key != nb.key {
+        // Never for a notebook without a mirror: an encrypted one must not get a
+        // plaintext copy (found by desktop journey D13's leak scan).
+        if !old_ro && old.key != nb.key && old.mirror_enabled() {
             if let (Ok(_fs), Some(open)) = (FS_LOCK.try_lock(), db.as_ref()) {
                 let _ = mirror::run(open, &MirrorTarget::for_notebook(&old), false);
             }

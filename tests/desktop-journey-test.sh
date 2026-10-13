@@ -41,7 +41,7 @@ echo "════════════════════════�
 echo "  MiNotes Desktop Journeys (real app, real backend)"
 echo "═══════════════════════════════════════════════"
 
-rm -rf "$STATE"/{persist,devA,devB,nbook,outside,xnb,zip8,barrier10,trust10,rimg,img10,remote.git} "$STATE/results.tsv"
+rm -rf "$STATE"/{persist,devA,devB,nbook,outside,xnb,zip8,barrier10,trust10,rimg,img10,remote.git,enc13,enc13-tmp,enc13-keychain} "$STATE/results.tsv"
 if [[ -z "$DESKTOP_NO_BUILD" ]]; then
   "$DC" up --webdriver --profile persist >/dev/null || { echo "build/launch failed"; exit 1; }
 else
@@ -944,6 +944,97 @@ waitfor "[...document.querySelectorAll('.block img')].some(i=>i.complete&&i.natu
 "$DC" wshot "d12-saved" >/dev/null
 ev "(async()=>{const r=await import('/src/lib/remoteImages.ts');r.setNotebookAlways(false);return 1})()" >/dev/null
 unset MINOTES_TEST_IMAGE_ORIGIN
+
+# ═══════════════════════════════════════════════
+journey "D13. My private notebook is encrypted on disk — and only opens with my passphrase"
+# PRD-encryption §7: create encrypted, write (title, block, folder, property,
+# whiteboard, attachment, search), quit → relaunch locked, wrong passphrase,
+# unlock, nothing readable anywhere under the scratch HOME / TMPDIR / app log
+# (the leak test), the CLI with MINOTES_PASSPHRASE, "keep unlocked on this
+# device" (debug-build fake keychain — never the real one), auto-lock, and
+# encrypting an existing notebook (mirror deleted, page kept).
+# ═══════════════════════════════════════════════
+EH="$STATE/enc13"; ETMP="$STATE/enc13-tmp"; EKC="$STATE/enc13-keychain"
+rm -rf "$ETMP" "$EKC"; mkdir -p "$ETMP"
+export TMPDIR="$ETMP" MINOTES_FAKE_KEYCHAIN_DIR="$EKC"
+device enc13 || true
+A13="const api=await import('/src/lib/api.ts');"
+PASS13="correct horse battery staple"
+mx13() { HOME="$EH" "$REPO_ROOT/target/debug/minotes" "$@" 2>&1; }
+setv13() { ev "(()=>{const i=document.querySelector('$1');if(!i)return 'no input';const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;set.call(i,'$2');i.dispatchEvent(new Event('input',{bubbles:true}));return 'ok'})()" >/dev/null; }
+# Own helpers: the journey also runs on its own (D5's wait_file isn't defined then).
+wait_file13() { for _ in $(seq 1 $(( $2 * 4 ))); do grep -qF -- "$3" "$1" 2>/dev/null && return 0; sleep 0.25; done; return 1; }
+unlock_ui13() { setv13 "[data-testid=unlock-passphrase]" "$1"; "$DC" wclick "[data-testid=unlock-submit]" >/dev/null; }
+# Marker strings: none of them may appear in any file the app writes.
+M_TITLE="Okapi13Title"; M_BLOCK="okapi13 block text"; M_FOLDER="Okapi13Folder"; M_PROP="okapi13prop"; M_BOARD="okapi13board"; M_ATT="OKAPI13ATTACH"; M_SEARCH="okapi13query"
+leaks13() { grep -rlaF -e "$M_TITLE" -e "$M_BLOCK" -e "$M_FOLDER" -e "$M_PROP" -e "$M_BOARD" -e "$M_ATT" -e "$M_SEARCH" "$EH" "$ETMP" "$STATE/app.log" 2>/dev/null | grep -v '/shots/' | head -5; }
+
+step "I create an encrypted notebook and write in it"
+R=$(ev "(async()=>{$A13 const r=await api.createEncryptedNotebook('Vault13',undefined,'$PASS13');const n=await import('/src/lib/notebooks.ts');await n.switchNotebook(r.notebook.key);return r.recovery_key.length+'|'+(await api.getNotebookSession()).encrypted})()")
+is "Created and opened (recovery key, encrypted)" "$R" "63|true"
+R=$(ev "(async()=>{$A13 const f=await api.createFolder('$M_FOLDER');const p=await api.createPage('$M_TITLE');await api.movePageToFolder(p.id,f.id);const b=await api.createBlock(p.id,'$M_BLOCK');await api.setProperty(b.id,'block','status','$M_PROP');await api.saveWhiteboard('wb13','{\"notes\":[{\"text\":\"$M_BOARD\"}]}');await api.createBlock(p.id,'{{whiteboard:wb13}}');return (await api.search('$M_SEARCH'.slice(0,6),10)).length})()")
+[[ "$R" =~ ^[0-9]+$ ]] && pass "Page, folder, property, whiteboard written; searched" || fail "Write" "$R"
+R=$(ev "(async()=>{$A13 const a=await api.storeAttachment('n13.txt','text/plain',new TextEncoder().encode('$M_ATT bytes'));const p=await api.getPageTree('$M_TITLE');await api.createBlock(p.page.id,'['+a.name+'](attachment:'+a.hash+'/n13.txt)');const c=document.createElement('canvas');c.width=20;c.height=10;c.getContext('2d').fillRect(0,0,20,10);const png=new Uint8Array(await (await new Promise(r=>c.toBlob(r,'image/png'))).arrayBuffer());const i=await api.storeAttachment('p13.png','image/png',png);const w=await new Promise(r=>{const im=new Image();im.onload=()=>r(im.naturalWidth);im.onerror=()=>r('refused');im.src='attachment://localhost/'+i.hash});return (await api.getAttachment(a.hash)).name+'|'+w})()")
+is "Attachments stored in the database and served back" "$R" "n13.txt|20"
+api "navigateTo('$M_TITLE')" >/dev/null; sleep 1
+VAULT="$EH/MiNotes/Vault13"
+[[ -f "$VAULT/notebook.minotes" && ! -d "$VAULT/notes" ]] && pass "Folder has the database, no markdown copy" || fail "Vault layout" "$(ls "$VAULT" 2>&1 | tr '\n' ' ')"
+
+step "Quit and relaunch: the notebook opens locked"
+"$DC" restart >/dev/null
+waitfor "!!document.querySelector('[data-testid=unlock-screen]')" 30 && pass "Unlock screen after restart" || fail "Not locked after restart" "$(ev "document.body.innerText.slice(0,200)")"
+is "No title on the locked screen" "$(ev "String(document.body.innerText.includes('$M_TITLE'))")" "false"
+"$DC" wshot "d13-locked" >/dev/null
+
+step "The leak test: no marker in any file under HOME, TMPDIR or the app log"
+L=$(leaks13); [[ -z "$L" ]] && pass "No plaintext markers anywhere (HOME, TMPDIR, app log)" || fail "Plaintext found" "$L"
+H=$(head -c 16 "$VAULT/notebook.minotes" | tr -d '\0')
+[[ "$H" != "SQLite format 3" ]] && pass "The database file has no SQLite header (it is ciphertext)" || fail "Plain database" "$H"
+
+step "A wrong passphrase is refused; the right one opens it"
+unlock_ui13 "not the passphrase"
+waitfor "(document.querySelector('[data-testid=unlock-error]')?.textContent||'').includes('Wrong passphrase')" 10 && pass "Wrong passphrase refused" || fail "Wrong passphrase" "$(ev "document.querySelector('[data-testid=unlock-error]')?.textContent")"
+unlock_ui13 "$PASS13"
+waitfor "!document.querySelector('[data-testid=unlock-screen]') && !!window.__MINOTES__?.navigateTo" 20 && pass "Unlocked" || fail "Unlock" ""
+R=$(ev "(async()=>{$A13 const t=await api.getPageTree('$M_TITLE');return t.blocks.map(b=>b.content).filter(c=>!c.startsWith('{{')&&!c.startsWith('[')).join('|')})()")
+is "My page is there" "$R" "$M_BLOCK"
+
+step "The CLI opens it only with the passphrase"
+R=$(MINOTES_PASSPHRASE="$PASS13" mx13 --notebook Vault13 -f text page list)
+[[ "$R" == *"$M_TITLE"* ]] && pass "CLI with MINOTES_PASSPHRASE lists the page" || fail "CLI unlock" "$R"
+R=$(env -u MINOTES_PASSPHRASE HOME="$EH" "$REPO_ROOT/target/debug/minotes" --notebook Vault13 page list </dev/null 2>&1)
+[[ "$R" == *"encrypted"* ]] && pass "Without it: refused ('encrypted')" || fail "CLI without passphrase" "$R"
+
+step "Keep unlocked on this device: a restart opens it without asking"
+R=$(ev "(async()=>{$A13 const s=await api.setRememberDevice(true);return s.remembered+'|'+s.keychain_available})()")
+is "Remembered (debug fake keychain)" "$R" "true|true"
+"$DC" restart >/dev/null
+waitfor "!!window.__MINOTES__?.navigateTo && !document.querySelector('[data-testid=unlock-screen]')" 30 && pass "Opened unlocked after restart" || fail "Remembered device" "$(ev "document.body.innerText.slice(0,120)")"
+ev "(async()=>{$A13 await api.setRememberDevice(false);return 1})()" >/dev/null
+
+step "Auto-lock after a minute without input"
+ev "(async()=>{const s=await import('/src/lib/settings.ts');s.updateSettings({autoLockMinutes:1});return 1})()" >/dev/null
+"$DC" restart >/dev/null
+waitfor "!!document.querySelector('[data-testid=unlock-screen]')" 30
+unlock_ui13 "$PASS13"
+waitfor "!document.querySelector('[data-testid=unlock-screen]')" 20
+waitfor "!!document.querySelector('[data-testid=unlock-screen]')" 110 && pass "Locked itself after ~1 min idle" || fail "Auto-lock" ""
+ev "(async()=>{const s=await import('/src/lib/settings.ts');s.updateSettings({autoLockMinutes:15});return 1})()" >/dev/null
+unlock_ui13 "$PASS13"
+waitfor "!document.querySelector('[data-testid=unlock-screen]')" 20
+
+step "Encrypting an existing notebook: verified copy, mirror deleted, page kept"
+R=$(ev "(async()=>{$A13 const nb=await api.createNotebook('Plain13');const n=await import('/src/lib/notebooks.ts');await n.switchNotebook(nb.key);const p=await api.createPage('Okapi13Plainpage');await api.createBlock(p.id,'okapi13 plain body');return nb.path})()")
+PLAIN="$R"
+wait_file13 "$PLAIN/notes/Okapi13Plainpage.md" 20 "okapi13 plain body" && pass "Its markdown copy was written" \
+  || fail "Plain mirror" "$PLAIN: $(ls "$PLAIN/notes" 2>&1 | tr '\n' ' ') $(ev "(async()=>{$A13 return JSON.stringify(await api.mirrorStatus())})()")"
+R=$(ev "(async()=>{$A13 const plan=await api.encryptionPlan();const rk=await api.encryptNotebook('$PASS13');const s=await api.getNotebookSession();const t=await api.getPageTree('Okapi13Plainpage');return plan.deletes.length+'|'+rk.length+'|'+s.encrypted+'|'+t.blocks[0].content})()")
+[[ "$R" =~ ^[0-9]+\|63\|true\|okapi13\ plain\ body$ ]] && pass "Encrypted in place, still open and readable ($R)" || fail "Encrypt existing" "$R"
+[[ ! -e "$PLAIN/notes" ]] && pass "The plain markdown copy is gone" || fail "Mirror left" "$(ls -R "$PLAIN/notes" 2>&1 | head -3)"
+G=$(grep -rlaF "Okapi13Plainpage" "$PLAIN" 2>/dev/null | head -3)
+[[ -z "$G" ]] && pass "No plaintext left in its folder" || fail "Plaintext after encrypting" "$G"
+L=$(leaks13); [[ -z "$L" ]] && pass "Leak scan still clean" || fail "Plaintext found" "$L"
+unset TMPDIR MINOTES_FAKE_KEYCHAIN_DIR
 
 # ═══════════════════════════════════════════════
 echo ""
