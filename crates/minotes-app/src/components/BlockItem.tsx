@@ -279,7 +279,15 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
     setActive(false);
     return true;
   };
-  const ownerRef = useRef<EditorOwner>({ release: () => releaseRef.current() });
+  const ownerRef = useRef<EditorOwner>({
+    release: () => releaseRef.current(),
+    // Save barrier (notebook switch): commit unsaved typing now. Only when dirty,
+    // so a merely focused block is never rewritten with normalized markdown.
+    flush: () => {
+      const ed = bridgeRef.current?.api;
+      if (ed?.isDirty()) ed.saveNow();
+    },
+  });
   useEffect(() => () => forgetEditor(ownerRef.current), []);
 
   const linkPreviewOrWhiteboard = !!linkPreviewUrl || WHITEBOARD_REGEX.test(block.content);

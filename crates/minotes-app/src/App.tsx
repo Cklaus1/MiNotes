@@ -39,6 +39,7 @@ import {
 } from "./lib/notebooks";
 import { OPEN_IN_NOTEBOOK, type OpenInNotebook } from "./lib/crossNotebook";
 import { setPendingReveal } from "./lib/pendingReveal";
+import { trackWrite } from "./lib/pendingEdits";
 import { notifyCardsChanged } from "./lib/cards";
 // ── AI platform ──
 import AiMount from "./components/AiMount";
@@ -182,7 +183,9 @@ export default function App() {
       // Camera/grid-only saves have no content — keep waiting.
       if (!pageId || !hasWhiteboardData(wbId)) return;
       pendingBoardsRef.current.delete(wbId);
-      api.createBlock(pageId, `{{whiteboard:${wbId}}}`)
+      // Tracked: a notebook switch waits for it (the save barrier flushes the
+      // board, which lands here; the block must go into the SAME notebook).
+      trackWrite(api.createBlock(pageId, `{{whiteboard:${wbId}}}`))
         .then(() => { if (activePageIdRef.current === pageId) return openPage(pageId); })
         .catch((err) => {
           pendingBoardsRef.current.set(wbId, pageId); // retry on the next save
@@ -552,6 +555,9 @@ export default function App() {
       const key = (e as CustomEvent<{ key: string }>).detail?.key ?? "";
       setNotebookKey(key);
       navTokenRef.current++;
+      // Boards opened in the old notebook are saved (save barrier) or empty:
+      // their block must never be created in this one.
+      pendingBoardsRef.current.clear();
       setOpenPanel(null);
       setCanvasMode(null);
       setWhiteboardId(null);

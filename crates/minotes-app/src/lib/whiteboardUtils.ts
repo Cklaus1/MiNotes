@@ -104,3 +104,10 @@ export function hasWhiteboardData(whiteboardId: string): boolean {
 export function generateWhiteboardId(): string {
   return "wb-" + crypto.randomUUID().slice(0, 8);
 }
+
+/** Another notebook was opened: cached boards belong to the old one (a copied
+ *  or zip-imported notebook can share whiteboard ids). */
+export function clearWhiteboardCache() {
+  cache.clear();
+  inflight.clear();
+}

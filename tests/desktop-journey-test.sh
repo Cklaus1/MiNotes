@@ -41,7 +41,7 @@ echo "════════════════════════�
 echo "  MiNotes Desktop Journeys (real app, real backend)"
 echo "═══════════════════════════════════════════════"
 
-rm -rf "$STATE"/{persist,devA,devB,nbook,outside,xnb,zip8,remote.git} "$STATE/results.tsv"
+rm -rf "$STATE"/{persist,devA,devB,nbook,outside,xnb,zip8,barrier10,remote.git} "$STATE/results.tsv"
 if [[ -z "$DESKTOP_NO_BUILD" ]]; then
   "$DC" up --webdriver --profile persist >/dev/null || { echo "build/launch failed"; exit 1; }
 else
@@ -705,6 +705,80 @@ waitfor "(document.querySelector('[data-testid=notebook-switcher]')?.innerText||
   && pass "The imported notebook reopens" || fail "After restart" "$(switcher)"
 [[ "$(blocks_of 'Zip Page')" == *"zq8"* ]] && pass "…with my page" || fail "Content after restart" "$(blocks_of 'Zip Page')"
 is "Desktop capabilities: folders, reveal, outside edits" "$(ev "(async()=>{$A8 const c=await api.getPlatformCapabilities();return [c.app_storage,c.choose_location,c.open_folder,c.outside_edits,c.notebook_zip].join(',')})()")" "false,true,true,true,true"
+
+# ═══════════════════════════════════════════════
+journey "D10. I switch notebooks right after typing or drawing — it stays in the notebook I wrote it in"
+# ARCH U-1 save barrier. Real keystrokes / a real stroke, then a switch before
+# the blur save (50 ms) or the whiteboard debounce (1 s) ran. Checked with sqlite
+# on BOTH databases while the app shows the other notebook.
+# ═══════════════════════════════════════════════
+device barrier10 || true
+BH="$STATE/barrier10"; HDB10="$BH/.minotes/default.db"; ODB10="$BH/MiNotes/Other10/notebook.minotes"
+A10="const api=await import('/src/lib/api.ts');"
+mx10() { HOME="$BH" "$REPO_ROOT/target/debug/minotes" "$@" 2>&1; }
+cur10() { ev "(async()=>{$A10 return (await api.getNotebookSession()).key})()"; }
+wait_nb10() { for _ in $(seq 1 24); do [[ "$(cur10)" == "$1" ]] && return 0; sleep 0.25; done; return 1; }
+HOME10=$(cur10)
+mx10 notebook create Other10 >/dev/null
+mx10 --notebook Other10 page create Target10 >/dev/null
+OKEY10=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["id"])' "$BH/MiNotes/Other10/notebook.json" 2>/dev/null)
+ev "window.dispatchEvent(new Event('minotes-notebooks-changed'))" >/dev/null
+ev "(async()=>{$A10 const p=await api.createPage('Edit10');await api.createBlock(p.id,'Go to [[Other10::Target10]]');await api.createBlock(p.id,'Second10');return 1})()" >/dev/null
+[[ -n "$OKEY10" && -n "$HOME10" && -f "$ODB10" ]] && pass "Other10 ($OKEY10) next to the open notebook" || fail "Setup" "key=$OKEY10 $(ls "$BH/MiNotes" 2>&1)"
+
+step "I type with the keyboard and click the [[Other10::Target10]] chip in the same editor at once"
+api "navigateTo('Edit10')" >/dev/null; waitfor "window.__MINOTES__.getCurrentPage()==='Edit10'"; sleep 1
+api "focusBlock(0)" >/dev/null; sleep 0.5
+"$DC" key End; "$DC" type " typed10chip"
+ev "(()=>{const c=document.querySelector('[data-block-id] .ProseMirror:not(.block-static) .xnb-link');if(!c)return 'no chip';c.click();return 'clicked'})()" >/dev/null
+waitfor "(window.__MINOTES__.getCurrentPage()||'')==='Target10'" 15 && pass "The chip opened Target10" || fail "Chip follow" "$(api 'getCurrentPage()')"
+is "…in Other10" "$(cur10)" "$OKEY10"
+is "The typed text is in the home database" "$(sqlite3 "$HDB10" "select count(*) from blocks where content='Go to [[Other10::Target10]] typed10chip'")" "1"
+is "…and nothing landed in Other10's" "$(sqlite3 "$ODB10" "select count(*) from blocks where content like '%typed10%'")" "0"
+ev "window.__MINOTES__.switchNotebook('$HOME10')" >/dev/null; wait_nb10 "$HOME10"
+
+step "I type and switch notebooks straight away (no blur)"
+api "navigateTo('Edit10')" >/dev/null; waitfor "window.__MINOTES__.getCurrentPage()==='Edit10'"; sleep 1
+api "focusBlock(1)" >/dev/null; sleep 0.5
+"$DC" key End; "$DC" type " typed10api"
+ev "(()=>{window.__MINOTES__.switchNotebook('$OKEY10');return 1})()" >/dev/null
+wait_nb10 "$OKEY10" && pass "Switched to Other10" || fail "Switch" "$(cur10)"
+is "The edit is in the home database" "$(sqlite3 "$HDB10" "select count(*) from blocks where content='Second10 typed10api'")" "1"
+ev "window.__MINOTES__.switchNotebook('$HOME10')" >/dev/null; wait_nb10 "$HOME10"
+
+# Arm a switch 150 ms after the next mouseup on the canvas (inside the 1 s debounce).
+ARM10="(()=>{const c=document.querySelector('canvas.whiteboard-canvas');if(!c)return 'no canvas';c.addEventListener('mouseup',()=>setTimeout(()=>window.__MINOTES__.switchNotebook('$OKEY10'),150),{once:true});return 'armed'})()"
+DRAWMODE10="(()=>{const b=[...document.querySelectorAll('.whiteboard-toolbar button')].find(b=>b.textContent.trim()==='Draw');if(b)b.click();return !!b})()"
+stroke10() { DISPLAY="localhost:${DESKTOP_CHECK_DISPLAY:-97}" bash -c 'xdotool mousemove 400 400 mousedown 1; for i in $(seq 1 12); do xdotool mousemove $((400+i*20)) $((400+(i%4)*25)); sleep 0.03; done; xdotool mouseup 1'; }
+lines10() { sqlite3 "$1" "select coalesce(json_array_length(json_extract(data,'\$.lines')),0) from whiteboards where id='$2'"; }
+
+step "I draw on a whiteboard on my page and switch within a second"
+WB10=$(ev "(async()=>{$A10 const {generateWhiteboardId}=await import('/src/lib/whiteboardUtils.ts');const t=await api.getPageTree('Edit10');const id=generateWhiteboardId();await api.createBlock(t.page.id,'{{whiteboard:'+id+'}}');return id})()")
+api "navigateTo('Target10')" >/dev/null 2>&1; api "navigateTo('Edit10')" >/dev/null; sleep 1.5
+ev "document.querySelector('.whiteboard-indicator')?.click()" >/dev/null
+waitfor "!!document.querySelector('canvas.whiteboard-canvas')" 10
+ev "$DRAWMODE10" >/dev/null; sleep 0.5
+is "Switch armed" "$(ev "$ARM10")" "armed"
+stroke10
+wait_nb10 "$OKEY10" && pass "Drew a stroke, switched to Other10" || fail "Draw + switch" "$(cur10)"
+is "The stroke is in the home database's board" "$(lines10 "$HDB10" "$WB10")" "1"
+is "No board row in Other10's database" "$(sqlite3 "$ODB10" "select count(*) from whiteboards where id='$WB10'")" "0"
+ev "window.__MINOTES__.switchNotebook('$HOME10')" >/dev/null; wait_nb10 "$HOME10"
+
+step "I draw on a NEW board (Ctrl+W) and switch at once: its block and board stay home"
+api "navigateTo('Edit10')" >/dev/null; waitfor "window.__MINOTES__.getCurrentPage()==='Edit10'"; sleep 1
+"$DC" press "Control+w"; waitfor "!!document.querySelector('canvas.whiteboard-canvas')" 10
+NWB10=$(api "getOpenWhiteboardId()")
+ev "$DRAWMODE10" >/dev/null; sleep 0.5
+is "Switch armed" "$(ev "$ARM10")" "armed"
+stroke10
+wait_nb10 "$OKEY10" && pass "Drew on new board $NWB10, switched" || fail "New board draw + switch" "$(cur10)"
+is "Its board is in the home database" "$(lines10 "$HDB10" "$NWB10")" "1"
+is "Its {{whiteboard}} block is on Edit10 in the home database" "$(sqlite3 "$HDB10" "select count(*) from blocks b join pages p on p.id=b.page_id where p.title='Edit10' and b.content='{{whiteboard:$NWB10}}'")" "1"
+is "Nothing of it in Other10's database" "$(sqlite3 "$ODB10" "select (select count(*) from whiteboards where id='$NWB10')+(select count(*) from blocks where content like '%$NWB10%')")" "0"
+"$DC" wshot "d10-after-switch" >/dev/null
+ev "window.__MINOTES__.switchNotebook('$HOME10')" >/dev/null; wait_nb10 "$HOME10"
+is "Back home" "$(cur10)" "$HOME10"
 
 # ═══════════════════════════════════════════════
 echo ""

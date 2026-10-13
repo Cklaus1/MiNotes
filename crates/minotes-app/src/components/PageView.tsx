@@ -19,6 +19,7 @@ import { extractTags } from "../lib/tagExtractor";
 import { showToast } from "../lib/toast";
 import { suggestLinks, type LinkSuggestion } from "../lib/linkSuggestions";
 import { prefetchBlockProperties } from "../lib/blockProperties";
+import { registerFlush } from "../lib/pendingEdits";
 import { getSettingsCached } from "../lib/cachedSettings";
 
 /**
@@ -120,6 +121,8 @@ export default function PageView({
     opQueueRef.current = p.catch(() => {});
     return p;
   };
+  // Save barrier (notebook switch): queued creates/moves must reach THIS notebook.
+  useEffect(() => registerFlush(() => opQueueRef.current), []);
   // Undo/redo rewrote these blocks on the backend: drop their optimistic
   // bookkeeping so the refreshed tree (e.g. a restored, recently merged-away
   // block) isn't masked for PENDING_TTL_MS.

@@ -67,7 +67,7 @@ And one process gap that makes all of this riskier: **there is no CI** (X-1).
 | F-4, F-5 | Refuse symlinks in the mirror (lstat everywhere, canonical containment); `core.symlinks=false` | S |
 | B-1, F-16 | Scrub imported zip notebooks: AI settings off, no transcripts/snippets/plugins, drop unknown triggers/views, `trusted_schema=OFF`; exclude `ai_runs` from export | M |
 | C-1 | Bound the event log and stop GC from counting events no one can undo, so trash and attachments are actually freed | M |
-| U-1 | Save barrier before notebook switch (flush editor + whiteboard) | S |
+| U-1 | Save barrier before notebook switch (flush editor + whiteboard) — **Fixed** | S |
 | B-2 | AI Ask must respect read-only sessions | S |
 | C-3 | `BEGIN IMMEDIATE` for outermost transactions + bounded busy retry | S |
 | B-14 | Dev-only OpenRouter URL override out of release builds | S |
@@ -109,7 +109,7 @@ code splitting (U-14), accessibility (U-15), whiteboard conflict handling
 | C-3 | High | Verified | Deferred transactions: concurrent writers fail instantly with "database is locked" | S |
 | C-4 | High | Verified | Migrations not transactional, no downgrade guard, DDL outside versioning | M |
 | C-5 | High | Verified | Version restore is non-atomic and leaves links/sync state wrong | M |
-| U-1 | High | Likely | Notebook switch doesn't flush edits; the unmount save lands in the other notebook | S–M |
+| U-1 | High | Fixed | Notebook switch doesn't flush edits; the unmount save lands in the other notebook | S–M |
 | U-2 | High | Verified | Open page never refreshes after outside writes; stale content can overwrite them | M |
 | U-4 | High | Likely | Undo is one global stack: Ctrl+Z can undo invisible changes on other pages | M–L |
 | F-5 | Medium | Verified | Mirror writes and prunes through symlinked directories | S |
@@ -400,6 +400,14 @@ unmount flush and the whiteboard's debounced save then write against the new
 notebook (lost edit, or strokes saved into a board that GC deletes). Easiest
 trigger: clicking a just-typed `[[Notebook::Page]]` chip. **Fix:** a
 `flushPendingEdits()` barrier awaited before the IPC call.
+**Fixed:** `lib/pendingEdits.ts` — `switchNotebook` (the only path that changes
+notebook: switcher, dialogs, imports, chips, search results) awaits it before
+`api.switchNotebook`; it saves dirty live editors (`editorActivation` owners'
+`flush` → `saveNow`), whiteboards (`flushSave`), PageView's op queue and App's
+pending-board block, waits for tracked `updateBlock` writes, and aborts the switch
+with the reason on failure or after 3 s. Also run before "Move to folder". Pending
+boards and the whiteboard / prefetched-property caches are reset on switch.
+Tests: user journey 63, desktop journey D10.
 
 **U-2 The open page ignores outside writes.** `db-changed` only refreshes the
 sidebar (`App.tsx:110`); a CLI/agent edit to the visible page doesn't appear,

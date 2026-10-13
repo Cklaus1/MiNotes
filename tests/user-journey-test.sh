@@ -3174,6 +3174,91 @@ ev "(async()=>{const s=await import('/src/lib/settings.ts');s.updateSettings({se
 [[ "$(cur62)" == "$HOME62" ]] && pass "Home notebook open" || fail "End notebook" "$(cur62)"
 
 # ═══════════════════════════════════════════════
+journey "63. I switch notebooks right after typing or drawing — nothing is lost"
+# ARCH U-1: the save barrier. Unsaved typing and whiteboard strokes are written
+# to the notebook they belong to BEFORE the switch, not by the unmount save
+# afterwards (which used to land in the other notebook: lost edit / orphan board).
+# ═══════════════════════════════════════════════
+A63="const api=await import('/src/lib/api.ts');"
+cur63() { ev "(async()=>{$A63 return (await api.getNotebookSession()).key})()" | tr -d '"'; }
+# Edit63's block contents (in whichever notebook is open).
+blocks63() { ev "(async()=>{$A63 const t=await api.getPageTree('Edit63');return t.blocks.map(b=>b.content).join(' / ')})()" | tr -d '"'; }
+has_edit63() { ev "(async()=>{$A63 return (await api.listPages(1000)).some(p=>p.title==='Edit63')})()" | tr -d '"'; }
+board63() { ev "(async()=>{$A63 const d=await api.getWhiteboard('$1');return d?String(JSON.parse(d).lines.length):'none'})()" | tr -d '"'; }
+wait_nb63() { for _ in $(seq 1 12); do sleep 0.5; [[ "$(cur63)" == "$1" ]] && break; done; }
+api "closePanel()" >/dev/null; sleep 0.3
+HOME63=$(cur63)
+OTHER63="Other63 $(date +%s)"
+OKEY63=$(ev "(async()=>{$A63 return (await api.createNotebook('$OTHER63')).key})()" | tr -d '"')
+ev "window.__MINOTES__.switchNotebook('$OKEY63')" >/dev/null; sleep 2
+ev "(async()=>{$A63 const p=await api.createPage('Target63');await api.createBlock(p.id,'Over here');return 1})()" >/dev/null
+ev "window.__MINOTES__.switchNotebook('$HOME63')" >/dev/null; sleep 2
+ev "(async()=>{$A63 const p=await api.createPage('Edit63');await api.createBlock(p.id,'Go to [[$OTHER63::Target63]]');await api.createBlock(p.id,'Second63');return 1})()" >/dev/null
+[[ -n "$OKEY63" && "$(cur63)" == "$HOME63" ]] && pass "Two notebooks; Edit63 links to $OTHER63::Target63" || fail "Setup" "other=$OKEY63 cur=$(cur63)"
+
+step "I type into a block and click its cross-notebook chip at once (no blur)"
+api "navigateTo('Edit63')" >/dev/null; sleep 2
+api "focusBlock(0)" >/dev/null; sleep 0.6
+for _ in $(seq 1 10); do R=$(ev "!!document.querySelector('[data-block-id] .ProseMirror:not(.block-static) .xnb-link')" | tr -d '"'); [[ "$R" == "true" ]] && break; sleep 0.3; done
+R=$(ev "(()=>{const ok=window.__MINOTES__.typeInBlock(0,' typed63chip');const c=document.querySelector('[data-block-id] .ProseMirror:not(.block-static) .xnb-link');if(!ok||!c)return 'no editor/chip';c.click();return 'clicked'})()" | tr -d '"')
+for _ in $(seq 1 16); do sleep 0.5; [[ "$(api 'getCurrentPage()' | tr -d '"')" == "Target63" ]] && break; done
+R="$R|$(cur63)|$(api 'getCurrentPage()' | tr -d '"')"
+[[ "$R" == "clicked|$OKEY63|Target63" ]] && pass "The live editor's chip opened Target63 in $OTHER63" || fail "Chip follow" "$R"
+R=$(ev "[...document.querySelectorAll('.minotes-toast')].map(t=>t.textContent).join(' | ')" | tr -d '"')
+R2=$(ev "(document.body.innerText.match(/Couldn.t save[^\\n]*/)||[''])[0]" | tr -d '"')
+[[ "$R $R2" != *"ouldn't save"* && "$R $R2" != *"no longer exists"* ]] && pass "No save error after the switch" || fail "Save error after switch" "$R $R2"
+[[ "$(has_edit63)" == "false" ]] && pass "Nothing of Edit63 leaked into $OTHER63" || fail "Leak into other notebook" "Edit63 exists there"
+ev "window.__MINOTES__.switchNotebook('$HOME63')" >/dev/null; wait_nb63 "$HOME63"
+R=$(blocks63)
+[[ "$R" == *"typed63chip"* ]] && pass "The typed text is saved in the home notebook ($R)" || fail "Typing lost on chip switch" "$R"
+
+step "I type and switch notebooks in the same instant (window.__MINOTES__.switchNotebook)"
+api "navigateTo('Edit63')" >/dev/null; sleep 2
+R=$(ev "(()=>{const ok=window.__MINOTES__.typeInBlock(1,' typed63api');window.__MINOTES__.switchNotebook('$OKEY63');return String(ok)})()" | tr -d '"')
+wait_nb63 "$OKEY63"
+[[ "$R|$(cur63)" == "true|$OKEY63" ]] && pass "Switched right after typing" || fail "Switch" "$R|$(cur63)"
+ev "window.__MINOTES__.switchNotebook('$HOME63')" >/dev/null; wait_nb63 "$HOME63"
+R=$(blocks63)
+[[ "$R" == *"typed63chip"*"typed63api"* ]] && pass "Both edits are in the home notebook ($R)" || fail "Typing lost on API switch" "$R"
+
+# A stroke on the open whiteboard, then a switch 150 ms later (inside the 1 s save debounce).
+DRAWMODE63="(()=>{const b=[...document.querySelectorAll('.whiteboard-toolbar button')].find(b=>b.textContent.trim()==='Draw');if(b)b.click();return !!b})()"
+DRAW63="(()=>{const c=document.querySelector('canvas.whiteboard-canvas');if(!c)return 'no canvas';const r=c.getBoundingClientRect();const o=(x,y)=>({bubbles:true,button:0,clientX:r.left+x,clientY:r.top+y});c.dispatchEvent(new MouseEvent('mousedown',o(120,120)));for(let i=1;i<=8;i++)c.dispatchEvent(new MouseEvent('mousemove',o(120+i*20,120+i*10)));c.dispatchEvent(new MouseEvent('mouseup',o(280,200)));setTimeout(()=>window.__MINOTES__.switchNotebook('$OKEY63'),150);return 'drawn'})()"
+
+step "I draw on an existing whiteboard and switch within a second"
+WB63=$(ev "(async()=>{$A63 const {generateWhiteboardId}=await import('/src/lib/whiteboardUtils.ts');const t=await api.getPageTree('Edit63');const id=generateWhiteboardId();await api.createBlock(t.page.id,'{{whiteboard:'+id+'}}');return id})()" | tr -d '"')
+api "navigateTo('Edit63')" >/dev/null; sleep 2
+ev "document.querySelector('.whiteboard-indicator')?.click()" >/dev/null; sleep 1.5
+ev "$DRAWMODE63" >/dev/null; sleep 0.5
+R=$(ev "$DRAW63" | tr -d '"')
+wait_nb63 "$OKEY63"
+[[ "$R|$(cur63)" == "drawn|$OKEY63" ]] && pass "Drew a stroke on $WB63, switched to $OTHER63" || fail "Draw + switch" "$R|$(cur63)"
+R=$(board63 "$WB63")
+[[ "$R" == "none" ]] && pass "No stray board row in $OTHER63" || fail "Board saved into the other notebook" "$R"
+ev "window.__MINOTES__.switchNotebook('$HOME63')" >/dev/null; wait_nb63 "$HOME63"
+R=$(board63 "$WB63")
+[[ "$R" == "1" ]] && pass "The stroke is saved in the home notebook's board" || fail "Stroke lost" "lines=$R"
+
+step "I draw on a NEW board (Draw button) and switch at once: block and board stay home"
+api "navigateTo('Edit63')" >/dev/null; sleep 2
+ev "[...document.querySelectorAll('.stats-mode-btn')].find(b=>b.textContent.includes('Draw'))?.click()" >/dev/null; sleep 1.5
+NWB63=$(api "getOpenWhiteboardId()" | tr -d '"')
+ev "$DRAWMODE63" >/dev/null; sleep 0.5
+R=$(ev "$DRAW63" | tr -d '"')
+wait_nb63 "$OKEY63"
+[[ "$NWB63" == wb-* && "$R|$(cur63)" == "drawn|$OKEY63" ]] && pass "Drew on new board $NWB63, switched" || fail "New board draw + switch" "$NWB63|$R|$(cur63)"
+R="$(board63 "$NWB63")|$(has_edit63)"
+[[ "$R" == "none|false" ]] && pass "Nothing created in $OTHER63" || fail "New board leaked" "$R"
+ev "window.__MINOTES__.switchNotebook('$HOME63')" >/dev/null; wait_nb63 "$HOME63"
+R="$(board63 "$NWB63")|$(blocks63)"
+[[ "$R" == "1|"*"{{whiteboard:$NWB63}}"* ]] && pass "New board and its block are in the home notebook" || fail "New board lost" "$R"
+
+step "If a save fails, the switch is refused and I'm told why"
+R=$(ev "(async()=>{$A63 const pe=await import('/src/lib/pendingEdits.ts');const un=pe.registerFlush(()=>Promise.reject(new Error('disk full63')));let msg='no error';try{await window.__MINOTES__.switchNotebook('$OKEY63')}catch(e){msg=String(e&&e.message||e)}finally{un()}return msg+'|'+(await api.getNotebookSession()).key})()" | tr -d '"')
+[[ "$R" == *"disk full63"*"|$HOME63" ]] && pass "Switch refused, still in the home notebook ($R)" || fail "Failed save didn't stop the switch" "$R"
+[[ "$(cur63)" == "$HOME63" ]] && pass "Home notebook open" || fail "End notebook" "$(cur63)"
+
+# ═══════════════════════════════════════════════
 close_app
 
 # ═══════════════════════════════════════════════

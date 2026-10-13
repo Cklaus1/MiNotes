@@ -12,6 +12,8 @@
 export interface EditorOwner {
   /** Go back to static rendering. Return false to keep the editor for now. */
   release: () => boolean;
+  /** Save unsaved edits now (the save barrier, lib/pendingEdits.ts). No-op when clean. */
+  flush?: () => void;
 }
 
 /** Longer than useBlockEditor's 50 ms blur-save delay. */
@@ -51,4 +53,14 @@ export function requestEditorSweep() {
 export function forgetEditor(owner: EditorOwner) {
   waiting.delete(owner);
   if (current === owner) current = null;
+}
+
+/** Every live editor saves its unsaved edits now (current owner and the ones
+ *  still waiting to release). Their writes are tracked by lib/pendingEdits. */
+export function flushEditors() {
+  const owners = new Set<EditorOwner>(waiting);
+  if (current) owners.add(current);
+  for (const o of owners) {
+    try { o.flush?.(); } catch (e) { console.error("Editor flush failed:", e); }
+  }
 }

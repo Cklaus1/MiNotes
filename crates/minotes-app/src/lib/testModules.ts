@@ -15,6 +15,7 @@ import * as whiteboardUtils from "./whiteboardUtils";
 import * as mockBackend from "./mockBackend";
 import * as undoStack from "./undoStack";
 import * as undoManager from "./undoManager";
+import * as pendingEdits from "./pendingEdits";
 import { registerTestApi } from "./testApi";
 
 registerTestApi({
@@ -26,5 +27,6 @@ registerTestApi({
     "/src/lib/mockBackend.ts": mockBackend,
     "/src/lib/undoStack.ts": undoStack,
     "/src/lib/undoManager.ts": undoManager,
+    "/src/lib/pendingEdits.ts": pendingEdits,
   },
 } as any);

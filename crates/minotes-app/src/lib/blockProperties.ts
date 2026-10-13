@@ -69,3 +69,9 @@ export function loadBlockProperties(id: string): Promise<Props> {
     if (!flushTimer) flushTimer = setTimeout(flush, 0);
   });
 }
+
+/** Another notebook was opened: prefetched answers belong to the old one
+ *  (a copied or zip-imported notebook can share block ids). */
+export function clearPrefetchedProperties() {
+  prefetched.clear();
+}

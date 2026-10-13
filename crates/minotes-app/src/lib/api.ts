@@ -1,5 +1,6 @@
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { mockHandlers } from "./mockBackend";
+import { trackWrite } from "./pendingEdits";
 
 // Detect if we're running inside Tauri or in a regular browser
 const isTauri = !!(window as any).__TAURI_INTERNALS__;
@@ -109,8 +110,9 @@ export const renamePage = (id: string, newTitle: string) =>
 export const createBlock = (pageId: string, content: string, parentId?: string) =>
   invoke<Block>("create_block", { pageId, content, parentId });
 
+/** Tracked: the notebook-switch save barrier (lib/pendingEdits) waits for it. */
 export const updateBlock = (id: string, content: string) =>
-  invoke<Block>("update_block", { id, content });
+  trackWrite(invoke<Block>("update_block", { id, content }));
 
 export const deleteBlock = (id: string) =>
   invoke<boolean>("delete_block", { id });
