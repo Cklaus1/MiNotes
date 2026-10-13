@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 
 use clap::Subcommand;
 use minotes_core::error::Error;
+use minotes_core::encryption;
 use minotes_core::notebook::{self, NotebookInfo};
 
 use crate::output::{print_error, print_json, Format};
@@ -25,6 +26,22 @@ pub enum NotebookCmd {
         /// Folder to create it in (must not exist yet, or be empty)
         #[arg(long)]
         location: Option<String>,
+        /// Encrypt it with a passphrase (from MINOTES_PASSPHRASE, else asked on
+        /// the terminal). Prints the recovery key once.
+        #[arg(long)]
+        encrypt: bool,
+    },
+    /// Encrypt an existing notebook with a passphrase (MINOTES_PASSPHRASE or a
+    /// terminal prompt). Prints the recovery key once.
+    Encrypt {
+        /// Notebook name or folder (default: the app's open notebook)
+        notebook: Option<String>,
+    },
+    /// Remove a notebook's encryption (needs its passphrase: MINOTES_PASSPHRASE
+    /// or a terminal prompt).
+    Decrypt {
+        /// Notebook name or folder (default: the app's open notebook)
+        notebook: Option<String>,
     },
     /// Register an existing notebook folder (like "Open notebook…" in the app)
     Open {
@@ -175,16 +192,96 @@ fn find(sel: &str) -> Result<notebook::Notebook, String> {
     notebook::find_by_name(sel).map_err(|e| e.to_string())
 }
 
+/// A notebook for `encrypt` / `decrypt`: a name (or id), a notebook folder, or
+/// the app's open notebook.
+fn find_any(sel: Option<&str>) -> Result<notebook::Notebook, String> {
+    let Some(sel) = sel else {
+        return notebook::resolve(&active_key()).map_err(|e| e.to_string());
+    };
+    if looks_like_path(sel) || (Path::new(sel).is_dir() && notebook::find_by_name(sel).is_err()) {
+        let p = expand_tilde(sel);
+        let root = if p.is_dir() { p } else { p.parent().map(Path::to_path_buf).unwrap_or_default() };
+        return crate::unlock::folder_notebook(&root)
+            .ok_or_else(|| format!("{} is not a MiNotes notebook folder", root.display()));
+    }
+    find(sel)
+}
+
+/// Refuse while the desktop app has the notebook open.
+fn ensure_not_open_in_app(nb: &notebook::Notebook) -> Result<(), String> {
+    match notebook::check_lock(&nb.lock_path()) {
+        notebook::LockStatus::HeldByOther(_) => Err("Notebook is open in MiNotes; close it first".into()),
+        notebook::LockStatus::Acquired => Ok(()),
+    }
+}
+
+const RECOVERY_WARNING: &str =
+    "Save this recovery key somewhere safe (it is shown only once). Without it and the passphrase the notebook cannot be opened.";
+
+fn info_marker(info: &NotebookInfo) -> String {
+    let mut m = String::new();
+    if !info.available {
+        m.push_str("\t(unavailable)");
+    }
+    if info.encrypted {
+        m.push_str(if info.locked { "\t(encrypted, locked)" } else { "\t(encrypted)" });
+    }
+    m
+}
+
+fn csv_field(s: &str) -> String {
+    if s.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s.to_string()
+    }
+}
+
+const CSV_HEADER: &str = "key,name,kind,path,available,encrypted,locked";
+
+fn csv_row(info: &NotebookInfo) -> String {
+    format!(
+        "{},{},{},{},{},{},{}",
+        csv_field(&info.key),
+        csv_field(&info.name),
+        info.kind,
+        csv_field(&info.path),
+        info.available,
+        info.encrypted,
+        info.locked
+    )
+}
+
 fn print_info(info: &NotebookInfo, fmt: &Format) {
     match fmt {
-        Format::Text | Format::Md => println!(
-            "{}\t{}\t{}{}",
-            info.name,
-            info.kind,
-            info.path,
-            if info.available { "" } else { "\t(unavailable)" }
-        ),
+        Format::Text | Format::Md => println!("{}\t{}\t{}{}", info.name, info.kind, info.path, info_marker(info)),
+        Format::Csv => {
+            println!("{CSV_HEADER}");
+            println!("{}", csv_row(info));
+        }
         _ => print_json(info),
+    }
+}
+
+/// A new notebook's info plus its recovery key, shown once in every format.
+fn print_info_with_recovery(info: &NotebookInfo, recovery_key: &str, fmt: &Format) {
+    match fmt {
+        Format::Text | Format::Md => {
+            println!("{}\t{}\t{}{}", info.name, info.kind, info.path, info_marker(info));
+            println!("Recovery key: {recovery_key}");
+            println!("{RECOVERY_WARNING}");
+        }
+        Format::Csv => {
+            println!("{CSV_HEADER},recovery_key");
+            println!("{},{}", csv_row(info), csv_field(recovery_key));
+            eprintln!("{RECOVERY_WARNING}");
+        }
+        _ => {
+            let mut v = serde_json::to_value(info).unwrap_or_default();
+            v["recovery_key"] = recovery_key.into();
+            v["warning"] = RECOVERY_WARNING.into();
+            print_json(&v);
+        }
     }
 }
 
@@ -196,6 +293,10 @@ pub fn run(cmd: Option<NotebookCmd>, fmt: &Format) -> i32 {
             let list = notebook::list();
             match fmt {
                 Format::Text | Format::Md => list.iter().for_each(|n| print_info(n, fmt)),
+                Format::Csv => {
+                    println!("{CSV_HEADER}");
+                    list.iter().for_each(|n| println!("{}", csv_row(n)));
+                }
                 _ => print_json(&serde_json::json!({ "notebooks": list, "count": list.len() })),
             }
             Ok(())
@@ -203,17 +304,77 @@ pub fn run(cmd: Option<NotebookCmd>, fmt: &Format) -> i32 {
         NotebookCmd::Current => notebook::resolve(&active_key())
             .map(|nb| print_info(&notebook::info(&nb), fmt))
             .map_err(|e| e.to_string()),
-        NotebookCmd::Create { name, location } => (|| {
+        NotebookCmd::Create { name, location, encrypt } => (|| {
             let name = name.trim().to_string();
             notebook::validate_name(&name).map_err(|e| e.to_string())?;
             let dir = match location.as_deref().map(str::trim).filter(|l| !l.is_empty()) {
                 Some(l) => expand_tilde(l),
                 None => notebook::default_location(&name),
             };
+            if encrypt {
+                let pass = crate::unlock::passphrase(
+                    &format!("New passphrase for {name}: "),
+                    true,
+                    "An encrypted notebook needs a passphrase: set MINOTES_PASSPHRASE or run in a terminal",
+                )?;
+                let (nb, rk) = encryption::create_in_folder(&dir, &name, &pass).map_err(|e| e.to_string())?;
+                print_info_with_recovery(&notebook::info(&nb), &rk.display(), fmt);
+                return Ok(());
+            }
             let nb = notebook::create_in_folder(&dir, &name).map_err(|e| e.to_string())?;
             print_info(&notebook::info(&nb), fmt);
             Ok(())
         })(),
+        NotebookCmd::Encrypt { notebook: sel } => find_any(sel.as_deref()).and_then(|nb| {
+            if !nb.is_folder() {
+                return Err(format!(
+                    "Notebook '{}' is a legacy notebook; move it to a folder in the app before encrypting it",
+                    nb.name
+                ));
+            }
+            ensure_not_open_in_app(&nb)?;
+            encryption::resume_conversion(&nb).map_err(|e| e.to_string())?;
+            if nb.is_encrypted() {
+                return Err(format!("Notebook '{}' is already encrypted", nb.name));
+            }
+            let pass = crate::unlock::passphrase(
+                &format!("New passphrase for {}: ", nb.name),
+                true,
+                &format!("Encrypting '{}' needs a passphrase: set MINOTES_PASSPHRASE or run in a terminal", nb.name),
+            )?;
+            let rk = encryption::encrypt_notebook(&nb, &pass).map_err(|e| e.to_string())?;
+            let info = notebook::info(&nb);
+            match fmt {
+                Format::Text | Format::Md => {
+                    println!("Encrypted notebook '{}'", nb.name);
+                    println!("Recovery key: {}", &*rk.display());
+                    println!("{RECOVERY_WARNING}");
+                }
+                _ => print_info_with_recovery(&info, &rk.display(), fmt),
+            }
+            Ok(())
+        }),
+        NotebookCmd::Decrypt { notebook: sel } => find_any(sel.as_deref()).and_then(|nb| {
+            ensure_not_open_in_app(&nb)?;
+            encryption::resume_conversion(&nb).map_err(|e| e.to_string())?;
+            if !nb.is_encrypted() {
+                return Err(format!("Notebook '{}' is not encrypted", nb.name));
+            }
+            let pass = crate::unlock::passphrase(
+                &format!("Passphrase for {}: ", nb.name),
+                false,
+                &format!("Notebook '{}' is encrypted: set MINOTES_PASSPHRASE or run in a terminal", nb.name),
+            )?;
+            encryption::decrypt_notebook(&nb, &pass).map_err(|e| match e {
+                Error::WrongPassphrase => "Wrong passphrase".to_string(),
+                e => e.to_string(),
+            })?;
+            match fmt {
+                Format::Text | Format::Md => println!("Decrypted notebook '{}'", nb.name),
+                _ => print_info(&notebook::info(&nb), fmt),
+            }
+            Ok(())
+        }),
         NotebookCmd::Open { folder } => notebook::open_folder(&expand_tilde(&folder))
             .map(|nb| print_info(&notebook::info(&nb), fmt))
             .map_err(|e| e.to_string()),

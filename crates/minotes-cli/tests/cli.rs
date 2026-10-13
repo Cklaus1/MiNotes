@@ -474,3 +474,200 @@ fn search_all_notebooks_labels_results_and_skips_unavailable() {
     assert_eq!(std::fs::read(&work_db).unwrap(), before, "Work's database untouched");
     assert!(!h.path().join("MiNotes/Work/.minotes/lock.json").exists());
 }
+
+// ── Encrypted notebooks (PRD-encryption §4.4) ──
+
+const PASS: &str = "correct horse battery staple";
+
+fn run_env(home: &TempHome, args: &[&str], env: &[(&str, &str)]) -> Output {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_minotes"));
+    cmd.args(args)
+        .env("HOME", home.path())
+        .env_remove("MINOTES_PASSPHRASE")
+        .env_remove("MINOTES_FAKE_KEYCHAIN_DIR")
+        .envs(env.iter().copied())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    cmd.output().expect("spawn minotes")
+}
+
+fn stderr(out: &Output) -> String {
+    String::from_utf8_lossy(&out.stderr).into_owned()
+}
+
+fn contains_bytes(hay: &[u8], needle: &[u8]) -> bool {
+    hay.windows(needle.len()).any(|w| w == needle)
+}
+
+fn hostname() -> String {
+    std::fs::read_to_string("/proc/sys/kernel/hostname")
+        .map(|s| s.trim().to_string())
+        .or_else(|_| Command::new("hostname").output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()))
+        .unwrap_or_default()
+}
+
+#[test]
+fn encrypted_notebook_create_open_and_refusals() {
+    let h = TempHome::new();
+    let env = [("MINOTES_PASSPHRASE", PASS)];
+
+    // No passphrase source: refused, nothing created.
+    let out = run_env(&h, &["notebook", "create", "Vault", "--encrypt"], &[]);
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("MINOTES_PASSPHRASE"), "{}", stderr(&out));
+    // A weak passphrase is refused by core.
+    let out = run_env(&h, &["notebook", "create", "Vault", "--encrypt"], &[("MINOTES_PASSPHRASE", "abc")]);
+    assert!(!out.status.success());
+
+    let out = run_env(&h, &["notebook", "create", "Vault", "--encrypt"], &env);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let v = json(&out);
+    assert_eq!(v["encrypted"], true);
+    let rk = v["recovery_key"].as_str().unwrap();
+    assert!(rk.len() >= 32, "{rk}");
+    assert!(v["warning"].as_str().unwrap().contains("recovery key"));
+
+    // The text format shows the recovery key too.
+    let out = run_env(&h, &["notebook", "create", "Vault2", "--encrypt", "-f", "text"], &env);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("Recovery key: "));
+
+    // Pages go in with the passphrase from the environment.
+    let out = run_env(&h, &["--notebook", "Vault", "page", "create", "Zanzibar secrets"], &env);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let out = run_env(&h, &["--notebook", "Vault", "page", "list"], &env);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(titles(&out), vec!["Zanzibar secrets".to_string()]);
+    // Also by folder path.
+    let root = h.path().join("MiNotes/Vault");
+    let out = run_env(&h, &["--notebook", &root.to_string_lossy(), "page", "list"], &env);
+    assert_eq!(titles(&out), vec!["Zanzibar secrets".to_string()]);
+
+    // No env, stdin not a terminal: a clear error.
+    let out = run_env(&h, &["--notebook", "Vault", "page", "list"], &[]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr(&out).contains("encrypted"), "{}", stderr(&out));
+    assert!(out.stdout.is_empty());
+
+    // Wrong passphrase.
+    let out = run_env(&h, &["--notebook", "Vault", "page", "list"], &[("MINOTES_PASSPHRASE", "wrong horse battery staple")]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr(&out).contains("Wrong passphrase"), "{}", stderr(&out));
+
+    // The database file holds no plaintext.
+    let bytes = std::fs::read(root.join("notebook.minotes")).unwrap();
+    assert!(!contains_bytes(&bytes, b"Zanzibar"));
+    assert!(!bytes.starts_with(b"SQLite format 3"));
+
+    // list / current show it as encrypted and locked.
+    let v = json(&run_env(&h, &["notebook", "list"], &[]));
+    let vault = v["notebooks"].as_array().unwrap().iter().find(|n| n["name"] == "Vault").unwrap().clone();
+    assert_eq!(vault["encrypted"], true);
+    assert_eq!(vault["locked"], true);
+    let text = String::from_utf8(run_env(&h, &["notebook", "list", "-f", "text"], &[]).stdout).unwrap();
+    assert!(text.lines().any(|l| l.starts_with("Vault\t") && l.contains("(encrypted, locked)")), "{text}");
+    let csv = String::from_utf8(run_env(&h, &["notebook", "list", "-f", "csv"], &[]).stdout).unwrap();
+    assert!(csv.starts_with("key,name,kind,path,available,encrypted,locked"), "{csv}");
+    assert!(csv.lines().any(|l| l.contains(",Vault,") && l.ends_with(",true,true")), "{csv}");
+    std::fs::write(h.path().join(".minotes/active_graph"), vault["key"].as_str().unwrap()).unwrap();
+    let v = json(&run_env(&h, &["notebook", "current"], &[]));
+    assert_eq!(v["encrypted"], true);
+    // The app's open notebook is the default for commands too.
+    let out = run_env(&h, &["page", "list"], &env);
+    assert_eq!(titles(&out), vec!["Zanzibar secrets".to_string()]);
+
+    // The desktop app holding the lock blocks decrypt.
+    let lock = serde_json::json!({
+        "pid": std::process::id(), "host": hostname(), "instance": "another-instance",
+        "opened_at": "2026-01-01T00:00:00Z", "root": root.to_string_lossy(),
+    });
+    std::fs::write(root.join(".minotes/lock.json"), lock.to_string()).unwrap();
+    let out = run_env(&h, &["notebook", "decrypt", "Vault"], &env);
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("open in MiNotes"), "{}", stderr(&out));
+}
+
+#[test]
+fn encrypted_notebook_opens_with_a_remembered_key() {
+    use minotes_core::crypto::Secret;
+
+
+    let h = TempHome::new();
+    let out = run_env(&h, &["notebook", "create", "Kept", "--encrypt"], &[("MINOTES_PASSPHRASE", PASS)]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let id = json(&out)["key"].as_str().unwrap().to_string();
+    let root = h.path().join("MiNotes/Kept");
+    let out = run_env(&h, &["--notebook", "Kept", "page", "create", "Remembered"], &[("MINOTES_PASSPHRASE", PASS)]);
+    assert!(out.status.success(), "{}", stderr(&out));
+
+    // "Keep unlocked on this device": the data key in the (debug-build fake)
+    // keychain, stored the way core's keychain::remember stores it.
+    // Unwrapped straight from notebook.json's slots: nothing here may resolve
+    // paths through this process's (real) HOME.
+    let meta: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(root.join("notebook.json")).unwrap()).unwrap();
+    let info: minotes_core::crypto::EncryptionInfo = serde_json::from_value(meta["encryption"].clone()).unwrap();
+    let key = info.unlock(Secret::Passphrase(PASS)).unwrap();
+    let kc = h.path().join("keychain");
+    std::fs::create_dir_all(&kc).unwrap();
+    std::fs::write(kc.join(format!("minotes-notebook-key-{id}")), key.to_hex().as_bytes()).unwrap();
+    let kc = kc.to_string_lossy().into_owned();
+
+    let out = run_env(&h, &["--notebook", "Kept", "page", "list"], &[("MINOTES_FAKE_KEYCHAIN_DIR", &kc)]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(titles(&out), vec!["Remembered".to_string()]);
+    // Without the remembered key it is locked again.
+    let out = run_env(&h, &["--notebook", "Kept", "page", "list"], &[]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr(&out).contains("encrypted"));
+}
+
+#[test]
+fn encrypt_then_decrypt_an_existing_notebook_round_trips() {
+    let h = TempHome::new();
+    assert!(run_env(&h, &["notebook", "create", "Plain"], &[]).status.success());
+    for t in ["Alpha page", "Beta page"] {
+        let out = run_env(&h, &["--notebook", "Plain", "page", "create", t], &[]);
+        assert!(out.status.success(), "{}", stderr(&out));
+    }
+    let root = h.path().join("MiNotes/Plain");
+    let env = [("MINOTES_PASSPHRASE", PASS)];
+
+    // Decrypting a plaintext notebook is refused; encrypting needs a passphrase.
+    assert!(!run_env(&h, &["notebook", "decrypt", "Plain"], &env).status.success());
+    let out = run_env(&h, &["notebook", "encrypt", "Plain"], &[]);
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("MINOTES_PASSPHRASE"), "{}", stderr(&out));
+
+    let out = run_env(&h, &["notebook", "encrypt", "Plain"], &env);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let v = json(&out);
+    assert!(v["recovery_key"].as_str().is_some_and(|k| !k.is_empty()), "{v}");
+    assert_eq!(v["encrypted"], true);
+    let bytes = std::fs::read(root.join("notebook.minotes")).unwrap();
+    assert!(!contains_bytes(&bytes, b"Alpha page"));
+    assert!(!run_env(&h, &["--notebook", "Plain", "page", "list"], &[]).status.success());
+    let out = run_env(&h, &["--notebook", "Plain", "page", "list"], &env);
+    let mut t = titles(&out);
+    t.sort();
+    assert_eq!(t, vec!["Alpha page".to_string(), "Beta page".to_string()]);
+    // Encrypting twice is refused.
+    assert!(!run_env(&h, &["notebook", "encrypt", "Plain"], &env).status.success());
+
+    // Wrong passphrase: decrypt refused, notebook still encrypted.
+    let out = run_env(&h, &["notebook", "decrypt", &root.to_string_lossy()], &[("MINOTES_PASSPHRASE", "wrong horse battery staple")]);
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("Wrong passphrase"), "{}", stderr(&out));
+
+    let out = run_env(&h, &["notebook", "decrypt", &root.to_string_lossy()], &env);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(json(&out)["encrypted"], false);
+    let bytes = std::fs::read(root.join("notebook.minotes")).unwrap();
+    assert!(bytes.starts_with(b"SQLite format 3"));
+    let out = run_env(&h, &["--notebook", "Plain", "page", "list"], &[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let mut t = titles(&out);
+    t.sort();
+    assert_eq!(t, vec!["Alpha page".to_string(), "Beta page".to_string()]);
+}

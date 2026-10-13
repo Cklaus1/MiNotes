@@ -159,7 +159,7 @@ pub fn run(kind: SourceKind, paths: Vec<String>, parent: Option<String>, a: &Imp
                         }
                     },
                 };
-                match Database::open(&db_path).and_then(|db| import::preview_for(&db, &model, &opts)) {
+                match crate::unlock::open_db(&db_path).and_then(|db| import::preview_for(&db, &model, &opts).map_err(|e| e.to_string())) {
                     Ok(p) => p,
                     Err(e) => {
                         print_error(&e.to_string());
@@ -182,10 +182,10 @@ pub fn run(kind: SourceKind, paths: Vec<String>, parent: Option<String>, a: &Imp
             return 1;
         }
     };
-    let db = match Database::open(&db_path) {
+    let db = match crate::unlock::open_db(&db_path) {
         Ok(d) => d,
         Err(e) => {
-            print_error(&format!("Failed to open database: {e}"));
+            print_error(&e);
             return 1;
         }
     };

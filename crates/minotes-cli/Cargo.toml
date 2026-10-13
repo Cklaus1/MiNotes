@@ -15,3 +15,6 @@ serde_json = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 rusqlite = { workspace = true }
+# Encrypted notebooks: read the passphrase from the terminal without echo.
+rpassword = "7"
+zeroize = "1"
