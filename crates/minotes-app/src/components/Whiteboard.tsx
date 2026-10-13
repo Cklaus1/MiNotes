@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, useCallback, type CSSProperties } from "re
 import { isTauri, savePngToDownloads } from "../lib/api";
 import { loadWhiteboard, persistWhiteboard } from "../lib/whiteboardUtils";
 import { showToast } from "../lib/toast";
+import { registerFlush } from "../lib/pendingEdits";
 
 interface StickyNote {
   id: string;
@@ -758,6 +759,13 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
 
   // Flush pending changes on unmount.
   useEffect(() => () => { void flushSave(); }, [flushSave]);
+
+  // Save barrier (notebook switch): save now, and fail the barrier if it didn't
+  // stick — switching anyway would send the retry to the other notebook.
+  useEffect(() => registerFlush(async () => {
+    await flushSave();
+    if (dirtyRef.current) throw new Error("the whiteboard couldn't be saved");
+  }), [flushSave]);
 
   // ── Undo / redo: bounded snapshot history covering all element types ──
   const undoStackRef = useRef<Snapshot[]>([]);

@@ -8,6 +8,9 @@ import * as api from "./api";
 import { showToast } from "./toast";
 import { errorMessage } from "./errors";
 import { undoStack } from "./undoStack";
+import { flushPendingEdits } from "./pendingEdits";
+import { clearWhiteboardCache } from "./whiteboardUtils";
+import { clearPrefetchedProperties } from "./blockProperties";
 
 /** Fired after the open notebook changed (detail: { key }). App resets its views. */
 export const NOTEBOOK_SWITCHED = "minotes-notebook-switched";
@@ -39,9 +42,17 @@ function swapLocalState(from: string, to: string) {
 let switching = false;
 
 /**
- * Open another notebook. Undo history belongs to a notebook, so it is cleared;
- * recent pages and sidebar state are swapped; App closes views and lands on the
- * new notebook's journal for today (it listens for NOTEBOOK_SWITCHED).
+ * Open another notebook. Every path that changes the open notebook goes through
+ * here (switcher, dialogs, imports, cross-notebook links and search results).
+ *
+ * First the save barrier: unsaved typing and whiteboard strokes are written to
+ * the CURRENT notebook before the backend swaps databases — otherwise the views'
+ * unmount saves would run against the new one. If that fails (or hangs), the
+ * switch is aborted with the reason (thrown; callers show it).
+ *
+ * Then: undo history belongs to a notebook, so it is cleared; recent pages and
+ * sidebar state are swapped; per-notebook caches are dropped; App closes views
+ * and lands on the new notebook's journal for today (NOTEBOOK_SWITCHED).
  */
 export async function switchNotebook(key: string): Promise<void> {
   if (switching) return;
@@ -49,8 +60,15 @@ export async function switchNotebook(key: string): Promise<void> {
   try {
     const from = await api.getCurrentNotebook();
     if (from === key) return;
+    try {
+      await flushPendingEdits();
+    } catch (e) {
+      throw new Error(`${errorMessage(e)}, so this notebook stays open`);
+    }
     await api.switchNotebook(key);
     swapLocalState(from, key);
+    clearWhiteboardCache();
+    clearPrefetchedProperties();
     undoStack.clear();
     window.dispatchEvent(new CustomEvent(NOTEBOOK_SWITCHED, { detail: { key, from } }));
     window.dispatchEvent(new Event(NOTEBOOKS_CHANGED));

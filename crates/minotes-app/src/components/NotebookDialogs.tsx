@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import * as api from "../lib/api";
 import { showToast } from "../lib/toast";
 import { errorMessage } from "../lib/errors";
+import { flushPendingEdits } from "../lib/pendingEdits";
 import {
   exportNotebook, formatSize, importNotebookFromZip, notebooksChanged, pickFolder, prettyPath, switchNotebook, timeAgo,
   useCapabilities,
@@ -365,6 +366,9 @@ export function MoveNotebookDialog({ session, onClose }: { session: api.Notebook
     setBusy(true);
     setError(null);
     try {
+      // The database is copied, then the old one deleted: a save landing in
+      // between would be lost, so flush first (same barrier as a switch).
+      await flushPendingEdits();
       const s = await api.moveNotebookToFolder(location);
       notebooksChanged();
       showToast(`“${s.name}” now lives in ${prettyPath(s.path)}`);
