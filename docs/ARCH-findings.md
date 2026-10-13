@@ -96,11 +96,11 @@ code splitting (U-14), accessibility (U-15), whiteboard conflict handling
 | ID | Sev | Conf | Title | Effort |
 |---|---|---|---|---|
 | F-1 | **Critical** | **Fixed** | Enabling git sync reverts unmirrored edits and hard-deletes new blocks | S |
-| F-2 | High | Verified | Remote edit silently discarded when the page was edited locally during sync | M |
+| F-2 | High | **Fixed** | Remote edit silently discarded when the page was edited locally during sync | M |
 | F-3 | High | Verified | Dropped-in markdown rewritten lossily (YAML lists, code fences), no copy kept | M |
 | F-4 | High | **Fixed** | Symlinked `.md` in the mirror is imported and re-written as a real file (exfiltration via a shared repo) | S |
 | F-6 | High | **Fixed** | Git runs repo-local hooks/fsmonitor in notebook folders the user opened | S |
-| F-7 | High | Verified | Block properties are not in the markdown, so never sync | M |
+| F-7 | High | **Fixed** | Block properties are not in the markdown, so never sync | M |
 | B-1 | High | Likely | Imported notebook zip carries AI endpoint, CSS snippets, plugins, triggers | M |
 | B-2 | High | Verified | AI Ask writes to a notebook open read-only (owned by another window) | S |
 | B-3 | High | Verified | Monthly AI cost cap can be exceeded (parallel runs, unknown prices, lost usage, per-notebook) | M |
@@ -189,6 +189,24 @@ devices when A edits block 1 mid-sync. **Fix:** keep the pulled version as a
 conflict copy (or 3-way block merge against `git show <imported_head>:path`);
 never mark the head imported until skipped pages are absorbed.
 
+> **Fixed** (f03c7a4). Pages the import skips as protected are recorded; for each
+> one whose file the pull changed, `Database::merge_into_protected_page` does a
+> three-way merge against `git show <base>:<path>` (base = the last imported commit,
+> or the flushed commit on enable). Rule, per block id: text and `key:: value`
+> properties merge separately — changed only remotely → applied; changed the same
+> way on both → nothing; changed differently on both → conflict. New remote blocks
+> are created (under their parent if present, else at the end); blocks removed
+> remotely and unchanged here go to a "(removed by sync …)" Trash page; removed
+> remotely but edited here → kept; edited remotely but deleted here → conflict.
+> Title and page properties follow the same rule per field; structure (moves,
+> order) stays local. On any conflict the clean parts are still applied, the local
+> text stays in place and the whole remote file becomes a "<title> (conflict from
+> <host>)" page. Without a base the remote file becomes such a page whenever it
+> differs. A merge error is an import error, so `imported_head` does not advance.
+> Tests: `test_remote_edit_survives_a_local_edit_during_sync` (the proof),
+> `test_same_block_edited_on_both_sides_keeps_a_conflict_copy`,
+> `test_protected_page_untouched_by_the_pull_makes_no_copy`.
+
 **F-3 Dropped-in markdown is rewritten lossily.** *High, Verified.* New files in
 `notes/` go through the sync codec, which drops YAML list values
 (`sync.rs:1367`) and splits fenced code per line with indentation as nesting; the
@@ -204,6 +222,25 @@ the mirror fingerprint ignores block properties. Proof test: device B has no
 block properties after sync. **Fix:** serialise as indented `key:: value`
 lines (or a sidecar), parse in reconcile, include in the fingerprint, two-device
 test.
+
+> **Fixed** (ab1682d). Format: under the block's line (and its `\ ` continuation
+> lines), one `key:: value` line per property, indented one level deeper, no
+> bullet (Logseq's convention; other tools show plain text). A line is a property
+> only directly under a block, deeper than it, without a bullet, with a key matching
+> `[A-Za-z0-9_][A-Za-z0-9_.-]*` followed by `::` and a space or end of line — so
+> `::` inside block text (first line or `\ ` continuations) never becomes one.
+> Values with newlines, edge whitespace or a leading quote are JSON-quoted. Which
+> keys sync: every block property whose key fits that pattern (MiNotes keeps no
+> internal state in block properties — collapsed state is a column); others stay
+> local. Reconcile sets/updates them; a writable key missing from the file is
+> removed only for blocks that carry an id marker (the exporter writes every
+> writable key, and the file is exported before each import, so "missing" means
+> removed); a block-property edit now marks its page modified (`pages_modified_since`),
+> so one made during a sync is protected (and merged, F-2). Mixed versions: a device
+> on an older MiNotes writes no property lines and would remove them on import
+> (same as page properties). In the mirror fingerprint; also read by the legacy
+> markdown importer. Tests: `test_block_properties_sync_both_ways`,
+> `test_block_property_format_round_trips` (incl. `::` in text, quoting, no churn).
 
 **F-8 / F-13 Two importers, three parsers.** Outside-edit import refuses
 oversized/binary/conflict-marker files and parks removals in Trash; git-sync
