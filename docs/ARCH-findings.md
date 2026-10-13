@@ -139,7 +139,7 @@ code splitting (U-14), accessibility (U-15), whiteboard conflict handling
 | U-7 | Medium | Verified | Every save reloads the sidebar with ~25 IPC calls; no list virtualization | S / M |
 | U-9 | Medium | Verified | Mock backend is a hand-written reimplementation; parity unenforced | M–L |
 | U-10 | Medium | Verified | `window` event bus + god components; caches not tied to notebook lifecycle | M–L |
-| X-1 | Medium | Verified | No CI: no automated tests, lint or audit on any change | S–M |
+| X-1 | Medium | Verified | No CI: no automated tests, lint or audit on any change (**Fixed, pending first run**) | S–M |
 | B-12 | Low–Med | Verified | AI runs can't be cancelled mid-call; scope filter applied after a 500-hit cap | S–M |
 | C-11 | Low–Med | Verified | Lenient row decoding hides corruption (bad timestamps become "now") | S–M |
 | C-12 | Low | Verified | Several multi-statement writes outside `tx`; card uniqueness only in code | S |
@@ -448,6 +448,13 @@ vulnerabilities today; no `cargo audit` installed.) **Fix:** CI running
 `cargo test`, `tsc`, `vite build`, the browser journeys headless, and
 `cargo audit`/`npm audit`; nightly real-app journeys on a Linux runner with
 Xvfb (the desktop-check skill already scripts it).
+**Status: Fixed, pending first run.** `.github/workflows/ci.yml` (push to main +
+PRs: `cargo check`/`cargo test`, `tsc` + `vite build`, browser journeys headless,
+`cargo audit` + `npm audit`), `nightly.yml` (real-app journeys on Xvfb),
+`release-android.yml` (debug APK on dispatch / `v*` tags); see CLAUDE.md "CI".
+Known on day one: `cargo audit` reports 13 advisories (quinn-proto, rustls,
+rustls-webpki: `cargo update` fixes; quick-xml 0.39 in core needs 0.41; quick-xml
+0.38 via tauri's `plist`), so the audit job stays red until the lockfile is bumped.
 
 **U-9 The mock backend** (1,900 lines) re-implements backend semantics,
 synchronously (so optimistic races never happen in browser tests), returns live
@@ -517,5 +524,7 @@ each can land incrementally behind the existing interfaces.
    properly) or reduce it to what sync needs (then delete `undo_last`)?
 3. Remote images: off by default for imported/synced content only, or for all
    notes?
-4. CI provider and budget for nightly real-app journeys (needs a Linux runner
-   with Xvfb; ~25 min per run).
+4. ~~CI provider and budget for nightly real-app journeys (needs a Linux runner
+   with Xvfb; ~25 min per run).~~ **Decided:** GitHub Actions (public repo, free
+   Linux runners): per-push checks + browser journeys, nightly real-app
+   journeys, Android APK on dispatch/tags (X-1).

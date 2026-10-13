@@ -39,6 +39,8 @@ reports land there. `$D` with no arguments prints the full command list.
 Both build first; set `DESKTOP_NO_BUILD=1` to reuse `target/debug/minotes-app`.
 ~20 min for the 52 journeys, ~4 min for the desktop ones. To run two at once give
 each its own `DESKTOP_CHECK_DIR`, `DESKTOP_CHECK_DISPLAY` and `DESKTOP_CHECK_WD_PORT`.
+Both run nightly on a plain Ubuntu runner (`.github/workflows/nightly.yml`); a
+failed run uploads the shots, logs and `results.tsv` as an artifact.
 
 **A journey that passes in browser mode but fails here is a mock/real divergence**
 — the most valuable kind of finding. Reproduce it by hand with the driver, decide

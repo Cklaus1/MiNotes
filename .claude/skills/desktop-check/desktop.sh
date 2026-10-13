@@ -43,6 +43,7 @@ STATE="${DESKTOP_CHECK_DIR:-${TMPDIR:-/tmp}/minotes-desktop-check-$(id -u)}"
 DNUM="${DESKTOP_CHECK_DISPLAY:-97}"
 export DISPLAY="localhost:$DNUM"
 # glvnd otherwise picks the NVIDIA EGL vendor, which aborts the X server on WSL.
+# Harmless elsewhere (Xvfb is software-only); skipped when Mesa's EGL isn't installed.
 MESA_EGL=/usr/share/glvnd/egl_vendor.d/50_mesa.json
 [ -f "$MESA_EGL" ] && export __EGL_VENDOR_LIBRARY_FILENAMES="$MESA_EGL"
 

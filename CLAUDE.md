@@ -55,8 +55,9 @@ cargo check -p minotes-cli
 # Rust unit tests
 cargo test
 
-# Run user journey tests (requires dev server on :1420)
+# Run user journey tests (requires dev server on :1420; JOURNEY_URL points elsewhere)
 bash tests/user-journey-test.sh
+JOURNEY_URL=http://localhost:1591 bash tests/user-journey-test.sh   # vite started with --port 1591
 
 # Desktop app (Tauri dev mode)
 cd crates/minotes-app && npm run tauri dev
@@ -81,6 +82,14 @@ cargo run -p minotes-cli -- notebook list                     # notebook create|
 - ProseMirror doesn't respond to CDP keyboard events — use `window.__MINOTES__` API instead
 - Browser-mode tests use the mock backend and don't enforce the CSP. For anything Tauri-only use the `desktop-check` skill (Xvfb + xdotool + screenshots against a throwaway HOME).
 - PDFs open via the `read_pdf_file` command (bytes over IPC); the webview can't fetch filesystem paths.
+
+## CI (GitHub Actions, `.github/workflows/`)
+
+- **`ci.yml`** — every push to `main` and every PR (superseded runs cancelled): `rust` (`cargo check -p minotes-app -p minotes-cli`, `cargo test --workspace`, both `--locked`), `frontend` (`npm ci`, `tsc --noEmit`, `vite build`), `journeys` (vite on :1591 + `JOURNEY_URL=http://localhost:1591 bash tests/user-journey-test.sh` in headless Chrome via `agent-browser@0.22.1`; screenshots + logs uploaded on failure), `audit` (`cargo audit`, `npm audit --omit=dev --audit-level=high`).
+- **`nightly.yml`** — 03:17 UTC daily + manual: builds the debug app, then `tests/desktop-journey-test.sh` and `JOURNEY_BACKEND=desktop DESKTOP_NO_BUILD=1 bash tests/user-journey-test.sh` on Xvfb (tauri-driver + WebKitWebDriver); shots, logs and `results.tsv` uploaded on failure.
+- **`release-android.yml`** — manual or `v*` tag: debug APK for x86_64 + aarch64 (NDK 27.0.12077973, JDK 17), uploaded as an artifact. No signing secrets.
+- Rules: `permissions: contents: read`, no secrets, `pull_request` only (never `pull_request_target`), third-party actions pinned to full commit SHAs (bump the SHA and its `# vX` comment together). Lint workflow edits with `actionlint`.
+- Reproduce a job locally by running its `run:` lines from the repo root (journeys: a free port, never 1420). Runners have no git identity, so the workflows set one system-wide; the journeys use `AGENT_BROWSER_ARGS=--disable-gpu,--disable-software-rasterizer` and their own `AGENT_BROWSER_SESSION`.
 
 ## Important gotchas
 
