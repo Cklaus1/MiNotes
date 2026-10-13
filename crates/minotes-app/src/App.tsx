@@ -78,6 +78,8 @@ export default function App() {
   const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Deletions from another device that sync's mass-delete guard is holding.
   const [heldDeletions, setHeldDeletions] = useState<api.HeldDeletions | null>(null);
+  // Sync is on in a folder set up on another computer: ask before syncing it here.
+  const [syncNeedsConfirm, setSyncNeedsConfirm] = useState(false);
   // Key of the open notebook (remounts per-notebook views such as the AI panel).
   const [notebookKey, setNotebookKey] = useState<string>("");
 
@@ -472,9 +474,18 @@ export default function App() {
     try {
       const status = await api.gitSyncStatus().catch(() => null);
       if (!status?.enabled) return;
+      if (status.needs_confirmation) {
+        setSyncNeedsConfirm(true);
+        return;
+      }
       syncingRef.current = true;
       setSyncState("syncing");
       const result = await api.gitSync();
+      if (result.needs_confirmation) {
+        setSyncNeedsConfirm(true);
+        setSyncState("idle");
+        return;
+      }
       setHeldDeletions(result.held_deletions ?? null);
       if (result.success) {
         setSyncState("idle");
@@ -544,6 +555,20 @@ export default function App() {
     }
   }, [refresh, openPage, activePage]);
 
+  // The user confirmed syncing a folder whose sync was set up elsewhere.
+  const confirmSync = useCallback(async () => {
+    try {
+      const removed = await api.gitSyncConfirm();
+      setSyncNeedsConfirm(false);
+      showToast(removed.length
+        ? `Syncing this folder here. Removed ${removed.length} setting(s) from its git config that could run programs.`
+        : "Syncing this folder on this computer.");
+      triggerSync();
+    } catch (e) {
+      showToast(`Couldn't turn on sync here: ${errorMessage(e)}`);
+    }
+  }, [triggerSync]);
+
   // Another notebook was opened: close views and panels, forget per-notebook UI
   // state, and land on that notebook's journal for today.
   useEffect(() => {
@@ -562,6 +587,7 @@ export default function App() {
       setPendingJournalDate(null);
       setActivePage(null);
       setHeldDeletions(null);
+      setSyncNeedsConfirm(false);
       setSyncState("idle");
       setSyncErrorMsg(null);
       undoStack.clear();
@@ -919,7 +945,14 @@ export default function App() {
       />
       <div className="main workspace-split mod-root" style={{ position: "relative", display: "flex", flexDirection: "row" }}>
         <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }}>
-          <NotebookBanner heldDeletions={heldDeletions} onResolveHeld={resolveHeldDeletions} onOpenPage={id => { openPage(id).catch(() => {}); }} />
+          <NotebookBanner
+            heldDeletions={heldDeletions}
+            onResolveHeld={resolveHeldDeletions}
+            onOpenPage={id => { openPage(id).catch(() => {}); }}
+            syncNeedsConfirm={syncNeedsConfirm}
+            onConfirmSync={confirmSync}
+            onDeclineSync={() => setSyncNeedsConfirm(false)}
+          />
           {lastError && (
             <div style={{ background: "#f38ba8", color: "#1e1e2e", padding: "8px 16px", fontSize: 13, fontWeight: 600 }}>
               {lastError}

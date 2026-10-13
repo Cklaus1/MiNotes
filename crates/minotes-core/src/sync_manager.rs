@@ -13,6 +13,19 @@
 //!
 //! The last imported commit is persisted in `.git/minotes-sync-state.json`, so an
 //! import that failed or was interrupted is retried on the next cycle.
+//!
+//! **Enabling** sync ([`enable_in_dir`]) is the same cycle with a stricter import:
+//! the files are first brought up to date with the database (a full mirror pass,
+//! outside edits imported first), and the import afterwards only takes what the
+//! pull changed — every other page keeps the database's version, so files older
+//! than the database (a mirror that was off, still debouncing, or failed) can
+//! never revert it. Blocks the pull removed go to the Trash, not away.
+//!
+//! **Trust** (F-6): a notebook folder whose `.minotes/sync-config.json` says
+//! "enabled" may have been set up on another computer and copied here, with
+//! someone else's `.git/config`. Such a folder is not synced automatically: the
+//! user confirms once ([`confirm_sync`]), which strips command-running keys from
+//! its `.git/config` and records the folder in this machine's private state.
 
 use std::collections::HashSet;
 use std::ops::Deref;
@@ -66,6 +79,91 @@ fn config_path(key: &str) -> PathBuf {
 pub struct SyncConfig {
     pub enabled: bool,
     pub last_sync: Option<String>,
+}
+
+// ── Trust: was sync for this folder set up on this machine? ──
+
+/// This machine's record of sync folders it set up (app-private, never copied
+/// with a notebook folder): random tokens, one per repo, each also kept in that
+/// repo's `.git/` (which travels with a copy — the record here does not).
+const TRUST_FILE: &str = "sync-trust.json";
+const TRUST_TOKEN_FILE: &str = "minotes-sync-trust";
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct TrustRecord {
+    #[serde(default)]
+    tokens: Vec<String>,
+}
+
+fn trust_record_path() -> PathBuf {
+    crate::notebook::base_dir().join(TRUST_FILE)
+}
+
+fn read_trust_record() -> TrustRecord {
+    std::fs::read_to_string(trust_record_path())
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+fn repo_token(dir: &Path) -> Option<String> {
+    let p = dir.join(".git").join(TRUST_TOKEN_FILE);
+    if crate::repo::export::is_symlink(&p) {
+        return None;
+    }
+    std::fs::read_to_string(p).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+}
+
+/// Was git sync for `dir` set up on this machine (see the module docs)?
+pub fn repo_trusted(dir: &Path) -> bool {
+    match repo_token(dir) {
+        Some(t) => read_trust_record().tokens.iter().any(|x| *x == t),
+        None => false,
+    }
+}
+
+/// Record `dir` as set up on this machine. A repo this machine has no record
+/// of first loses the command-running keys of its `.git/config`.
+pub fn trust_repo(dir: &Path) -> Result<Vec<String>> {
+    if !git_cmd::is_git_repo(dir) || repo_trusted(dir) {
+        return Ok(vec![]);
+    }
+    let removed = git_cmd::strip_untrusted_config(dir)?;
+    git_cmd::harden_repo(dir)?;
+    let token = Uuid::now_v7().simple().to_string();
+    crate::repo::export::atomic_write(&dir.join(".git").join(TRUST_TOKEN_FILE), token.as_bytes())
+        .map_err(|e| Error::Git(format!("Failed to record the sync folder: {e}")))?;
+    let mut rec = read_trust_record();
+    rec.tokens.push(token);
+    let json = serde_json::to_string_pretty(&rec)?;
+    crate::repo::export::atomic_write(&trust_record_path(), json.as_bytes())
+        .map_err(|e| Error::Git(format!("Failed to record the sync folder: {e}")))?;
+    Ok(removed)
+}
+
+/// Is the notebook's sync set up on this machine? Legacy notebooks keep their
+/// sync config in this machine's private dir, so their config is the record.
+/// A folder notebook carries its config with it: it needs this machine's record.
+pub fn sync_trusted(key: &str) -> bool {
+    let nb = notebook(key);
+    if !nb.is_folder() {
+        return true;
+    }
+    let dir = nb.mirror_dir();
+    // No repo yet: nothing of anyone else's can run (enable creates it here).
+    !git_cmd::is_git_repo(&dir) || repo_trusted(&dir)
+}
+
+/// Sync is on in the notebook's config but was set up elsewhere: ask first.
+pub fn needs_confirmation(key: &str) -> bool {
+    read_config(key).enabled && !sync_trusted(key)
+}
+
+/// The user confirmed syncing a notebook folder set up on another computer.
+/// Returns the `.git/config` keys that were removed.
+pub fn confirm_sync(key: &str) -> Result<Vec<String>> {
+    let _guard = SYNC_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    trust_repo(&sync_dir_for_notebook(key))
 }
 
 fn read_config(key: &str) -> SyncConfig {
@@ -238,6 +336,9 @@ pub fn resolve_held_deletions(db: &Database, key: &str, move_to_trash: bool) -> 
 
 fn ensure_gitignore(dir: &Path) {
     let path = dir.join(".gitignore");
+    if crate::repo::export::is_symlink(&path) {
+        return; // never written through
+    }
     let existing = std::fs::read_to_string(&path).unwrap_or_else(|_| {
         ".DS_Store\nThumbs.db\n*.swp\n*~\n".to_string()
     });
@@ -255,7 +356,7 @@ fn ensure_gitignore(dir: &Path) {
         }
     }
     if out != existing || !path.exists() {
-        let _ = std::fs::write(&path, out);
+        let _ = crate::repo::export::atomic_write(&path, out.as_bytes());
     }
 }
 
@@ -264,6 +365,9 @@ fn ensure_gitignore(dir: &Path) {
 /// by the mirror; make sure git also never sees half-copied temp files.
 fn ensure_attachment_gitignore(dir: &Path) {
     let gi = dir.join(".gitignore");
+    if crate::repo::export::is_symlink(&gi) {
+        return;
+    }
     let existing = std::fs::read_to_string(&gi).unwrap_or_default();
     let line = format!("{}/**/.*{}", crate::repo::attachments::MIRROR_DIR, crate::repo::export::TMP_SUFFIX);
     if !existing.lines().any(|l| l.trim() == line) {
@@ -273,7 +377,7 @@ fn ensure_attachment_gitignore(dir: &Path) {
         }
         out.push_str(&line);
         out.push('\n');
-        let _ = std::fs::write(&gi, out);
+        let _ = crate::repo::export::atomic_write(&gi, out.as_bytes());
     }
 }
 // ── End import ──
@@ -290,6 +394,10 @@ pub struct GitSyncStatus {
     pub remote_url: Option<String>,
     pub branch: Option<String>,
     pub last_sync: Option<String>,
+    /// Sync is on for this folder, but it was set up on another computer: it
+    /// does not sync here until the user confirms ([`confirm_sync`]).
+    #[serde(default)]
+    pub needs_confirmation: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -312,20 +420,36 @@ pub struct GitSyncResult {
     /// Non-fatal notices (e.g. attachments over 50 MB left out of git).
     #[serde(default)]
     pub warnings: Vec<String>,
+    /// Nothing ran: the folder's sync was set up on another computer and the
+    /// user has not confirmed syncing it here yet.
+    #[serde(default)]
+    pub needs_confirmation: bool,
 }
 
 impl GitSyncResult {
-    fn not_enabled() -> Self {
+    fn refused(msg: &str) -> Self {
         GitSyncResult {
             success: false,
             pages_exported: 0,
             pages_imported: 0,
             conflicts_resolved: 0,
-            error: Some("Sync is not enabled".to_string()),
+            error: Some(msg.to_string()),
             import_errors: vec![],
             held_deletions: None,
             offline: false,
             warnings: vec![],
+            needs_confirmation: false,
+        }
+    }
+
+    fn not_enabled() -> Self {
+        Self::refused("Sync is not enabled")
+    }
+
+    fn unconfirmed() -> Self {
+        GitSyncResult {
+            needs_confirmation: true,
+            ..Self::refused("This notebook folder's sync was set up on another computer. Confirm to sync it here.")
         }
     }
 }
@@ -395,6 +519,7 @@ pub fn git_available() -> bool {
 pub fn get_sync_status(key: &str) -> Result<GitSyncStatus> {
     let config = read_config(key);
     let sync_dir = sync_dir_for_notebook(key);
+    let needs_confirmation = config.enabled && !sync_trusted(key);
 
     if !config.enabled || !git_cmd::is_git_repo(&sync_dir) {
         return Ok(GitSyncStatus {
@@ -402,6 +527,7 @@ pub fn get_sync_status(key: &str) -> Result<GitSyncStatus> {
             remote_url: None,
             branch: None,
             last_sync: config.last_sync,
+            needs_confirmation,
         });
     }
 
@@ -413,6 +539,7 @@ pub fn get_sync_status(key: &str) -> Result<GitSyncStatus> {
         remote_url,
         branch,
         last_sync: config.last_sync,
+        needs_confirmation,
     })
 }
 
@@ -428,11 +555,15 @@ where
     }
     {
         let _guard = SYNC_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let sync_dir = sync_dir_for_notebook(key);
-        enable_in_dir(&sync_dir, &lock_db)?;
-        // The mirror's own bookkeeping must match what enable just wrote.
-        let db = lock_db()?;
-        let _ = crate::mirror::run(&db, &MirrorTarget::for_notebook(&notebook(key)), true);
+        let target = MirrorTarget::for_notebook(&notebook(key));
+        // Turning sync on is the user's explicit choice for this folder: an
+        // existing repo this machine has no record of loses the command-running
+        // keys of its `.git/config` before git runs anything else in it.
+        if git_cmd::is_git_repo(&target.dir) && !repo_trusted(&target.dir) {
+            git_cmd::strip_untrusted_config(&target.dir)?;
+        }
+        enable_in_dir(&target, &lock_db)?;
+        trust_repo(&target.dir)?;
     }
 
     let mut config = read_config(key);
@@ -448,43 +579,78 @@ pub fn enable_sync(db: &Database, key: &str) -> Result<GitSyncStatus> {
     enable_sync_with(key, || Ok(db))
 }
 
-/// Init (if needed), pull, merge remote content into the DB, export, commit, push.
-pub fn enable_in_dir<G, F>(sync_dir: &Path, lock_db: &F) -> Result<()>
+/// Init (if needed), flush the mirror, commit, pull, import what the pull
+/// changed, export, commit, push (see the module docs).
+///
+/// The database is the truth when sync is turned on. Files can be older than the
+/// database — edits still in the mirror's debounce, a pass that failed, a mirror
+/// that was off (Android, or switched off in the notebook's settings) for weeks —
+/// so before anything is read back, a full mirror pass (outside edits imported
+/// first, under the caller's FS lock and the DB lock) writes the database out and
+/// it is committed. The import after the pull then takes only what the pull
+/// changed: every page whose file the pull left alone is protected, and so is
+/// every page edited during the network phase. Blocks the pull removed are
+/// parked in a Trash page "(removed by sync …)", never deleted.
+pub fn enable_in_dir<G, F>(target: &MirrorTarget, lock_db: &F) -> Result<()>
 where
     G: Deref<Target = Database>,
     F: Fn() -> Result<G>,
 {
+    let sync_dir = target.dir.as_path();
     if !git_cmd::is_git_repo(sync_dir) {
         git_cmd::init_repo(sync_dir)?;
     }
+    git_cmd::harden_repo(sync_dir)?;
     ensure_gitignore(sync_dir);
     git_cmd::abort_stale_rebase(sync_dir)?;
 
-    // Pull existing remote content first (no DB lock).
+    // 1. (DB lock) The files say what the database says; commit that.
+    let (export_time, flushed_head) = {
+        let db = lock_db()?;
+        let exp = export_and_commit_target(&db, target)?;
+        (exp.export_time, git_cmd::rev_parse_head(sync_dir)?)
+    };
+
+    // 2. (no DB lock) Bring in what other devices pushed.
     if git_cmd::has_remote(sync_dir) {
-        match git_cmd::pull_rebase(sync_dir) {
-            Ok(_) => {}
-            Err(e) if e.to_string().contains("merge_conflict") => {
-                if let Err(e) = git_cmd::auto_resolve_conflicts(sync_dir) {
-                    eprintln!("[minotes-sync] enable: conflict resolution failed: {e}");
-                }
-            }
+        if let Err(e) = pull_with_resolve(sync_dir) {
             // Empty/unreachable remote — first push will create it.
-            Err(e) => eprintln!("[minotes-sync] enable: pull skipped: {e}"),
+            eprintln!("[minotes-sync] enable: pull skipped: {e}");
         }
     }
 
-    {
+    // 3. (DB lock) Import only what the pull changed — deletions included (to
+    //    the Trash, under the mass-delete guard) — then export and commit.
+    if let Some(head) = git_cmd::rev_parse_head(sync_dir)? {
         let db = lock_db()?;
-        // Import (merge) remote files, then export + prune.
-        let opts = SyncOptions { write_back: true, ..Default::default() };
-        let r = db.sync_dir_with(sync_dir, IMPORT_ACTOR, &opts)?;
-        for e in &r.errors {
-            eprintln!("[minotes-sync] enable: {e}");
+        let pending = pending_between(sync_dir, flushed_head.as_deref(), head)?;
+        let mut protect_pages = match &pending.changed_paths {
+            Some(paths) => pages_not_changed_by(&db, sync_dir, paths)?,
+            // Nothing was committed from here: everything came with the pull.
+            None => HashSet::new(),
+        };
+        for id in &pending.removed_page_ids {
+            protect_pages.remove(id); // deleted by the pull: its file is gone, not old
         }
-        git_cmd::commit_all(sync_dir, &commit_message())?;
-        if let Some(head) = git_cmd::rev_parse_head(sync_dir)? {
-            set_imported_head(sync_dir, Some(head))?;
+        let opts = SyncOptions {
+            protect_modified_after: Some(export_time),
+            protect_pages,
+            park_removed: true,
+            ..Default::default()
+        };
+        let r = apply_import_opts(&db, sync_dir, &pending, opts)?;
+        // What the pull wrote is not an outside edit; then write the database's
+        // version of everything (ids, conflict copies) and commit it.
+        if let Err(e) = crate::outside::adopt_pulled_files(&db, target, pending.changed_paths.as_deref()) {
+            eprintln!("[minotes-sync] enable: could not re-baseline pulled files: {e}");
+        }
+        let mut t = target.clone();
+        t.skip = held_export_options(sync_dir);
+        crate::mirror::run(&db, &t, true)?;
+        let committed = git_cmd::commit_all(sync_dir, &commit_message())?;
+        // Our own commit holds only database state: imported too, if the pull was.
+        if committed && r.errors.is_empty() {
+            set_imported_head(sync_dir, git_cmd::rev_parse_head(sync_dir)?)?;
         }
     }
 
@@ -494,6 +660,35 @@ where
         }
     }
     Ok(())
+}
+
+/// Every page except those whose file is among `paths` (changed by a pull):
+/// by the frontmatter id, or — for a file without one — by its title.
+fn pages_not_changed_by(db: &Database, dir: &Path, paths: &[String]) -> Result<HashSet<Uuid>> {
+    let mut all: HashSet<Uuid> = HashSet::new();
+    {
+        let mut stmt = db.conn.prepare("SELECT id FROM pages")?;
+        for r in stmt.query_map([], |r| r.get::<_, String>(0))? {
+            if let Ok(id) = Uuid::parse_str(&r?) {
+                all.insert(id);
+            }
+        }
+    }
+    for p in paths.iter().filter(|p| p.ends_with(".md")) {
+        let Ok(text) = crate::repo::export::read_text_below(dir, Path::new(p)) else { continue };
+        let file = crate::repo::sync::ImportFile::from_text(Path::new(p), &text);
+        let id = match file.fm.id {
+            Some(id) => Some(id),
+            None => {
+                let title = file.fm.title.clone().filter(|t| !t.trim().is_empty()).unwrap_or(file.stem.clone());
+                db.get_page_by_title(&title)?.map(|pg| pg.id)
+            }
+        };
+        if let Some(id) = id {
+            all.remove(&id);
+        }
+    }
+    Ok(all)
 }
 
 /// Disable sync for a notebook (does not delete the git repo).
@@ -519,9 +714,14 @@ pub fn export_and_commit_target(db: &Database, target: &MirrorTarget) -> Result<
     ensure_gitignore(sync_dir);
     ensure_attachment_gitignore(sync_dir);
     refresh_held(db, sync_dir)?;
-    let export_time = Utc::now();
     let mut target = target.clone();
     target.skip = held_export_options(sync_dir);
+    // Outside edits first, so what they changed is in this export — and is not
+    // mistaken for an edit made during the network phase.
+    if let Err(e) = crate::outside::import_outside_edits(db, &target, &crate::outside::Scope::All) {
+        eprintln!("[minotes-sync] outside edits: {e}");
+    }
+    let export_time = Utc::now();
     let report = crate::mirror::run(db, &target, true)?;
 
     let before = git_cmd::rev_parse_head(sync_dir)?;
@@ -592,10 +792,15 @@ pub fn pending_import(sync_dir: &Path) -> Result<Option<PendingImport>> {
     if st.imported_head.as_deref() == Some(head.as_str()) {
         return Ok(None);
     }
+    pending_between(sync_dir, st.imported_head.as_deref(), head).map(Some)
+}
+
+/// What changed from `old` (None: unknown — import everything) to `head`.
+fn pending_between(sync_dir: &Path, old: Option<&str>, head: String) -> Result<PendingImport> {
     let mut removed_page_ids = Vec::new();
     let mut removed_folder_ids = Vec::new();
     let mut changed_paths = None;
-    if let Some(old) = st.imported_head.as_deref() {
+    if let Some(old) = old {
         if git_cmd::commit_exists(sync_dir, old) {
             changed_paths = Some(git_cmd::changed_files_between(sync_dir, old, &head)?);
             for path in git_cmd::deleted_files_between(sync_dir, old, &head)? {
@@ -628,7 +833,7 @@ pub fn pending_import(sync_dir: &Path) -> Result<Option<PendingImport>> {
             }
         }
     }
-    Ok(Some(PendingImport { head, removed_page_ids, removed_folder_ids, changed_paths }))
+    Ok(PendingImport { head, removed_page_ids, removed_folder_ids, changed_paths })
 }
 
 /// Phase 3b (DB): import files → DB. Pages edited locally after `protect_after`
@@ -640,12 +845,14 @@ pub fn apply_import(
     pending: &PendingImport,
     protect_after: Option<DateTime<Utc>>,
 ) -> Result<SyncResult> {
-    let opts = SyncOptions {
-        protect_modified_after: protect_after,
-        trash_page_ids: pending.removed_page_ids.clone(),
-        trash_folder_ids: pending.removed_folder_ids.clone(),
-        ..Default::default()
-    };
+    let opts = SyncOptions { protect_modified_after: protect_after, ..Default::default() };
+    apply_import_opts(db, sync_dir, pending, opts)
+}
+
+/// [`apply_import`] with more options (the removals come from `pending`).
+fn apply_import_opts(db: &Database, sync_dir: &Path, pending: &PendingImport, mut opts: SyncOptions) -> Result<SyncResult> {
+    opts.trash_page_ids = pending.removed_page_ids.clone();
+    opts.trash_folder_ids = pending.removed_folder_ids.clone();
     let r = db.sync_dir_with(sync_dir, IMPORT_ACTOR, &opts)?;
     for e in &r.errors {
         eprintln!("[minotes-sync] import: {e}");
@@ -697,6 +904,7 @@ where
     if !git_cmd::is_git_repo(sync_dir) {
         return Err(Error::Git("Sync directory is not a git repo".to_string()));
     }
+    git_cmd::harden_repo(sync_dir)?;
 
     // Phase 1 (DB lock)
     let export = {
@@ -748,6 +956,7 @@ where
             .iter()
             .map(|a| format!("{a} is over 50 MB and was not synced"))
             .collect(),
+        needs_confirmation: false,
     })
 }
 
@@ -767,6 +976,9 @@ where
     let config = read_config(key);
     if !config.enabled {
         return Ok(GitSyncResult::not_enabled());
+    }
+    if !sync_trusted(key) {
+        return Ok(GitSyncResult::unconfirmed());
     }
     let result = sync_cycle(&MirrorTarget::for_notebook(&notebook(key)), lock_db)?;
     if result.success {
@@ -1346,6 +1558,309 @@ mod tests {
         let rep = crate::mirror::run(&db, &target, false).unwrap();
         assert!(!rep.full, "state still valid after a sync cycle");
         assert_eq!(rep.written_paths, vec!["Hello.md".to_string()]);
+    }
+
+    fn mirror_target(root: &Path, name: &str) -> MirrorTarget {
+        MirrorTarget::new(root.join(name), Some(root.join(format!("{name}-mirror-state.json"))))
+    }
+
+    fn in_order(db: &Database, page: &Uuid) -> Vec<String> {
+        db.get_page_blocks(page).unwrap().into_iter().map(|b| b.content).collect()
+    }
+
+    // F-1: edits the mirror has not written yet (debounce, failed pass) survive
+    // turning sync on — the stale file is never imported over them.
+    #[test]
+    fn test_enable_keeps_unmirrored_edits() {
+        if !git_cmd::git_available() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let db = Database::open_in_memory().unwrap();
+        let target = mirror_target(tmp.path(), "notes");
+        let p = db.create_page("P", None, false, None, "user").unwrap();
+        let b = db.create_block(&p.id, "old text", None, None, "user").unwrap();
+        crate::mirror::run(&db, &target, false).unwrap();
+        // Not mirrored yet (the 2 s debounce).
+        db.update_block(&b.id, Some("NEW text typed just now"), "user").unwrap();
+        db.create_block(&p.id, "brand new block", None, None, "user").unwrap();
+        git_cmd::init_repo(&target.dir).unwrap();
+        git_cmd::tests::configure_test_repo(&target.dir);
+        enable_in_dir(&target, &|| Ok::<&Database, Error>(&db)).unwrap();
+        assert_eq!(in_order(&db, &p.id), vec!["NEW text typed just now", "brand new block"]);
+        let file = std::fs::read_to_string(target.dir.join("P.md")).unwrap();
+        assert!(file.contains("NEW text typed just now") && file.contains("brand new block"), "{file}");
+        let (log, _, _) = git_cmd::run_git(&target.dir, &["show", "HEAD:P.md"]).unwrap();
+        assert!(log.contains("brand new block"), "the database's version is committed");
+        assert!(db.list_trash().unwrap().is_empty(), "nothing parked: nothing was removed");
+    }
+
+    // F-1: a notebook whose mirror was off (Android without sync, or switched off
+    // in its settings) for weeks: re-enabling sync keeps every edit made since,
+    // rewrites the old files, and the other device gets the edits.
+    #[test]
+    fn test_reenable_after_weeks_with_mirror_off_keeps_the_database() {
+        if !git_cmd::git_available() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let (_remote, a, b) = setup_remote_and_devices(tmp.path());
+        let ta = MirrorTarget::new(&a, Some(tmp.path().join("a-state.json")));
+        let db_a = Database::open_in_memory().unwrap();
+        let db_b = Database::open_in_memory().unwrap();
+        let p = db_a.create_page("Diary", None, false, None, "user").unwrap();
+        let keep = db_a.create_block(&p.id, "week 1", None, None, "user").unwrap();
+        let gone = db_a.create_block(&p.id, "to be deleted", None, None, "user").unwrap();
+        enable_in_dir(&ta, &|| Ok::<&Database, Error>(&db_a)).unwrap();
+        cycle(&b, &db_b);
+        assert_eq!(in_order(&db_b, &p.id), vec!["week 1", "to be deleted"]);
+
+        // Sync off, mirror off: weeks of edits that never reach the files.
+        db_a.update_block(&keep.id, Some("week 1, revised in week 5"), "user").unwrap();
+        db_a.delete_block(&gone.id, "user").unwrap();
+        db_a.create_block(&p.id, "week 6", None, None, "user").unwrap();
+        let q = db_a.create_page("New in week 4", None, false, None, "user").unwrap();
+        db_a.create_block(&q.id, "fresh", None, None, "user").unwrap();
+        let stale = std::fs::read_to_string(a.join("Diary.md")).unwrap();
+        assert!(stale.contains("to be deleted"), "the files are weeks old");
+
+        enable_in_dir(&ta, &|| Ok::<&Database, Error>(&db_a)).unwrap();
+        assert_eq!(in_order(&db_a, &p.id), vec!["week 1, revised in week 5", "week 6"], "nothing reverted");
+        assert_eq!(in_order(&db_a, &q.id), vec!["fresh"]);
+        let file = std::fs::read_to_string(a.join("Diary.md")).unwrap();
+        assert!(file.contains("week 6") && !file.contains("to be deleted"), "the files were rewritten: {file}");
+
+        cycle(&b, &db_b);
+        assert_eq!(in_order(&db_b, &p.id), vec!["week 1, revised in week 5", "week 6"]);
+        assert_eq!(in_order(&db_b, &q.id), vec!["fresh"]);
+        // And it doesn't bounce back.
+        sync_cycle(&ta, || Ok(&db_a)).unwrap();
+        assert_eq!(in_order(&db_a, &p.id), vec!["week 1, revised in week 5", "week 6"]);
+    }
+
+    // F-1: what the pull does bring is imported on enable — and blocks the other
+    // device removed go to the Trash (restorable), not away.
+    #[test]
+    fn test_enable_imports_the_pull_and_parks_removed_blocks() {
+        if !git_cmd::git_available() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let (_remote, a, b) = setup_remote_and_devices(tmp.path());
+        let ta = MirrorTarget::new(&a, Some(tmp.path().join("a-state.json")));
+        let db_a = Database::open_in_memory().unwrap();
+        let db_b = Database::open_in_memory().unwrap();
+        let p = db_a.create_page("Shared", None, false, None, "user").unwrap();
+        let one = db_a.create_block(&p.id, "one", None, None, "user").unwrap();
+        let two = db_a.create_block(&p.id, "two", None, None, "user").unwrap();
+        let mine = db_a.create_page("Only A edits", None, false, None, "user").unwrap();
+        let m1 = db_a.create_block(&mine.id, "a1", None, None, "user").unwrap();
+        let doomed = db_a.create_page("Trashed on B", None, false, None, "user").unwrap();
+        enable_in_dir(&ta, &|| Ok::<&Database, Error>(&db_a)).unwrap();
+        cycle(&b, &db_b);
+        db_b.trash_page(&doomed.id).unwrap();
+
+        // A turns sync off. B edits and deletes; A edits its own page meanwhile.
+        db_b.update_block(&one.id, Some("one, from B"), "user").unwrap();
+        db_b.delete_block(&two.id, "user").unwrap();
+        cycle(&b, &db_b);
+        db_a.update_block(&m1.id, Some("a1 edited while sync was off"), "user").unwrap();
+
+        enable_in_dir(&ta, &|| Ok::<&Database, Error>(&db_a)).unwrap();
+        assert_eq!(in_order(&db_a, &p.id), vec!["one, from B"], "the pull is imported");
+        assert_eq!(in_order(&db_a, &mine.id), vec!["a1 edited while sync was off"], "local edit kept");
+        assert!(db_a.is_trashed(&doomed.id).unwrap(), "the pull's deletion reaches the Trash");
+        assert!(!a.join("Trashed on B.md").exists(), "and is not written back");
+        let removed = db_a.get_block(&two.id).unwrap().expect("parked, not deleted");
+        let parked = db_a.get_page(&removed.page_id).unwrap().unwrap();
+        assert!(parked.title.starts_with("Shared (removed by sync"), "{}", parked.title);
+        assert!(db_a.is_trashed(&parked.id).unwrap());
+        cycle(&b, &db_b);
+        assert_eq!(in_order(&db_b, &mine.id), vec!["a1 edited while sync was off"]);
+    }
+
+    // F-4: a symlink committed by someone with push access is checked out as a
+    // plain file on the other device (core.symlinks=false), never followed.
+    #[cfg(unix)]
+    #[test]
+    fn test_symlink_from_a_shared_remote_is_never_followed() {
+        if !git_cmd::git_available() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let (_remote, a, b) = setup_remote_and_devices(tmp.path());
+        let db_a = Database::open_in_memory().unwrap();
+        let db_b = Database::open_in_memory().unwrap();
+        db_a.create_page("Home", None, false, None, "user").unwrap();
+        cycle(&a, &db_a);
+        cycle(&b, &db_b);
+        // The attacker's device commits links to a secret on the victim's disk.
+        let secret = tmp.path().join("id_rsa");
+        std::fs::write(&secret, "PRIVATE KEY\n").unwrap();
+        std::os::unix::fs::symlink(&secret, a.join("evil.md")).unwrap();
+        std::os::unix::fs::symlink(tmp.path(), a.join("Escape")).unwrap();
+        let (_, e, ok) = git_cmd::run_git(&a, &["add", "-A"]).unwrap();
+        assert!(ok, "{e}");
+        git_cmd::commit_all(&a, "links").unwrap();
+        git_cmd::push(&a).unwrap();
+
+        let tb = MirrorTarget::new(&b, Some(tmp.path().join("b-state.json")));
+        sync_cycle(&tb, || Ok(&db_b)).unwrap();
+        for name in ["evil.md", "Escape"] {
+            let meta = std::fs::symlink_metadata(b.join(name)).unwrap();
+            assert!(!meta.file_type().is_symlink(), "{name} was checked out as a link");
+        }
+        let (cfg, _, _) = git_cmd::run_git(&b, &["config", "--local", "--get", "core.symlinks"]).unwrap();
+        assert_eq!(cfg.trim(), "false");
+        let all: Vec<String> = db_b
+            .list_pages(None)
+            .unwrap()
+            .iter()
+            .flat_map(|p| in_order(&db_b, &p.id))
+            .collect();
+        assert!(all.iter().all(|c| !c.contains("PRIVATE KEY")), "{all:?}");
+        for _ in 0..2 {
+            sync_cycle(&tb, || Ok(&db_b)).unwrap();
+        }
+        let (tree, _, _) = git_cmd::run_git(&a, &["ls-tree", "-r", "origin/main"]).unwrap();
+        assert!(!tree.contains("PRIVATE KEY"));
+        assert_eq!(std::fs::read_to_string(&secret).unwrap(), "PRIVATE KEY\n");
+    }
+
+    /// A repo copied from someone else: hooks and a repo-local fsmonitor command
+    /// that would write `marker` if git ever ran them.
+    #[cfg(unix)]
+    fn plant_hostile_repo_config(dir: &Path, marker: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        let script = format!("#!/bin/sh\necho ran >> '{}'\nexit 0\n", marker.display());
+        let hooks = dir.join(".git/hooks");
+        std::fs::create_dir_all(&hooks).unwrap();
+        for h in ["pre-commit", "post-commit", "commit-msg", "prepare-commit-msg", "post-checkout", "post-merge", "post-rewrite", "pre-push", "pre-rebase", "reference-transaction"] {
+            let f = hooks.join(h);
+            std::fs::write(&f, &script).unwrap();
+            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let fsm = dir.join(".git/fsmonitor-evil");
+        std::fs::write(&fsm, &script).unwrap();
+        std::fs::set_permissions(&fsm, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut cfg = std::fs::read_to_string(dir.join(".git/config")).unwrap();
+        cfg.push_str(&format!("[core]\n\tfsmonitor = {}\n\tsshCommand = {}\n[filter \"evil\"]\n\tclean = {}\n", fsm.display(), fsm.display(), fsm.display()));
+        std::fs::write(dir.join(".git/config"), cfg).unwrap();
+    }
+
+    // F-6: repo-local hooks and fsmonitor never run during sync.
+    #[cfg(unix)]
+    #[test]
+    fn test_sync_never_runs_repo_hooks_or_fsmonitor() {
+        if !git_cmd::git_available() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let (_remote, a, b) = setup_remote_and_devices(tmp.path());
+        let marker = tmp.path().join("PWNED");
+        plant_hostile_repo_config(&a, &marker);
+        // Sanity: plain git in this repo does run them.
+        std::fs::write(a.join("probe.txt"), "x").unwrap();
+        let st = std::process::Command::new("git")
+            .current_dir(&a)
+            .args(["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "probe"])
+            .status()
+            .unwrap();
+        assert!(st.success());
+        assert!(marker.exists(), "test setup: the hook should run under plain git");
+        std::fs::remove_file(&marker).unwrap();
+        std::fs::remove_file(a.join("probe.txt")).unwrap();
+
+        let db_a = Database::open_in_memory().unwrap();
+        let db_b = Database::open_in_memory().unwrap();
+        let p = db_a.create_page("Notes", None, false, None, "user").unwrap();
+        db_a.create_block(&p.id, "hello", None, None, "user").unwrap();
+        let ta = MirrorTarget::new(&a, Some(tmp.path().join("a-state.json")));
+        enable_in_dir(&ta, &|| Ok::<&Database, Error>(&db_a)).unwrap();
+        cycle(&b, &db_b);
+        db_b.create_block(&p.id, "from B", None, None, "user").unwrap();
+        cycle(&b, &db_b);
+        let q = db_a.create_page("Other", None, false, None, "user").unwrap();
+        db_a.create_block(&q.id, "from A", None, None, "user").unwrap();
+        for _ in 0..2 {
+            let r = sync_cycle(&ta, || Ok(&db_a)).unwrap();
+            assert!(r.success, "{:?}", r.error);
+        }
+        assert_eq!(contents(&db_a, &p.id), vec!["from B", "hello"]);
+        cycle(&b, &db_b);
+        assert_eq!(contents(&db_b, &q.id), vec!["from A"]);
+        assert!(!marker.exists(), "a repo hook or fsmonitor ran: {}", std::fs::read_to_string(&marker).unwrap_or_default());
+    }
+
+    #[test]
+    fn test_command_config_keys() {
+        for k in ["core.fsmonitor", "core.sshCommand", "core.hooksPath", "filter.lfs.clean", "filter.x.process", "merge.ours.driver",
+            "diff.pdf.textconv", "credential.helper", "credential.https://x.helper", "gpg.ssh.program", "include.path",
+            "includeIf.gitdir:/x/.path", "remote.origin.uploadpack", "alias.st", "core.pager"] {
+            assert!(git_cmd::is_command_config_key(k), "{k}");
+        }
+        for k in ["user.name", "user.email", "remote.origin.url", "remote.origin.fetch", "branch.main.remote", "core.bare", "pull.rebase"] {
+            assert!(!git_cmd::is_command_config_key(k), "{k}");
+        }
+    }
+
+    // F-6: a notebook folder with sync on in its own config, copied from another
+    // computer, is not synced on open; confirming strips its command-running git
+    // config, records it here, and syncing then works (without running anything).
+    #[cfg(unix)]
+    #[test]
+    fn test_copied_folder_sync_needs_confirmation() {
+        if !git_cmd::git_available() {
+            return;
+        }
+        let home = crate::notebook::tests::FakeHome::new();
+        let root = home.path().join("Copied");
+        let nb = crate::notebook::create_in_folder(&root, "Copied").unwrap();
+        let db = nb.open_db().unwrap();
+        db.create_page("Hello", None, false, None, "user").unwrap();
+        let notes = root.join("notes");
+        let remote = home.path().join("remote.git");
+        std::fs::create_dir_all(&remote).unwrap();
+        git_cmd::run_git(&remote, &["init", "--bare", "-q"]).unwrap();
+        git_cmd::init_repo(&notes).unwrap();
+        git_cmd::tests::configure_test_repo(&notes);
+        git_cmd::run_git(&notes, &["remote", "add", "origin", remote.to_str().unwrap()]).unwrap();
+        // As copied: sync on in the folder's own config, no record on this machine.
+        write_config(&nb.key, &SyncConfig { enabled: true, last_sync: None }).unwrap();
+        let marker = home.path().join("PWNED");
+        plant_hostile_repo_config(&notes, &marker);
+
+        assert!(!sync_trusted(&nb.key));
+        assert!(get_sync_status(&nb.key).unwrap().needs_confirmation);
+        let r = full_sync_with(&nb.key, || Ok(&db)).unwrap();
+        assert!(r.needs_confirmation && !r.success);
+        assert_eq!(git_cmd::rev_parse_head(&notes).unwrap(), None, "nothing was committed");
+
+        let removed = confirm_sync(&nb.key).unwrap();
+        assert!(removed.iter().any(|k| k == "core.fsmonitor"), "{removed:?}");
+        assert!(removed.iter().any(|k| k == "core.sshcommand"), "{removed:?}");
+        assert!(removed.iter().any(|k| k == "filter.evil.clean"), "{removed:?}");
+        let (name, _, _) = git_cmd::run_git(&notes, &["config", "--local", "--get", "user.name"]).unwrap();
+        assert_eq!(name.trim(), "MiNotes Test", "the rest of the config is kept");
+        assert!(sync_trusted(&nb.key));
+        assert!(!get_sync_status(&nb.key).unwrap().needs_confirmation);
+        let r = full_sync_with(&nb.key, || Ok(&db)).unwrap();
+        assert!(r.success, "{:?}", r.error);
+        assert!(git_cmd::rev_parse_head(&notes).unwrap().is_some());
+        assert!(!marker.exists(), "nothing of the copied repo ran");
+
+        // The same folder copied again elsewhere carries the token, but this
+        // machine trusts it (it is the user's own copy); another machine's record
+        // does not have it.
+        std::fs::remove_file(crate::notebook::base_dir().join(TRUST_FILE)).unwrap();
+        assert!(!sync_trusted(&nb.key), "a different machine (no record) asks again");
+
+        // Turning sync on yourself is a confirmation too.
+        let other = crate::notebook::create_in_folder(&home.path().join("Mine"), "Mine").unwrap();
+        let odb = other.open_db().unwrap();
+        enable_sync(&odb, &other.key).unwrap();
+        assert!(sync_trusted(&other.key));
+        assert!(!get_sync_status(&other.key).unwrap().needs_confirmation);
     }
 
     // Both devices created a "Work" folder independently (e.g. folders created

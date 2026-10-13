@@ -339,3 +339,134 @@ fn files_pulled_by_git_sync_are_not_outside_edits() {
     assert!(db.get_page_by_title("Plans (edited outside)").unwrap().is_none());
     assert_eq!(texts(&db, &pid)[1], "beta from device B");
 }
+
+// ── F-4 / F-5: symbolic links in the mirror are never followed ──
+
+/// A symlinked `.md` reported by the watcher is not read through: no page is
+/// made from its target, it is reported once, and the next pass neither writes
+/// through it nor replaces it with a real file (which git sync would commit).
+#[cfg(unix)]
+#[test]
+fn symlinked_md_from_the_watcher_is_skipped_not_imported() {
+    let (tmp, db, target) = setup();
+    db.create_page("Home", None, false, None, "user").unwrap();
+    run(&db, &target, false).unwrap();
+    let secret = tmp.path().join("secret.txt");
+    fs::write(&secret, "TOP SECRET KEY MATERIAL\n").unwrap();
+    std::os::unix::fs::symlink(&secret, target.dir.join("evil.md")).unwrap();
+
+    let rep = import_outside_edits(&db, &target, &paths(&["evil.md"])).unwrap();
+    assert!(rep.created.is_empty(), "{:?}", rep.created);
+    assert_eq!(rep.rejected, vec![Rejected { path: "evil.md".into(), reason: SYMLINK_REASON.into() }]);
+    assert!(db.list_pages(None).unwrap().iter().all(|p| p.title != "evil"));
+    // Reported once.
+    let again = import_outside_edits(&db, &target, &paths(&["evil.md"])).unwrap();
+    assert!(again.rejected.is_empty());
+    let all = import_outside_edits(&db, &target, &Scope::All).unwrap();
+    assert!(all.is_empty(), "{all:?}");
+
+    for full in [false, true] {
+        run(&db, &target, full).unwrap();
+        let meta = fs::symlink_metadata(target.dir.join("evil.md")).unwrap();
+        assert!(meta.file_type().is_symlink(), "still the link, not a real file");
+        assert_eq!(fs::read_to_string(&secret).unwrap(), "TOP SECRET KEY MATERIAL\n", "target untouched");
+    }
+    assert!(db.list_pages(None).unwrap().iter().all(|p| p.title != "evil"));
+}
+
+/// A tracked page file replaced by a link: not imported, not deleted (its page
+/// stays), and the mirror never writes the page's text through the link.
+#[cfg(unix)]
+#[test]
+fn page_file_replaced_by_a_symlink_is_left_alone() {
+    let (tmp, db, target) = setup();
+    let (pid, _) = page_abc(&db, &target);
+    let other = tmp.path().join("other.md");
+    fs::write(&other, "- not a note\n").unwrap();
+    fs::remove_file(target.dir.join("Plans.md")).unwrap();
+    std::os::unix::fs::symlink(&other, target.dir.join("Plans.md")).unwrap();
+
+    let rep = import_outside_edits(&db, &target, &Scope::All).unwrap();
+    assert_eq!(rep.rejected.len(), 1, "{rep:?}");
+    assert!(rep.trashed.is_empty() && rep.imported.is_empty() && rep.conflicts.is_empty(), "{rep:?}");
+    assert_eq!(texts(&db, &pid), vec!["alpha", "beta", "gamma", "gamma child"]);
+    db.create_block(&pid, "delta", None, None, "user").unwrap();
+    for full in [false, true] {
+        let r = run(&db, &target, full).unwrap();
+        assert_eq!(r.guarded, vec!["Plans.md".to_string()], "full={full}");
+        assert_eq!(fs::read_to_string(&other).unwrap(), "- not a note\n", "never written through");
+        assert!(fs::symlink_metadata(target.dir.join("Plans.md")).unwrap().file_type().is_symlink());
+    }
+    assert!(!db.is_trashed(&pid).unwrap());
+}
+
+/// A folder directory that is a link to elsewhere: the mirror writes nothing
+/// through it (no page, no folder marker, nothing moved into it), neither in a
+/// full pass nor incrementally, and a file in it is not imported.
+#[cfg(unix)]
+#[test]
+fn symlinked_folder_dir_never_escapes_the_mirror() {
+    let (tmp, db, target) = setup();
+    let f = db.create_folder("Work", None, None, None, "user").unwrap();
+    let p = db.create_page("Plan", None, false, None, "user").unwrap();
+    db.move_page_to_folder(&p.id, Some(&f.id), "user").unwrap();
+    fs::create_dir_all(&target.dir).unwrap();
+    let outside = tmp.path().join("elsewhere");
+    fs::create_dir_all(&outside).unwrap();
+    fs::write(outside.join("Stolen.md"), "- from outside the mirror\n").unwrap();
+    std::os::unix::fs::symlink(&outside, target.dir.join("Work")).unwrap();
+
+    let listing = |d: &Path| -> Vec<String> {
+        let mut v: Vec<String> =
+            fs::read_dir(d).unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect();
+        v.sort();
+        v
+    };
+    run(&db, &target, false).unwrap();
+    assert_eq!(listing(&outside), vec!["Stolen.md".to_string()], "full pass wrote through the link");
+    db.create_block(&p.id, "more", None, None, "user").unwrap();
+    db.create_page("Root page", None, false, None, "user").unwrap();
+    run(&db, &target, false).unwrap(); // incremental
+    assert_eq!(listing(&outside), vec!["Stolen.md".to_string()], "incremental pass wrote through the link");
+    assert!(target.dir.join("Root page.md").exists(), "the rest of the mirror is written");
+
+    let rep = import_outside_edits(&db, &target, &paths(&["Work/Stolen.md"])).unwrap();
+    assert!(rep.created.is_empty(), "{rep:?}");
+    assert!(db.get_page_by_title("Stolen").unwrap().is_none());
+    // Trashing the page moves nothing out through the link either.
+    db.trash_page(&p.id).unwrap();
+    run(&db, &target, false).unwrap();
+    run(&db, &target, true).unwrap();
+    assert_eq!(listing(&outside), vec!["Stolen.md".to_string()]);
+    assert_eq!(fs::read_to_string(outside.join("Stolen.md")).unwrap(), "- from outside the mirror\n");
+}
+
+/// `.minotes-trash` being a link: nothing is moved out of the mirror through it.
+#[cfg(unix)]
+#[test]
+fn prune_never_moves_files_through_a_symlinked_trash_dir() {
+    let (tmp, db, target) = setup();
+    let p = db.create_page("Doomed", None, false, None, "user").unwrap();
+    run(&db, &target, false).unwrap();
+    let outside = tmp.path().join("elsewhere");
+    fs::create_dir_all(&outside).unwrap();
+    std::os::unix::fs::symlink(&outside, target.dir.join(export::SYNC_TRASH_DIR)).unwrap();
+    db.trash_page(&p.id).unwrap();
+    run(&db, &target, false).unwrap();
+    run(&db, &target, true).unwrap();
+    assert!(fs::read_dir(&outside).unwrap().next().is_none(), "nothing moved out through the link");
+}
+
+#[cfg(unix)]
+#[test]
+fn atomic_write_refuses_to_replace_a_symlink() {
+    let tmp = tempfile::tempdir().unwrap();
+    let target = tmp.path().join("target.txt");
+    fs::write(&target, "original").unwrap();
+    let link = tmp.path().join("link.md");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    assert!(export::atomic_write(&link, b"new").is_err());
+    assert!(export::write_if_changed(&link, "new").is_err());
+    assert_eq!(fs::read_to_string(&target).unwrap(), "original");
+    assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+}

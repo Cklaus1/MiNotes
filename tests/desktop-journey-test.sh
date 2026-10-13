@@ -41,7 +41,7 @@ echo "════════════════════════�
 echo "  MiNotes Desktop Journeys (real app, real backend)"
 echo "═══════════════════════════════════════════════"
 
-rm -rf "$STATE"/{persist,devA,devB,nbook,outside,xnb,zip8,remote.git} "$STATE/results.tsv"
+rm -rf "$STATE"/{persist,devA,devB,nbook,outside,xnb,zip8,trust10,remote.git} "$STATE/results.tsv"
 if [[ -z "$DESKTOP_NO_BUILD" ]]; then
   "$DC" up --webdriver --profile persist >/dev/null || { echo "build/launch failed"; exit 1; }
 else
@@ -705,6 +705,50 @@ waitfor "(document.querySelector('[data-testid=notebook-switcher]')?.innerText||
   && pass "The imported notebook reopens" || fail "After restart" "$(switcher)"
 [[ "$(blocks_of 'Zip Page')" == *"zq8"* ]] && pass "…with my page" || fail "Content after restart" "$(blocks_of 'Zip Page')"
 is "Desktop capabilities: folders, reveal, outside edits" "$(ev "(async()=>{$A8 const c=await api.getPlatformCapabilities();return [c.app_storage,c.choose_location,c.open_folder,c.outside_edits,c.notebook_zip].join(',')})()")" "false,true,true,true,true"
+
+# ═══════════════════════════════════════════════
+journey "D10. A notebook folder copied from another computer asks before it syncs"
+# Its own .minotes/sync-config.json says sync is on, and its notes/.git carries
+# someone else's hook and fsmonitor command. Nothing may run before I agree, and
+# nothing of theirs runs after.
+# ═══════════════════════════════════════════════
+if command -v git >/dev/null; then
+device trust10 || true
+TH="$STATE/trust10"
+A10="const api=await import('/src/lib/api.ts');"
+F10="$TH/Incoming/Arrived"; MARK="$TH/PWNED"
+mkdir -p "$TH/Incoming"
+printf '[user]\n\tname = t10\n\temail = t10@example.test\n[init]\n\tdefaultBranch = main\n' >"$TH/.gitconfig"
+KEY10=$(ev "(async()=>{$A10 const n=await api.createNotebook('Arrived','$F10');return n.key})()")
+step "The folder as it arrives: sync on, a repo with a hostile hook and fsmonitor"
+git init -q --bare -b main "$TH/remote.git"
+HOME="$TH" git -C "$F10/notes" init -q -b main
+HOME="$TH" git -C "$F10/notes" remote add origin "$TH/remote.git"
+printf '#!/bin/sh\necho ran >> "%s"\nexit 0\n' "$MARK" >"$F10/notes/.git/hooks/post-commit"
+cp "$F10/notes/.git/hooks/post-commit" "$F10/notes/.git/hooks/pre-commit"
+cp "$F10/notes/.git/hooks/post-commit" "$F10/notes/.git/fsmon"
+chmod +x "$F10/notes/.git/hooks/post-commit" "$F10/notes/.git/hooks/pre-commit" "$F10/notes/.git/fsmon"
+HOME="$TH" git -C "$F10/notes" config core.fsmonitor "$F10/notes/.git/fsmon"
+mkdir -p "$F10/.minotes"; printf '{"enabled": true, "last_sync": null}\n' >"$F10/.minotes/sync-config.json"
+ev "window.__MINOTES__.switchNotebook('$KEY10')" >/dev/null
+waitfor "!!document.querySelector('[data-testid=sync-confirm-banner]')" 20 \
+  && pass "Opening it asks before syncing" || fail "No confirmation notice" "$(ev "document.querySelector('.nb-banners')?.innerText||'none'")"
+"$DC" wshot "d10-sync-confirm" >/dev/null
+is "Status says it needs confirmation" "$(ev "(async()=>{$A10 return String((await api.gitSyncStatus()).needs_confirmation)})()")" "true"
+is "A sync call is refused" "$(ev "(async()=>{$A10 const r=await api.gitSync();return String(r.needs_confirmation)+'/'+String(r.success)})()")" "true/false"
+is "Nothing was committed" "$(HOME="$TH" git -C "$F10/notes" rev-parse -q --verify HEAD >/dev/null 2>&1 && echo yes || echo no)" "no"
+step "I agree: Sync it here"
+ev "document.querySelector('[data-testid=sync-confirm]')?.click()" >/dev/null
+for _ in $(seq 1 60); do git --git-dir="$TH/remote.git" rev-parse -q --verify main >/dev/null 2>&1 && break; sleep 0.25; done
+is "It synced to the folder's remote" "$(git --git-dir="$TH/remote.git" rev-parse -q --verify main >/dev/null 2>&1 && echo yes || echo no)" "yes"
+waitfor "!document.querySelector('[data-testid=sync-confirm-banner]')" 10 && pass "The notice is gone" || fail "Notice still shown" ""
+is "Their fsmonitor setting was removed" "$(HOME="$TH" git -C "$F10/notes" config --local --get core.fsmonitor || echo none)" "none"
+is "Their hook and fsmonitor never ran" "$([[ -e "$MARK" ]] && cat "$MARK" | wc -l || echo 0)" "0"
+"$DC" restart >/dev/null && waitfor "window.__MINOTES__ && !!window.__MINOTES__.navigateTo" 30
+sleep 2
+is "After a restart it syncs without asking again" "$(ev "(async()=>{$A10 return String((await api.gitSyncStatus()).needs_confirmation)})()")" "false"
+is "…and no notice" "$(ev "String(!!document.querySelector('[data-testid=sync-confirm-banner]'))")" "false"
+fi
 
 # ═══════════════════════════════════════════════
 echo ""

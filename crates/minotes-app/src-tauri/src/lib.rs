@@ -1412,6 +1412,16 @@ fn git_sync(state: State<'_, AppState>) -> Result<GitSyncResult, String> {
         .map_err(|e| e.to_string())
 }
 
+/// The user confirmed syncing a notebook folder whose sync was set up on another
+/// computer (copied here): strip command-running keys from its `.git/config`,
+/// record it as set up here. Returns the keys removed.
+#[tauri::command(async)]
+fn git_sync_confirm(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    refuse_read_only(&state)?;
+    let key = current_notebook_key(&state)?;
+    sync_manager::confirm_sync(&key).map_err(|e| e.to_string())
+}
+
 #[tauri::command(async)]
 fn git_sync_status(state: State<'_, AppState>) -> Result<GitSyncStatus, String> {
     let key = current_notebook_key(&state)?;
@@ -1698,6 +1708,7 @@ pub fn run() {
             git_sync_disable,
             git_sync,
             git_sync_status,
+            git_sync_confirm,
             get_pending_todo_count,
             list_pending_todos,
             list_pending_todos_with_page_ids,

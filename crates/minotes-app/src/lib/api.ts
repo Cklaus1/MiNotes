@@ -817,6 +817,9 @@ export interface GitSyncStatus {
   remote_url: string | null;
   branch: string | null;
   last_sync: string | null;
+  /** Sync is on for this folder, but it was set up on another computer (copied
+   *  here): it doesn't sync until the user confirms (`gitSyncConfirm`). */
+  needs_confirmation?: boolean;
 }
 
 export interface GitSyncResult {
@@ -832,6 +835,8 @@ export interface GitSyncResult {
   held_deletions?: HeldDeletions | null;
   /** The remote could not be reached. */
   offline?: boolean;
+  /** Nothing ran: the folder's sync needs the user's confirmation first. */
+  needs_confirmation?: boolean;
 }
 
 export interface HeldDeletions {
@@ -896,6 +901,11 @@ export const gitSync = () =>
 
 export const gitSyncStatus = () =>
   invoke<GitSyncStatus>("git_sync_status");
+
+/** Sync a notebook folder whose sync was set up on another computer. Returns the
+ *  git config keys removed from the folder's repo (commands it could have run). */
+export const gitSyncConfirm = () =>
+  invoke<string[]>("git_sync_confirm");
 
 // AI: TODO count
 export const getPendingTodoCount = () =>

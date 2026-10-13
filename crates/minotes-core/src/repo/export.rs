@@ -103,6 +103,9 @@ pub(crate) fn bytes_hash(bytes: &[u8]) -> String {
 /// longer hashes to `recorded` (what the mirror last wrote there) and is not
 /// already `new_content`. Hashes, never timestamps.
 pub(crate) fn edited_outside(path: &Path, recorded: &str, new_content: &str) -> bool {
+    if is_symlink(path) {
+        return true; // never written over: a link is not ours
+    }
     match fs::read(path) {
         Ok(bytes) => bytes != new_content.as_bytes() && bytes_hash(&bytes) != recorded,
         Err(_) => false,
@@ -113,16 +116,86 @@ pub(crate) fn edited_outside(path: &Path, recorded: &str, new_content: &str) -> 
 /// so no scanner ever picks one up).
 pub(crate) const TMP_SUFFIX: &str = ".minotes-tmp";
 
+// ── Symbolic links in a mirror / sync dir (never followed) ──
+//
+// The mirror and the sync folder can hold files nobody here wrote: a pull from a
+// shared remote, a copied folder. A symbolic link there (`evil.md -> ~/.ssh/id_rsa`,
+// `Work -> /elsewhere`) must never be read through (its target would be imported
+// and then committed) nor written through (the mirror would write outside its
+// folder). Reads and writes below a mirror root check with `lstat` that no path
+// component under the root is a link; such paths are left alone. The root itself
+// may be a link (a user pointing `notes/` at another disk).
+
+/// Is `path` itself a symbolic link (or a Windows junction)? Never follows it.
+pub(crate) fn is_symlink(path: &Path) -> bool {
+    fs::symlink_metadata(path).map(|m| m.file_type().is_symlink()).unwrap_or(false)
+}
+
+fn symlink_refused(path: &Path) -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::Other,
+        format!("refusing to follow the symbolic link {}", path.display()),
+    )
+}
+
+/// The first path from `root` along `rel` (inclusive of `rel` itself) that is a
+/// symbolic link, if any — an `lstat` walk, so nothing is followed. A component
+/// that doesn't exist ends the walk (nothing below it can be a link).
+pub(crate) fn symlink_below(root: &Path, rel: &Path) -> Option<PathBuf> {
+    let mut acc = root.to_path_buf();
+    for c in rel.components() {
+        acc.push(c);
+        match fs::symlink_metadata(&acc) {
+            Ok(m) if m.file_type().is_symlink() => return Some(acc),
+            Ok(_) => {}
+            Err(_) => return None,
+        }
+    }
+    None
+}
+
+/// Read `root/rel` without following a symbolic link anywhere below `root`.
+pub(crate) fn read_below(root: &Path, rel: &Path) -> std::io::Result<Vec<u8>> {
+    if let Some(link) = symlink_below(root, rel) {
+        return Err(symlink_refused(&link));
+    }
+    fs::read(root.join(rel))
+}
+
+/// [`read_below`] as UTF-8 text.
+pub(crate) fn read_text_below(root: &Path, rel: &Path) -> std::io::Result<String> {
+    String::from_utf8(read_below(root, rel)?).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+}
+
+/// A write under `root` that a symbolic link is in the way of: logged, and the
+/// caller skips it (a linked file or directory is foreign, never written through).
+pub(crate) fn link_in_the_way(root: &Path, rel: &Path) -> bool {
+    match symlink_below(root, rel) {
+        Some(link) => {
+            eprintln!("[minotes-mirror] not writing {} (symbolic link at {})", rel.display(), link.display());
+            true
+        }
+        None => false,
+    }
+}
+
 /// Write `content` to `path` atomically: a temp file in the same directory, then
 /// a rename over the target. A reader (another app, git, a crash) only ever sees
 /// the old or the new file, never a half-written one.
+///
+/// A symbolic link at `path` is never written over (nor replaced): the write is
+/// refused. The temp file is created exclusively, so nothing planted at its name
+/// is followed either.
 pub(crate) fn atomic_write(path: &Path, content: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
+    if is_symlink(path) {
+        return Err(symlink_refused(path));
+    }
     let dir = path.parent().unwrap_or(Path::new("."));
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
     let tmp = dir.join(format!(".{name}.{}{TMP_SUFFIX}", Uuid::now_v7().simple()));
     let res = (|| {
-        let mut f = fs::File::create(&tmp)?;
+        let mut f = fs::OpenOptions::new().write(true).create_new(true).open(&tmp)?;
         f.write_all(content)?;
         f.flush()?;
         drop(f);
@@ -163,16 +236,21 @@ pub(crate) fn read_whiteboard_files(root: &Path) -> (Vec<(PathBuf, WhiteboardFil
     let mut out = Vec::new();
     let mut errors = Vec::new();
     let dir = root.join(WHITEBOARD_DIR);
+    if is_symlink(&dir) {
+        return (out, errors);
+    }
     let Ok(rd) = fs::read_dir(&dir) else { return (out, errors) };
     let mut entries: Vec<_> = rd.filter_map(|e| e.ok()).collect();
     entries.sort_by_key(|e| e.file_name());
     for e in entries {
         let path = e.path();
-        if path.extension().and_then(|x| x.to_str()) != Some("json") || !path.is_file() {
+        // `DirEntry::file_type` does not follow links: a linked sidecar is skipped.
+        let regular = e.file_type().map(|t| t.is_file()).unwrap_or(false);
+        if path.extension().and_then(|x| x.to_str()) != Some("json") || !regular {
             continue;
         }
         let rel = Path::new(WHITEBOARD_DIR).join(e.file_name());
-        match fs::read_to_string(&path) {
+        match read_text_below(root, &rel) {
             Ok(text) => match serde_json::from_str::<WhiteboardFile>(&text) {
                 Ok(wb) => out.push((rel, wb)),
                 // A malformed file won't fix itself on retry: log, don't block.
@@ -186,7 +264,7 @@ pub(crate) fn read_whiteboard_files(root: &Path) -> (Vec<(PathBuf, WhiteboardFil
 
 /// Read the folder marker in `<root>/<rel>/`, if any.
 pub(crate) fn read_folder_marker(root: &Path, rel: &Path) -> Option<FolderMarker> {
-    let text = fs::read_to_string(root.join(rel).join(FOLDER_MARKER)).ok()?;
+    let text = read_text_below(root, &rel.join(FOLDER_MARKER)).ok()?;
     serde_json::from_str(&text).ok()
 }
 
@@ -211,26 +289,38 @@ pub(crate) fn fm_key_exportable(key: &str) -> bool {
 /// as "ours" and pruned, instead of being re-imported forever.
 pub(crate) fn add_to_manifest(root: &Path, ids: impl IntoIterator<Item = Uuid>) {
     let path = root.join(EXPORT_MANIFEST);
-    let Ok(existing) = fs::read_to_string(&path) else { return };
+    let Ok(existing) = read_text_below(root, Path::new(EXPORT_MANIFEST)) else { return };
     let mut set: std::collections::BTreeSet<String> =
         existing.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect();
     let before = set.len();
     set.extend(ids.into_iter().map(|i| i.to_string()));
     if set.len() != before {
         let body: Vec<String> = set.into_iter().collect();
-        let _ = fs::write(&path, body.join("\n") + "\n");
+        let _ = atomic_write(&path, (body.join("\n") + "\n").as_bytes());
     }
 }
 
-/// Move `rel` (relative to `root`) into `.minotes-trash/<stamp>/rel`.
+/// Move `rel` (relative to `root`) into `.minotes-trash/<stamp>/rel`. Nothing is
+/// moved through a symbolic link: a link on either path is refused.
 pub(crate) fn move_to_sync_trash(root: &Path, rel: &Path, stamp: &str) -> std::io::Result<()> {
-    let mut dest = root.join(SYNC_TRASH_DIR).join(stamp).join(rel);
+    if let Some(link) = symlink_below(root, rel.parent().unwrap_or(Path::new(""))) {
+        return Err(symlink_refused(&link));
+    }
+    let trash_rel = Path::new(SYNC_TRASH_DIR).join(stamp).join(rel);
+    if let Some(link) = symlink_below(root, trash_rel.parent().unwrap_or(Path::new(SYNC_TRASH_DIR))) {
+        return Err(symlink_refused(&link));
+    }
+    let mut dest = root.join(&trash_rel);
     if dest.exists() {
         let ext = rel.extension().and_then(|e| e.to_str()).unwrap_or("bak").to_string();
         dest = dest.with_extension(format!("{}.{ext}", Uuid::now_v7().simple()));
     }
     if let Some(parent) = dest.parent() {
         let _ = fs::create_dir_all(parent);
+        // create_dir_all may have met a link put there meanwhile: check again.
+        if let Some(link) = symlink_below(root, parent.strip_prefix(root).unwrap_or(parent)) {
+            return Err(symlink_refused(&link));
+        }
     }
     fs::rename(root.join(rel), &dest)
 }
@@ -238,7 +328,7 @@ pub(crate) fn move_to_sync_trash(root: &Path, rel: &Path, stamp: &str) -> std::i
 /// Write `content` to `path` (atomically) unless it already holds exactly that.
 /// Returns whether the file was written.
 pub(crate) fn write_if_changed(path: &Path, content: &str) -> Result<bool> {
-    if fs::read_to_string(path).map(|c| c == content).unwrap_or(false) {
+    if !is_symlink(path) && fs::read_to_string(path).map(|c| c == content).unwrap_or(false) {
         return Ok(false);
     }
     atomic_write(path, content.as_bytes())
@@ -930,6 +1020,9 @@ pub(crate) fn apply_export(root: &Path, prepared: PreparedExport) -> Result<Expo
     let mut report = ExportReport::default();
     for (id, rel, json) in &prepared.folders {
         let dir = safe_join(root, rel)?;
+        if link_in_the_way(root, &rel.join(FOLDER_MARKER)) {
+            continue; // a symlinked folder dir is foreign: never written through
+        }
         mkdir(&dir)?;
         // Stable folder identity (renames/deletes propagate; empty folders
         // round-trip because git now has a file to track).
@@ -940,6 +1033,11 @@ pub(crate) fn apply_export(root: &Path, prepared: PreparedExport) -> Result<Expo
     }
     for (id, rel, md) in &prepared.pages {
         let filepath = safe_join(root, rel)?;
+        if link_in_the_way(root, rel) {
+            // Like an outside edit: not overwritten, its previous record is kept.
+            report.guarded.push((*id, rel.clone()));
+            continue;
+        }
         if let Some(parent) = filepath.parent() {
             mkdir(parent)?;
         }
@@ -968,6 +1066,9 @@ pub(crate) fn apply_export(root: &Path, prepared: PreparedExport) -> Result<Expo
     }
     for (rel, json) in &prepared.sidecars {
         let path = safe_join(root, rel)?;
+        if link_in_the_way(root, rel) {
+            continue;
+        }
         if let Some(parent) = path.parent() {
             mkdir(parent)?;
         }
@@ -1039,6 +1140,9 @@ pub(crate) fn apply_attachment_copies(root: &Path, copies: &[AttachmentCopy]) ->
             continue;
         }
         let dest = safe_join(root, &c.rel)?;
+        if link_in_the_way(root, &c.rel) {
+            continue;
+        }
         if c.size > crate::repo::attachments::GIT_SYNC_MAX_BYTES {
             large.push(format!("{} ({} MB)", c.rel.display(), c.size / (1024 * 1024)));
         }
@@ -1057,8 +1161,9 @@ pub(crate) fn apply_attachment_copies(root: &Path, copies: &[AttachmentCopy]) ->
         }
         written += 1;
     }
-    if !large.is_empty() {
-        let gi = root.join(crate::repo::attachments::MIRROR_DIR).join(".gitignore");
+    let gi_rel = Path::new(crate::repo::attachments::MIRROR_DIR).join(".gitignore");
+    if !large.is_empty() && !link_in_the_way(root, &gi_rel) {
+        let gi = root.join(&gi_rel);
         let existing = fs::read_to_string(&gi).unwrap_or_default();
         let mut out = existing.clone();
         for c in copies.iter().filter(|c| c.size > crate::repo::attachments::GIT_SYNC_MAX_BYTES) {
@@ -1080,6 +1185,9 @@ pub(crate) fn apply_attachment_copies(root: &Path, copies: &[AttachmentCopy]) ->
 /// not imported yet is never touched).
 pub(crate) fn prune_attachment_dirs(root: &Path, keep: &HashSet<String>, known: &HashSet<String>) -> Vec<String> {
     let dir = root.join(crate::repo::attachments::MIRROR_DIR);
+    if is_symlink(&dir) {
+        return vec![];
+    }
     let Ok(rd) = fs::read_dir(&dir) else { return vec![] };
     let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%S%.3f").to_string();
     let mut pruned = Vec::new();
@@ -1099,6 +1207,9 @@ pub(crate) fn prune_attachment_dirs(root: &Path, keep: &HashSet<String>, known: 
 
 /// Does the file at `path` carry another page's id that `known` doesn't have?
 pub(crate) fn holds_unknown_page(path: &Path, id: &Uuid, known: &HashSet<Uuid>) -> bool {
+    if is_symlink(path) {
+        return false; // never read through; the write path refuses it
+    }
     let Ok(text) = fs::read_to_string(path) else { return false };
     match crate::repo::sync::parse_frontmatter_id(&text) {
         Some(other) => other != *id && !known.contains(&other),
@@ -1127,7 +1238,7 @@ pub(crate) fn prune_stale_files(root: &Path, plan: &ExportPlan, db: &PruneInputs
     let planned_folders: HashMap<Uuid, &PathBuf> =
         plan.folders.iter().map(|(f, rel)| (f.id, rel)).collect();
     let manifest_path = root.join(EXPORT_MANIFEST);
-    let previously_exported: HashSet<Uuid> = fs::read_to_string(&manifest_path)
+    let previously_exported: HashSet<Uuid> = read_text_below(root, Path::new(EXPORT_MANIFEST))
         .map(|s| s.lines().filter_map(|l| Uuid::parse_str(l.trim()).ok()).collect())
         .unwrap_or_default();
 
@@ -1137,7 +1248,7 @@ pub(crate) fn prune_stale_files(root: &Path, plan: &ExportPlan, db: &PruneInputs
     // Whiteboards referenced by .md files that stay in the dir.
     let mut wb_keep: HashSet<String> = HashSet::new();
     for file in &scan.files {
-        let Ok(content) = fs::read_to_string(&file.abs) else { continue };
+        let Ok(content) = read_text_below(root, &file.rel) else { continue };
         let stale = match crate::repo::sync::parse_frontmatter_id(&content) {
             None => false,
             Some(id) => {
@@ -1170,7 +1281,8 @@ pub(crate) fn prune_stale_files(root: &Path, plan: &ExportPlan, db: &PruneInputs
         if let Ok(rd) = fs::read_dir(root.join(d)) {
             for e in rd.flatten() {
                 let name = e.file_name().to_string_lossy().to_string();
-                if name.starts_with(".minotes-folder.conflict-") && name.ends_with(".json") {
+                let regular = e.file_type().map(|t| t.is_file()).unwrap_or(false);
+                if regular && name.starts_with(".minotes-folder.conflict-") && name.ends_with(".json") {
                     let rel = d.join(&name);
                     if move_to_sync_trash(root, &rel, &stamp).is_ok() {
                         pruned.push(rel.display().to_string());
