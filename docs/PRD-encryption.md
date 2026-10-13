@@ -171,8 +171,10 @@ exists. Linux availability reuses the AI key's secret-service probe.]
   (`zeroize` crate), clears undo history, closes open views of that notebook and
   drops any cached page data from the frontend.
   [REVISED: added, reason: review — locking also cancels running AI requests and
-  drops the in-memory AI conversations; the frontend reloads the webview after
-  locking so no page data survives in JS memory. Limit, stated honestly: SQLCipher
+  drops the in-memory AI conversations; the frontend unmounts every view (a lock
+  gate around the app shows only the unlock screen) and clears the per-notebook
+  caches, so no page data survives in the window. (A webview reload was the first
+  plan; it would also reset browser-mode tests' mock backend.) Limit, stated honestly: SQLCipher
   keeps its own key copy until the connection closes (it zeroes it then), and the
   OS may have paged memory out (§2 non-goal).]
 - Only the open notebook can be unlocked: switching to another notebook locks an
@@ -208,7 +210,7 @@ Everything that would leak must be handled explicitly:
 | Link previews fetched for a page | Fetched while unlocked only; cached inside the database. [REVISED: no change needed, reason: `fetch_og_metadata` results are not cached on disk at all today, so nothing leaks.] |
 | **Attachments** (`attachments/` store) [REVISED: added, P0, reason: review — the store holds plaintext files next to the DB] | Stored **inside the encrypted database** (an `attachment_blobs` table) instead of files, so SQLCipher covers them. Opening one in an external app writes a temporary copy in the OS temp dir, deleted on lock and quit (documented). Encrypting an existing notebook moves its files into the database. Supersedes PRD-import §5 "encrypted with a key derived from the notebook key". |
 | **Notebook zip** (Export / Import notebook…) [REVISED: added, P1, reason: review — `VACUUM INTO` inherits the key, so today's export would ship ciphertext without slots and import would refuse it] | Export stays encrypted: the snapshot keeps the DEK and the zip carries `notebook.json` with the slots. Import detects `encryption`, asks for the passphrase (or recovery key), and keys the connection before the integrity check, scrub and migrations. |
-| **Mirror state, sync config, parked webview keys** [REVISED: added, reason: review — `mirror-state.json` holds page paths (titles), `minotes-recent-pages@notebook:<key>` holds titles] | Deleted on encrypt. Recent pages of an encrypted notebook live in its database (`ui_state`), never in webview storage. Ids-only keys (`minotes-collapsed-<pageId>`, `minotes-expanded-projects`) reveal structure ids only and stay; kanban column names/colours are content, so they move into `ui_state` too. |
+| **Mirror state, sync config, parked webview keys** [REVISED: added, reason: review — `mirror-state.json` holds page paths (titles), `minotes-recent-pages@notebook:<key>` holds titles] | Deleted on encrypt. Recent pages of an encrypted notebook live in its database (`ui_state`), never in webview storage. Ids-only keys (`minotes-collapsed-<pageId>`, `minotes-expanded-projects`) reveal structure ids only and stay; so do `kanban-columns-<pageId>` / `kanban-colors-<pageId>` (column block ids and colours, no text — corrected during the build). |
 | **AI and plugins** [REVISED: added, reason: PRD-ai-assistant §2.4, PRD-plugin-architecture §6.2] | AI is off for a new encrypted notebook (it is off by default everywhere) and its settings show an "encrypted notebook" warning recommending a local model; CSS snippets/plugins are disabled when a notebook is encrypted. |
 
 ### 4.6 Converting
