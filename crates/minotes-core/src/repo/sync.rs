@@ -37,6 +37,14 @@ pub struct SyncResult {
     pub held_page_ids: Vec<Uuid>,
     /// Folders likewise.
     pub held_folder_ids: Vec<Uuid>,
+    /// Pages skipped as protected (id, file): the caller merges the file's remote
+    /// changes in (see [`Database::merge_into_protected_page`]).
+    #[serde(skip)]
+    pub skipped_pages: Vec<(Uuid, PathBuf)>,
+    /// Protected pages the remote changes were merged into (F-2).
+    pub pages_merged: Vec<String>,
+    /// "(conflict from …)" pages made for remote changes that collided with local ones.
+    pub conflict_copies: Vec<String>,
 }
 
 /// Options for [`Database::sync_dir_with`].
@@ -778,7 +786,9 @@ impl Database {
                    END
                FROM events
               WHERE created_at > ?1 AND actor != ?2
-                AND entity_type IN ('page', 'block', 'property')",
+                AND entity_type IN ('page', 'block', 'property')
+             UNION SELECT b.page_id FROM events e JOIN blocks b ON b.id = e.entity_id
+              WHERE e.created_at > ?1 AND e.actor != ?2 AND e.entity_type = 'property'",
         )?;
         let rows = stmt.query_map(rusqlite::params![t, import_actor], |r| r.get::<_, Option<String>>(0))?;
         let mut out = HashSet::new();
@@ -871,6 +881,7 @@ impl Database {
             seen_page_ids.insert(existing.id);
             if protected.contains(&existing.id) {
                 result.pages_skipped_local_edits.push(existing.title.clone());
+                result.skipped_pages.push((existing.id, file.rel.clone()));
                 return Ok(());
             }
 
@@ -1071,6 +1082,21 @@ impl Database {
             }
         }
 
+        // 1b) Block properties (F-7): the file's `key:: value` lines win. A writable
+        //     key the file doesn't have is removed only when the block carries an
+        //     id marker (our exporter wrote the line, and it writes every writable
+        //     property): a hand-written block never loses properties it can't
+        //     express. Properties set here after the export that preceded a sync
+        //     protect the page (see `pages_modified_since`), so they aren't wiped.
+        for (id, _, _, pb) in &desired {
+            if self.sync_block_props(id, pb, actor, result)? {
+                if existing_by_id.contains_key(id) {
+                    result.blocks_updated += 1;
+                }
+                changed = true;
+            }
+        }
+
         // 2) Delete blocks that no longer appear in the file (true deletion — Bug #9).
         //    Every kept block has already been re-parented away from them.
         for b in &existing_blocks {
@@ -1093,6 +1119,255 @@ impl Database {
             }
         }
 
+        Ok(changed)
+    }
+
+    /// Merge the remote version `theirs` of a page's file into a page that was
+    /// edited here meanwhile (so the plain import skipped it) — F-2. A three-way
+    /// merge by block id against `base`, the file as last imported/exported:
+    ///
+    /// - a block (text + `key:: value` properties) the remote changed and this
+    ///   side did not → takes the remote version; one both changed the same way →
+    ///   nothing to do; one both changed differently → **conflict**;
+    /// - a block the remote added → created (under its parent when that exists
+    ///   here, else at the end); one it removed that is unchanged here → parked
+    ///   in a "(removed by sync …)" Trash page; removed there but edited here →
+    ///   kept (an edit beats a deletion); edited there but deleted here → conflict;
+    /// - title and page properties: the same rule per field;
+    /// - structure (moves, order) stays as it is here.
+    ///
+    /// On a conflict, everything that merged cleanly is still applied, the local
+    /// text stays in place, and the whole remote file is kept as a separate page
+    /// "<title> (conflict from <host>)". Without a base (no earlier import) the
+    /// remote file is kept as such a page whenever it differs from the page. So
+    /// the remote side is never dropped.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn merge_into_protected_page(
+        &self,
+        page_id: &Uuid,
+        rel: &Path,
+        theirs: &str,
+        base: Option<&str>,
+        actor: &str,
+        host: &str,
+        result: &mut SyncResult,
+    ) -> Result<()> {
+        type Key = (String, Vec<(String, String)>);
+        let Some(page) = self.get_page(page_id)? else { return Ok(()) };
+        let t_file = ImportFile::from_text(rel, theirs);
+        let t_blocks = parse_markdown_blocks(&strip_frontmatter(&t_file.content));
+        let key_of = |pb: &ParsedBlock| -> Key {
+            let mut p = pb.props.clone();
+            p.sort();
+            (normalize_content(&pb.content), p)
+        };
+        let local_blocks = self.get_page_blocks(page_id)?;
+        let local_props = self.block_props_of_page(page_id)?;
+        let local: HashMap<Uuid, (Key, &crate::models::Block)> = local_blocks
+            .iter()
+            .map(|b| {
+                let mut p = local_props.get(&b.id).cloned().unwrap_or_default();
+                p.sort();
+                (b.id, ((normalize_content(&b.content), p), b))
+            })
+            .collect();
+        let local_page_props: Vec<(String, String)> = self
+            .get_properties(page_id)?
+            .into_iter()
+            .filter(|p| crate::repo::export::fm_key_exportable(&p.key))
+            .filter_map(|p| p.value.map(|v| (p.key, v)))
+            .collect();
+        let t_title = t_file.fm.title.clone().filter(|t| !t.trim().is_empty()).unwrap_or_else(|| t_file.stem.clone());
+
+        let b_file = base.map(|b| ImportFile::from_text(rel, b)).filter(|b| b.fm.id == Some(*page_id));
+        let Some(b_file) = b_file else {
+            // No common ancestor: identical → nothing; otherwise keep theirs aside.
+            let same = t_title == page.title
+                && t_blocks.len() == local.len()
+                && t_blocks.iter().all(|pb| pb.id.and_then(|i| local.get(&i)).map(|(k, _)| *k == key_of(pb)).unwrap_or(false));
+            if !same {
+                self.keep_conflict_copy(theirs, &page, rel, actor, host, result)?;
+            }
+            return Ok(());
+        };
+        let b_blocks = parse_markdown_blocks(&strip_frontmatter(&b_file.content));
+        let base_map: HashMap<Uuid, Key> = b_blocks.iter().filter_map(|pb| pb.id.map(|i| (i, key_of(pb)))).collect();
+        let base_markerless: HashSet<String> =
+            b_blocks.iter().filter(|pb| pb.id.is_none()).map(|pb| normalize_content(&pb.content)).collect();
+
+        let mut conflict = false;
+        let mut applied = 0usize;
+        let mut sink = SyncResult::default();
+        // Ids along the remote outline, for parents of new blocks.
+        let mut stack: Vec<(usize, Option<Uuid>)> = Vec::new();
+        let mut t_ids: HashSet<Uuid> = HashSet::new();
+        for pb in &t_blocks {
+            while let Some(&(d, _)) = stack.last() {
+                if d >= pb.depth { stack.pop(); } else { break; }
+            }
+            let parent = stack.last().and_then(|(_, id)| *id);
+            stack.push((pb.depth, pb.id));
+            let Some(id) = pb.id else {
+                if !base_markerless.contains(&normalize_content(&pb.content)) {
+                    conflict = true; // a hand-written line: can't place it safely
+                }
+                continue;
+            };
+            t_ids.insert(id);
+            let tk = key_of(pb);
+            match (base_map.get(&id), local.get(&id)) {
+                (Some(bk), Some((lk, _))) => {
+                    // Text and properties merge separately: one side may change
+                    // the text while the other sets a property.
+                    let text_theirs = tk.0 != bk.0 && tk.0 != lk.0;
+                    let props_theirs = tk.1 != bk.1 && tk.1 != lk.1;
+                    if (text_theirs && lk.0 != bk.0) || (props_theirs && lk.1 != bk.1) {
+                        conflict = true;
+                        continue;
+                    }
+                    if text_theirs {
+                        self.update_block(&id, Some(&pb.content), actor)?;
+                        applied += 1;
+                    }
+                    if props_theirs {
+                        self.sync_block_props(&id, pb, actor, &mut sink)?;
+                        applied += 1;
+                    }
+                }
+                (None, None) => {
+                    if self.get_block(&id)?.is_some() {
+                        conflict = true; // lives on another page here
+                        continue;
+                    }
+                    let parent = parent.filter(|p| local.contains_key(p) || self.get_block(p).ok().flatten().map(|b| b.page_id == *page_id).unwrap_or(false));
+                    let pos: f64 = self.conn.query_row(
+                        "SELECT IFNULL(MAX(position), 0) + 1 FROM blocks WHERE page_id = ?1 AND parent_id IS ?2",
+                        rusqlite::params![page_id.to_string(), parent.map(|p| p.to_string())],
+                        |r| r.get(0),
+                    )?;
+                    self.create_block_with_id(id, page_id, &pb.content, parent.as_ref(), Some(pos), actor)?;
+                    self.sync_block_props(&id, pb, actor, &mut sink)?;
+                    applied += 1;
+                }
+                (None, Some((lk, _))) => {
+                    if *lk != tk {
+                        conflict = true;
+                    }
+                }
+                (Some(bk), None) => {
+                    if *bk != tk {
+                        conflict = true; // edited there, deleted here
+                    }
+                }
+            }
+        }
+        // Removed there.
+        let mut park: Vec<Uuid> = Vec::new();
+        for (id, bk) in &base_map {
+            if t_ids.contains(id) {
+                continue;
+            }
+            if let Some((lk, l)) = local.get(id) {
+                let parent_parked = l.parent_id.map(|p| base_map.contains_key(&p) && !t_ids.contains(&p)).unwrap_or(false);
+                if lk == bk && !parent_parked {
+                    park.push(*id);
+                }
+            }
+        }
+        if !park.is_empty() {
+            park.sort();
+            crate::outside::park_blocks_as(self, &page.title, REMOVED_BY_SYNC, &park, actor)?;
+            applied += park.len();
+        }
+        // Title.
+        let b_title = b_file.fm.title.clone().filter(|t| !t.trim().is_empty()).unwrap_or_else(|| b_file.stem.clone());
+        if t_title != b_title && t_title != page.title {
+            if page.title == b_title && self.get_page_by_title(&t_title)?.is_none() {
+                self.rename_page(page_id, &t_title, actor)?;
+                applied += 1;
+            } else {
+                conflict = true;
+            }
+        }
+        // Page properties, per key.
+        let get = |v: &[(String, String)], k: &str| v.iter().find(|(x, _)| x == k).map(|(_, v)| v.clone());
+        let mut keys: Vec<String> = t_file.fm.props.iter().chain(b_file.fm.props.iter()).map(|(k, _)| k.clone()).collect();
+        keys.sort();
+        keys.dedup();
+        for k in keys {
+            let (t, b, l) = (get(&t_file.fm.props, &k), get(&b_file.fm.props, &k), get(&local_page_props, &k));
+            if t == b || t == l {
+                continue;
+            }
+            if l != b {
+                conflict = true;
+                continue;
+            }
+            match t {
+                Some(v) => {
+                    if let Err(e) = self.tx(|| self.set_property(page_id, "page", &k, &v, "text", actor)) {
+                        result.errors.push(format!("{}: property '{k}' skipped: {e}", rel.display()));
+                    }
+                }
+                None => {
+                    self.delete_property(page_id, &k, actor)?;
+                }
+            }
+            applied += 1;
+        }
+        result.errors.extend(sink.errors);
+        if applied > 0 {
+            result.pages_merged.push(self.get_page(page_id)?.map(|p| p.title).unwrap_or(page.title.clone()));
+        }
+        if conflict {
+            self.keep_conflict_copy(theirs, &page, rel, actor, host, result)?;
+        }
+        Ok(())
+    }
+
+    /// Keep a remote version of `page`'s file as its own page "(conflict from <host>)".
+    fn keep_conflict_copy(&self, theirs: &str, page: &crate::models::Page, rel: &Path, actor: &str, host: &str, result: &mut SyncResult) -> Result<()> {
+        let content = rewrite_as_conflict_copy(theirs, &page.title, host);
+        let mut copy = ImportFile::from_text(rel, &content);
+        if self.get_page_by_title(copy.fm.title.as_deref().unwrap_or(""))?.is_some() {
+            let t = self.unique_page_title(copy.fm.title.as_deref().unwrap_or(&page.title))?;
+            copy.fm.title = Some(t);
+        }
+        let title = copy.fm.title.clone().unwrap_or_default();
+        self.sync_page(&copy, page.folder_id, actor, result, &mut HashSet::new(), &HashSet::new(), None)?;
+        result.conflict_copies.push(title);
+        Ok(())
+    }
+
+    /// Make block `id`'s writable properties match the parsed block. Returns
+    /// whether anything changed. A value the DB refuses (property schema) is
+    /// reported and skipped.
+    fn sync_block_props(&self, id: &Uuid, pb: &ParsedBlock, actor: &str, result: &mut SyncResult) -> Result<bool> {
+        use crate::repo::export::block_prop_key_ok;
+        if pb.props.is_empty() && pb.id.is_none() {
+            return Ok(false);
+        }
+        let current: Vec<crate::models::Property> = self.get_properties(id)?;
+        let mut changed = false;
+        for (k, v) in &pb.props {
+            let cur = current.iter().find(|p| p.key == *k);
+            if cur.and_then(|p| p.value.as_deref()) == Some(v.as_str()) {
+                continue;
+            }
+            let vt = cur.map(|p| p.value_type.clone()).unwrap_or_else(|| "text".to_string());
+            match self.tx(|| self.set_property(id, "block", k, v, &vt, actor)) {
+                Ok(_) => changed = true,
+                Err(e) => result.errors.push(format!("block {id}: property '{k}' skipped: {e}")),
+            }
+        }
+        if pb.id.is_some() {
+            for p in &current {
+                if block_prop_key_ok(&p.key) && p.value.is_some() && !pb.props.iter().any(|(k, _)| *k == p.key) {
+                    self.delete_property(id, &p.key, actor)?;
+                    changed = true;
+                }
+            }
+        }
         Ok(changed)
     }
 
@@ -1258,6 +1533,20 @@ pub(crate) struct ParsedBlock {
     pub(crate) content: String,
     /// Stable block id parsed from an `<!-- id:UUID -->` marker, if present (Bug #1).
     pub(crate) id: Option<Uuid>,
+    /// `key:: value` lines under the block (F-7; see `export::block_prop_key_ok`).
+    pub(crate) props: Vec<(String, String)>,
+}
+
+/// A `key:: value` block-property line (body without its indent), if it is one.
+fn parse_block_prop_line(body: &str) -> Option<(String, String)> {
+    let (key, rest) = body.split_once("::")?;
+    if !crate::repo::export::block_prop_key_ok(key) {
+        return None;
+    }
+    if !(rest.is_empty() || rest.starts_with(' ')) {
+        return None;
+    }
+    Some((key.to_string(), crate::repo::export::decode_block_prop_value(rest)))
 }
 
 /// Strip a trailing `<!-- id:UUID -->` marker from a line, returning (clean, id).
@@ -1294,6 +1583,8 @@ pub(crate) fn normalize_content(s: &str) -> String {
 pub(crate) fn parse_markdown_blocks(lines: &[&str]) -> Vec<ParsedBlock> {
     let mut out: Vec<ParsedBlock> = Vec::new();
     let mut seen_ids: HashSet<Uuid> = HashSet::new();
+    // Indent (in spaces) of the last block's line; property lines must be deeper.
+    let mut last_indent: Option<usize> = None;
     for raw in lines {
         let raw = raw.strip_suffix('\r').unwrap_or(raw);
         // Count leading whitespace. A tab counts as 2 spaces' worth of indent so it
@@ -1325,6 +1616,18 @@ pub(crate) fn parse_markdown_blocks(lines: &[&str]) -> Vec<ParsedBlock> {
             continue;
         }
 
+        // `key:: value` right under a block, indented deeper, no bullet: a property
+        // of that block (never a block of its own).
+        if let (Some(ind), Some(last)) = (last_indent, out.last_mut()) {
+            if spaces > ind && !body.starts_with("- ") && !body.starts_with("* ") && !body.starts_with("+ ") {
+                if let Some((k, v)) = parse_block_prop_line(body) {
+                    last.props.retain(|(x, _)| *x != k);
+                    last.props.push((k, v));
+                    continue;
+                }
+            }
+        }
+
         let depth = spaces / 2;
         let bullet_body = body
             .strip_prefix("- ")
@@ -1342,7 +1645,8 @@ pub(crate) fn parse_markdown_blocks(lines: &[&str]) -> Vec<ParsedBlock> {
                 id = Some(Uuid::now_v7()); // duplicate marker → fresh identity
             }
         }
-        out.push(ParsedBlock { depth, content, id });
+        last_indent = Some(spaces);
+        out.push(ParsedBlock { depth, content, id, props: Vec::new() });
     }
     out
 }

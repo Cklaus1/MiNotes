@@ -617,10 +617,12 @@ impl Database {
             }
         }
         let by_id: HashMap<uuid::Uuid, &crate::models::Block> = blocks.iter().map(|b| (b.id, b)).collect();
+        let block_props = self.block_props_of_page(&page.id)?;
         let mut emitted = 0usize;
         while let Some((Some(id), depth)) = stack.pop() {
             if let Some(block) = by_id.get(&id) {
-                md.push_str(&render_block_lines(&block.content, depth, &block.id));
+                let props = block_props.get(&block.id).map(Vec::as_slice).unwrap_or(&[]);
+                md.push_str(&render_block_lines(&block.content, depth, &block.id, props));
                 emitted += 1;
             }
             if let Some(kids) = children.get(&Some(id)) {
@@ -714,6 +716,9 @@ impl Database {
                 Some(id) => self.create_block_with_id(id, page_id, &pb.content, parent.as_ref(), None, actor)?,
                 None => self.create_block(page_id, &pb.content, parent.as_ref(), None, actor)?,
             };
+            for (k, v) in &pb.props {
+                self.set_property(&block.id, "block", k, v, "text", actor)?;
+            }
             count += 1;
             stack.push((pb.depth, block.id));
         }
@@ -1365,7 +1370,7 @@ pub(crate) fn prune_stale_files(root: &Path, plan: &ExportPlan, db: &PruneInputs
 /// continuation lines indented two spaces DEEPER than a child bullet and WITHOUT a
 /// bullet marker, so the importer folds them back into a single block instead of
 /// splitting one block into several.
-fn render_block_lines(content: &str, depth: usize, id: &uuid::Uuid) -> String {
+fn render_block_lines(content: &str, depth: usize, id: &uuid::Uuid, props: &[(String, String)]) -> String {
     let bullet_indent = "  ".repeat(depth);
     // Continuation lines are indented one level deeper than this block's *children*
     // would be, and carry no bullet, so they're unambiguous on import.
@@ -1381,7 +1386,82 @@ fn render_block_lines(content: &str, depth: usize, id: &uuid::Uuid) -> String {
         // bullet. A literal empty line is preserved as an empty continuation.
         out.push_str(&format!("{cont_indent}\\ {line}\n"));
     }
+    // Block properties (F-7): `key:: value` lines right under the block, one level
+    // deeper, no bullet (the Logseq convention, so other tools show them as text
+    // and Logseq reads them as properties).
+    for (k, v) in props {
+        out.push_str(&format!("{cont_indent}{k}:: {}\n", encode_block_prop_value(v)));
+    }
     out
+}
+
+// ── Block properties in the markdown (F-7) ──
+//
+// Format: under a block's line (and its `\ ` continuation lines), one line per
+// property, indented one level deeper than the block, with no bullet:
+//
+//     - Call the plumber <!-- id:… -->
+//       status:: done
+//       due:: 2026-10-20
+//
+// Only keys of letters, digits, `_`, `-` and `.` (starting with a letter, digit
+// or `_`) are written; other keys stay local. A value that would not survive a
+// plain line (newlines, edge whitespace, a leading quote) is JSON-quoted. Every
+// such property syncs: MiNotes keeps no internal state in block properties
+// (collapsed state is a block column, not a property).
+
+/// Can this block property be written as a `key:: value` line?
+pub(crate) fn block_prop_key_ok(key: &str) -> bool {
+    let mut chars = key.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphanumeric() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+}
+
+pub(crate) fn encode_block_prop_value(v: &str) -> String {
+    if v.contains('\n') || v.contains('\r') || v.trim() != v || v.starts_with('"') {
+        serde_json::to_string(v).unwrap_or_else(|_| v.to_string())
+    } else {
+        v.to_string()
+    }
+}
+
+pub(crate) fn decode_block_prop_value(raw: &str) -> String {
+    let t = raw.trim();
+    if t.starts_with('"') {
+        if let Ok(s) = serde_json::from_str::<String>(t) {
+            return s;
+        }
+    }
+    t.to_string()
+}
+
+impl Database {
+    /// Block id → its writable properties (sorted by key), for one page.
+    pub(crate) fn block_props_of_page(&self, page_id: &Uuid) -> Result<HashMap<Uuid, Vec<(String, String)>>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT pr.entity_id, pr.key, pr.value FROM properties pr
+               JOIN blocks b ON b.id = pr.entity_id
+              WHERE b.page_id = ?1 AND pr.value IS NOT NULL
+              ORDER BY pr.entity_id, pr.key",
+        )?;
+        let rows = stmt.query_map([page_id.to_string()], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+        })?;
+        let mut out: HashMap<Uuid, Vec<(String, String)>> = HashMap::new();
+        for r in rows {
+            let (id, k, v) = r?;
+            if !block_prop_key_ok(&k) {
+                continue;
+            }
+            if let Ok(id) = Uuid::parse_str(&id) {
+                out.entry(id).or_default().push((k, v));
+            }
+        }
+        Ok(out)
+    }
 }
 
 fn xml_escape(s: &str) -> String {
