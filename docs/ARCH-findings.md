@@ -1,6 +1,6 @@
 # Architecture review: findings and plan
 
-Status: review complete, nothing fixed yet · Owner: Chris Klaus · Reviewed 2026-10-12
+Status: P0 fixed (except remote-image blocking, in progress); F-2/F-7 in progress; P1/P2 open · Owner: Chris Klaus · Reviewed 2026-10-12
 Code reviewed: branch `nb5` (main `27929d6` + cross-notebook search/links + Android
 storage), ~63k lines: core 30k, frontend 26k, desktop backend 4k, CLI 2.5k.
 
