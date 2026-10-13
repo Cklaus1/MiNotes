@@ -110,9 +110,14 @@ cargo run -p minotes-cli -- notebook list                     # notebook create|
 
 ```bash
 cd crates/minotes-app && ANDROID_HOME=~/Android/Sdk NDK_HOME=~/Android/Sdk/ndk/27.0.12077973 \
+  RANLIB_x86_64_linux_android=~/Android/Sdk/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib \
   npx tauri android build --debug --apk --target x86_64   # emulator; drop --target for all ABIs
 # → src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk
 ```
+
+SQLite is **SQLCipher** (`rusqlite` feature `bundled-sqlcipher-vendored-openssl`, workspace-wide):
+plaintext notebooks are ordinary SQLite files; OpenSSL is built from source. The NDK only ships
+`llvm-ranlib`, so set `RANLIB_<target>` (as above; `RANLIB_aarch64_linux_android` etc. for other ABIs).
 
 - **All paths come from `minotes_core::notebook`** (`base_dir`, `home_dir`, `notebooks_dir`, `default_location`, `legacy_mirror_dir`). Never read `$HOME` directly — Android has none (the pre-fix APK died opening `./.minotes/default.db`). On Android `platform::init_app_storage` injects the app data dir at startup: `<app_data>` = the old `~/.minotes`, folder notebooks in `<app_data>/notebooks/<name>/`.
 - **SQLite never runs on a picker `content://` URI.** The picker is only for copies: `export_notebook_zip` / `import_notebook_zip` (core `notebook_zip`), via `tauri-plugin-fs` on Android.
