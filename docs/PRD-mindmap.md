@@ -1,6 +1,6 @@
 # PRD: Mind Map View
 
-Status: 85% built · Revised 2026-10-10 · Owner: Chris Klaus
+Status: ~90% built (export labels, persisted collapse and label fixes since done) · Revised 2026-10-10, updated 2026-10-12 · Owner: Chris Klaus
 
 > **What changed in this revision.** The spec now describes the built view
 > (`crates/minotes-app/src/components/mindmap/`) instead of the plan. Changes:

@@ -1,6 +1,6 @@
 # PRD: AI in MiNotes
 
-Status: ~15% built (rule-based stand-ins only) · Owner: Chris Klaus · Revised 2026-10-10
+Status: ~35% built (platform + Ask; palette search, editor AI, review queue and phases 2–3 open) · Owner: Chris Klaus · Revised 2026-10-10
 
 > **What changed in this revision.** The original (May 2026) planned a local
 > ONNX embedding model + HNSW index for tags/links/search, with a cloud LLM only for

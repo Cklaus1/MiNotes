@@ -1,6 +1,6 @@
 # PRD: Plugins
 
-Status: draft · Owner: Chris Klaus · Rewritten 2026-10-10
+Status: not started · Owner: Chris Klaus · Rewritten 2026-10-10
 
 > **Supersedes the "hybrid tiered" design** (2026-10-07, never implemented). That
 > version proposed native third-party plugins loaded with `libloading`, frontend

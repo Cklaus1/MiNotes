@@ -1,6 +1,6 @@
 # PRD: Notebooks
 
-Status: draft · Owner: Chris Klaus · Written 2026-10-10
+Status: built (phases 1–4; Q1, Q3–Q5 resolved; Q2 open) · Owner: Chris Klaus · Written 2026-10-10, updated 2026-10-12
 
 ## 1. Overview
 

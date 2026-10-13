@@ -1,6 +1,6 @@
 # PRD: Notebook Encryption
 
-Status: draft · Owner: Chris Klaus · Rewritten 2026-10-10
+Status: not started · Owner: Chris Klaus · Rewritten 2026-10-10
 
 > **Supersedes the per-folder design.** The earlier version of this PRD encrypted
 > individual fields (block content, page titles, property values) per Project

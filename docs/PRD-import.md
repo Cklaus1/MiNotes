@@ -1,6 +1,6 @@
 # PRD: Import
 
-Status: draft · Owner: Chris Klaus · Written 2026-10-10
+Status: ~95% built (Obsidian, Evernote, markdown folders, attachments; Android import and canvas→whiteboard open) · Owner: Chris Klaus · Written 2026-10-10, updated 2026-10-12
 
 ## 1. Overview
 
