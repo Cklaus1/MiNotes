@@ -10,6 +10,7 @@ pub mod git_cmd;
 // ── Import ──
 pub mod import;
 // ── End import ──
+pub mod keychain;
 pub mod links;
 pub mod mirror;
 pub mod models;

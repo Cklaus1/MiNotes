@@ -2704,6 +2704,7 @@ dependencies = [
  "chrono",
  "hkdf",
  "hostname",
+ "keyring",
  "md-5",
  "quick-xml 0.39.2",
  "rusqlite",
