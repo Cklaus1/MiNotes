@@ -223,6 +223,11 @@ pub(crate) fn page_fingerprints(db: &Database) -> Result<HashMap<Uuid, String>> 
                   || char(31)
                   || IFNULL((SELECT GROUP_CONCAT(key || '=' || IFNULL(value,''), char(30))
                              FROM properties WHERE entity_id = p.id), '')
+                  || char(31)
+                  || IFNULL((SELECT COUNT(*) || ':' || MAX(pr.updated_at) || ':'
+                                    || SUM(LENGTH(pr.key) + LENGTH(IFNULL(pr.value,'')))
+                             FROM properties pr JOIN blocks bp ON bp.id = pr.entity_id
+                             WHERE bp.page_id = p.id), '')
            FROM pages p",
     )?;
     let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;

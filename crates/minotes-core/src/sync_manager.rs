@@ -1568,6 +1568,108 @@ mod tests {
         db.get_page_blocks(page).unwrap().into_iter().map(|b| b.content).collect()
     }
 
+    fn props_of(db: &Database, id: &Uuid) -> Vec<(String, String)> {
+        db.get_properties(id).unwrap().into_iter().map(|p| (p.key, p.value.unwrap_or_default())).collect()
+    }
+
+    fn kv(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    // F-7: block properties travel through git both ways; a property-only edit
+    // changes the file; removing one removes it on the other device.
+    #[test]
+    fn test_block_properties_sync_both_ways() {
+        if !git_cmd::git_available() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let (_remote, a, b) = setup_remote_and_devices(tmp.path());
+        let db_a = Database::open_in_memory().unwrap();
+        let db_b = Database::open_in_memory().unwrap();
+        let p = db_a.create_page("P", None, false, None, "user").unwrap();
+        let blk = db_a.create_block(&p.id, "card", None, None, "user").unwrap();
+        let kid = db_a.create_block(&p.id, "child", Some(&blk.id), None, "user").unwrap();
+        db_a.set_property(&blk.id, "block", "status", "done", "text", "user").unwrap();
+        db_a.set_property(&kid.id, "block", "note", "two\nlines", "text", "user").unwrap();
+        cycle(&a, &db_a);
+        let file = std::fs::read_to_string(a.join("P.md")).unwrap();
+        assert!(file.contains("\n  status:: done\n"), "{file}");
+        cycle(&b, &db_b);
+        assert_eq!(props_of(&db_b, &blk.id), kv(&[("status", "done")]));
+        assert_eq!(props_of(&db_b, &kid.id), kv(&[("note", "two\nlines")]));
+        assert_eq!(in_order(&db_b, &p.id), vec!["card", "child"], "property lines are not blocks");
+
+        // B: property-only edits (change one, add one).
+        db_b.set_property(&blk.id, "block", "status", "doing", "text", "user").unwrap();
+        db_b.set_property(&blk.id, "block", "due", "2026-10-20", "text", "user").unwrap();
+        cycle(&b, &db_b);
+        assert!(std::fs::read_to_string(b.join("P.md")).unwrap().contains("status:: doing"));
+        cycle(&a, &db_a);
+        assert_eq!(props_of(&db_a, &blk.id), kv(&[("due", "2026-10-20"), ("status", "doing")]));
+
+        // A removes one: gone on B too.
+        db_a.delete_property(&blk.id, "due", "user").unwrap();
+        cycle(&a, &db_a);
+        cycle(&b, &db_b);
+        assert_eq!(props_of(&db_b, &blk.id), kv(&[("status", "doing")]));
+        // Steady state.
+        for _ in 0..2 {
+            cycle(&a, &db_a);
+            cycle(&b, &db_b);
+        }
+        for db in [&db_a, &db_b] {
+            assert_eq!(props_of(db, &blk.id), kv(&[("status", "doing")]));
+            assert_eq!(in_order(db, &p.id), vec!["card", "child"]);
+        }
+    }
+
+    // F-7: `::` in block text is not a property; property values round-trip;
+    // re-rendering is stable (no mirror churn).
+    #[test]
+    fn test_block_property_format_round_trips() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = Database::open_in_memory().unwrap();
+        let target = mirror_target(tmp.path(), "notes");
+        let p = db.create_page("Fmt", None, false, None, "user").unwrap();
+        let texts = [
+            "key:: value at the start of the block text",
+            "C++ uses a::b and Logseq-style status:: inline",
+            "multi\nnote:: in a continuation line\nend",
+        ];
+        let mut ids = Vec::new();
+        for t in texts {
+            ids.push(db.create_block(&p.id, t, None, None, "user").unwrap().id);
+        }
+        db.set_property(&ids[1], "block", "quoted", "\"starts with a quote", "text", "user").unwrap();
+        db.set_property(&ids[1], "block", "spaces", "  padded  ", "text", "user").unwrap();
+        db.set_property(&ids[1], "block", "colons", "a:: b", "text", "user").unwrap();
+        db.set_property(&ids[2], "block", "bad key", "local only", "text", "user").unwrap();
+        crate::mirror::run(&db, &target, false).unwrap();
+
+        // Another database imports the file: same blocks, same properties.
+        let db2 = Database::open_in_memory().unwrap();
+        db2.sync_dir_with(&target.dir, "test", &SyncOptions::default()).unwrap();
+        let got: Vec<String> = in_order(&db2, &p.id);
+        assert_eq!(got, texts.to_vec());
+        assert!(props_of(&db2, &ids[0]).is_empty());
+        assert_eq!(props_of(&db2, &ids[1]), kv(&[("colons", "a:: b"), ("quoted", "\"starts with a quote"), ("spaces", "  padded  ")]));
+        assert!(props_of(&db2, &ids[2]).is_empty(), "keys that can't be written stay local");
+
+        // Importing its own file back changes nothing, and passes don't rewrite.
+        let r = db.sync_dir_with(&target.dir, "test", &SyncOptions::default()).unwrap();
+        assert!(r.pages_updated.is_empty(), "{:?}", r.pages_updated);
+        assert_eq!(props_of(&db, &ids[2]), kv(&[("bad key", "local only")]), "local-only key kept");
+        for full in [false, true, false] {
+            let rep = crate::mirror::run(&db, &target, full).unwrap();
+            assert_eq!(rep.files_written, 0, "full={full}: {:?}", rep.written_paths);
+        }
+        // A property-only edit re-renders exactly that page.
+        db.set_property(&ids[0], "block", "status", "done", "text", "user").unwrap();
+        let rep = crate::mirror::run(&db, &target, false).unwrap();
+        assert_eq!(rep.written_paths, vec!["Fmt.md".to_string()]);
+    }
+
     // F-1: edits the mirror has not written yet (debounce, failed pass) survive
     // turning sync on — the stale file is never imported over them.
     #[test]

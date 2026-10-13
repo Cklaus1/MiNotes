@@ -778,7 +778,9 @@ impl Database {
                    END
                FROM events
               WHERE created_at > ?1 AND actor != ?2
-                AND entity_type IN ('page', 'block', 'property')",
+                AND entity_type IN ('page', 'block', 'property')
+             UNION SELECT b.page_id FROM events e JOIN blocks b ON b.id = e.entity_id
+              WHERE e.created_at > ?1 AND e.actor != ?2 AND e.entity_type = 'property'",
         )?;
         let rows = stmt.query_map(rusqlite::params![t, import_actor], |r| r.get::<_, Option<String>>(0))?;
         let mut out = HashSet::new();
@@ -1071,6 +1073,21 @@ impl Database {
             }
         }
 
+        // 1b) Block properties (F-7): the file's `key:: value` lines win. A writable
+        //     key the file doesn't have is removed only when the block carries an
+        //     id marker (our exporter wrote the line, and it writes every writable
+        //     property): a hand-written block never loses properties it can't
+        //     express. Properties set here after the export that preceded a sync
+        //     protect the page (see `pages_modified_since`), so they aren't wiped.
+        for (id, _, _, pb) in &desired {
+            if self.sync_block_props(id, pb, actor, result)? {
+                if existing_by_id.contains_key(id) {
+                    result.blocks_updated += 1;
+                }
+                changed = true;
+            }
+        }
+
         // 2) Delete blocks that no longer appear in the file (true deletion — Bug #9).
         //    Every kept block has already been re-parented away from them.
         for b in &existing_blocks {
@@ -1093,6 +1110,38 @@ impl Database {
             }
         }
 
+        Ok(changed)
+    }
+
+    /// Make block `id`'s writable properties match the parsed block. Returns
+    /// whether anything changed. A value the DB refuses (property schema) is
+    /// reported and skipped.
+    fn sync_block_props(&self, id: &Uuid, pb: &ParsedBlock, actor: &str, result: &mut SyncResult) -> Result<bool> {
+        use crate::repo::export::block_prop_key_ok;
+        if pb.props.is_empty() && pb.id.is_none() {
+            return Ok(false);
+        }
+        let current: Vec<crate::models::Property> = self.get_properties(id)?;
+        let mut changed = false;
+        for (k, v) in &pb.props {
+            let cur = current.iter().find(|p| p.key == *k);
+            if cur.and_then(|p| p.value.as_deref()) == Some(v.as_str()) {
+                continue;
+            }
+            let vt = cur.map(|p| p.value_type.clone()).unwrap_or_else(|| "text".to_string());
+            match self.tx(|| self.set_property(id, "block", k, v, &vt, actor)) {
+                Ok(_) => changed = true,
+                Err(e) => result.errors.push(format!("block {id}: property '{k}' skipped: {e}")),
+            }
+        }
+        if pb.id.is_some() {
+            for p in &current {
+                if block_prop_key_ok(&p.key) && p.value.is_some() && !pb.props.iter().any(|(k, _)| *k == p.key) {
+                    self.delete_property(id, &p.key, actor)?;
+                    changed = true;
+                }
+            }
+        }
         Ok(changed)
     }
 
@@ -1258,6 +1307,20 @@ pub(crate) struct ParsedBlock {
     pub(crate) content: String,
     /// Stable block id parsed from an `<!-- id:UUID -->` marker, if present (Bug #1).
     pub(crate) id: Option<Uuid>,
+    /// `key:: value` lines under the block (F-7; see `export::block_prop_key_ok`).
+    pub(crate) props: Vec<(String, String)>,
+}
+
+/// A `key:: value` block-property line (body without its indent), if it is one.
+fn parse_block_prop_line(body: &str) -> Option<(String, String)> {
+    let (key, rest) = body.split_once("::")?;
+    if !crate::repo::export::block_prop_key_ok(key) {
+        return None;
+    }
+    if !(rest.is_empty() || rest.starts_with(' ')) {
+        return None;
+    }
+    Some((key.to_string(), crate::repo::export::decode_block_prop_value(rest)))
 }
 
 /// Strip a trailing `<!-- id:UUID -->` marker from a line, returning (clean, id).
@@ -1294,6 +1357,8 @@ pub(crate) fn normalize_content(s: &str) -> String {
 pub(crate) fn parse_markdown_blocks(lines: &[&str]) -> Vec<ParsedBlock> {
     let mut out: Vec<ParsedBlock> = Vec::new();
     let mut seen_ids: HashSet<Uuid> = HashSet::new();
+    // Indent (in spaces) of the last block's line; property lines must be deeper.
+    let mut last_indent: Option<usize> = None;
     for raw in lines {
         let raw = raw.strip_suffix('\r').unwrap_or(raw);
         // Count leading whitespace. A tab counts as 2 spaces' worth of indent so it
@@ -1325,6 +1390,18 @@ pub(crate) fn parse_markdown_blocks(lines: &[&str]) -> Vec<ParsedBlock> {
             continue;
         }
 
+        // `key:: value` right under a block, indented deeper, no bullet: a property
+        // of that block (never a block of its own).
+        if let (Some(ind), Some(last)) = (last_indent, out.last_mut()) {
+            if spaces > ind && !body.starts_with("- ") && !body.starts_with("* ") && !body.starts_with("+ ") {
+                if let Some((k, v)) = parse_block_prop_line(body) {
+                    last.props.retain(|(x, _)| *x != k);
+                    last.props.push((k, v));
+                    continue;
+                }
+            }
+        }
+
         let depth = spaces / 2;
         let bullet_body = body
             .strip_prefix("- ")
@@ -1342,7 +1419,8 @@ pub(crate) fn parse_markdown_blocks(lines: &[&str]) -> Vec<ParsedBlock> {
                 id = Some(Uuid::now_v7()); // duplicate marker → fresh identity
             }
         }
-        out.push(ParsedBlock { depth, content, id });
+        last_indent = Some(spaces);
+        out.push(ParsedBlock { depth, content, id, props: Vec::new() });
     }
     out
 }
