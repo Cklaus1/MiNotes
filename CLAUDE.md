@@ -142,3 +142,4 @@ Without these flags, WebKit fails silently (MESA/Zink GPU errors) and no window 
 - `docs/PRD-notebooks.md` — notebooks: sidebar switcher, markdown mirror, notebook folders
 - `docs/PRD-import.md` — import from Obsidian, Evernote (.enex), markdown folders; attachment store
 - `docs/PRD-plugin-architecture.md` — sandboxed (Wasm + iframe) plugins and a free public marketplace
+- `docs/ARCH-findings.md` — architecture review (2026-10-12): ~60 findings by layer, P0/P1/P2 plan, target architecture
