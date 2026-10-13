@@ -1005,6 +1005,10 @@ export const saveWhiteboard = (id: string, data: string) =>
   invoke<void>("save_whiteboard", { id, data });
 // ── End whiteboards ──
 
+/** UI state kept in the notebook's database (encrypted notebooks: recent pages). */
+export const getUiState = (key: string) => invoke<string | null>("get_ui_state", { key }).then(v => v ?? null);
+export const setUiState = (key: string, value: string) => invoke<void>("set_ui_state", { key, value });
+
 // ── PDF viewer ──
 /**
  * Bytes of a local PDF. In the desktop app the webview can't read files by path,

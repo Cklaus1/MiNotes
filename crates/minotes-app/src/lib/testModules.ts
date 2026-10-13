@@ -17,6 +17,7 @@ import * as undoStack from "./undoStack";
 import * as undoManager from "./undoManager";
 import * as pendingEdits from "./pendingEdits";
 import * as remoteImages from "./remoteImages";
+import * as encryption from "./encryption";
 import { registerTestApi } from "./testApi";
 
 registerTestApi({
@@ -30,5 +31,6 @@ registerTestApi({
     "/src/lib/undoManager.ts": undoManager,
     "/src/lib/pendingEdits.ts": pendingEdits,
     "/src/lib/remoteImages.ts": remoteImages,
+    "/src/lib/encryption.ts": encryption,
   },
 } as any);

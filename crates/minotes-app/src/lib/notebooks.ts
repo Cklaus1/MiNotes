@@ -11,6 +11,8 @@ import { undoStack } from "./undoStack";
 import { flushPendingEdits } from "./pendingEdits";
 import { clearWhiteboardCache } from "./whiteboardUtils";
 import { clearPrefetchedProperties } from "./blockProperties";
+import { setOpenNotebook } from "./webviewState";
+import { LOCK_CHANGED, askPassphrase } from "./encryption";
 
 /** Fired after the open notebook changed (detail: { key }). App resets its views. */
 export const NOTEBOOK_SWITCHED = "minotes-notebook-switched";
@@ -70,6 +72,11 @@ export async function switchNotebook(key: string): Promise<void> {
     clearWhiteboardCache();
     clearPrefetchedProperties();
     undoStack.clear();
+    // Encrypted notebooks: where recent pages live, and whether it opened locked
+    // (then the lock gate shows the unlock screen instead of the views).
+    const session = await api.getNotebookSession().catch(() => null);
+    await setOpenNotebook(session);
+    window.dispatchEvent(new CustomEvent(LOCK_CHANGED, { detail: session }));
     window.dispatchEvent(new CustomEvent(NOTEBOOK_SWITCHED, { detail: { key, from } }));
     window.dispatchEvent(new Event(NOTEBOOKS_CHANGED));
   } finally {
@@ -221,7 +228,24 @@ export async function importNotebookFromZip(): Promise<api.ZipImport | null> {
   }
   if (!source) return null;
   try {
-    const r = await api.importNotebookZip(source);
+    let r: api.ZipImport;
+    try {
+      r = await api.importNotebookZip(source);
+    } catch (e) {
+      // An encrypted notebook's archive: ask for its passphrase (in-app prompt).
+      if (!api.isLockedError(e)) throw e;
+      let secret = await askPassphrase("Encrypted notebook", "This notebook archive is encrypted. Enter its passphrase or recovery key to import it.");
+      for (;;) {
+        if (!secret) return null;
+        try {
+          r = await api.importNotebookZip(source, secret);
+          break;
+        } catch (e2) {
+          if (!api.isWrongPassphrase(e2)) throw e2;
+          secret = await askPassphrase("Encrypted notebook", "Wrong passphrase — try again.");
+        }
+      }
+    }
     await switchNotebook(r.notebook.key);
     notebooksChanged();
     const renamed = r.renamed_from ? ` as “${r.notebook.name}” (“${r.renamed_from}” already exists)` : ` “${r.notebook.name}”`;
