@@ -569,9 +569,12 @@ Xvfb (the desktop-check skill already scripts it).
 PRs: `cargo check`/`cargo test`, `tsc` + `vite build`, browser journeys headless,
 `cargo audit` + `npm audit`), `nightly.yml` (real-app journeys on Xvfb),
 `release-android.yml` (debug APK on dispatch / `v*` tags); see CLAUDE.md "CI".
-Known on day one: `cargo audit` reports 13 advisories (quinn-proto, rustls,
-rustls-webpki: `cargo update` fixes; quick-xml 0.39 in core needs 0.41; quick-xml
-0.38 via tauri's `plist`), so the audit job stays red until the lockfile is bumped.
+Audit: the 13 day-one advisories are fixed (quinn-proto, rustls, rustls-webpki,
+plist, wayland-scanner updated in the lockfile; core's quick-xml 0.39 → 0.41), so
+`cargo audit` exits 0. It still prints 12 allowed warnings (unmaintained crates
+pulled in by Tauri/GTK such as `unic-*`, `fxhash`, `proc-macro-error`, `glib`;
+`anyhow` and `event-listener` unsoundness notices) — upstream, tracked for the
+next Tauri upgrade.
 
 **U-9 The mock backend** (1,900 lines) re-implements backend semantics,
 synchronously (so optimistic races never happen in browser tests), returns live

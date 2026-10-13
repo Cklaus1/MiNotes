@@ -15,7 +15,7 @@ sha2 = "0.10"
 # AI platform: blocking HTTP client for the OpenAI-compatible providers (OpenRouter / local).
 ureq = "3"
 # ── Import / attachments ──
-quick-xml = "0.39"
+quick-xml = "0.41"
 base64 = "0.22"
 md-5 = "0.10"
 # Notebook zip export / import (pure-Rust deflate: builds for Android too).
