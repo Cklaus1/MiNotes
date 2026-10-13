@@ -37,6 +37,14 @@ pub struct SyncResult {
     pub held_page_ids: Vec<Uuid>,
     /// Folders likewise.
     pub held_folder_ids: Vec<Uuid>,
+    /// Pages skipped as protected (id, file): the caller merges the file's remote
+    /// changes in (see [`Database::merge_into_protected_page`]).
+    #[serde(skip)]
+    pub skipped_pages: Vec<(Uuid, PathBuf)>,
+    /// Protected pages the remote changes were merged into (F-2).
+    pub pages_merged: Vec<String>,
+    /// "(conflict from …)" pages made for remote changes that collided with local ones.
+    pub conflict_copies: Vec<String>,
 }
 
 /// Options for [`Database::sync_dir_with`].
@@ -873,6 +881,7 @@ impl Database {
             seen_page_ids.insert(existing.id);
             if protected.contains(&existing.id) {
                 result.pages_skipped_local_edits.push(existing.title.clone());
+                result.skipped_pages.push((existing.id, file.rel.clone()));
                 return Ok(());
             }
 
@@ -1111,6 +1120,223 @@ impl Database {
         }
 
         Ok(changed)
+    }
+
+    /// Merge the remote version `theirs` of a page's file into a page that was
+    /// edited here meanwhile (so the plain import skipped it) — F-2. A three-way
+    /// merge by block id against `base`, the file as last imported/exported:
+    ///
+    /// - a block (text + `key:: value` properties) the remote changed and this
+    ///   side did not → takes the remote version; one both changed the same way →
+    ///   nothing to do; one both changed differently → **conflict**;
+    /// - a block the remote added → created (under its parent when that exists
+    ///   here, else at the end); one it removed that is unchanged here → parked
+    ///   in a "(removed by sync …)" Trash page; removed there but edited here →
+    ///   kept (an edit beats a deletion); edited there but deleted here → conflict;
+    /// - title and page properties: the same rule per field;
+    /// - structure (moves, order) stays as it is here.
+    ///
+    /// On a conflict, everything that merged cleanly is still applied, the local
+    /// text stays in place, and the whole remote file is kept as a separate page
+    /// "<title> (conflict from <host>)". Without a base (no earlier import) the
+    /// remote file is kept as such a page whenever it differs from the page. So
+    /// the remote side is never dropped.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn merge_into_protected_page(
+        &self,
+        page_id: &Uuid,
+        rel: &Path,
+        theirs: &str,
+        base: Option<&str>,
+        actor: &str,
+        host: &str,
+        result: &mut SyncResult,
+    ) -> Result<()> {
+        type Key = (String, Vec<(String, String)>);
+        let Some(page) = self.get_page(page_id)? else { return Ok(()) };
+        let t_file = ImportFile::from_text(rel, theirs);
+        let t_blocks = parse_markdown_blocks(&strip_frontmatter(&t_file.content));
+        let key_of = |pb: &ParsedBlock| -> Key {
+            let mut p = pb.props.clone();
+            p.sort();
+            (normalize_content(&pb.content), p)
+        };
+        let local_blocks = self.get_page_blocks(page_id)?;
+        let local_props = self.block_props_of_page(page_id)?;
+        let local: HashMap<Uuid, (Key, &crate::models::Block)> = local_blocks
+            .iter()
+            .map(|b| {
+                let mut p = local_props.get(&b.id).cloned().unwrap_or_default();
+                p.sort();
+                (b.id, ((normalize_content(&b.content), p), b))
+            })
+            .collect();
+        let local_page_props: Vec<(String, String)> = self
+            .get_properties(page_id)?
+            .into_iter()
+            .filter(|p| crate::repo::export::fm_key_exportable(&p.key))
+            .filter_map(|p| p.value.map(|v| (p.key, v)))
+            .collect();
+        let t_title = t_file.fm.title.clone().filter(|t| !t.trim().is_empty()).unwrap_or_else(|| t_file.stem.clone());
+
+        let b_file = base.map(|b| ImportFile::from_text(rel, b)).filter(|b| b.fm.id == Some(*page_id));
+        let Some(b_file) = b_file else {
+            // No common ancestor: identical → nothing; otherwise keep theirs aside.
+            let same = t_title == page.title
+                && t_blocks.len() == local.len()
+                && t_blocks.iter().all(|pb| pb.id.and_then(|i| local.get(&i)).map(|(k, _)| *k == key_of(pb)).unwrap_or(false));
+            if !same {
+                self.keep_conflict_copy(theirs, &page, rel, actor, host, result)?;
+            }
+            return Ok(());
+        };
+        let b_blocks = parse_markdown_blocks(&strip_frontmatter(&b_file.content));
+        let base_map: HashMap<Uuid, Key> = b_blocks.iter().filter_map(|pb| pb.id.map(|i| (i, key_of(pb)))).collect();
+        let base_markerless: HashSet<String> =
+            b_blocks.iter().filter(|pb| pb.id.is_none()).map(|pb| normalize_content(&pb.content)).collect();
+
+        let mut conflict = false;
+        let mut applied = 0usize;
+        let mut sink = SyncResult::default();
+        // Ids along the remote outline, for parents of new blocks.
+        let mut stack: Vec<(usize, Option<Uuid>)> = Vec::new();
+        let mut t_ids: HashSet<Uuid> = HashSet::new();
+        for pb in &t_blocks {
+            while let Some(&(d, _)) = stack.last() {
+                if d >= pb.depth { stack.pop(); } else { break; }
+            }
+            let parent = stack.last().and_then(|(_, id)| *id);
+            stack.push((pb.depth, pb.id));
+            let Some(id) = pb.id else {
+                if !base_markerless.contains(&normalize_content(&pb.content)) {
+                    conflict = true; // a hand-written line: can't place it safely
+                }
+                continue;
+            };
+            t_ids.insert(id);
+            let tk = key_of(pb);
+            match (base_map.get(&id), local.get(&id)) {
+                (Some(bk), Some((lk, _))) => {
+                    // Text and properties merge separately: one side may change
+                    // the text while the other sets a property.
+                    let text_theirs = tk.0 != bk.0 && tk.0 != lk.0;
+                    let props_theirs = tk.1 != bk.1 && tk.1 != lk.1;
+                    if (text_theirs && lk.0 != bk.0) || (props_theirs && lk.1 != bk.1) {
+                        conflict = true;
+                        continue;
+                    }
+                    if text_theirs {
+                        self.update_block(&id, Some(&pb.content), actor)?;
+                        applied += 1;
+                    }
+                    if props_theirs {
+                        self.sync_block_props(&id, pb, actor, &mut sink)?;
+                        applied += 1;
+                    }
+                }
+                (None, None) => {
+                    if self.get_block(&id)?.is_some() {
+                        conflict = true; // lives on another page here
+                        continue;
+                    }
+                    let parent = parent.filter(|p| local.contains_key(p) || self.get_block(p).ok().flatten().map(|b| b.page_id == *page_id).unwrap_or(false));
+                    let pos: f64 = self.conn.query_row(
+                        "SELECT IFNULL(MAX(position), 0) + 1 FROM blocks WHERE page_id = ?1 AND parent_id IS ?2",
+                        rusqlite::params![page_id.to_string(), parent.map(|p| p.to_string())],
+                        |r| r.get(0),
+                    )?;
+                    self.create_block_with_id(id, page_id, &pb.content, parent.as_ref(), Some(pos), actor)?;
+                    self.sync_block_props(&id, pb, actor, &mut sink)?;
+                    applied += 1;
+                }
+                (None, Some((lk, _))) => {
+                    if *lk != tk {
+                        conflict = true;
+                    }
+                }
+                (Some(bk), None) => {
+                    if *bk != tk {
+                        conflict = true; // edited there, deleted here
+                    }
+                }
+            }
+        }
+        // Removed there.
+        let mut park: Vec<Uuid> = Vec::new();
+        for (id, bk) in &base_map {
+            if t_ids.contains(id) {
+                continue;
+            }
+            if let Some((lk, l)) = local.get(id) {
+                let parent_parked = l.parent_id.map(|p| base_map.contains_key(&p) && !t_ids.contains(&p)).unwrap_or(false);
+                if lk == bk && !parent_parked {
+                    park.push(*id);
+                }
+            }
+        }
+        if !park.is_empty() {
+            park.sort();
+            crate::outside::park_blocks_as(self, &page.title, REMOVED_BY_SYNC, &park, actor)?;
+            applied += park.len();
+        }
+        // Title.
+        let b_title = b_file.fm.title.clone().filter(|t| !t.trim().is_empty()).unwrap_or_else(|| b_file.stem.clone());
+        if t_title != b_title && t_title != page.title {
+            if page.title == b_title && self.get_page_by_title(&t_title)?.is_none() {
+                self.rename_page(page_id, &t_title, actor)?;
+                applied += 1;
+            } else {
+                conflict = true;
+            }
+        }
+        // Page properties, per key.
+        let get = |v: &[(String, String)], k: &str| v.iter().find(|(x, _)| x == k).map(|(_, v)| v.clone());
+        let mut keys: Vec<String> = t_file.fm.props.iter().chain(b_file.fm.props.iter()).map(|(k, _)| k.clone()).collect();
+        keys.sort();
+        keys.dedup();
+        for k in keys {
+            let (t, b, l) = (get(&t_file.fm.props, &k), get(&b_file.fm.props, &k), get(&local_page_props, &k));
+            if t == b || t == l {
+                continue;
+            }
+            if l != b {
+                conflict = true;
+                continue;
+            }
+            match t {
+                Some(v) => {
+                    if let Err(e) = self.tx(|| self.set_property(page_id, "page", &k, &v, "text", actor)) {
+                        result.errors.push(format!("{}: property '{k}' skipped: {e}", rel.display()));
+                    }
+                }
+                None => {
+                    self.delete_property(page_id, &k, actor)?;
+                }
+            }
+            applied += 1;
+        }
+        result.errors.extend(sink.errors);
+        if applied > 0 {
+            result.pages_merged.push(self.get_page(page_id)?.map(|p| p.title).unwrap_or(page.title.clone()));
+        }
+        if conflict {
+            self.keep_conflict_copy(theirs, &page, rel, actor, host, result)?;
+        }
+        Ok(())
+    }
+
+    /// Keep a remote version of `page`'s file as its own page "(conflict from <host>)".
+    fn keep_conflict_copy(&self, theirs: &str, page: &crate::models::Page, rel: &Path, actor: &str, host: &str, result: &mut SyncResult) -> Result<()> {
+        let content = rewrite_as_conflict_copy(theirs, &page.title, host);
+        let mut copy = ImportFile::from_text(rel, &content);
+        if self.get_page_by_title(copy.fm.title.as_deref().unwrap_or(""))?.is_some() {
+            let t = self.unique_page_title(copy.fm.title.as_deref().unwrap_or(&page.title))?;
+            copy.fm.title = Some(t);
+        }
+        let title = copy.fm.title.clone().unwrap_or_default();
+        self.sync_page(&copy, page.folder_id, actor, result, &mut HashSet::new(), &HashSet::new(), None)?;
+        result.conflict_copies.push(title);
+        Ok(())
     }
 
     /// Make block `id`'s writable properties match the parsed block. Returns

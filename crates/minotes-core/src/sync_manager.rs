@@ -506,6 +506,9 @@ pub struct PendingImport {
     /// The markdown mirror re-baselines them after the import, so they are not
     /// mistaken for outside edits.
     pub changed_paths: Option<Vec<String>>,
+    /// The commit the changes are relative to (the merge base for pages edited
+    /// here meanwhile).
+    pub base: Option<String>,
 }
 
 // ── Public API ──
@@ -800,8 +803,10 @@ fn pending_between(sync_dir: &Path, old: Option<&str>, head: String) -> Result<P
     let mut removed_page_ids = Vec::new();
     let mut removed_folder_ids = Vec::new();
     let mut changed_paths = None;
+    let mut base = None;
     if let Some(old) = old {
         if git_cmd::commit_exists(sync_dir, old) {
+            base = Some(old.to_string());
             changed_paths = Some(git_cmd::changed_files_between(sync_dir, old, &head)?);
             for path in git_cmd::deleted_files_between(sync_dir, old, &head)? {
                 let p = Path::new(&path);
@@ -833,7 +838,7 @@ fn pending_between(sync_dir: &Path, old: Option<&str>, head: String) -> Result<P
             }
         }
     }
-    Ok(PendingImport { head, removed_page_ids, removed_folder_ids, changed_paths })
+    Ok(PendingImport { head, removed_page_ids, removed_folder_ids, changed_paths, base })
 }
 
 /// Phase 3b (DB): import files → DB. Pages edited locally after `protect_after`
@@ -853,7 +858,8 @@ pub fn apply_import(
 fn apply_import_opts(db: &Database, sync_dir: &Path, pending: &PendingImport, mut opts: SyncOptions) -> Result<SyncResult> {
     opts.trash_page_ids = pending.removed_page_ids.clone();
     opts.trash_folder_ids = pending.removed_folder_ids.clone();
-    let r = db.sync_dir_with(sync_dir, IMPORT_ACTOR, &opts)?;
+    let mut r = db.sync_dir_with(sync_dir, IMPORT_ACTOR, &opts)?;
+    merge_skipped_pages(db, sync_dir, pending, &mut r);
     for e in &r.errors {
         eprintln!("[minotes-sync] import: {e}");
     }
@@ -881,6 +887,42 @@ fn apply_import_opts(db: &Database, sync_dir: &Path, pending: &PendingImport, mu
     }
     write_state(sync_dir, &st)?;
     Ok(r)
+}
+
+/// F-2: pages edited here during the network phase were skipped by the import.
+/// The pull may have changed their files too: merge those remote changes in
+/// (three-way, against the file at the last imported commit) or keep them as a
+/// conflict page — never drop them. A failure is an import error, so the commit
+/// is not marked imported and the next cycle retries.
+fn merge_skipped_pages(db: &Database, sync_dir: &Path, pending: &PendingImport, r: &mut SyncResult) {
+    let skipped = std::mem::take(&mut r.skipped_pages);
+    let host = git_cmd::get_hostname();
+    for (id, rel) in skipped {
+        let key = rel.to_string_lossy().replace('\\', "/");
+        if let Some(changed) = &pending.changed_paths {
+            if !changed.iter().any(|c| *c == key) {
+                continue; // the pull didn't touch it: nothing remote to absorb
+            }
+        }
+        let res = (|| -> Result<()> {
+            let theirs = crate::repo::export::read_text_below(sync_dir, &rel)
+                .map_err(|e| Error::Git(format!("Read failed for {key}: {e}")))?;
+            let base = match &pending.base {
+                Some(b) => git_cmd::show_file_at(sync_dir, b, &key)?,
+                None => None,
+            };
+            let mut sr = SyncResult::default();
+            db.tx(|| db.merge_into_protected_page(&id, &rel, &theirs, base.as_deref(), IMPORT_ACTOR, &host, &mut sr))?;
+            r.errors.extend(sr.errors);
+            r.pages_merged.extend(sr.pages_merged);
+            r.conflict_copies.extend(sr.conflict_copies.iter().cloned());
+            r.pages_created.extend(sr.pages_created);
+            Ok(())
+        })();
+        if let Err(e) = res {
+            r.errors.push(format!("{key}: could not merge the other device's changes: {e}"));
+        }
+    }
 }
 
 /// One full cycle against an explicit sync dir (see module docs).
@@ -1566,6 +1608,135 @@ mod tests {
 
     fn in_order(db: &Database, page: &Uuid) -> Vec<String> {
         db.get_page_blocks(page).unwrap().into_iter().map(|b| b.content).collect()
+    }
+
+    /// One cycle on A with an edit made during its network phase (F-2 setup).
+    fn cycle_with_edit_mid_network(a: &Path, db_a: &Database, edit: impl FnOnce()) -> SyncResult {
+        let exp = export_and_commit(db_a, a).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        edit();
+        assert!(git_pull_push(a).unwrap().error.is_none());
+        let pending = pending_import(a).unwrap().expect("remote commits");
+        apply_import(db_a, a, &pending, Some(exp.export_time)).unwrap()
+    }
+
+    fn titles(db: &Database) -> Vec<String> {
+        let mut v: Vec<String> = db.list_pages(None).unwrap().into_iter().map(|p| p.title).collect();
+        v.sort();
+        v
+    }
+
+    // F-2: B edits block 2, A edits block 1 of the same page while A's sync is
+    // on the network: both edits survive on both devices, no conflict page.
+    #[test]
+    fn test_remote_edit_survives_a_local_edit_during_sync() {
+        if !git_cmd::git_available() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let (_remote, a, b) = setup_remote_and_devices(tmp.path());
+        let db_a = Database::open_in_memory().unwrap();
+        let db_b = Database::open_in_memory().unwrap();
+        let p = db_a.create_page("P", None, false, None, "user").unwrap();
+        let b1 = db_a.create_block(&p.id, "first", None, None, "user").unwrap();
+        let b2 = db_a.create_block(&p.id, "second", None, None, "user").unwrap();
+        cycle(&a, &db_a);
+        cycle(&b, &db_b);
+        db_b.update_block(&b2.id, Some("second EDITED ON B"), "user").unwrap();
+        let b3 = db_b.create_block(&p.id, "third, new on B", None, None, "user").unwrap();
+        db_b.set_property(&b1.id, "block", "status", "done", "text", "user").unwrap();
+        cycle(&b, &db_b);
+
+        let r = cycle_with_edit_mid_network(&a, &db_a, || {
+            db_a.update_block(&b1.id, Some("first edited on A"), "user").unwrap();
+        });
+        assert!(r.pages_skipped_local_edits.contains(&"P".to_string()));
+        assert_eq!(r.pages_merged, vec!["P".to_string()]);
+        assert!(r.conflict_copies.is_empty(), "{:?}", r.conflict_copies);
+        assert_eq!(in_order(&db_a, &p.id), vec!["first edited on A", "second EDITED ON B", "third, new on B"]);
+        assert_eq!(props_of(&db_a, &b1.id), kv(&[("status", "done")]));
+
+        for _ in 0..2 {
+            cycle(&a, &db_a);
+            cycle(&b, &db_b);
+        }
+        for db in [&db_a, &db_b] {
+            assert_eq!(in_order(db, &p.id), vec!["first edited on A", "second EDITED ON B", "third, new on B"]);
+            assert_eq!(titles(db), vec!["P".to_string()], "no conflict page");
+            assert!(db.get_block(&b3.id).unwrap().is_some());
+        }
+    }
+
+    // F-2: both sides change the same block: the local text stays in place and
+    // the remote version is kept as a "(conflict from …)" page, on both devices.
+    #[test]
+    fn test_same_block_edited_on_both_sides_keeps_a_conflict_copy() {
+        if !git_cmd::git_available() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let (_remote, a, b) = setup_remote_and_devices(tmp.path());
+        let db_a = Database::open_in_memory().unwrap();
+        let db_b = Database::open_in_memory().unwrap();
+        let p = db_a.create_page("P", None, false, None, "user").unwrap();
+        let b1 = db_a.create_block(&p.id, "first", None, None, "user").unwrap();
+        let b2 = db_a.create_block(&p.id, "second", None, None, "user").unwrap();
+        cycle(&a, &db_a);
+        cycle(&b, &db_b);
+        db_b.update_block(&b1.id, Some("first from B"), "user").unwrap();
+        db_b.update_block(&b2.id, Some("second from B"), "user").unwrap();
+        cycle(&b, &db_b);
+
+        let r = cycle_with_edit_mid_network(&a, &db_a, || {
+            db_a.update_block(&b1.id, Some("first from A"), "user").unwrap();
+        });
+        assert_eq!(r.conflict_copies.len(), 1, "{r:?}");
+        assert_eq!(in_order(&db_a, &p.id), vec!["first from A", "second from B"], "local kept, the rest merged");
+        for _ in 0..2 {
+            cycle(&a, &db_a);
+            cycle(&b, &db_b);
+        }
+        for db in [&db_a, &db_b] {
+            assert_eq!(in_order(db, &p.id), vec!["first from A", "second from B"]);
+            let pages = db.list_pages(None).unwrap();
+            assert_eq!(pages.len(), 2, "{:?}", titles(db));
+            let copy = pages.iter().find(|x| x.title.starts_with("P (conflict from ")).expect("conflict page");
+            assert_eq!(in_order(db, &copy.id), vec!["first from B", "second from B"]);
+        }
+    }
+
+    // F-2: no spurious copies — a page edited here mid-sync whose file the pull
+    // didn't change stays as it is, with no conflict page.
+    #[test]
+    fn test_protected_page_untouched_by_the_pull_makes_no_copy() {
+        if !git_cmd::git_available() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let (_remote, a, b) = setup_remote_and_devices(tmp.path());
+        let db_a = Database::open_in_memory().unwrap();
+        let db_b = Database::open_in_memory().unwrap();
+        let p = db_a.create_page("P", None, false, None, "user").unwrap();
+        let pb = db_a.create_block(&p.id, "p1", None, None, "user").unwrap();
+        let q = db_a.create_page("Q", None, false, None, "user").unwrap();
+        let qb = db_a.create_block(&q.id, "q1", None, None, "user").unwrap();
+        cycle(&a, &db_a);
+        cycle(&b, &db_b);
+        db_b.update_block(&qb.id, Some("q from B"), "user").unwrap();
+        cycle(&b, &db_b);
+        let r = cycle_with_edit_mid_network(&a, &db_a, || {
+            db_a.update_block(&pb.id, Some("p edited mid-sync"), "user").unwrap();
+        });
+        assert!(r.pages_merged.is_empty() && r.conflict_copies.is_empty(), "{r:?}");
+        for _ in 0..2 {
+            cycle(&a, &db_a);
+            cycle(&b, &db_b);
+        }
+        for db in [&db_a, &db_b] {
+            assert_eq!(titles(db), vec!["P".to_string(), "Q".to_string()]);
+            assert_eq!(in_order(db, &p.id), vec!["p edited mid-sync"]);
+            assert_eq!(in_order(db, &q.id), vec!["q from B"]);
+        }
     }
 
     fn props_of(db: &Database, id: &Uuid) -> Vec<(String, String)> {
