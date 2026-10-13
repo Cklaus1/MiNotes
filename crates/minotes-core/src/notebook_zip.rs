@@ -141,6 +141,7 @@ pub fn export_meta(nb: &Notebook) -> NotebookMeta {
         format_version: FORMAT_VERSION,
         mirror: Default::default(),
         created_at: Some(chrono::Utc::now().to_rfc3339()),
+        encryption: None,
     }
 }
 
@@ -548,6 +549,7 @@ fn extract_and_adopt<R: Read + Seek>(
             format_version: FORMAT_VERSION,
             mirror: Default::default(),
             created_at: Some(chrono::Utc::now().to_rfc3339()),
+            encryption: None,
         }
     };
     if notebook::validate_name(&meta.name).is_err() {

@@ -4,6 +4,7 @@ pub mod ai;
 pub mod crypto;
 pub mod cross_notebook;
 pub mod db;
+pub mod encryption;
 pub mod error;
 pub mod git_cmd;
 // ── Import ──

@@ -39,6 +39,9 @@ pub const PRIVATE_DIR: &str = ".minotes";
 pub const LOCK_FILE: &str = "lock.json";
 pub const REGISTRY_FILE: &str = "notebooks.json";
 pub const FORMAT_VERSION: u32 = 1;
+/// `notebook.json` format of an encrypted notebook: older MiNotes builds refuse it
+/// ("made by a newer MiNotes") instead of failing on the ciphertext.
+pub const ENCRYPTED_FORMAT_VERSION: u32 = 2;
 const MIRROR_STATE_FILE: &str = "mirror-state.json";
 const SYNC_CONFIG_FILE: &str = "sync-config.json";
 
@@ -166,6 +169,9 @@ impl Default for MirrorSettings {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct NotebookMeta {
+    /// Display name. Not written for an encrypted notebook (PRD-encryption §4.2):
+    /// there it comes from this device's registry, else the folder name.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub name: String,
     pub id: String,
     pub format_version: u32,
@@ -173,23 +179,45 @@ pub struct NotebookMeta {
     pub mirror: MirrorSettings,
     #[serde(default)]
     pub created_at: Option<String>,
+    /// Key slots of an encrypted notebook (PRD-encryption §4.2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encryption: Option<crate::crypto::EncryptionInfo>,
 }
 
 pub fn read_meta(root: &Path) -> Result<NotebookMeta> {
     let path = root.join(META_FILE);
     let text = fs::read_to_string(&path).map_err(|e| io_err("Cannot read", &path, e))?;
-    let meta: NotebookMeta = serde_json::from_str(&text)
+    let mut meta: NotebookMeta = serde_json::from_str(&text)
         .map_err(|e| Error::InvalidInput(format!("{} is not a notebook description: {e}", path.display())))?;
-    if meta.format_version > FORMAT_VERSION {
+    if meta.format_version > ENCRYPTED_FORMAT_VERSION {
         return Err(Error::InvalidInput(format!(
             "This notebook was made by a newer MiNotes (format {}); please update the app",
             meta.format_version
         )));
     }
+    if meta.name.is_empty() {
+        meta.name = Registry::load()
+            .find(&meta.id)
+            .map(|e| e.name.clone())
+            .unwrap_or_else(|| folder_display_name(root));
+    }
     Ok(meta)
 }
 
-pub(crate) fn write_meta(root: &Path, meta: &NotebookMeta) -> Result<()> {
+/// A display name from the folder's own name (`My Notes.v2` → `My Notes_v2`).
+fn folder_display_name(root: &Path) -> String {
+    let name = root.file_name().and_then(|n| n.to_str()).unwrap_or("Notebook").replace('.', "_");
+    if validate_name(&name).is_ok() { name } else { "Notebook".into() }
+}
+
+pub fn write_meta(root: &Path, meta: &NotebookMeta) -> Result<()> {
+    if meta.encryption.is_some() {
+        // Encrypted: no name on disk, and a format older apps refuse cleanly.
+        let mut m = meta.clone();
+        m.name.clear();
+        m.format_version = ENCRYPTED_FORMAT_VERSION;
+        return write_json_atomic(&root.join(META_FILE), &m);
+    }
     write_json_atomic(&root.join(META_FILE), meta)
 }
 
@@ -369,6 +397,10 @@ impl Notebook {
         if is_app_storage() && !self.sync_enabled() {
             return false;
         }
+        // An encrypted notebook has no plaintext mirror (PRD-encryption §4.5, Q1).
+        if self.is_encrypted() {
+            return false;
+        }
         match &self.location {
             Location::Legacy { .. } => true,
             Location::Folder { root } => read_meta(root).map(|m| m.mirror.enabled).unwrap_or(true),
@@ -385,7 +417,30 @@ impl Notebook {
                 self.db_path().display()
             )));
         }
+        if self.is_encrypted() {
+            let key = crate::encryption::unlocked_key(&self.key).ok_or_else(|| Error::Locked(self.name.clone()))?;
+            return Database::open_encrypted(&self.db_path(), &key);
+        }
         Database::open(&self.db_path())
+    }
+
+    /// Open read-only (another instance holds it, or another notebook reads it).
+    /// An encrypted notebook needs to be unlocked in this process.
+    pub fn open_read_only(&self, busy_timeout_ms: u32) -> Result<Database> {
+        if self.is_encrypted() {
+            let key = crate::encryption::unlocked_key(&self.key).ok_or_else(|| Error::Locked(self.name.clone()))?;
+            return Database::open_read_only_encrypted(&self.db_path(), &key, busy_timeout_ms);
+        }
+        Database::open_read_only_with_timeout(&self.db_path(), busy_timeout_ms)
+    }
+
+    /// The key slots, if this notebook is encrypted. Only folder notebooks can be.
+    pub fn encryption(&self) -> Option<crate::crypto::EncryptionInfo> {
+        self.root().and_then(|r| read_meta(r).ok()).and_then(|m| m.encryption)
+    }
+
+    pub fn is_encrypted(&self) -> bool {
+        self.encryption().is_some()
     }
 }
 
@@ -443,6 +498,10 @@ pub struct NotebookInfo {
     pub modified_at: String,
     /// Name of the file-sync service the folder seems to live in (Dropbox, …).
     pub cloud: Option<String>,
+    /// Encrypted with a passphrase (PRD-encryption).
+    pub encrypted: bool,
+    /// Encrypted and not unlocked in this process.
+    pub locked: bool,
 }
 
 fn file_times(path: &Path) -> (u64, String) {
@@ -460,6 +519,7 @@ fn file_times(path: &Path) -> (u64, String) {
 }
 
 pub fn info(nb: &Notebook) -> NotebookInfo {
+    let encrypted = nb.is_encrypted();
     let reg = Registry::load();
     let (size_bytes, modified_at) = file_times(&nb.db_path());
     let (kind, path, last_opened) = match &nb.location {
@@ -482,6 +542,8 @@ pub fn info(nb: &Notebook) -> NotebookInfo {
         size_bytes,
         modified_at,
         cloud: nb.root().and_then(cloud_service).map(str::to_string),
+        encrypted,
+        locked: encrypted && crate::encryption::unlocked_key(&nb.key).is_none(),
     }
 }
 
@@ -550,6 +612,16 @@ fn absolute(p: &Path) -> PathBuf {
 
 /// Create a new notebook in `root` (which must not exist yet, or be empty).
 pub fn create_in_folder(root: &Path, name: &str) -> Result<Notebook> {
+    create_in_folder_with(root, name, None)
+}
+
+/// [`create_in_folder`], optionally encrypted with `key` (its slots in `info`).
+/// An encrypted notebook gets no `notes/` mirror folder.
+pub(crate) fn create_in_folder_with(
+    root: &Path,
+    name: &str,
+    encryption: Option<(&crate::crypto::DataKey, crate::crypto::EncryptionInfo)>,
+) -> Result<Notebook> {
     validate_name(name)?;
     let root = absolute(root);
     if root.exists() && !(root.is_dir() && dir_is_empty(&root)) {
@@ -564,14 +636,24 @@ pub fn create_in_folder(root: &Path, name: &str) -> Result<Notebook> {
     let created_root = !root.exists();
     let result = (|| {
         fs::create_dir_all(root.join(PRIVATE_DIR)).map_err(|e| io_err("Cannot create", &root, e))?;
-        fs::create_dir_all(root.join(NOTES_DIR)).map_err(|e| io_err("Cannot create", &root, e))?;
-        drop(Database::open(&root.join(DB_FILE))?);
+        let (key, info) = match encryption {
+            Some((k, i)) => (Some(k), Some(i)),
+            None => (None, None),
+        };
+        match key {
+            Some(k) => drop(Database::create_encrypted(&root.join(DB_FILE), k)?),
+            None => {
+                fs::create_dir_all(root.join(NOTES_DIR)).map_err(|e| io_err("Cannot create", &root, e))?;
+                drop(Database::open(&root.join(DB_FILE))?);
+            }
+        }
         let meta = NotebookMeta {
             name: name.to_string(),
             id: Uuid::now_v7().to_string(),
             format_version: FORMAT_VERSION,
             mirror: MirrorSettings::default(),
             created_at: Some(chrono::Utc::now().to_rfc3339()),
+            encryption: info,
         };
         write_meta(&root, &meta)?;
         register(&root, &meta)
@@ -611,6 +693,14 @@ pub fn open_folder(root: &Path) -> Result<Notebook> {
         // A folder with a database but no description (e.g. copied by hand):
         // describe it now rather than refusing.
         Err(_) if !root.join(META_FILE).exists() => {
+            // An encrypted database whose notebook.json (with its key slots) is
+            // gone cannot be opened by anyone; it must not become "a new notebook".
+            if !crate::db::is_plaintext_sqlite(&root.join(DB_FILE)) {
+                return Err(Error::InvalidInput(format!(
+                    "{} holds an encrypted (or damaged) database but no {META_FILE} with its keys — restore {META_FILE} from a backup",
+                    root.display()
+                )));
+            }
             let name = root.file_name().and_then(|n| n.to_str()).unwrap_or("Notebook").replace('.', "_");
             let m = NotebookMeta {
                 name: if validate_name(&name).is_ok() { name } else { "Notebook".into() },
@@ -618,6 +708,7 @@ pub fn open_folder(root: &Path) -> Result<Notebook> {
                 format_version: FORMAT_VERSION,
                 mirror: MirrorSettings::default(),
                 created_at: Some(chrono::Utc::now().to_rfc3339()),
+                encryption: None,
             };
             write_meta(&root, &m)?;
             m
@@ -1069,6 +1160,7 @@ pub fn prepare_move_to_folder(
             format_version: FORMAT_VERSION,
             mirror: MirrorSettings::default(),
             created_at: Some(chrono::Utc::now().to_rfc3339()),
+            encryption: None,
         };
         write_meta(&dest, &meta)?;
         mv.notebook.key = meta.id.clone();

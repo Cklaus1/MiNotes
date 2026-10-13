@@ -101,10 +101,9 @@ pub fn same_file(a: &Path, b: &Path) -> bool {
 
 /// Can another notebook read this one right now?
 ///
-/// Encryption hook (PRD-encryption): a folder notebook whose `notebook.json`
-/// declares `"encryption"` is "not searchable while locked" — it is skipped with
-/// [`SkipReason::Locked`]. When unlocking exists, consult the unlocked-key cache
-/// here and let unlocked notebooks through.
+/// An encrypted notebook (PRD-encryption) is "not searchable while locked" — it is
+/// skipped with [`SkipReason::Locked`] unless it is unlocked in this process (the
+/// unlocked-key cache in [`crate::encryption`]).
 pub fn readable(nb: &Notebook) -> std::result::Result<(), SkipReason> {
     if !nb.available() {
         return Err(SkipReason::Unavailable);
@@ -114,7 +113,7 @@ pub fn readable(nb: &Notebook) -> std::result::Result<(), SkipReason> {
             .ok()
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
             .is_some_and(|v| v.get("encryption").is_some_and(|e| !e.is_null()));
-        if encrypted {
+        if encrypted && crate::encryption::unlocked_key(&nb.key).is_none() {
             return Err(SkipReason::Locked);
         }
     }
@@ -134,7 +133,8 @@ fn classify(e: &Error) -> SkipReason {
 /// never takes the notebook lock; gives up quickly if it is busy.
 pub fn open_read_only(nb: &Notebook, busy_timeout_ms: u32) -> std::result::Result<Database, Skipped> {
     readable(nb).map_err(|r| Skipped::new(nb, r, ""))?;
-    let db = Database::open_read_only_with_timeout(&nb.db_path(), busy_timeout_ms)
+    let db = nb
+        .open_read_only(busy_timeout_ms)
         .map_err(|e| Skipped::new(nb, classify(&e), e.to_string()))?;
     // Touch the schema now, so a busy or damaged file is reported here.
     db.conn
