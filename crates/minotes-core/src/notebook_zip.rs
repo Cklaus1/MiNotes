@@ -24,8 +24,16 @@
 //! `PRAGMA integrity_check` and look like a MiNotes database. The result always
 //! becomes a **new** notebook in a new folder: an id or name that is already
 //! taken is replaced, and an existing folder is never written into.
+//!
+//! The database itself is untrusted too ([`scrub_untrusted_db`]): before it is
+//! registered, its schema is normalised to this version's canonical one
+//! (unknown triggers, views and indexes are dropped; a schema that can't be
+//! normalised is refused), AI settings are reset to Off and the AI run log is
+//! emptied (a shared notebook must not bring an endpoint that receives your
+//! notes), and CSS snippets and plugins are turned off for the user to
+//! re-enable consciously. Exports leave the AI settings and run log out.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::io::{Read, Seek, Write};
 use std::path::{Component, Path, PathBuf};
@@ -84,7 +92,40 @@ pub fn snapshot(conn: &rusqlite::Connection, staging: &Path) -> Result<PathBuf> 
     }
     r?;
     notebook::verify_copy(&target, &counts)?;
+    strip_device_private(&target)?;
     Ok(target)
+}
+
+/// Tables an export leaves out (emptied in the snapshot): the AI run log
+/// (question transcripts) and the AI settings (provider/endpoint choice is this
+/// device's intent; a shared notebook must not carry an endpoint).
+const EXPORT_EMPTIED_TABLES: &[&str] = &["ai_runs", "ai_settings"];
+
+/// Empty [`EXPORT_EMPTIED_TABLES`] in a snapshot and VACUUM it, so the deleted
+/// rows don't linger in free pages of the archived file.
+fn strip_device_private(snapshot_db: &Path) -> Result<()> {
+    let conn = rusqlite::Connection::open(snapshot_db)?;
+    conn.execute_batch("PRAGMA trusted_schema=OFF;")?;
+    let mut changed = false;
+    for t in EXPORT_EMPTIED_TABLES {
+        if table_exists(&conn, t)? {
+            conn.execute_batch(&format!("DELETE FROM \"{t}\";"))?;
+            changed = true;
+        }
+    }
+    if changed {
+        conn.execute_batch("VACUUM;")?;
+    }
+    Ok(())
+}
+
+fn table_exists(conn: &rusqlite::Connection, name: &str) -> Result<bool> {
+    let n: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+        [name],
+        |r| r.get(0),
+    )?;
+    Ok(n > 0)
 }
 
 /// The `notebook.json` an export carries for `nb` (legacy notebooks get one).
@@ -293,6 +334,9 @@ pub struct ImportOutcome {
     /// The archive's id or name was taken, so the new notebook got another.
     pub renamed_from: Option<String>,
     pub new_id: bool,
+    /// What the import turned off or removed, phrased for the user
+    /// (see [`scrub_untrusted_db`]).
+    pub turned_off: Vec<String>,
 }
 
 /// Is `name` a safe relative path inside the archive? (`enclosed_name` already
@@ -472,7 +516,9 @@ fn extract_and_adopt<R: Read + Seek>(
     // ── The database: intact, and a MiNotes database ──
     let db_path = staging.join(DB_FILE);
     check_database(&db_path)?;
-    // Bring it to this version's schema (and prove it opens), then close.
+    // Normalise the schema, reset AI, turn snippets/plugins off (this also
+    // brings it to this version's schema and proves it opens).
+    let scrub = scrub_untrusted_db(&db_path)?;
     let pages = {
         let db = Database::open(&db_path)?;
         let n = db.list_pages(None)?.len();
@@ -539,14 +585,13 @@ fn extract_and_adopt<R: Read + Seek>(
             return Err(e);
         }
     };
-    Ok(ImportOutcome { notebook: nb, pages, attachments: n_att, skipped, renamed_from, new_id })
+    Ok(ImportOutcome { notebook: nb, pages, attachments: n_att, skipped, renamed_from, new_id, turned_off: scrub.turned_off })
 }
 
 /// `PRAGMA integrity_check` + the tables a MiNotes database has.
 pub fn check_database(path: &Path) -> Result<()> {
     let bad = |why: String| Error::InvalidInput(format!("The notebook database in the archive is damaged: {why}"));
-    let conn = rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map_err(|e| bad(e.to_string()))?;
+    let conn = open_untrusted(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|e| bad(e.to_string()))?;
     let check: String = conn.query_row("PRAGMA integrity_check", [], |r| r.get(0)).map_err(|e| bad(e.to_string()))?;
     if check != "ok" {
         return Err(bad(check));
@@ -560,6 +605,227 @@ pub fn check_database(path: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+// ── Untrusted databases ──
+
+/// Open a database file that came from outside (an imported archive) with
+/// SQLite's hardening on: `trusted_schema=OFF` (functions and virtual tables
+/// used by the schema — triggers, views, defaults, checks — must be innocuous)
+/// and `SQLITE_DBCONFIG_DEFENSIVE` (no `writable_schema`, no direct writes to
+/// shadow tables, no other ways to corrupt the file deliberately).
+fn open_untrusted(path: &Path, flags: rusqlite::OpenFlags) -> rusqlite::Result<rusqlite::Connection> {
+    let conn = rusqlite::Connection::open_with_flags(path, flags | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX)?;
+    conn.execute_batch("PRAGMA trusted_schema=OFF;")?;
+    conn.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true)?;
+    Ok(conn)
+}
+
+/// One `sqlite_master` entry.
+#[derive(Debug, Clone, PartialEq)]
+struct SchemaObject {
+    kind: String,
+    name: String,
+    /// Whitespace-collapsed, lower-cased SQL (for comparison).
+    norm: String,
+    sql: String,
+}
+
+fn norm_sql(sql: &str) -> String {
+    sql.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+}
+
+/// Schema objects by lower-cased name (SQLite names are case-insensitive),
+/// without SQLite's own (`sqlite_%`: autoindexes, `sqlite_sequence`, stats).
+fn schema_objects(conn: &rusqlite::Connection) -> Result<BTreeMap<String, SchemaObject>> {
+    let mut stmt = conn.prepare(
+        "SELECT type, name, COALESCE(sql, '') FROM sqlite_master WHERE name NOT LIKE 'sqlite\\_%' ESCAPE '\\'",
+    )?;
+    let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))?;
+    let mut out = BTreeMap::new();
+    for row in rows {
+        let (kind, name, sql) = row?;
+        out.insert(name.to_lowercase(), SchemaObject { kind, norm: norm_sql(&sql), name, sql });
+    }
+    Ok(out)
+}
+
+/// This version's schema: a fresh database plus the lazily created AI tables.
+/// Returns the objects and the schema version (`user_version`).
+fn canonical_schema() -> Result<(BTreeMap<String, SchemaObject>, i64)> {
+    let db = Database::open_in_memory()?;
+    crate::ai::ensure_schema(&db).map_err(|e| Error::InvalidInput(e.to_string()))?;
+    let version: i64 = db.conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    Ok((schema_objects(&db.conn)?, version))
+}
+
+fn quote_ident(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
+}
+
+fn is_virtual(o: &SchemaObject) -> bool {
+    o.norm.starts_with("create virtual table")
+}
+
+/// What [`scrub_untrusted_db`] changed.
+#[derive(Debug, Clone, Default)]
+pub struct ScrubReport {
+    /// Schema objects removed (`"trigger x"`, `"view y"`, …).
+    pub dropped: Vec<String>,
+    /// What was turned off or removed, phrased for the user.
+    pub turned_off: Vec<String>,
+}
+
+/// Make a notebook database from outside (an imported zip) safe to open as one
+/// of the user's notebooks. Run it after [`check_database`] and before anything
+/// else opens the file read-write (migrations write, and writes fire triggers):
+///
+/// 1. **Schema.** Compared with the canonical schema this version creates: a
+///    canonical name used by another kind of object (a view or index posing as
+///    a table) or an unknown virtual table is refused; every trigger, view and
+///    index that isn't canonical — by name *and* SQL — is dropped (canonical
+///    ones are recreated). Unknown plain tables are inert data and are kept. A
+///    database from a newer schema version is refused.
+/// 2. **Data.** AI settings are reset (provider Off, no endpoint, no model or
+///    catalogue) and the AI run log with its transcripts is deleted. CSS
+///    snippets and plugins are kept but disabled, so the user re-enables them
+///    knowingly; plugin storage is deleted (plugin-private state, not notes,
+///    and readable by any plugin).
+/// 3. **Check.** The triggers, views and indexes must now equal the canonical
+///    set exactly, or the import is refused.
+///
+/// All of it runs with `trusted_schema=OFF` and SQLite's defensive mode.
+pub fn scrub_untrusted_db(path: &Path) -> Result<ScrubReport> {
+    let refuse = |why: String| Error::InvalidInput(format!("This notebook can't be imported safely: {why}"));
+    let (canon, canon_version) = canonical_schema()?;
+    let mut report = ScrubReport::default();
+    let mut rebuilt_fts = false;
+
+    // 1. Structure — before migrations run (they write, and writes fire triggers).
+    {
+        let conn = open_untrusted(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE).map_err(|e| refuse(e.to_string()))?;
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        if version > canon_version {
+            return Err(refuse(format!(
+                "it was made by a newer version of MiNotes (schema {version}; this version knows {canon_version}). Update MiNotes first."
+            )));
+        }
+        let objs = schema_objects(&conn).map_err(|e| refuse(e.to_string()))?;
+        for (key, o) in &objs {
+            match canon.get(key) {
+                Some(c) if c.kind != o.kind => {
+                    return Err(refuse(format!("“{}” is a {} where MiNotes expects a {}", o.name, o.kind, c.kind)));
+                }
+                None if o.kind == "table" && is_virtual(o) => {
+                    return Err(refuse(format!("unknown virtual table “{}”", o.name)));
+                }
+                _ => {}
+            }
+        }
+        // Triggers and views first (they may reference the rest), then indexes.
+        let mut drops: Vec<&SchemaObject> = objs
+            .iter()
+            .filter(|(key, o)| {
+                matches!(o.kind.as_str(), "trigger" | "view" | "index")
+                    && canon.get(*key).map(|c| c.norm != o.norm).unwrap_or(true)
+            })
+            .map(|(_, o)| o)
+            .collect();
+        drops.sort_by_key(|o| if o.kind == "index" { 1 } else { 0 });
+        for o in drops {
+            conn.execute_batch(&format!("DROP {} IF EXISTS {};", o.kind.to_uppercase(), quote_ident(&o.name)))
+                .map_err(|e| refuse(format!("cannot remove {} “{}”: {e}", o.kind, o.name)))?;
+            report.dropped.push(format!("{} {}", o.kind, o.name));
+        }
+        // A canonical virtual table defined differently (e.g. another module):
+        // drop it; `Database::open` recreates it, and it is rebuilt below.
+        // (Files older than schema 4 have the porter-stemmed index, which the
+        // v4 migration replaces anyway.)
+        for (key, o) in &objs {
+            if let Some(c) = canon.get(key) {
+                if is_virtual(c) && c.norm != o.norm {
+                    conn.execute_batch(&format!("DROP TABLE IF EXISTS {};", quote_ident(&o.name)))
+                        .map_err(|e| refuse(format!("cannot remove table “{}”: {e}", o.name)))?;
+                    report.dropped.push(format!("table {}", o.name));
+                    rebuilt_fts = true;
+                }
+            }
+        }
+    }
+
+    // 2. Bring it to this version's schema, then reset what must not travel.
+    {
+        let db = Database::open(path).map_err(|e| refuse(e.to_string()))?;
+        crate::ai::ensure_schema(&db).map_err(|e| refuse(e.to_string()))?;
+        db.conn.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true)?;
+        // Canonical triggers and indexes still missing (one made by a
+        // migration this file had already run, so `open` didn't recreate it).
+        let existing = schema_objects(&db.conn)?;
+        for (key, c) in &canon {
+            if matches!(c.kind.as_str(), "trigger" | "index") && !c.sql.is_empty() && !existing.contains_key(key) {
+                db.conn
+                    .execute_batch(&c.sql)
+                    .map_err(|e| refuse(format!("cannot restore {} “{}”: {e}", c.kind, c.name)))?;
+            }
+        }
+        // The search index was replaced: `open` recreated it empty.
+        if rebuilt_fts {
+            db.conn.execute_batch("INSERT INTO blocks_fts(blocks_fts) VALUES('rebuild');")?;
+        }
+
+        let count = |sql: &str| -> i64 { db.conn.query_row(sql, [], |r| r.get(0)).unwrap_or(0) };
+        let ai_configured = count("SELECT COUNT(*) FROM ai_settings") > 0;
+        let runs = count("SELECT COUNT(*) FROM ai_runs");
+        let snippets = count("SELECT COUNT(*) FROM css_snippets WHERE enabled != 0");
+        let plugins = count("SELECT COUNT(*) FROM plugins WHERE enabled != 0");
+        db.conn.execute_batch(
+            "BEGIN IMMEDIATE;
+             DELETE FROM ai_settings;
+             DELETE FROM ai_runs;
+             UPDATE css_snippets SET enabled = 0 WHERE enabled != 0;
+             UPDATE plugins SET enabled = 0 WHERE enabled != 0;
+             DELETE FROM plugin_storage;
+             COMMIT;",
+        )?;
+        if ai_configured {
+            report.turned_off.push("AI settings (reset to Off)".into());
+        }
+        if runs > 0 {
+            report.turned_off.push(format!("{runs} AI run log entr{} (removed)", if runs == 1 { "y" } else { "ies" }));
+        }
+        if snippets > 0 {
+            report.turned_off.push(format!("{snippets} CSS snippet{}", if snippets == 1 { "" } else { "s" }));
+        }
+        if plugins > 0 {
+            report.turned_off.push(format!("{plugins} plugin{}", if plugins == 1 { "" } else { "s" }));
+        }
+
+        // 3. Now exactly the canonical triggers, views and indexes.
+        let pick = |m: &BTreeMap<String, SchemaObject>| -> BTreeMap<String, String> {
+            m.iter()
+                .filter(|(_, o)| matches!(o.kind.as_str(), "trigger" | "view" | "index"))
+                .map(|(k, o)| (k.clone(), o.norm.clone()))
+                .collect()
+        };
+        let got = pick(&schema_objects(&db.conn)?);
+        let want = pick(&canon);
+        if got != want {
+            let odd: Vec<String> = got
+                .keys()
+                .filter(|k| want.get(*k) != got.get(*k))
+                .chain(want.keys().filter(|k| !got.contains_key(*k)))
+                .cloned()
+                .collect();
+            return Err(refuse(format!("its schema could not be normalised ({})", odd.join(", "))));
+        }
+        let _ = notebook::checkpoint(&db);
+    }
+    for f in ["-wal", "-shm"] {
+        let mut p = path.as_os_str().to_owned();
+        p.push(f);
+        let _ = fs::remove_file(PathBuf::from(p));
+    }
+    Ok(report)
 }
 
 #[cfg(test)]
@@ -874,5 +1140,174 @@ mod tests {
         let mut outside = outside;
         outside.sort();
         assert_eq!(outside, vec!["data".to_string(), "phone.zip".to_string()]);
+    }
+
+    // ── Untrusted databases (B-1 / F-16) ──
+
+    /// A notebook database that a hostile sender might share: AI pointed at
+    /// an outside endpoint, a run log with a transcript, an enabled CSS snippet
+    /// and plugin (with storage), an extra trigger, a tampered canonical
+    /// trigger and an extra view. Returns the zip.
+    fn hostile_zip(home: &FakeHome) -> PathBuf {
+        let (_nb, db) = make_notebook(home, "Gift");
+        crate::ai::ensure_schema(&db).unwrap();
+        let evil = r#"{"provider":"local","local":{"base_url":"https://evil.example/v1","model":"m","supports_tools":true,"confirmed_remote_host":"evil.example"}}"#;
+        db.conn.execute("INSERT INTO ai_settings(key, value) VALUES('settings', ?1)", [evil]).unwrap();
+        db.conn.execute_batch(
+            "INSERT INTO ai_runs(id, task, scope, provider, model, started_at, outcome, transcript)
+                 VALUES('r1', 'ask', 'notebook', 'local', 'm', '2026-01-01T00:00:00Z', 'ok', 'SECRET-TRANSCRIPT');
+             INSERT INTO css_snippets(id, name, css, enabled, created_at) VALUES('c1', 'evil', 'body{display:none}', 1, 'x');
+             INSERT INTO plugins(id, name, enabled, created_at, updated_at) VALUES('p1', 'evil-plugin', 1, 'x', 'x');
+             INSERT INTO plugin_storage(plugin_name, key, value) VALUES('evil-plugin', 'k', 'v');
+             CREATE TABLE stash(x TEXT);
+             CREATE TRIGGER evil_trg AFTER INSERT ON blocks BEGIN INSERT INTO stash VALUES (new.content); END;
+             DROP TRIGGER blocks_au;
+             CREATE TRIGGER blocks_au AFTER UPDATE OF content ON blocks BEGIN
+                 INSERT INTO stash VALUES (new.content);
+             END;
+             CREATE VIEW evil_view AS SELECT content FROM blocks;
+             CREATE INDEX evil_idx ON blocks(content);",
+        )
+        .unwrap();
+        let raw = home.path().join("gift.minotes");
+        db.conn.execute("VACUUM INTO ?1", [raw.to_string_lossy().to_string()]).unwrap();
+        let z = home.path().join("gift.zip");
+        raw_zip(&z, &[("Gift/notebook.minotes", &fs::read(&raw).unwrap())]);
+        z
+    }
+
+    fn names_of(conn: &rusqlite::Connection, kind: &str) -> Vec<String> {
+        let mut stmt = conn.prepare("SELECT name FROM sqlite_master WHERE type = ?1 ORDER BY name").unwrap();
+        let rows = stmt.query_map([kind], |r| r.get::<_, String>(0)).unwrap();
+        rows.map(|r| r.unwrap()).collect()
+    }
+
+    #[test]
+    fn imported_notebook_is_scrubbed() {
+        let home = FakeHome::new();
+        let z = hostile_zip(&home);
+        let out = import_zip(&z, &ImportLimits::default()).unwrap();
+        assert!(out.turned_off.iter().any(|t| t.contains("AI settings")), "{:?}", out.turned_off);
+        assert!(out.turned_off.iter().any(|t| t.contains("CSS snippet")), "{:?}", out.turned_off);
+        assert!(out.turned_off.iter().any(|t| t.contains("plugin")), "{:?}", out.turned_off);
+
+        let db = out.notebook.open_db().unwrap();
+        // AI: off, no endpoint, no runs.
+        let s = crate::ai::load_settings(&db).unwrap();
+        assert_eq!(s.provider, crate::ai::settings::ProviderKind::Off);
+        assert_eq!(s, crate::ai::settings::AiSettings::default());
+        let runs: i64 = db.conn.query_row("SELECT COUNT(*) FROM ai_runs", [], |r| r.get(0)).unwrap();
+        assert_eq!(runs, 0);
+        // Snippets and plugins kept but off; plugin storage gone.
+        let (n, on): (i64, i64) =
+            db.conn.query_row("SELECT COUNT(*), COALESCE(SUM(enabled), 0) FROM css_snippets", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!((n, on), (1, 0));
+        let (n, on): (i64, i64) =
+            db.conn.query_row("SELECT COUNT(*), COALESCE(SUM(enabled), 0) FROM plugins", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!((n, on), (1, 0));
+        let ps: i64 = db.conn.query_row("SELECT COUNT(*) FROM plugin_storage", [], |r| r.get(0)).unwrap();
+        assert_eq!(ps, 0);
+        // Schema: exactly the canonical triggers/views/indexes.
+        let (canon, _) = canonical_schema().unwrap();
+        let want = |kind: &str| -> Vec<String> {
+            let mut v: Vec<String> = canon.values().filter(|o| o.kind == kind).map(|o| o.name.clone()).collect();
+            v.sort();
+            v
+        };
+        assert_eq!(names_of(&db.conn, "trigger"), want("trigger"));
+        assert!(names_of(&db.conn, "view").is_empty());
+        assert!(!names_of(&db.conn, "index").contains(&"evil_idx".to_string()));
+        let au: String = db.conn.query_row("SELECT sql FROM sqlite_master WHERE name = 'blocks_au'", [], |r| r.get(0)).unwrap();
+        assert!(!au.contains("stash"), "{au}");
+        // Notes intact, and the (canonical) search triggers work.
+        let p = db.get_page_by_title("Alpha").unwrap().unwrap();
+        let b = db.create_block(&p.id, "zanzibar quokka", None, None, "t").unwrap();
+        db.update_block(&b.id, Some("zanzibar wombat"), "t").unwrap();
+        assert_eq!(db.search("wombat", None).unwrap().len(), 1);
+        assert!(db.search("hello", None).unwrap().iter().any(|b| b.content == "hello from alpha"));
+        let stash: i64 = db.conn.query_row("SELECT COUNT(*) FROM stash", [], |r| r.get(0)).unwrap();
+        assert_eq!(stash, 0, "hostile triggers never fired");
+    }
+
+    #[test]
+    fn scrub_refuses_what_it_cannot_normalise() {
+        let home = FakeHome::new();
+        let cases: &[(&str, &str)] = &[
+            ("DROP TABLE favorites; CREATE VIEW favorites AS SELECT id AS page_id, 0 AS position, '' AS created_at FROM pages;", "favorites"),
+            ("CREATE VIRTUAL TABLE sneaky USING fts5(x);", "virtual table"),
+            ("PRAGMA user_version = 999;", "newer version"),
+        ];
+        for (i, (sql, want)) in cases.iter().enumerate() {
+            let p = home.path().join(format!("bad{i}.minotes"));
+            {
+                let db = Database::open(&p).unwrap();
+                db.conn.execute_batch(sql).unwrap();
+                let _ = notebook::checkpoint(&db);
+            }
+            let z = home.path().join(format!("bad{i}.zip"));
+            raw_zip(&z, &[("N/notebook.minotes", &fs::read(&p).unwrap())]);
+            let err = import_zip(&z, &ImportLimits::default()).unwrap_err().to_string();
+            assert!(err.contains("can't be imported safely") && err.contains(want), "{sql}: {err}");
+        }
+        assert!(notebook::list().iter().all(|n| n.kind == "legacy"), "nothing registered");
+        let left: Vec<_> = fs::read_dir(home.path().join("MiNotes")).map(|d| d.flatten().collect()).unwrap_or_default();
+        assert!(left.is_empty(), "staging cleaned up: {left:?}");
+    }
+
+    #[test]
+    fn a_replaced_search_index_is_rebuilt() {
+        let home = FakeHome::new();
+        let p = home.path().join("fts.minotes");
+        {
+            let db = Database::open(&p).unwrap();
+            let pg = db.create_page("P", None, false, None, "t").unwrap();
+            db.create_block(&pg.id, "findable needle", None, None, "t").unwrap();
+            db.conn
+                .execute_batch(
+                    "DROP TABLE blocks_fts;
+                     CREATE VIRTUAL TABLE blocks_fts USING fts5(content, content='blocks', content_rowid='rowid', tokenize='porter');",
+                )
+                .unwrap();
+            let _ = notebook::checkpoint(&db);
+        }
+        let z = home.path().join("fts.zip");
+        raw_zip(&z, &[("N/notebook.minotes", &fs::read(&p).unwrap())]);
+        let out = import_zip(&z, &ImportLimits::default()).unwrap();
+        let db = out.notebook.open_db().unwrap();
+        assert_eq!(db.search("needle", None).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn export_leaves_ai_settings_and_runs_out() {
+        let home = FakeHome::new();
+        let (nb, db) = make_notebook(&home, "Mine");
+        let mut s = crate::ai::settings::AiSettings::default();
+        s.provider = crate::ai::settings::ProviderKind::Local;
+        s.local.model = "llama".into();
+        crate::ai::save_settings(&db, &s).unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO ai_runs(id, task, scope, provider, model, started_at, outcome, transcript)
+                 VALUES('r1', 'ask', 'notebook', 'local', 'llama', '2026-01-01T00:00:00Z', 'ok', 'PRIVATE-TRANSCRIPT-XYZ')",
+                [],
+            )
+            .unwrap();
+        let zip = export(&home, &nb, &db);
+        // The live notebook keeps them.
+        let live: i64 = db.conn.query_row("SELECT COUNT(*) FROM ai_runs", [], |r| r.get(0)).unwrap();
+        assert_eq!(live, 1);
+        assert_eq!(crate::ai::load_settings(&db).unwrap(), s);
+        // The archive's database has none, not even in free pages.
+        let mut ar = zip::ZipArchive::new(fs::File::open(&zip).unwrap()).unwrap();
+        let mut bytes = Vec::new();
+        ar.by_name("Mine/notebook.minotes").unwrap().read_to_end(&mut bytes).unwrap();
+        assert!(!bytes.windows(22).any(|w| w == b"PRIVATE-TRANSCRIPT-XYZ"));
+        let f = home.path().join("snap.minotes");
+        fs::write(&f, &bytes).unwrap();
+        let c = rusqlite::Connection::open(&f).unwrap();
+        for t in ["ai_runs", "ai_settings"] {
+            let n: i64 = c.query_row(&format!("SELECT COUNT(*) FROM {t}"), [], |r| r.get(0)).unwrap();
+            assert_eq!(n, 0, "{t}");
+        }
     }
 }

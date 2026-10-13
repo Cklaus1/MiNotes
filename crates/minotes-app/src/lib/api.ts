@@ -603,6 +603,8 @@ export interface ZipImport {
   attachments: number;
   skipped: string[];
   renamed_from: string | null;
+  /** What the import turned off for safety (AI settings, CSS snippets, plugins). */
+  turned_off?: string[];
 }
 /** Export a notebook (default: the open one) as a .zip. Without `dest` the
  *  backend shows the save dialog / share picker. Null when cancelled. */
@@ -939,7 +941,9 @@ export interface AiSettings {
   scope: { kind: "notebook" | "folders" | "page"; folder_ids: string[] };
   monthly_cap_usd: number;
   keep_transcripts: boolean;
-  local: { base_url: string; model: string; supports_tools: boolean };
+  /** `confirmed_remote_host`: set only after the user confirmed sending notes
+   *  to a non-loopback endpoint (see lib/aiEndpoint.ts). */
+  local: { base_url: string; model: string; supports_tools: boolean; confirmed_remote_host?: string | null };
   reasoning_effort: "low" | "medium" | "high" | null;
   max_tool_iterations: number;
   run_token_budget: number;

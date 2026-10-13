@@ -278,7 +278,7 @@ impl Database {
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )?;
         conn.execute_batch(&format!(
-            "PRAGMA busy_timeout={busy_timeout_ms}; PRAGMA query_only=ON; PRAGMA foreign_keys=ON;"
+            "PRAGMA busy_timeout={busy_timeout_ms}; PRAGMA query_only=ON; PRAGMA foreign_keys=ON; PRAGMA trusted_schema=OFF;"
         ))?;
         Ok(Self { conn, attachments_override: Default::default() })
     }
@@ -497,6 +497,10 @@ impl Database {
         self.conn.execute_batch("PRAGMA cache_size=-20000;")?;   // 20 MB
         self.conn.execute_batch("PRAGMA mmap_size=134217728;")?; // 128 MB
         self.conn.execute_batch("PRAGMA temp_store=MEMORY;")?;
+        // Schema code (triggers, views, defaults) may only use innocuous
+        // functions/virtual tables: a database file can come from elsewhere
+        // (an imported zip, a synced folder). The FTS5 triggers still work.
+        self.conn.execute_batch("PRAGMA trusted_schema=OFF;")?;
         self.conn.execute_batch(SCHEMA)?;
         self.conn.execute_batch(FTS_SCHEMA)?;
         self.run_migrations()?;

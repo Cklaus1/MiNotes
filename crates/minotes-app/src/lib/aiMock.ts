@@ -12,6 +12,7 @@
 import type {
   AiSettings, AiStatus, AiKeyStatus, AiModelInfo, AiRunOutput, AiCitation, AiStreamEvent, AiRunRecord, Block, Page,
 } from "./api";
+import { endpointHost, remoteHost } from "./aiEndpoint";
 
 export const aiMockEvents = new EventTarget();
 
@@ -23,7 +24,7 @@ const defaultSettings = (): AiSettings => ({
   scope: { kind: "notebook", folder_ids: [] },
   monthly_cap_usd: 10,
   keep_transcripts: false,
-  local: { base_url: "http://localhost:11434/v1", model: "", supports_tools: true },
+  local: { base_url: "http://localhost:11434/v1", model: "", supports_tools: true, confirmed_remote_host: null },
   reasoning_effort: "medium",
   max_tool_iterations: 8,
   run_token_budget: 300000,
@@ -93,12 +94,16 @@ export function createAiMockHandlers(h: Handlers): Handlers {
   const status = (): AiStatus => {
     const model = effectiveModel();
     const ks = keyStatus();
+    const remote = settings.provider === "local" ? remoteHost(settings.local.base_url) : null;
     const problem = settings.provider === "off" ? "AI is off."
       : settings.provider === "openrouter" && !ks.configured ? "Add your OpenRouter API key."
+      : remote && settings.local.confirmed_remote_host !== remote ? `Confirm the custom endpoint ${remote} in AI settings: it is not on this computer.`
       : !model ? "Choose a model." : null;
     const label = scopeLabel();
     const data_notice = settings.provider === "off" ? "AI is off: no note content leaves this device."
-      : settings.provider === "local" ? `Your notes in ${label} are sent only to the local model server at ${settings.local.base_url} when you use AI features.`
+      : settings.provider === "local" ? (remote
+        ? `Your notes in ${label} are sent to ${remote}, a custom endpoint that is NOT on this computer, when you use AI features.`
+        : `Your notes in ${label} are sent only to the local model server at ${settings.local.base_url} when you use AI features.`)
       : `Your notes in ${label} are sent to OpenRouter and ${providerName(model)} when you use AI features.`;
     return {
       settings: structuredClone(settings), key: ks, configured: problem === null, problem,
@@ -216,6 +221,13 @@ export function createAiMockHandlers(h: Handlers): Handlers {
       if (!(s.monthly_cap_usd >= 0)) throw new Error("Monthly cap must be a number ≥ 0");
       if (s.provider === "local" && !/^https?:\/\//.test(s.local.base_url.trim())) {
         throw new Error("Local endpoint must start with http:// or https://");
+      }
+      if (s.provider === "local") {
+        if (!endpointHost(s.local.base_url)) throw new Error("The endpoint URL has no host name");
+        const remote = remoteHost(s.local.base_url);
+        if (remote && (s.local.confirmed_remote_host ?? "").trim().toLowerCase() !== remote) {
+          throw new Error(`${remote} is not on this computer: your notes would be sent to it. Confirm the custom endpoint in AI settings first.`);
+        }
       }
       if (s.scope.kind === "folders" && s.scope.folder_ids.length === 0) throw new Error("Pick at least one folder for the AI scope");
       settings = structuredClone(s);

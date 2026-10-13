@@ -629,6 +629,8 @@ fn serve_once(status: &'static str, body: String) -> (String, Arc<Mutex<String>>
     (format!("http://{addr}"), captured)
 }
 
+// The URL override is debug-only (B-14), so this test is too.
+#[cfg(debug_assertions)]
 #[test]
 fn client_streams_from_http_server_with_attribution_headers() {
     let block = Uuid::now_v7();
@@ -696,4 +698,108 @@ fn live_openrouter_ask() {
     eprintln!("{out:#?}");
     assert!(out.citations.iter().any(|c| c.block_id == f.work_block.to_string()), "should cite the pricing block");
     assert!(!out.answer.contains("ZEBRA"));
+}
+
+// ── Custom (non-loopback) endpoints — B-1 ──
+
+#[test]
+fn loopback_hosts_are_recognised() {
+    use super::settings::{endpoint_host, is_loopback_host};
+    for u in [
+        "http://localhost:11434/v1", "http://LOCALHOST/v1", "http://127.0.0.1:8080", "http://127.9.9.9/v1",
+        "http://[::1]:1234/v1", "http://ollama.localhost/v1", "http://user@localhost/v1", "http://[::ffff:127.0.0.1]/",
+    ] {
+        let h = endpoint_host(u).unwrap_or_else(|| panic!("{u}"));
+        assert!(is_loopback_host(&h), "{u} → {h}");
+    }
+    for (u, host) in [
+        ("https://evil.example/v1", "evil.example"),
+        ("http://127.0.0.1@evil.example/v1", "evil.example"),
+        ("http://localhost.evil.example/v1", "localhost.evil.example"),
+        ("http://192.168.1.20:11434/v1", "192.168.1.20"),
+        ("http://0.0.0.0:11434/v1", "0.0.0.0"),
+        ("http://[2001:db8::1]/v1", "2001:db8::1"),
+    ] {
+        assert_eq!(endpoint_host(u).as_deref(), Some(host), "{u}");
+        assert!(!is_loopback_host(host), "{u}");
+    }
+    assert!(endpoint_host("http:///v1").is_none());
+    assert!(endpoint_host("http://evil.example\\@localhost/").is_none());
+}
+
+#[test]
+fn custom_endpoint_needs_explicit_confirmation() {
+    let f = fixture();
+    let mut s = AiSettings::default();
+    s.provider = ProviderKind::Local;
+    s.local.model = "llama3.1".into();
+    // Loopback setups keep working without the flag.
+    for u in ["http://localhost:11434/v1", "http://127.0.0.1:1234/v1", "http://[::1]:8080/v1"] {
+        s.local.base_url = u.into();
+        save_settings(&f.db, &s).unwrap_or_else(|e| panic!("{u}: {e}"));
+        assert!(provider_for(&s, None).is_ok());
+    }
+    // Not on this computer: refused until confirmed for exactly this host.
+    s.local.base_url = "https://ai.example.com/v1".into();
+    let e = save_settings(&f.db, &s).unwrap_err().to_string();
+    assert!(e.contains("ai.example.com") && e.contains("not on this computer"), "{e}");
+    s.local.confirmed_remote_host = Some("other.example.com".into());
+    assert!(save_settings(&f.db, &s).is_err(), "confirmation is per host");
+    s.local.confirmed_remote_host = Some("ai.example.com".into());
+    save_settings(&f.db, &s).unwrap();
+    assert!(provider_for(&s, None).is_ok());
+    // The data notice says where notes go.
+    let ks = KeyStatus { configured: false, source: "none".into(), keychain_available: true };
+    let st = status(&f.db, ks.clone()).unwrap();
+    assert!(st.configured, "{:?}", st.problem);
+    assert!(st.data_notice.contains("ai.example.com") && st.data_notice.contains("NOT on this computer"), "{}", st.data_notice);
+    // Pointing the URL elsewhere without a new confirmation: refused to save,
+    // and settings that arrive unvalidated (older/imported) don't run.
+    s.local.base_url = "https://elsewhere.example/v1".into();
+    assert!(save_settings(&f.db, &s).is_err());
+    settings::set_value(&f.db, "settings", &serde_json::to_string(&s).unwrap()).unwrap();
+    assert!(matches!(provider_for(&s, None), Err(AiError::NotConfigured(_))));
+    let st = status(&f.db, ks).unwrap();
+    assert!(!st.configured && st.problem.unwrap().contains("elsewhere.example"));
+}
+
+// ── Read-only sessions — B-2 ──
+
+#[test]
+fn ask_on_a_read_only_connection_writes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("ro.minotes");
+    {
+        let db = Database::open(&path).unwrap();
+        let p = db.create_page("Pricing plan", None, false, None, "user").unwrap();
+        db.create_block(&p.id, "Pricing decision: we chose $20 per seat", None, None, "user").unwrap();
+    }
+    let ro = Database::open_read_only(&path).unwrap();
+    // A notebook that never used AI: no tables, and none are created.
+    assert!(!super::has_schema(&ro));
+    assert_eq!(load_settings(&ro).unwrap(), AiSettings::default());
+    assert_eq!(month_spend(&ro).unwrap(), 0.0);
+    assert!(list_runs(&ro, 10).unwrap().is_empty());
+    let p = MockProvider::new(vec![MockTurn::Tools(vec![("search".into(), r#"{"query":"pricing"}"#.into())]), cite_first()]);
+    let mut conv = Conversation::default();
+    let out = ask(&ro, &mock_settings(), &p, "What did we decide about pricing?", &mut conv).unwrap();
+    assert_eq!(out.outcome, "ok");
+    assert!(!super::has_schema(&ro), "no AI tables created");
+    drop(ro);
+    let rw = Database::open(&path).unwrap();
+    assert!(list_runs(&rw, 10).unwrap().is_empty(), "nothing logged");
+
+    // With the AI tables present, a read-only run still logs nothing.
+    save_settings(&rw, &AiSettings::default()).unwrap();
+    drop(rw);
+    let ro = Database::open_read_only(&path).unwrap();
+    let p = MockProvider::new(vec![MockTurn::Tools(vec![("search".into(), r#"{"query":"pricing"}"#.into())]), cite_first()]);
+    let mut conv = Conversation::default();
+    let mut ms = mock_settings();
+    ms.keep_transcripts = true;
+    let out = ask(&ro, &ms, &p, "What did we decide about pricing?", &mut conv).unwrap();
+    assert_eq!(out.outcome, "ok");
+    drop(ro);
+    let rw = Database::open(&path).unwrap();
+    assert!(list_runs(&rw, 10).unwrap().is_empty(), "nothing logged");
 }

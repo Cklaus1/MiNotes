@@ -36,6 +36,9 @@ pub struct ZipImportOut {
     pub skipped: Vec<String>,
     /// The archive's name was taken here; the notebook got `notebook.name`.
     pub renamed_from: Option<String>,
+    /// What the import turned off for safety (AI settings, CSS snippets,
+    /// plugins), phrased for the user.
+    pub turned_off: Vec<String>,
 }
 
 /// Scratch space for building / receiving archives (the app's cache dir).
@@ -181,6 +184,7 @@ pub fn import_notebook_zip(app: AppHandle, source: String) -> Result<ZipImportOu
             attachments: out.attachments,
             skipped: out.skipped,
             renamed_from: out.renamed_from,
+            turned_off: out.turned_off,
         })
     })();
     let _ = std::fs::remove_dir_all(&staging);

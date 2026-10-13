@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import * as api from "../lib/api";
+import { remoteHost } from "../lib/aiEndpoint";
 
 interface Props {
   open: boolean;
@@ -78,7 +79,12 @@ export default function AiSettings({ open, onClose, onSaved }: Props) {
       : draft.scope.kind === "page" ? "the page you have open"
       : (folders.filter(f => draft.scope.folder_ids.includes(f.id)).map(f => f.name).join(", ") || "the selected folders");
     if (draft.provider === "off") return "AI is off: no note content leaves this device.";
-    if (draft.provider === "local") return `Your notes in ${scope} are sent only to the local model server at ${draft.local.base_url} when you use AI features.`;
+    if (draft.provider === "local") {
+      const remote = remoteHost(draft.local.base_url);
+      return remote
+        ? `Your notes in ${scope} are sent to ${remote}, a custom endpoint that is NOT on this computer, when you use AI features.`
+        : `Your notes in ${scope} are sent only to the local model server at ${draft.local.base_url} when you use AI features.`;
+    }
     const prefix = (modelFor("interactive") || "").split("/")[0];
     const who = PROVIDER_NAMES[prefix] ?? (prefix ? prefix[0].toUpperCase() + prefix.slice(1) : "the model's provider");
     return `Your notes in ${scope} are sent to OpenRouter and ${who} when you use AI features.`;
@@ -86,6 +92,9 @@ export default function AiSettings({ open, onClose, onSaved }: Props) {
   }, [draft, folders, recommended]);
 
   if (!open) return null;
+
+  // A "local" endpoint that isn't on this computer needs explicit confirmation.
+  const remote = draft?.provider === "local" ? remoteHost(draft.local.base_url) : null;
 
   const update = (fn: (d: api.AiSettings) => void) => {
     setDraft(prev => {
@@ -232,8 +241,20 @@ export default function AiSettings({ open, onClose, onSaved }: Props) {
                 <div className="settings-section-title">Local model</div>
                 <label className="ai-field">
                   <span>Endpoint (OpenAI-compatible)</span>
-                  <input className="ai-text" value={draft.local.base_url} onChange={e => update(d => { d.local.base_url = e.target.value; })} />
+                  <input className="ai-text" value={draft.local.base_url} onChange={e => update(d => { d.local.base_url = e.target.value; })}
+                    data-testid="ai-local-url" />
                 </label>
+                {remote && (
+                  <div className="ai-remote-warning" data-testid="ai-remote-warning" role="alert">
+                    <p><strong>{remote} is not on this computer.</strong> Notes will be sent to {remote} whenever you use AI features.</p>
+                    <label className="ai-check">
+                      <input type="checkbox" checked={draft.local.confirmed_remote_host === remote}
+                        onChange={e => update(d => { d.local.confirmed_remote_host = e.target.checked ? remote : null; })}
+                        data-testid="ai-remote-confirm" />
+                      Send my notes to {remote}
+                    </label>
+                  </div>
+                )}
                 <label className="ai-field">
                   <span>Model name</span>
                   <input className="ai-text" placeholder="e.g. llama3.1:8b" value={draft.local.model}

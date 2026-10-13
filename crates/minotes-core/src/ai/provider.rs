@@ -15,17 +15,18 @@ use super::AiError;
 
 pub const OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
 /// Dev/test-only override of the OpenRouter base URL (e.g. a local mock server).
+/// Honoured only in debug builds: the OpenRouter key is sent to this URL, so a
+/// release build must never let the environment redirect it.
 pub const OPENROUTER_URL_ENV: &str = "MINOTES_AI_OPENROUTER_URL";
 pub const APP_REFERER: &str = "https://github.com/Cklaus1/MiNotes";
 pub const APP_TITLE: &str = "MiNotes";
 
 pub fn openrouter_base_url() -> String {
-    std::env::var(OPENROUTER_URL_ENV)
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| OPENROUTER_BASE_URL.to_string())
-        .trim_end_matches('/')
-        .to_string()
+    #[cfg(debug_assertions)]
+    if let Some(u) = std::env::var(OPENROUTER_URL_ENV).ok().filter(|s| !s.trim().is_empty()) {
+        return u.trim_end_matches('/').to_string();
+    }
+    OPENROUTER_BASE_URL.to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
