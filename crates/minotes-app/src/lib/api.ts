@@ -661,6 +661,9 @@ export interface EncryptionPlan { deletes: string[]; needs_folder: boolean; has_
 /** New encrypted notebook (unlocked, not switched to). The recovery key is shown once. */
 export const createEncryptedNotebook = (name: string, location: string | undefined, passphrase: string) =>
   invoke<CreatedEncrypted>("create_encrypted_notebook", { name, location: location ?? null, passphrase });
+/** A new encrypted notebook from a git sync remote another device pushed (not switched to). */
+export const joinEncryptedNotebook = (remote: string, name: string, location: string | undefined, passphrase: string) =>
+  invoke<NotebookInfo>("join_encrypted_notebook", { remote, name, location: location ?? null, passphrase });
 /** Unlock the open notebook with its passphrase (or recovery key). */
 export const unlockNotebook = (secret: string, recovery: boolean, remember: boolean) =>
   invoke<NotebookSession>("unlock_notebook", { secret, recovery, remember });

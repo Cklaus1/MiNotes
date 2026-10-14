@@ -116,7 +116,7 @@ export default function SettingsPanel({ open, onClose, syncError, onSyncRetry, o
   const [syncLoading, setSyncLoading] = useState(false);
   const [showSyncAdvanced, setShowSyncAdvanced] = useState(false);
   const [syncDir, setSyncDir] = useState("~/MiNotes_Sync");
-  /** Sync is off for encrypted notebooks (no plaintext markdown copy). */
+  /** Encrypted notebooks sync encrypted files only (PRD-encryption §4.5). */
   const [encrypted, setEncrypted] = useState(false);
 
   useEffect(() => {
@@ -216,8 +216,7 @@ export default function SettingsPanel({ open, onClose, syncError, onSyncRetry, o
                 <input
                   type="checkbox"
                   checked={syncStatus?.enabled ?? false}
-                  disabled={syncLoading || encrypted}
-                  title={encrypted ? "Sync is off for encrypted notebooks: they have no plaintext markdown copy to sync" : undefined}
+                  disabled={syncLoading}
                   onChange={async (e) => {
                     setSyncLoading(true);
                     try {
@@ -239,8 +238,9 @@ export default function SettingsPanel({ open, onClose, syncError, onSyncRetry, o
               </label>
             </div>
             {encrypted && (
-              <div className="nb-hint" data-testid="sync-off-encrypted">
-                Sync is off for encrypted notebooks: they keep no plain-markdown copy for git to move.
+              <div className="nb-hint" data-testid="sync-encrypted-note">
+                This notebook is encrypted: git moves only encrypted files (opaque names, no titles or text).
+                Other devices join it with “Join encrypted notebook…” and the passphrase.
               </div>
             )}
             {syncStatus?.enabled && (

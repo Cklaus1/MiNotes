@@ -328,6 +328,67 @@ export function PassphrasePrompt({ title, message, onDone }: { title: string; me
   );
 }
 
+/** "Join encrypted notebook…": a git sync remote another device pushed, a
+ *  name, and that notebook's passphrase (or recovery key). Opens it and turns
+ *  sync on, which brings in every page. */
+export function JoinNotebookDialog({ onClose }: { onClose: () => void }) {
+  const [remote, setRemote] = useState("");
+  const [name, setName] = useState("");
+  const [secret, setSecret] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const join = async () => {
+    if (!remote.trim() || !name.trim() || !secret || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const nb = await api.joinEncryptedNotebook(remote.trim(), name.trim(), undefined, secret);
+      setSecret("");
+      await switchNotebook(nb.key);
+      notebooksChanged();
+      await api.gitSyncEnable();
+      notebooksChanged();
+      showToast(`Joined encrypted notebook “${nb.name}” — synced`);
+      onClose();
+    } catch (e) {
+      setError(friendly(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Modal title="Join an encrypted notebook" onClose={onClose} testId="join-notebook-dialog">
+      <form onSubmit={e => { e.preventDefault(); join(); }}>
+        <p className="nb-hint">
+          Another device syncs this notebook to a git remote. MiNotes fetches it, opens it with its passphrase and keeps
+          it in sync here. Nothing is sent to the remote until it is open.
+        </p>
+        <label className="nb-field">
+          <span className="nb-label">Sync remote (git URL or path)</span>
+          <input className="search-input" autoFocus value={remote} onChange={e => setRemote(e.target.value)} spellCheck={false}
+            aria-label="Sync remote" data-testid="join-remote" />
+        </label>
+        <label className="nb-field">
+          <span className="nb-label">Name on this device</span>
+          <input className="search-input" value={name} onChange={e => setName(e.target.value)} aria-label="Notebook name" data-testid="join-name" />
+        </label>
+        <label className="nb-field">
+          <span className="nb-label">Passphrase or recovery key</span>
+          <input type="password" className="search-input" value={secret} onChange={e => setSecret(e.target.value)}
+            aria-label="Passphrase or recovery key" data-testid="join-passphrase" />
+        </label>
+        {error && <div className="nb-field-error" role="alert" data-testid="join-error">{error}</div>}
+        <div className="nb-modal-actions">
+          <button type="button" className="btn btn-sm" onClick={onClose} disabled={busy}>Cancel</button>
+          <button type="submit" className="btn btn-sm btn-primary" disabled={busy || !remote.trim() || !name.trim() || !secret} data-testid="join-go">
+            {busy ? "Joining…" : "Join notebook"}
+          </button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
 /** "Encrypt this notebook…": what will be deleted, a passphrase, then the
  *  recovery key. */
 export function EncryptNotebookDialog({ session, onClose }: { session: api.NotebookSession; onClose: () => void }) {

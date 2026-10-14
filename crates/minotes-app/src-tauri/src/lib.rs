@@ -1384,7 +1384,6 @@ fn git_available() -> bool {
 #[tauri::command(async)]
 fn git_sync_enable(state: State<'_, AppState>) -> Result<GitSyncStatus, String> {
     refuse_read_only(&state)?;
-    refuse_encrypted(&state)?;
     let key = current_notebook_key(&state)?;
     sync_manager::enable_sync_with(&key, || lock_db_for_notebook(&state, &key))
         .map_err(|e| e.to_string())
@@ -1394,15 +1393,6 @@ fn git_sync_enable(state: State<'_, AppState>) -> Result<GitSyncStatus, String> 
 fn git_sync_disable(state: State<'_, AppState>) -> Result<(), String> {
     let key = current_notebook_key(&state)?;
     sync_manager::disable_sync(&key).map_err(|e| e.to_string())
-}
-
-/// Git sync is off for encrypted notebooks until the encrypted mirror exists
-/// (PRD-encryption §4.5 / step 5, PRD-git-sync §3.6).
-fn refuse_encrypted(state: &AppState) -> Result<(), String> {
-    if state.session.lock().map_err(|e| e.to_string())?.notebook.is_encrypted() {
-        return Err("Sync is off for encrypted notebooks: they have no plaintext markdown copy to sync".into());
-    }
-    Ok(())
 }
 
 fn refuse_read_only(state: &AppState) -> Result<(), String> {
@@ -1415,7 +1405,6 @@ fn refuse_read_only(state: &AppState) -> Result<(), String> {
 #[tauri::command(async)]
 fn git_sync(state: State<'_, AppState>) -> Result<GitSyncResult, String> {
     refuse_read_only(&state)?;
-    refuse_encrypted(&state)?;
     let key = current_notebook_key(&state)?;
     // Export (DB lock) → pull/push (no lock) → import only if the pull brought
     // remote commits (DB lock; pages edited during the network phase are kept).
@@ -1786,6 +1775,7 @@ pub fn run() {
             notebook_transfer::export_notebook_zip,
             // ── Encryption ──
             encryption_commands::create_encrypted_notebook,
+            encryption_commands::join_encrypted_notebook,
             encryption_commands::unlock_notebook,
             encryption_commands::lock_notebook,
             encryption_commands::change_passphrase,

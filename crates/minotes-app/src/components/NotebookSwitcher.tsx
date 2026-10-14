@@ -8,13 +8,14 @@ import {
   switchNotebook, useCapabilities,
 } from "../lib/notebooks";
 import { NewNotebookDialog, ManageNotebooksDialog, MoveNotebookDialog } from "./NotebookDialogs";
+import { JoinNotebookDialog } from "./EncryptionDialogs";
 import { LOCK_CHANGED, lockNow } from "../lib/encryption";
 import "./notebooks.css";
 
 /** Event other views fire to open a notebook dialog (detail: "new" | "manage" | "move"). */
 const OPEN_DIALOG = "minotes-open-notebook-dialog";
 
-type Dialog = null | "new" | "manage" | "move";
+type Dialog = null | "new" | "manage" | "move" | "join";
 
 /**
  * The notebook switcher in the sidebar header: the open notebook's name next to
@@ -192,6 +193,11 @@ export default function NotebookSwitcher() {
               Open notebook…
             </button>
           )}
+          {caps.open_folder && (
+            <button role="menuitem" className="nb-menu-action" onClick={() => { setOpen(false); setDialog("join"); }} data-testid="menu-join-encrypted">
+              Join encrypted notebook…
+            </button>
+          )}
           <button role="menuitem" className="nb-menu-action" onClick={() => { setOpen(false); setDialog("manage"); }}>
             Manage notebooks…
           </button>
@@ -242,6 +248,7 @@ export default function NotebookSwitcher() {
           onLocate={locate}
         />
       )}
+      {dialog === "join" && <JoinNotebookDialog onClose={() => setDialog(null)} />}
       {dialog === "move" && session && (
         <MoveNotebookDialog session={session} onClose={() => setDialog(null)} />
       )}

@@ -128,6 +128,28 @@ pub fn create_encrypted_notebook(name: String, location: Option<String>, passphr
     Ok(CreatedEncrypted { notebook: notebook::info(&nb), recovery_key: rk.display().to_string() })
 }
 
+/// "Join an encrypted notebook…": a new encrypted notebook (default
+/// `~/MiNotes/<name>`) from a git sync remote another device pushed, unlocked
+/// with that notebook's passphrase or recovery key. Does not switch; the caller
+/// then switches and turns sync on (which imports everything). A wrong secret
+/// creates nothing and nothing is written to the remote.
+#[tauri::command(async)]
+pub fn join_encrypted_notebook(remote: String, name: String, location: Option<String>, passphrase: String) -> Result<NotebookInfo, String> {
+    let name = name.trim().to_string();
+    notebook::validate_name(&name).map_err(|e| e.to_string())?;
+    let remote = remote.trim().to_string();
+    if remote.is_empty() || remote.starts_with('-') || remote.contains('\0') {
+        return Err("Enter the sync remote's address".into());
+    }
+    let loc = match location.filter(|l| !l.trim().is_empty() && !notebook::is_app_storage()) {
+        Some(l) => l,
+        None => notebook::default_location(&name).display().to_string(),
+    };
+    let dir = security::validate_notebook_dir(&loc, &notebooks::home_roots())?;
+    let nb = minotes_core::sync_encrypted::join_from_remote(&remote, &dir, &name, &passphrase).map_err(err)?;
+    Ok(notebook::info(&nb))
+}
+
 /// Open the locked notebook with its passphrase (or, with `recovery`, its
 /// recovery key). `remember`: keep the key in this device's keychain.
 #[tauri::command(async)]

@@ -79,7 +79,6 @@ export function createEncryptionMockHandlers(h: Handlers): Handlers {
   const baseSession = h.get_notebook_session;
   const baseSwitch = h.switch_notebook;
   const baseDelete = h.delete_notebook;
-  const baseSyncEnable = h.git_sync_enable;
 
   return {
     list_notebooks: (a: any) => (baseList(a) as any[]).map(decorate),
@@ -181,10 +180,7 @@ export function createEncryptionMockHandlers(h: Handlers): Handlers {
       st.remembered = false;
       return st.recovery;
     },
-    // Sync is off for encrypted notebooks (no plaintext markdown copy).
-    git_sync_enable: (a: any) => {
-      if (stateOf(current())) fail("Sync is off for encrypted notebooks: they have no plaintext markdown copy to sync");
-      return baseSyncEnable(a);
-    },
+    // Joining needs git and a real remote: desktop only.
+    join_encrypted_notebook: () => fail("Joining an encrypted notebook needs the desktop app (git)"),
   };
 }
