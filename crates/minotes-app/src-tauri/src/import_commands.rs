@@ -49,6 +49,18 @@ pub fn serve(app: &AppHandle, req: &tauri::http::Request<Vec<u8>>) -> tauri::htt
     use std::io::{Read, Seek, SeekFrom};
     let path = req.uri().path().trim_start_matches('/');
     let hash = path.split('/').next().unwrap_or("");
+    // An encrypted notebook keeps attachments inside its database.
+    if let Some(state) = app.try_state::<AppState>() {
+        let encrypted = state.session.lock().map(|s| s.notebook.is_encrypted()).unwrap_or(false);
+        if encrypted {
+            let Ok(db) = state.db_guard() else { return respond(423, "text/plain", b"locked".to_vec()) };
+            let mime = db.get_attachment(hash).ok().flatten().map(|a| attachments::mime_for_ext(&a.ext).to_string());
+            return match (db.attachment_bytes(hash), mime) {
+                (Ok(Some(bytes)), Some(mime)) => respond(200, &mime, bytes),
+                _ => respond(404, "text/plain", b"not found".to_vec()),
+            };
+        }
+    }
     let Some(dir) = store_dir(app) else { return respond(503, "text/plain", b"not ready".to_vec()) };
     let Some(file) = attachments::find_file(&dir, hash) else {
         return respond(404, "text/plain", b"not found".to_vec());
@@ -103,7 +115,7 @@ pub fn store_attachment(state: State<'_, AppState>, request: tauri::ipc::Request
     };
     let name = decode_header(&request, "x-name").filter(|n| !n.trim().is_empty()).unwrap_or_else(|| "pasted".into());
     let mime = decode_header(&request, "x-mime");
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     db.store_attachment_bytes(&name, mime.as_deref(), bytes).map(|s| s.attachment).map_err(|e| e.to_string())
 }
 
@@ -127,7 +139,7 @@ pub fn store_dropped_files(state: State<'_, AppState>, dropped: State<'_, Droppe
         Some((t, p)) if t.elapsed() < Duration::from_secs(60) => p,
         _ => return Ok(vec![]),
     };
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     let mut out = Vec::new();
     for p in paths.into_iter().filter(|p| p.is_file()).take(20) {
         out.push(db.store_attachment_file(&p, None, None).map_err(|e| e.to_string())?.attachment);
@@ -167,6 +179,21 @@ fn is_safe_to_open(file: &Path) -> bool {
 /// viewing allowlist; reveal it in its folder otherwise.
 #[tauri::command]
 pub fn open_attachment(app: AppHandle, hash: String) -> Result<(), String> {
+    // Encrypted notebook: a temporary copy (deleted on lock, switch and quit).
+    if let Some(state) = app.try_state::<AppState>() {
+        if state.session.lock().map(|s| s.notebook.is_encrypted()).unwrap_or(false) {
+            let (bytes, ext) = {
+                let db = state.db_guard()?;
+                let a = db.get_attachment(&hash).map_err(|e| e.to_string())?.ok_or("Attachment not found")?;
+                (db.attachment_bytes(&hash).map_err(|e| e.to_string())?.ok_or("Attachment not found")?, a.ext)
+            };
+            let file = crate::encryption_commands::temp_copy(&hash, &ext, &bytes)?;
+            if !is_safe_to_open(&file) {
+                return tauri_plugin_opener::reveal_item_in_dir(&file).map_err(|e| e.to_string());
+            }
+            return tauri_plugin_opener::open_path(&file, None::<&str>).map_err(|e| e.to_string());
+        }
+    }
     let dir = store_dir(&app).ok_or("not ready")?;
     let file = attachments::find_file(&dir, &hash).ok_or("Attachment not found")?;
     if !is_safe_to_open(&file) {
@@ -197,7 +224,7 @@ mod tests {
 
 #[tauri::command]
 pub fn get_attachment(state: State<'_, AppState>, hash: String) -> Result<Option<Attachment>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     db.get_attachment(&hash).map_err(|e| e.to_string())
 }
 
@@ -267,7 +294,7 @@ struct AppDb<'a> {
 
 impl import::DbAccess for AppDb<'_> {
     fn with<R>(&self, f: &mut dyn FnMut(&Database) -> minotes_core::error::Result<R>) -> minotes_core::error::Result<R> {
-        let db = self.state.db.lock().map_err(|e| minotes_core::error::Error::InvalidInput(e.to_string()))?;
+        let db = self.state.db_guard().map_err(minotes_core::error::Error::InvalidInput)?;
         let cur = self.state.current_notebook.lock().map(|g| g.clone()).unwrap_or_default();
         if cur != self.key {
             return Err(minotes_core::error::Error::InvalidInput("The notebook was switched during the import".into()));
@@ -434,7 +461,7 @@ pub fn import_discard(imp: State<'_, ImportState>) -> Result<(), String> {
 pub fn import_undo(app: AppHandle, state: State<'_, AppState>, run_id: String, keep_edited: Option<bool>) -> Result<import::UndoReport, String> {
     refuse_read_only(&state)?;
     let r = {
-        let db = state.db.lock().map_err(|e| e.to_string())?;
+        let db = state.db_guard()?;
         import::undo(&db, &run_id, keep_edited.unwrap_or(false)).map_err(|e| e.to_string())?
     };
     if let Some(w) = app.try_state::<notebooks::MirrorWorker>() {
@@ -445,6 +472,6 @@ pub fn import_undo(app: AppHandle, state: State<'_, AppState>, run_id: String, k
 
 #[tauri::command]
 pub fn import_runs(state: State<'_, AppState>) -> Result<Vec<import::RunInfo>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     import::list_runs(&db).map_err(|e| e.to_string())
 }

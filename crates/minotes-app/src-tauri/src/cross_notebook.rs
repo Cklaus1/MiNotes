@@ -44,7 +44,7 @@ pub async fn resolve_notebook_links(app: AppHandle, links: Vec<LinkRef>) -> Resu
     blocking(move || {
         let state = app.state::<AppState>();
         let (db_path, read_only) = current(&state)?;
-        let db = state.db.lock().map_err(|e| e.to_string())?;
+        let db = state.db_guard()?;
         Ok(cross_notebook::resolve_links(&db, Some(&db_path), &links, !read_only))
     })
     .await?

@@ -12,6 +12,11 @@ chrono = { workspace = true }
 thiserror = { workspace = true }
 hostname = "0.4"
 sha2 = "0.10"
+# Encryption (PRD-encryption §4.2): key slots. hkdf and zeroize are already in the tree.
+argon2 = "0.5"
+aes-gcm = "0.10"
+hkdf = "0.12"
+zeroize = "1"
 # AI platform: blocking HTTP client for the OpenAI-compatible providers (OpenRouter / local).
 ureq = "3"
 # ── Import / attachments ──
@@ -21,6 +26,11 @@ md-5 = "0.10"
 # Notebook zip export / import (pure-Rust deflate: builds for Android too).
 zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 # ── End import ──
+
+# "Keep unlocked on this device" (PRD-encryption §4.3) — same crate and
+# features the app already uses for the AI key; not on Android (no backend).
+[target.'cfg(not(target_os = "android"))'.dependencies]
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
 
 [dev-dependencies]
 tempfile = "3"

@@ -34,6 +34,7 @@ crates/
 - **Remote images are blocked by default** — a web-address image renders as a `.remote-img` placeholder (Image node `renderHTML`), never an `<img src="https://…">`; `lib/remoteImages.ts` fills it with a `blob:` from the backend `fetch_remote_image` (SSRF-safe, `src-tauri/src/remote_images.rs`) once allowed (Settings → Privacy: Never/Ask/Always, per-notebook always, page bar). The CSP has no `https:` in `img-src`, so never load a remote image any other way.
 - **React Fast Refresh** — component .tsx files must ONLY export React components. Utility exports break HMR.
 - **Cross-notebook** — `[[Notebook::Page]]` links live in `notebook_links` (target notebook key + page id), never in `links`; other notebooks are only opened via `cross_notebook::open_read_only` (no migrations, no lock). Search palette "All notebooks" toggle → `search_other_notebooks`; CLI `search --all-notebooks`. See PRD-notebooks §10 (Android storage: §11).
+- **Encrypted notebooks** (PRD-encryption) — whole database via SQLCipher; key slots in `notebook.json` (`encryption`, format 2, no name); `core/src/encryption.rs` holds the process-wide unlocked-key cache that `Notebook::open_db` / `open_read_only` consult (`Error::Locked` otherwise). In the app `AppState.db` is `Option<Database>` — always go through `state.db_guard()?` (a locked notebook → `NOTEBOOK_LOCKED: …`); `LockGate` unmounts the app while locked. Encrypted notebooks have **no mirror and no git sync** (`mirror::run` refuses them), attachments live in the DB (`attachment_blobs`), recent pages in `ui_state`, never localStorage. Tests use the debug-only fake keychain (`MINOTES_FAKE_KEYCHAIN_DIR`) — never the real OS keychain. CLI: `MINOTES_PASSPHRASE` or a TTY prompt.
 
 ## Build & test
 
@@ -79,7 +80,7 @@ cargo run -p minotes-cli -- notebook list                     # notebook create|
 
 - Tests use `agent-browser` (headless Chrome via CDP) — must be installed separately
 - Test API exposed on `window.__MINOTES__` for automation
-- 62 user journeys, ~419 assertions in `tests/user-journey-test.sh` (browser + mock by default; `JOURNEY_BACKEND=desktop` runs them on the real app). Desktop journeys D1–D9 (~183 assertions) in `tests/desktop-journey-test.sh`; D7 covers outside edits of the markdown copy, D8 cross-notebook search and links, D9 notebook zip export/import.
+- 65 user journeys, ~473 assertions in `tests/user-journey-test.sh` (browser + mock by default; `JOURNEY_BACKEND=desktop` runs them on the real app); journey 65 = encrypted notebooks. Desktop journeys D1–D13 (~252 assertions) in `tests/desktop-journey-test.sh`; D7 covers outside edits of the markdown copy, D8 cross-notebook search and links, D9 notebook zip export/import, D13 encrypted notebooks + the leak scan. A journey must define the shell helpers it uses (they may run on their own).
 - `get_page_blocks`/`getPageTree` return blocks in **outline order** (depth-first, siblings by position). Positions are per-parent — never sort a page's blocks by position alone.
 - ProseMirror doesn't respond to CDP keyboard events — use `window.__MINOTES__` API instead
 - Browser-mode tests use the mock backend and don't enforce the CSP. For anything Tauri-only use the `desktop-check` skill (Xvfb + xdotool + screenshots against a throwaway HOME).
@@ -119,9 +120,14 @@ cargo run -p minotes-cli -- notebook list                     # notebook create|
 
 ```bash
 cd crates/minotes-app && ANDROID_HOME=~/Android/Sdk NDK_HOME=~/Android/Sdk/ndk/27.0.12077973 \
+  RANLIB_x86_64_linux_android=~/Android/Sdk/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib \
   npx tauri android build --debug --apk --target x86_64   # emulator; drop --target for all ABIs
 # → src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk
 ```
+
+SQLite is **SQLCipher** (`rusqlite` feature `bundled-sqlcipher-vendored-openssl`, workspace-wide):
+plaintext notebooks are ordinary SQLite files; OpenSSL is built from source. The NDK only ships
+`llvm-ranlib`, so set `RANLIB_<target>` (as above; `RANLIB_aarch64_linux_android` etc. for other ABIs).
 
 - **All paths come from `minotes_core::notebook`** (`base_dir`, `home_dir`, `notebooks_dir`, `default_location`, `legacy_mirror_dir`). Never read `$HOME` directly — Android has none (the pre-fix APK died opening `./.minotes/default.db`). On Android `platform::init_app_storage` injects the app data dir at startup: `<app_data>` = the old `~/.minotes`, folder notebooks in `<app_data>/notebooks/<name>/`.
 - **SQLite never runs on a picker `content://` URI.** The picker is only for copies: `export_notebook_zip` / `import_notebook_zip` (core `notebook_zip`), via `tauri-plugin-fs` on Android.

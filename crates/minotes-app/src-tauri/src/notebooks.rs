@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use minotes_core::db::Database;
+use minotes_core::encryption;
 use minotes_core::mirror::{self, MirrorTarget, FS_LOCK};
 use minotes_core::notebook::{self, LockInfo, LockStatus, Notebook, NotebookInfo};
 use minotes_core::outside::{self, OutsideReport, Scope};
@@ -55,11 +56,20 @@ pub struct SessionInfo {
     pub cloud: Option<String>,
     /// `notebook (conflicted copy).minotes` and friends next to the database.
     pub conflicted_copies: Vec<String>,
+    /// Encrypted with a passphrase (PRD-encryption).
+    pub encrypted: bool,
+    /// Encrypted and not unlocked: only the unlock screen can be shown.
+    pub locked: bool,
+    /// Its key is kept in this device's keychain ("Keep unlocked on this device").
+    pub remembered: bool,
+    /// This device has a keychain MiNotes can use.
+    pub keychain_available: bool,
 }
 
-fn session_info(s: &Session) -> SessionInfo {
+pub(crate) fn session_info(s: &Session) -> SessionInfo {
     let nb = &s.notebook;
     let info = notebook::info(nb);
+    let remembered = info.encrypted && minotes_core::keychain::is_remembered(&nb.key);
     SessionInfo {
         key: nb.key.clone(),
         name: nb.name.clone(),
@@ -72,13 +82,22 @@ fn session_info(s: &Session) -> SessionInfo {
         notice: s.notice.clone(),
         cloud: info.cloud,
         conflicted_copies: nb.root().map(notebook::conflicted_copies).unwrap_or_default(),
+        encrypted: info.encrypted,
+        locked: info.locked,
+        remembered,
+        keychain_available: info.encrypted && minotes_core::keychain::available(),
     }
 }
 
 /// Open a notebook's database for this instance: take its lock, or open it
 /// read-only if another live instance holds it. A folder notebook that is
 /// missing is an error — never an empty new notebook.
-pub fn open_for_session(nb: &Notebook, force: bool) -> Result<(Database, Option<LockInfo>), String> {
+///
+/// An encrypted notebook opens only when its key is known — unlocked in this
+/// process, or remembered in this device's keychain; otherwise the database is
+/// `None` (locked) and the window shows the unlock screen. A conversion a crash
+/// interrupted is finished (or rolled back) first.
+pub fn open_for_session(nb: &Notebook, force: bool) -> Result<(Option<Database>, Option<LockInfo>), String> {
     if nb.is_folder() && !nb.available() {
         return Err(format!(
             "Notebook \u{201c}{}\u{201d} is unavailable: {} was not found",
@@ -86,24 +105,46 @@ pub fn open_for_session(nb: &Notebook, force: bool) -> Result<(Database, Option<
             nb.root().map(|r| r.display().to_string()).unwrap_or_default()
         ));
     }
-    match notebook::acquire_lock(&nb.lock_path(), force) {
-        Ok(LockStatus::HeldByOther(info)) => {
-            let db = Database::open_read_only(&nb.db_path()).map_err(|e| e.to_string())?;
-            Ok((db, Some(info)))
-        }
+    let held = match notebook::acquire_lock(&nb.lock_path(), force) {
+        Ok(LockStatus::HeldByOther(info)) => Some(info),
         // Acquired — or the lock could not be written (read-only medium):
         // SQLite's own locking stays the real guard.
-        _ => {
-            let db = nb.open_db().map_err(|e| e.to_string())?;
-            // Startup / notebook switch: drop change-feed events past the
-            // horizon (cheap when there are none; also done after empty-trash).
-            db.compact_events_quietly();
-            Ok((db, None))
+        _ => None,
+    };
+    if held.is_none() {
+        if let Err(e) = encryption::resume_conversion(nb) {
+            eprintln!("[minotes] could not finish an interrupted conversion: {e}");
         }
     }
+    if nb.is_encrypted() && encryption::unlocked_key(&nb.key).is_none() {
+        match minotes_core::keychain::recall(&nb.key) {
+            Some(k) => {
+                if encryption::unlock_with_key(nb, k).is_err() {
+                    // The remembered key no longer opens it (rotated): forget it.
+                    minotes_core::keychain::forget(&nb.key);
+                    return Ok((None, held));
+                }
+            }
+            None => return Ok((None, held)),
+        }
+    }
+    let db = open_unlocked(nb, held.is_some())?;
+    Ok((Some(db), held))
 }
 
-fn home_roots() -> Vec<PathBuf> {
+/// Open `nb` (its key, if encrypted, is in the unlocked-key cache).
+pub(crate) fn open_unlocked(nb: &Notebook, read_only: bool) -> Result<Database, String> {
+    if read_only {
+        return nb.open_read_only(5000).map_err(|e| e.to_string());
+    }
+    let db = nb.open_db().map_err(|e| e.to_string())?;
+    // Startup / notebook switch: drop change-feed events past the horizon
+    // (cheap when there are none; also done after empty-trash).
+    db.compact_events_quietly();
+    Ok(db)
+}
+
+pub(crate) fn home_roots() -> Vec<PathBuf> {
     let mut roots = vec![notebook::home_dir()];
     if let Some(w) = crate::wsl_windows_profile() {
         roots.push(w);
@@ -188,7 +229,7 @@ fn outside_pass(app: &AppHandle, paths: Vec<PathBuf>) {
     let state = app.state::<AppState>();
     let _fs = FS_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let report = {
-        let Ok(db) = state.db.lock() else { return };
+        let Ok(db) = state.db_guard() else { return };
         let Ok(s) = state.session.lock() else { return };
         if s.held_by.is_some() || !s.notebook.mirror_enabled() || notebook::is_app_storage() {
             return;
@@ -227,13 +268,22 @@ fn mirror_pass(app: &AppHandle, full: bool) -> Result<Option<mirror::MirrorRepor
 fn mirror_pass_inner(app: &AppHandle, full: bool) -> Result<Option<mirror::MirrorReport>, String> {
     let state = app.state::<AppState>();
     let _fs = FS_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    // The instance that has the notebook open owns its mirror (and an encrypted
+    // notebook has none — checked before asking for its database, which a
+    // locked one doesn't have).
+    let (nb, ro) = {
+        let s = state.session.lock().map_err(|e| e.to_string())?;
+        (s.notebook.clone(), s.held_by.is_some())
+    };
+    if ro || !nb.mirror_enabled() {
+        return Ok(None);
+    }
     let (target, prepared, outside_report) = {
-        let db = state.db.lock().map_err(|e| e.to_string())?;
+        let db = state.db_guard()?;
         let (nb, ro) = {
             let s = state.session.lock().map_err(|e| e.to_string())?;
             (s.notebook.clone(), s.held_by.is_some())
         };
-        // The instance that has the notebook open owns its mirror.
         if ro || !nb.mirror_enabled() {
             return Ok(None);
         }
@@ -259,7 +309,7 @@ fn mirror_pass_inner(app: &AppHandle, full: bool) -> Result<Option<mirror::Mirro
 
 fn checkpoint_if_needed(app: &AppHandle) {
     let state = app.state::<AppState>();
-    let Ok(db) = state.db.lock() else { return };
+    let Ok(db) = state.db_guard() else { return };
     let Ok(s) = state.session.lock() else { return };
     if s.held_by.is_some() {
         return;
@@ -304,7 +354,11 @@ pub fn start_mirror_worker(app: &AppHandle) -> MirrorWorker {
                     due = Some((now + MIRROR_DEBOUNCE).min(first + MIRROR_MAX_WAIT));
                     checkpoint_at = None;
                     set_pending(&handle, true);
-                    continue;
+                    // A steady stream of changes must not postpone the pass past
+                    // MIRROR_MAX_WAIT: only wait while the deadline is ahead.
+                    if due.is_some_and(|t| t > Instant::now()) {
+                        continue;
+                    }
                 }
                 Some(MirrorMsg::Full) => {
                     full = true;
@@ -423,6 +477,15 @@ pub fn start_db_watch(app: &AppHandle) -> DbWatch {
             };
             let Some(Ok(event)) = res else { continue };
             let event: notify::Event = event;
+            // Reads are not changes. (SQLite reading the WAL — and every read of an
+            // encrypted database, which SQLCipher never memory-maps — raises access
+            // events; counting them made each UI refresh trigger the next one.)
+            // (Closing after a write is still a change.)
+            if let notify::EventKind::Access(k) = event.kind {
+                if !matches!(k, notify::event::AccessKind::Close(notify::event::AccessMode::Write)) {
+                    continue;
+                }
+            }
             let Some(state) = app_handle.try_state::<AppState>() else { continue };
             let db_path = match state.session.lock() {
                 Ok(s) => s.notebook.db_path(),
@@ -573,7 +636,7 @@ pub fn outside_edit_set_blocks(
         Some(c) => Some(uuid::Uuid::parse_str(&c).map_err(|e| e.to_string())?),
         None => None,
     };
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     outside::set_page_blocks(&db, &pid, &blocks, park_title.as_deref(), cleanup.as_ref())
         .map(|p| p.map(|u| u.to_string()))
         .map_err(|e| e.to_string())
@@ -592,14 +655,20 @@ pub fn switch_to(app: &AppHandle, state: &AppState, nb: Notebook, force: bool) -
         let old_ro = state.session.lock().map_err(|e| e.to_string())?.held_by.is_some();
         // Flush what the old notebook's mirror hasn't written yet — unless a
         // sync is busy in that folder (its next open does a full pass anyway).
-        if !old_ro && old.key != nb.key {
-            if let Ok(_fs) = FS_LOCK.try_lock() {
-                let _ = mirror::run(&db, &MirrorTarget::for_notebook(&old), false);
+        // Never for a notebook without a mirror: an encrypted one must not get a
+        // plaintext copy (found by desktop journey D13's leak scan).
+        if !old_ro && old.key != nb.key && old.mirror_enabled() {
+            if let (Ok(_fs), Some(open)) = (FS_LOCK.try_lock(), db.as_ref()) {
+                let _ = mirror::run(open, &MirrorTarget::for_notebook(&old), false);
             }
         }
         *db = new_db;
         if old.key != nb.key && !old_ro {
             notebook::release_lock(&old.lock_path());
+        }
+        // Only the open notebook stays unlocked (PRD-encryption §4.4).
+        if old.key != nb.key {
+            crate::encryption_commands::forget_session_secrets(&old);
         }
         *state.current_notebook.lock().map_err(|e| e.to_string())? = nb.key.clone();
         let mut s = state.session.lock().map_err(|e| e.to_string())?;
@@ -622,8 +691,17 @@ pub fn switch_to(app: &AppHandle, state: &AppState, nb: Notebook, force: bool) -
 /// folder holds one consistent file), release the lock.
 pub fn shutdown(app: &AppHandle) {
     let Some(state) = app.try_state::<AppState>() else { return };
+    crate::encryption_commands::remove_open_copies();
     let _fs = FS_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-    let Ok(db) = state.db.lock() else { return };
+    let Ok(db) = state.db_guard() else {
+        // Locked: nothing to write; still release the lock.
+        if let Ok(s) = state.session.lock() {
+            if s.held_by.is_none() {
+                notebook::release_lock(&s.notebook.lock_path());
+            }
+        }
+        return;
+    };
     let Ok(s) = state.session.lock() else { return };
     if s.held_by.is_some() {
         return;
@@ -736,7 +814,8 @@ pub fn move_notebook_to_folder(app: AppHandle, state: State<'_, AppState>, path:
     let dest = security::validate_notebook_dir(&path, &home_roots())?;
     let _fs = FS_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let new_nb = {
-        let mut db = state.db.lock().map_err(|e| e.to_string())?;
+        let mut slot = state.db.lock().map_err(|e| e.to_string())?;
+        let db = slot.as_ref().ok_or("This notebook is locked")?;
         let (src, ro) = {
             let s = state.session.lock().map_err(|e| e.to_string())?;
             (s.notebook.clone(), s.held_by.is_some())
@@ -745,17 +824,21 @@ pub fn move_notebook_to_folder(app: AppHandle, state: State<'_, AppState>, path:
             return Err("This notebook is open read-only".into());
         }
         // Bring the mirror up to date first, so what moves is current.
-        let _ = mirror::run(&db, &MirrorTarget::for_notebook(&src), false);
-        let prepared = notebook::prepare_move_to_folder(&db, &src, &dest, None).map_err(|e| e.to_string())?;
+        let _ = mirror::run(db, &MirrorTarget::for_notebook(&src), false);
+        let prepared = notebook::prepare_move_to_folder(db, &src, &dest, None).map_err(|e| e.to_string())?;
         let new_nb = prepared.notebook.clone();
-        let (new_db, _) = match open_for_session(&new_nb, false) {
-            Ok(x) => x,
+        let new_db = match open_for_session(&new_nb, false) {
+            Ok((Some(d), _)) => d,
+            Ok((None, _)) => {
+                prepared.rollback();
+                return Err("The moved notebook could not be opened".into());
+            }
             Err(e) => {
                 prepared.rollback();
                 return Err(e);
             }
         };
-        *db = new_db; // closes the old database before its files go
+        *slot = Some(new_db); // closes the old database before its files go
         notebook::release_lock(&src.lock_path());
         *state.current_notebook.lock().map_err(|e| e.to_string())? = new_nb.key.clone();
         *state.session.lock().map_err(|e| e.to_string())? =
@@ -813,7 +896,7 @@ pub fn git_sync_resolve_deletions(app: AppHandle, state: State<'_, AppState>, ac
     let graph = state.current_notebook.lock().map_err(|e| e.to_string())?.clone();
     let n = {
         let _fs = FS_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let db = state.db.lock().map_err(|e| e.to_string())?;
+        let db = state.db_guard()?;
         minotes_core::sync_manager::resolve_held_deletions(&db, &graph, move_to_trash).map_err(|e| e.to_string())?
     };
     if let Some(w) = app.try_state::<MirrorWorker>() {

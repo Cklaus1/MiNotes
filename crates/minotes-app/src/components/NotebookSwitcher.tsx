@@ -8,6 +8,7 @@ import {
   switchNotebook, useCapabilities,
 } from "../lib/notebooks";
 import { NewNotebookDialog, ManageNotebooksDialog, MoveNotebookDialog } from "./NotebookDialogs";
+import { LOCK_CHANGED, lockNow } from "../lib/encryption";
 import "./notebooks.css";
 
 /** Event other views fire to open a notebook dialog (detail: "new" | "manage" | "move"). */
@@ -48,10 +49,12 @@ export default function NotebookSwitcher() {
     };
     window.addEventListener(NOTEBOOKS_CHANGED, reload);
     window.addEventListener(NOTEBOOK_SWITCHED, reload);
+    window.addEventListener(LOCK_CHANGED, reload);
     window.addEventListener(OPEN_DIALOG, openDialog);
     return () => {
       window.removeEventListener(NOTEBOOKS_CHANGED, reload);
       window.removeEventListener(NOTEBOOK_SWITCHED, reload);
+      window.removeEventListener(LOCK_CHANGED, reload);
       window.removeEventListener(OPEN_DIALOG, openDialog);
     };
   }, [load]);
@@ -130,6 +133,7 @@ export default function NotebookSwitcher() {
         data-testid="notebook-switcher"
       >
         <span className="nb-switcher-name">{name}</span>
+        {session?.encrypted && <span className="nb-lock-badge" title="Encrypted notebook" aria-label="Encrypted" data-testid="notebook-lock-icon">🔒</span>}
         {session?.read_only && <span className="nb-badge" title="Open read-only">read-only</span>}
         <span className="nb-switcher-caret" aria-hidden>▾</span>
       </button>
@@ -152,7 +156,10 @@ export default function NotebookSwitcher() {
                   >
                     <span className="nb-check" aria-hidden>{current ? "✓" : ""}</span>
                     <span className="nb-item-text">
-                      <span className="nb-item-name">{nb.name}</span>
+                      <span className="nb-item-name">
+                        {nb.name}
+                        {nb.encrypted && <span className="nb-lock-badge" title={nb.locked ? "Encrypted, locked" : "Encrypted"} aria-label="Encrypted">🔒</span>}
+                      </span>
                       <span className="nb-item-path">
                         {caps.app_storage ? "On this device" : nb.available ? prettyPath(nb.kind === "folder" ? nb.path : nb.mirror_dir) : "unavailable"}
                       </span>
@@ -166,6 +173,17 @@ export default function NotebookSwitcher() {
             })}
           </div>
           <div className="nb-menu-sep" />
+          {session?.encrypted && !session.locked && (
+            <button
+              role="menuitem"
+              className="nb-menu-action"
+              onClick={() => { setOpen(false); lockNow().catch(e => showToast(`Couldn't lock: ${errorMessage(e)}`)); }}
+              title="Lock this encrypted notebook now (Ctrl+Shift+L)"
+              data-testid="menu-lock-now"
+            >
+              Lock now <span className="nb-hint">Ctrl+Shift+L</span>
+            </button>
+          )}
           <button role="menuitem" className="nb-menu-action" onClick={() => { setOpen(false); setDialog("new"); }}>
             New notebook…
           </button>

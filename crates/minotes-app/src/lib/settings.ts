@@ -26,6 +26,9 @@ export interface MiNotesSettings {
   /** Images from the web in notes: never load, ask per page (default), always load.
    *  Loading goes through the backend (lib/remoteImages.ts), never the webview. */
   remoteImages: "never" | "ask" | "always";
+  /** Encrypted notebooks lock after this many minutes without input; 0 = never
+   *  (PRD-encryption §4.4, default 15). Also locks after the computer slept. */
+  autoLockMinutes: number;
 }
 
 const STORAGE_KEY = "minotes-settings";
@@ -41,6 +44,7 @@ const DEFAULTS: MiNotesSettings = {
   },
   searchAllNotebooks: false,
   remoteImages: "ask",
+  autoLockMinutes: 15,
 };
 
 export function getSettings(): MiNotesSettings {

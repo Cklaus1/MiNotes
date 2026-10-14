@@ -13,7 +13,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use minotes_core::ai::{self, catalog, settings::{AiSettings, ProviderKind, TaskClass}, AiError, AiEvent, AiStatus, Conversation, KeyStatus, RunOutput, RunRecord};
-use minotes_core::db::Database;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
@@ -31,6 +30,19 @@ struct Runtime {
 fn runtime() -> &'static Runtime {
     static RT: OnceLock<Runtime> = OnceLock::new();
     RT.get_or_init(Runtime::default)
+}
+
+/// Locking an encrypted notebook: stop running questions and drop the in-memory
+/// conversations (they hold note text).
+pub(crate) fn forget_runtime() {
+    if let Ok(c) = runtime().cancels.lock() {
+        for flag in c.values() {
+            flag.store(true, Ordering::Relaxed);
+        }
+    }
+    if let Ok(mut c) = runtime().conversations.lock() {
+        c.clear();
+    }
 }
 
 // ── Keychain ──
@@ -88,7 +100,7 @@ fn err(e: AiError) -> String {
 #[tauri::command]
 pub fn ai_get_status(state: State<'_, AppState>) -> Result<AiStatus, String> {
     let (_, ks) = current_key();
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     ai::status(&db, ks).map_err(err)
 }
 
@@ -98,7 +110,7 @@ pub fn ai_save_settings(state: State<'_, AppState>, settings: AiSettings) -> Res
         return Err("The mock provider is for tests only.".into());
     }
     let (_, ks) = current_key();
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     ai::save_settings(&db, &settings).map_err(err)?;
     ai::status(&db, ks).map_err(err)
 }
@@ -139,7 +151,7 @@ pub struct ModelList {
 #[tauri::command]
 pub async fn ai_list_models(state: State<'_, AppState>, refresh: Option<bool>) -> Result<ModelList, String> {
     let cached = {
-        let db = state.db.lock().map_err(|e| e.to_string())?;
+        let db = state.db_guard()?;
         ai::ensure_schema(&db).map_err(err)?;
         catalog::cached(&db)
     };
@@ -159,7 +171,7 @@ pub async fn ai_list_models(state: State<'_, AppState>, refresh: Option<bool>) -
         .map_err(|e| e.to_string())?;
         match fetched {
             Ok(models) => {
-                let db = state.db.lock().map_err(|e| e.to_string())?;
+                let db = state.db_guard()?;
                 if db.is_read_only() {
                     // Not cached in a notebook this window doesn't own.
                     cat = Some(catalog::Catalog { fetched_at: chrono::Utc::now().to_rfc3339(), models });
@@ -211,11 +223,11 @@ pub fn ai_ask(
     runtime().cancels.lock().unwrap().insert(conv_id.clone(), cancel.clone());
     // The open notebook's database (a legacy graph or a notebook folder), and
     // whether this window only has it read-only (another instance holds it).
-    let (path, read_only) = {
+    let (nb, read_only) = {
         use tauri::Manager;
         let state = app.state::<super::AppState>();
         let s = state.session.lock().map_err(|e| e.to_string())?;
-        (s.notebook.db_path(), s.held_by.is_some())
+        (s.notebook.clone(), s.held_by.is_some())
     };
     let id = conv_id.clone();
     std::thread::spawn(move || {
@@ -225,7 +237,8 @@ pub fn ai_ask(
         let result = (|| -> Result<RunOutput, AiError> {
             // Asking only reads notes, so a read-only window may ask too: its
             // connection runs no migrations and the run is not logged.
-            let db = if read_only { Database::open_read_only(&path) } else { Database::open(&path) }
+            // (An encrypted notebook opens with its unlocked key; a locked one fails.)
+            let db = if read_only { nb.open_read_only(5000) } else { nb.open_db() }
                 .map_err(|e| AiError::Internal(e.to_string()))?;
             let settings = ai::load_settings(&db)?;
             let model = ai::resolve_model(&db, &settings, TaskClass::Interactive)?;
@@ -273,6 +286,6 @@ pub fn ai_reset_conversation(conversation_id: String) -> Result<(), String> {
 
 #[tauri::command]
 pub fn ai_list_runs(state: State<'_, AppState>, limit: Option<i64>) -> Result<Vec<RunRecord>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     ai::list_runs(&db, limit.unwrap_or(20).clamp(1, 200)).map_err(err)
 }

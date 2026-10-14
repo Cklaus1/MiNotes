@@ -4,7 +4,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use rusqlite::Connection;
 
-use crate::error::Result;
+use crate::crypto::DataKey;
+use crate::error::{Error, Result};
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS folders (
@@ -250,13 +251,16 @@ pub struct Database {
     /// Where this database's attachment store lives when it can't be derived
     /// from the file path (in-memory databases, tests). See `attachments_dir`.
     pub(crate) attachments_override: std::cell::RefCell<Option<std::path::PathBuf>>,
+    /// Opened with a data key (SQLCipher). Attachments then live inside the
+    /// database, never as files (PRD-encryption §4.5).
+    pub(crate) encrypted: bool,
     // ── End import ──
 }
 
 impl Database {
     pub fn open(path: &Path) -> Result<Self> {
         let conn = Connection::open(path)?;
-        let db = Self { conn, attachments_override: Default::default() };
+        let db = Self { conn, attachments_override: Default::default(), encrypted: false };
         db.init()?;
         Ok(db)
     }
@@ -280,7 +284,12 @@ impl Database {
         conn.execute_batch(&format!(
             "PRAGMA busy_timeout={busy_timeout_ms}; PRAGMA query_only=ON; PRAGMA foreign_keys=ON; PRAGMA trusted_schema=OFF;"
         ))?;
-        Ok(Self { conn, attachments_override: Default::default() })
+        Ok(Self { conn, attachments_override: Default::default(), encrypted: false })
+    }
+
+    /// Was this database opened with a data key (an encrypted notebook)?
+    pub fn is_encrypted(&self) -> bool {
+        self.encrypted
     }
 
     /// Is this connection read-only (see [`open_read_only`](Self::open_read_only))?
@@ -291,9 +300,57 @@ impl Database {
             .unwrap_or(false)
     }
 
+    /// Open an existing encrypted (SQLCipher) database with its data key.
+    ///
+    /// The key is handed to SQLCipher before the first statement, and the file is
+    /// opened without `SQLITE_OPEN_CREATE`: a wrong path must not become an empty
+    /// new database. A key that does not match is [`Error::KeyMismatch`] — the
+    /// passphrase itself was already checked by the key slot (`crypto`).
+    pub fn open_encrypted(path: &Path, key: &DataKey) -> Result<Self> {
+        use rusqlite::OpenFlags;
+        if !path.is_file() {
+            return Err(Error::NotFound(format!("{} not found", path.display())));
+        }
+        let conn = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_URI | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        apply_key(&conn, key)?;
+        let db = Self { conn, attachments_override: Default::default(), encrypted: true };
+        db.init()?;
+        Ok(db)
+    }
+
+    /// Create a new encrypted database at `path` (which must not exist).
+    pub fn create_encrypted(path: &Path, key: &DataKey) -> Result<Self> {
+        if path.exists() {
+            return Err(Error::AlreadyExists(format!("{} already exists", path.display())));
+        }
+        let conn = Connection::open(path)?;
+        apply_key(&conn, key)?;
+        let db = Self { conn, attachments_override: Default::default(), encrypted: true };
+        db.init()?;
+        Ok(db)
+    }
+
+    /// [`open_read_only_with_timeout`](Self::open_read_only_with_timeout) for an
+    /// encrypted database.
+    pub fn open_read_only_encrypted(path: &Path, key: &DataKey, busy_timeout_ms: u32) -> Result<Self> {
+        use rusqlite::OpenFlags;
+        let conn = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        apply_key(&conn, key)?;
+        conn.execute_batch(&format!(
+            "PRAGMA busy_timeout={busy_timeout_ms}; PRAGMA query_only=ON; PRAGMA foreign_keys=ON; PRAGMA trusted_schema=OFF; PRAGMA temp_store=MEMORY;"
+        ))?;
+        Ok(Self { conn, attachments_override: Default::default(), encrypted: true })
+    }
+
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
-        let db = Self { conn, attachments_override: Default::default() };
+        let db = Self { conn, attachments_override: Default::default(), encrypted: false };
         db.init()?;
         Ok(db)
     }
@@ -382,7 +439,6 @@ impl Database {
     /// Execute a read-only SQL query and return results as JSON.
     /// Only a single read-only SELECT-style statement is allowed.
     pub fn run_query(&self, sql: &str) -> Result<serde_json::Value> {
-        use crate::error::Error;
         let trimmed = sql.trim();
 
         // All checks below are LEXICAL and happen before any `prepare`: some
@@ -539,6 +595,12 @@ impl Database {
                      tokenize='unicode61 remove_diacritics 2');
                  INSERT INTO blocks_fts(blocks_fts) VALUES('rebuild');
                  ALTER TABLE trash ADD COLUMN original_title TEXT;"),
+            // v5: UI state that names content (recent page titles) for notebooks
+            // whose webview storage must stay content-free (PRD-encryption §4.5).
+            (5, "CREATE TABLE IF NOT EXISTS ui_state (
+                     key        TEXT PRIMARY KEY,
+                     value      TEXT NOT NULL,
+                     updated_at TEXT NOT NULL);"),
         ];
 
         let current: i64 = self
@@ -666,6 +728,44 @@ fn has_multiple_statements(sql: &str) -> bool {
         i += 1;
     }
     false
+}
+
+/// Key a fresh connection (before any other statement) and prove the key reads
+/// the file. Uses `sqlite3_key_v2` with SQLCipher's raw-key literal `x'…'` from a
+/// zeroizing buffer — no SQL text with the key in it.
+pub(crate) fn apply_key(conn: &Connection, key: &DataKey) -> Result<()> {
+    let lit = key.sqlcipher_literal();
+    let rc = unsafe {
+        rusqlite::ffi::sqlite3_key_v2(
+            conn.handle(),
+            c"main".as_ptr(),
+            lit.as_ptr() as *const std::ffi::c_void,
+            lit.len() as std::ffi::c_int,
+        )
+    };
+    if rc != rusqlite::ffi::SQLITE_OK {
+        return Err(Error::InvalidInput(format!("Could not set the database key (code {rc})")));
+    }
+    // SQLCipher only notices a wrong key on the first read.
+    match conn.query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get::<_, i64>(0)) {
+        Ok(_) => Ok(()),
+        Err(rusqlite::Error::SqliteFailure(f, _)) if f.code == rusqlite::ErrorCode::NotADatabase => {
+            Err(Error::KeyMismatch)
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Is `path` a plain (unencrypted) SQLite file? A SQLCipher file starts with its
+/// random salt instead of the `SQLite format 3` header. (An empty file is a new
+/// plain database.)
+pub fn is_plaintext_sqlite(path: &Path) -> bool {
+    use std::io::Read;
+    if std::fs::metadata(path).map(|m| m.len() == 0).unwrap_or(false) {
+        return true;
+    }
+    let mut hdr = [0u8; 16];
+    std::fs::File::open(path).and_then(|mut f| f.read_exact(&mut hdr)).is_ok() && &hdr == b"SQLite format 3\0"
 }
 
 /// PRAGMAs that only read schema/metadata and never change connection or DB state.
@@ -956,5 +1056,109 @@ mod tests {
         db.trash_page(&p.id).unwrap();
         db.create_page("P", None, false, None, "user").unwrap();
         assert_eq!(db.list_trash().unwrap()[0].title, "P");
+    }
+
+    // ── Encryption (PRD-encryption §4.1) ──
+
+    fn file_contains(path: &Path, needle: &[u8]) -> bool {
+        std::fs::read(path).map(|b| b.windows(needle.len()).any(|w| w == needle)).unwrap_or(false)
+    }
+
+    #[test]
+    fn encrypted_database_has_no_plaintext_on_disk() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("enc.minotes");
+        let key = DataKey::generate();
+        {
+            let db = Database::create_encrypted(&path, &key).unwrap();
+            let p = db.create_page("Zebra Title Marker", None, false, None, "user").unwrap();
+            db.create_block(&p.id, "quokka block marker", None, None, "user").unwrap();
+            // Search (FTS5) works on the encrypted database.
+            assert_eq!(db.search("quokka", None).unwrap().len(), 1);
+            // While open: the WAL holds the recent pages — encrypted too.
+            for f in ["enc.minotes", "enc.minotes-wal"] {
+                for m in [&b"Zebra Title Marker"[..], b"quokka block marker"] {
+                    assert!(!file_contains(&tmp.path().join(f), m), "{f} leaks {}", String::from_utf8_lossy(m));
+                }
+            }
+        }
+        assert!(!is_plaintext_sqlite(&path));
+        for m in [&b"Zebra Title Marker"[..], b"quokka block marker"] {
+            assert!(!file_contains(&path, m));
+        }
+        // Reopens with the key; the data and the schema version are there.
+        let db = Database::open_encrypted(&path, &key).unwrap();
+        assert_eq!(db.list_pages(Some(10)).unwrap()[0].title, "Zebra Title Marker");
+        let v: i64 = db.conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert!(v >= 4);
+    }
+
+    #[test]
+    fn wrong_key_is_a_key_mismatch_not_corruption() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("enc.minotes");
+        drop(Database::create_encrypted(&path, &DataKey::generate()).unwrap());
+        let e = Database::open_encrypted(&path, &DataKey::generate()).err().unwrap();
+        assert!(matches!(e, Error::KeyMismatch), "{e:?}");
+        assert!(Database::open_read_only_encrypted(&path, &DataKey::generate(), 100).is_err());
+        // The plain opener cannot read it either (and does not damage it).
+        assert!(Database::open(&path).is_err());
+        assert!(!is_plaintext_sqlite(&path));
+    }
+
+    #[test]
+    fn open_encrypted_never_creates_a_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("missing.minotes");
+        assert!(matches!(Database::open_encrypted(&path, &DataKey::generate()), Err(Error::NotFound(_))));
+        assert!(!path.exists());
+        drop(Database::create_encrypted(&tmp.path().join("x"), &DataKey::generate()).unwrap());
+        assert!(Database::create_encrypted(&tmp.path().join("x"), &DataKey::generate()).is_err());
+    }
+
+    #[test]
+    fn plaintext_databases_are_unchanged_by_sqlcipher() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("plain.db");
+        let db = Database::open(&path).unwrap();
+        db.create_page("Plain page", None, false, None, "user").unwrap();
+        drop(db);
+        assert!(is_plaintext_sqlite(&path), "no key → standard SQLite format");
+        // Opening a plaintext file with a key is a mismatch, not a silent re-key.
+        assert!(matches!(Database::open_encrypted(&path, &DataKey::generate()), Err(Error::KeyMismatch)));
+        assert!(is_plaintext_sqlite(&path));
+        assert_eq!(Database::open(&path).unwrap().list_pages(Some(10)).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn read_only_encrypted_connection_reads_but_cannot_write() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("enc.minotes");
+        let key = DataKey::generate();
+        let db = Database::create_encrypted(&path, &key).unwrap();
+        db.create_page("Readable", None, false, None, "user").unwrap();
+        let ro = Database::open_read_only_encrypted(&path, &key, 1000).unwrap();
+        assert_eq!(ro.list_pages(Some(10)).unwrap().len(), 1);
+        assert!(ro.is_read_only());
+        assert!(ro.create_page("Nope", None, false, None, "user").is_err());
+    }
+
+    #[test]
+    fn run_query_refuses_key_pragmas() {
+        let tmp = tempfile::tempdir().unwrap();
+        let key = DataKey::generate();
+        let db = Database::create_encrypted(&tmp.path().join("enc.minotes"), &key).unwrap();
+        for q in [
+            "PRAGMA key = 'x'",
+            "PRAGMA rekey = 'x'",
+            "PRAGMA hexkey = '00'",
+            "PRAGMA cipher_compatibility = 3",
+            "PRAGMA cipher_settings",
+            "ATTACH DATABASE 'other.db' AS o KEY ''",
+        ] {
+            assert!(db.run_query(q).is_err(), "{q} must be refused");
+        }
+        // Still keyed and readable afterwards.
+        assert!(db.run_query("SELECT count(*) AS n FROM pages").is_ok());
     }
 }

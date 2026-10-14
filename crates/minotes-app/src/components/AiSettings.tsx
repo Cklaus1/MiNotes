@@ -40,9 +40,11 @@ export default function AiSettings({ open, onClose, onSaved }: Props) {
   const [message, setMessage] = useState<{ text: string; error: boolean } | null>(null);
   const [saving, setSaving] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [encrypted, setEncrypted] = useState(false);
 
   useEffect(() => {
     if (!open) return;
+    api.getNotebookSession().then(s => setEncrypted(!!s?.encrypted)).catch(() => setEncrypted(false));
     setMessage(null);
     setKeyInput("");
     api.aiGetStatus().then(s => { setStatus(s); setDraft(structuredClone(s.settings)); }).catch(e => setMessage({ text: String(e), error: true }));
@@ -336,6 +338,12 @@ export default function AiSettings({ open, onClose, onSaved }: Props) {
             )}
 
             <div className="settings-section">
+              {encrypted && (
+                <div className="ai-notice-box" data-testid="ai-encrypted-notice">
+                  This notebook is encrypted. Turning AI on sends the notes in scope to the provider you choose,
+                  outside the encryption — a local model keeps them on this computer.
+                </div>
+              )}
               <div className="ai-notice-box" data-testid="ai-data-notice">{notice}</div>
               {message && <p className={message.error ? "ai-error" : "ai-saved"} role="status">{message.text}</p>}
               <div className="ai-settings-actions">

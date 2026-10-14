@@ -3,9 +3,16 @@ resolver = "2"
 members = ["crates/minotes-core", "crates/minotes-cli", "crates/minotes-app/src-tauri"]
 
 [workspace.dependencies]
-rusqlite = { version = "0.33", features = ["bundled"] }
+rusqlite = { version = "0.33", features = ["bundled-sqlcipher-vendored-openssl"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v7", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 thiserror = "2"
+
+# Argon2id (64 MiB, 3 passes) takes many seconds unoptimised; keep unlocking and
+# the tests fast in debug builds.
+[profile.dev.package.argon2]
+opt-level = 3
+[profile.dev.package.blake2]
+opt-level = 3

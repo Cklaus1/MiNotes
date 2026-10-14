@@ -1,0 +1,149 @@
+/* Encrypted notebooks: unlock screen, passphrase fields, recovery key. */
+
+.enc-lockscreen {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 14vh 16px 16px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  overflow: auto;
+}
+.enc-lock-card {
+  width: min(420px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 24px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.3);
+}
+.enc-lock-icon {
+  font-size: 28px;
+  line-height: 1;
+}
+.enc-lock-title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  word-break: break-word;
+}
+.enc-lock-sub {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+.enc-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.enc-check.disabled {
+  color: var(--text-muted);
+  cursor: default;
+}
+.enc-link {
+  margin-right: auto;
+}
+.enc-mono,
+.enc-recovery-key {
+  font-family: var(--font-mono, ui-monospace, "SFMono-Regular", Menlo, monospace);
+}
+.enc-others {
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.enc-others-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.enc-pass-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.enc-meter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.enc-meter-bar {
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--bg-surface);
+  overflow: hidden;
+}
+.enc-meter-bar span {
+  display: block;
+  height: 100%;
+  background: var(--danger);
+  transition: width 0.15s;
+}
+.enc-meter[data-strength="2"] .enc-meter-bar span { background: var(--warning); }
+.enc-meter[data-strength="3"] .enc-meter-bar span,
+.enc-meter[data-strength="4"] .enc-meter-bar span { background: var(--success); }
+.enc-recovery {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.enc-recovery p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.enc-recovery-key {
+  display: block;
+  padding: 10px 12px;
+  border: 1px dashed var(--accent);
+  border-radius: 6px;
+  font-size: 14px;
+  letter-spacing: 0.04em;
+  /* Wrap between the dash-separated groups, never inside one. */
+  word-break: normal;
+  overflow-wrap: anywhere;
+  user-select: all;
+  background: var(--bg-secondary);
+}
+.enc-recovery-actions {
+  display: flex;
+  gap: 6px;
+}
+.enc-deletes {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12px;
+  max-height: 140px;
+  overflow: auto;
+}
+.enc-deletes code {
+  word-break: break-all;
+}
+.nb-lock-badge {
+  font-size: 11px;
+  margin-left: 4px;
+}
+
+/* Print only the recovery key panel. */
+@media print {
+  body.enc-printing * { visibility: hidden; }
+  body.enc-printing .enc-recovery,
+  body.enc-printing .enc-recovery * { visibility: visible; }
+  body.enc-printing .enc-recovery { position: absolute; left: 0; top: 0; }
+  body.enc-printing .enc-recovery-actions,
+  body.enc-printing .enc-check,
+  body.enc-printing .nb-modal-actions { display: none; }
+}

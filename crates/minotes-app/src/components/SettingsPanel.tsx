@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import NotebookSettings from "./NotebookSettings";
 import RemoteImageSettings from "./RemoteImageSettings";
+import SecuritySettings from "./SecuritySettings";
 import { prettyPath } from "../lib/notebooks";
 import { getSettings, updateSettings, type MiNotesSettings } from "../lib/settings";
 import { getTheme, setTheme } from "../lib/theme";
@@ -36,6 +37,7 @@ const SHORTCUT_GROUPS: Array<{ title: string; items: Array<[string, string]> }> 
       ["Ctrl+P", "Open a PDF by path"],
       ["Ctrl+Shift+C", "Copy the page as text"],
       ["Ctrl+Shift+T", "Toggle light/dark theme"],
+      ["Ctrl+Shift+L", "Lock an encrypted notebook"],
       ["Ctrl+,", "Settings"],
       ["Ctrl+\\", "Show/hide the right sidebar"],
       ["Esc", "Close the open panel, menu or view"],
@@ -114,6 +116,8 @@ export default function SettingsPanel({ open, onClose, syncError, onSyncRetry, o
   const [syncLoading, setSyncLoading] = useState(false);
   const [showSyncAdvanced, setShowSyncAdvanced] = useState(false);
   const [syncDir, setSyncDir] = useState("~/MiNotes_Sync");
+  /** Sync is off for encrypted notebooks (no plaintext markdown copy). */
+  const [encrypted, setEncrypted] = useState(false);
 
   useEffect(() => {
     if (open) {
@@ -122,7 +126,10 @@ export default function SettingsPanel({ open, onClose, syncError, onSyncRetry, o
       setCurrentTheme(getTheme());
       api.gitAvailable().then(setGitInstalled).catch(() => setGitInstalled(false));
       api.gitSyncStatus().then(setSyncStatus).catch(() => {});
-      api.getNotebookSession().then(s => { if (s?.mirror_dir) setSyncDir(prettyPath(s.mirror_dir)); }).catch(() => {});
+      api.getNotebookSession().then(s => {
+        if (s?.mirror_dir) setSyncDir(prettyPath(s.mirror_dir));
+        setEncrypted(!!s?.encrypted);
+      }).catch(() => {});
     }
   }, [open]);
 
@@ -193,6 +200,9 @@ export default function SettingsPanel({ open, onClose, syncError, onSyncRetry, o
         {/* Notebook: location + markdown copy (mirror) status */}
         <NotebookSettings />
 
+        {/* Security: encryption, lock, passphrase, recovery key */}
+        <SecuritySettings />
+
         {/* Privacy: remote images (blocked by default) */}
         <RemoteImageSettings />
 
@@ -206,7 +216,8 @@ export default function SettingsPanel({ open, onClose, syncError, onSyncRetry, o
                 <input
                   type="checkbox"
                   checked={syncStatus?.enabled ?? false}
-                  disabled={syncLoading}
+                  disabled={syncLoading || encrypted}
+                  title={encrypted ? "Sync is off for encrypted notebooks: they have no plaintext markdown copy to sync" : undefined}
                   onChange={async (e) => {
                     setSyncLoading(true);
                     try {
@@ -227,6 +238,11 @@ export default function SettingsPanel({ open, onClose, syncError, onSyncRetry, o
                 <span className="settings-toggle-slider" />
               </label>
             </div>
+            {encrypted && (
+              <div className="nb-hint" data-testid="sync-off-encrypted">
+                Sync is off for encrypted notebooks: they keep no plain-markdown copy for git to move.
+              </div>
+            )}
             {syncStatus?.enabled && (
               <>
                 {syncError && (

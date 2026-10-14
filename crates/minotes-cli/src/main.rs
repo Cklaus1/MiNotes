@@ -7,6 +7,7 @@ use minotes_core::db::Database;
 
 mod commands;
 mod output;
+mod unlock;
 
 use commands::{
     block::BlockCmd, export::{ExportCmd, ImportCmd}, folder::FolderCmd,
@@ -218,10 +219,10 @@ fn main() {
         }
     };
 
-    let db = match Database::open(&db_path) {
+    let db = match unlock::open_db(&db_path) {
         Ok(db) => db,
-        Err(e) => {
-            output::print_error(&format!("Failed to open database: {e}"));
+        Err(msg) => {
+            output::print_error(&msg);
             process::exit(1);
         }
     };

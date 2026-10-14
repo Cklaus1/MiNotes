@@ -17,12 +17,16 @@ mod cross_notebook;
 mod platform;
 mod security;
 mod remote_images;
+mod encryption_commands;
 // ── Import / attachments ──
 mod import_commands;
 // ── End import ──
 
 pub(crate) struct AppState {
-    pub(crate) db: Mutex<Database>,
+    /// The open notebook's database — `None` while it is an encrypted notebook
+    /// that is locked (PRD-encryption §4.4). Commands go through
+    /// [`AppState::db_guard`], which turns that into a typed "locked" error.
+    pub(crate) db: Mutex<Option<Database>>,
     /// Key of the open notebook (legacy notebook name, or a folder notebook's id).
     pub(crate) current_notebook: Mutex<String>,
     /// The open notebook: location, lock / read-only state, startup notice.
@@ -32,6 +36,34 @@ pub(crate) struct AppState {
     /// and the first write (`create_block`, `create_page` by title) materialises
     /// the page under that id. Lock order: `db` before this.
     pub(crate) virtual_journals: Mutex<HashMap<chrono::NaiveDate, uuid::Uuid>>,
+}
+
+/// The open database, held for the life of the guard.
+pub(crate) struct DbGuard<'a>(std::sync::MutexGuard<'a, Option<Database>>);
+
+impl std::ops::Deref for DbGuard<'_> {
+    type Target = Database;
+    fn deref(&self) -> &Database {
+        // `db_guard` only hands out guards over `Some`.
+        self.0.as_ref().expect("DbGuard over an open database")
+    }
+}
+
+/// Prefix of the error every command returns while the open notebook is locked;
+/// the frontend shows the unlock screen when it sees it.
+pub(crate) const LOCKED_ERROR: &str = "NOTEBOOK_LOCKED";
+
+impl AppState {
+    /// Lock the open notebook's database for a command. A locked (encrypted)
+    /// notebook is `Err("NOTEBOOK_LOCKED: …")`.
+    pub(crate) fn db_guard(&self) -> Result<DbGuard<'_>, String> {
+        let g = self.db.lock().map_err(|e| e.to_string())?;
+        if g.is_none() {
+            let name = self.session.lock().map(|s| s.notebook.name.clone()).unwrap_or_default();
+            return Err(format!("{LOCKED_ERROR}: Notebook \u{201c}{name}\u{201d} is locked"));
+        }
+        Ok(DbGuard(g))
+    }
 }
 
 /// The date of a virtual journal id handed out by `get_journal`, if it is one.
@@ -105,13 +137,13 @@ struct Link {
 
 #[tauri::command]
 fn list_pages(state: State<'_, AppState>, limit: Option<i64>) -> Result<Vec<Page>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     db.list_pages(limit).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn get_page_tree(state: State<'_, AppState>, title_or_id: String) -> Result<PageTree, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
 
     let page = if let Ok(uuid) = uuid::Uuid::parse_str(&title_or_id) {
         let p = db.get_page(&uuid).map_err(|e| e.to_string())?;
@@ -139,7 +171,7 @@ fn get_page_tree(state: State<'_, AppState>, title_or_id: String) -> Result<Page
 
 #[tauri::command]
 fn create_page(state: State<'_, AppState>, title: String) -> Result<Page, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     // Auto-detect journal pages by title format "Journal/YYYY-MM-DD". A journal
     // already shown as virtual keeps the id the frontend holds.
     if let Some(date) = minotes_core::repo::pages::journal_date_of(&title) {
@@ -164,7 +196,7 @@ fn create_page(state: State<'_, AppState>, title: String) -> Result<Page, String
 fn delete_page(state: State<'_, AppState>, id: String) -> Result<bool, String> {
     // Soft delete: route to trash so the user can recover. Permanent delete is
     // exposed separately via `permanently_delete`.
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
     db.trash_page(&uuid).map_err(|e| e.to_string())?;
     Ok(true)
@@ -172,7 +204,7 @@ fn delete_page(state: State<'_, AppState>, id: String) -> Result<bool, String> {
 
 #[tauri::command]
 fn rename_page(state: State<'_, AppState>, id: String, new_title: String) -> Result<Page, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
     db.rename_page(&uuid, &new_title, "user")
         .map_err(|e| e.to_string())
@@ -185,7 +217,7 @@ fn create_block(
     content: String,
     parent_id: Option<String>,
 ) -> Result<Block, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     let page_uuid = uuid::Uuid::parse_str(&page_id).map_err(|e| e.to_string())?;
     let parent_uuid = parent_id
         .as_ref()
@@ -211,7 +243,7 @@ fn create_block(
 
 #[tauri::command]
 fn update_block(state: State<'_, AppState>, id: String, content: String) -> Result<Block, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
     db.update_block(&uuid, Some(&content), "user")
         .map_err(|e| e.to_string())
@@ -219,20 +251,20 @@ fn update_block(state: State<'_, AppState>, id: String, content: String) -> Resu
 
 #[tauri::command]
 fn delete_block(state: State<'_, AppState>, id: String) -> Result<bool, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
     db.delete_block(&uuid, "user").map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn search_blocks(state: State<'_, AppState>, query: String, limit: Option<i64>) -> Result<Vec<Block>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     db.search(&query, limit).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn get_backlinks(state: State<'_, AppState>, page_id: String) -> Result<Vec<Link>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     let uuid = uuid::Uuid::parse_str(&page_id).map_err(|e| e.to_string())?;
     let links = db.get_backlink_blocks(&uuid).map_err(|e| e.to_string())?;
     Ok(links
@@ -249,7 +281,7 @@ fn get_backlinks(state: State<'_, AppState>, page_id: String) -> Result<Vec<Link
 
 #[tauri::command]
 fn get_unlinked_references(state: State<'_, AppState>, page_id: String) -> Result<Vec<Block>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     let uuid = uuid::Uuid::parse_str(&page_id).map_err(|e| e.to_string())?;
     db.get_unlinked_references(&uuid).map_err(|e| e.to_string())
 }
@@ -277,7 +309,7 @@ struct FrontendGraphData {
 
 #[tauri::command]
 fn get_graph_data(state: State<'_, AppState>) -> Result<FrontendGraphData, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     let data = db.get_graph_data().map_err(|e| e.to_string())?;
     Ok(FrontendGraphData {
         nodes: data.nodes.into_iter().map(|n| FrontendGraphNode {
@@ -296,13 +328,13 @@ fn get_graph_data(state: State<'_, AppState>) -> Result<FrontendGraphData, Strin
 
 #[tauri::command]
 fn get_graph_stats(state: State<'_, AppState>) -> Result<GraphStats, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     db.get_graph_stats().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn run_query(state: State<'_, AppState>, sql: String) -> Result<serde_json::Value, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     db.run_query(&sql).map_err(|e| e.to_string())
 }
 
@@ -311,7 +343,7 @@ fn run_query(state: State<'_, AppState>, sql: String) -> Result<serde_json::Valu
 /// stays the same for that date and that the first write materialises.
 #[tauri::command]
 fn get_journal(state: State<'_, AppState>, date: Option<String>) -> Result<PageTree, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     let today = chrono::Local::now().date_naive();
     let d = match date {
         Some(ref s) => chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
@@ -347,7 +379,7 @@ fn get_journal(state: State<'_, AppState>, date: Option<String>) -> Result<PageT
 
 #[tauri::command]
 fn get_folder_tree(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     let tree = db.get_folder_tree().map_err(|e| e.to_string())?;
     let root_pages = db.get_pages_in_folder(None).map_err(|e| e.to_string())?;
     Ok(serde_json::json!({
@@ -362,7 +394,7 @@ fn create_folder(
     name: String,
     parent_id: Option<String>,
 ) -> Result<minotes_core::models::Folder, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     let parent_uuid = parent_id
         .as_ref()
         .map(|p| uuid::Uuid::parse_str(p))
@@ -378,7 +410,7 @@ fn move_page_to_folder(
     page_id: String,
     folder_id: Option<String>,
 ) -> Result<Page, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     let page_uuid = uuid::Uuid::parse_str(&page_id).map_err(|e| e.to_string())?;
     let folder_uuid = folder_id
         .as_ref()
@@ -391,7 +423,7 @@ fn move_page_to_folder(
 
 #[tauri::command]
 fn reorder_page(state: State<'_, AppState>, id: String, new_position: f64) -> Result<Page, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
     db.reorder_page(&uuid, new_position, "user")
         .map_err(|e| e.to_string())
@@ -408,7 +440,7 @@ fn set_property(
     value: String,
     value_type: Option<String>,
 ) -> Result<Property, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     let uuid = uuid::Uuid::parse_str(&entity_id).map_err(|e| e.to_string())?;
     db.set_property(
         &uuid,
@@ -423,14 +455,14 @@ fn set_property(
 
 #[tauri::command]
 fn get_properties(state: State<'_, AppState>, entity_id: String) -> Result<Vec<Property>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     let uuid = uuid::Uuid::parse_str(&entity_id).map_err(|e| e.to_string())?;
     db.get_properties(&uuid).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn get_inherited_properties(state: State<'_, AppState>, block_id: String) -> Result<Vec<Property>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     let uuid = uuid::Uuid::parse_str(&block_id).map_err(|e| e.to_string())?;
     db.get_inherited_properties(&uuid).map_err(|e| e.to_string())
 }
@@ -441,7 +473,7 @@ fn delete_property(
     entity_id: String,
     key: String,
 ) -> Result<bool, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     let uuid = uuid::Uuid::parse_str(&entity_id).map_err(|e| e.to_string())?;
     db.delete_property(&uuid, &key, "user")
         .map_err(|e| e.to_string())
@@ -449,21 +481,21 @@ fn delete_property(
 
 #[tauri::command]
 fn delete_folder(state: State<'_, AppState>, id: String) -> Result<bool, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
     db.delete_folder(&uuid, "user").map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn update_folder_appearance(state: State<'_, AppState>, id: String, icon: Option<String>, color: Option<String>) -> Result<Folder, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
     db.update_folder_appearance(&uuid, icon.as_deref(), color.as_deref(), "user").map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn rename_folder(state: State<'_, AppState>, id: String, new_name: String) -> Result<Folder, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
     db.rename_folder(&uuid, &new_name, "user").map_err(|e| e.to_string())
 }
@@ -472,39 +504,39 @@ fn rename_folder(state: State<'_, AppState>, id: String, new_name: String) -> Re
 
 #[tauri::command]
 fn create_card(state: State<'_, AppState>, block_id: String, card_type: String) -> Result<Card, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     let uuid = uuid::Uuid::parse_str(&block_id).map_err(|e| e.to_string())?;
     db.create_card(&uuid, &card_type, "user").map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn list_cards(state: State<'_, AppState>) -> Result<Vec<Card>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     db.list_cards().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn get_due_cards(state: State<'_, AppState>, limit: Option<i64>) -> Result<Vec<Card>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     db.get_due_cards(limit.unwrap_or(50)).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn review_card(state: State<'_, AppState>, card_id: String, rating: String) -> Result<Card, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     let uuid = uuid::Uuid::parse_str(&card_id).map_err(|e| e.to_string())?;
     db.review_card(&uuid, &rating, "user").map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn get_srs_stats(state: State<'_, AppState>) -> Result<SrsStats, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     db.get_srs_stats().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn delete_card(state: State<'_, AppState>, card_id: String) -> Result<bool, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     let uuid = uuid::Uuid::parse_str(&card_id).map_err(|e| e.to_string())?;
     db.delete_card(&uuid, "user").map_err(|e| e.to_string())
 }
@@ -513,27 +545,27 @@ fn delete_card(state: State<'_, AppState>, card_id: String) -> Result<bool, Stri
 
 #[tauri::command]
 fn add_favorite(state: State<'_, AppState>, page_id: String) -> Result<(), String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     let uuid = uuid::Uuid::parse_str(&page_id).map_err(|e| e.to_string())?;
     db.add_favorite(&uuid, "user").map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn remove_favorite(state: State<'_, AppState>, page_id: String) -> Result<bool, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     let uuid = uuid::Uuid::parse_str(&page_id).map_err(|e| e.to_string())?;
     db.remove_favorite(&uuid).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn list_favorites(state: State<'_, AppState>) -> Result<Vec<Page>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     db.list_favorites().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn reorder_favorite(state: State<'_, AppState>, page_id: String, new_position: f64) -> Result<(), String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     let uuid = uuid::Uuid::parse_str(&page_id).map_err(|e| e.to_string())?;
     db.reorder_favorite(&uuid, new_position).map_err(|e| e.to_string())
 }
@@ -542,20 +574,20 @@ fn reorder_favorite(state: State<'_, AppState>, page_id: String, new_position: f
 
 #[tauri::command]
 fn add_alias(state: State<'_, AppState>, page_id: String, alias: String) -> Result<(), String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     let uuid = uuid::Uuid::parse_str(&page_id).map_err(|e| e.to_string())?;
     db.add_alias(&uuid, &alias, "user").map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn remove_alias(state: State<'_, AppState>, alias: String) -> Result<bool, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     db.remove_alias(&alias, "user").map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn get_aliases(state: State<'_, AppState>, page_id: String) -> Result<Vec<String>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     let uuid = uuid::Uuid::parse_str(&page_id).map_err(|e| e.to_string())?;
     db.get_aliases(&uuid).map_err(|e| e.to_string())
 }
@@ -569,14 +601,14 @@ fn create_template(
     description: Option<String>,
     content: String,
 ) -> Result<Template, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     db.create_template(&name, description.as_deref(), &content, "user")
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn list_templates(state: State<'_, AppState>) -> Result<Vec<Template>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     db.list_templates().map_err(|e| e.to_string())
 }
 
@@ -586,7 +618,7 @@ fn apply_template(
     page_id: String,
     template_name: String,
 ) -> Result<Vec<Block>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     let uuid = uuid::Uuid::parse_str(&page_id).map_err(|e| e.to_string())?;
     db.apply_template(&uuid, &template_name, "user")
         .map_err(|e| e.to_string())
@@ -594,7 +626,7 @@ fn apply_template(
 
 #[tauri::command]
 fn delete_template(state: State<'_, AppState>, name: String) -> Result<bool, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     db.delete_template(&name, "user").map_err(|e| e.to_string())
 }
 
@@ -602,13 +634,13 @@ fn delete_template(state: State<'_, AppState>, name: String) -> Result<bool, Str
 
 #[tauri::command]
 fn export_opml(state: State<'_, AppState>) -> Result<String, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     db.export_opml().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn export_json(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     db.export_json().map_err(|e| e.to_string())
 }
 
@@ -619,7 +651,7 @@ fn publish_site(state: State<'_, AppState>, output_dir: String) -> Result<Vec<St
     // top-level dir like ~/.ssh / ~/.minotes / ~/.config. Page files inside are named by
     // minotes-core's sanitize_filename (path separators replaced), so they stay in dir.
     let dir = security::validate_publish_dir(&output_dir, &publish_roots())?;
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     db.publish_static_site(&dir).map_err(|e| e.to_string())
 }
 
@@ -661,7 +693,7 @@ fn move_block(
     new_parent: String,
     position: f64,
 ) -> Result<Block, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
     let parent_uuid = uuid::Uuid::parse_str(&new_parent).map_err(|e| e.to_string())?;
     db.move_block(&uuid, &parent_uuid, position, "user")
@@ -675,7 +707,7 @@ fn reorder_block(
     parent_id: Option<String>,
     position: f64,
 ) -> Result<Block, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
     let parent_uuid = parent_id
         .as_deref()
@@ -694,7 +726,7 @@ fn reparent_block(
     id: String,
     parent_id: Option<String>,
 ) -> Result<Block, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
     let parent_uuid = parent_id
         .as_ref()
@@ -709,7 +741,7 @@ fn reparent_block(
 
 #[tauri::command]
 fn list_plugins(state: State<'_, AppState>) -> Result<Vec<Plugin>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     db.list_plugins().map_err(|e| e.to_string())
 }
 
@@ -721,7 +753,7 @@ fn register_plugin(
     description: Option<String>,
     author: Option<String>,
 ) -> Result<Plugin, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     db.register_plugin(
         &name,
         &version,
@@ -736,19 +768,19 @@ fn register_plugin(
 
 #[tauri::command]
 fn enable_plugin(state: State<'_, AppState>, name: String) -> Result<Plugin, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     db.enable_plugin(&name).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn disable_plugin(state: State<'_, AppState>, name: String) -> Result<Plugin, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     db.disable_plugin(&name).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn uninstall_plugin(state: State<'_, AppState>, name: String) -> Result<bool, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     db.uninstall_plugin(&name).map_err(|e| e.to_string())
 }
 
@@ -793,7 +825,7 @@ fn create_highlight(
     text: Option<String>,
     note: Option<String>,
 ) -> Result<Highlight, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     db.create_highlight(
         &pdf_path,
         page_num,
@@ -808,13 +840,13 @@ fn create_highlight(
 
 #[tauri::command]
 fn get_highlights(state: State<'_, AppState>, pdf_path: String) -> Result<Vec<Highlight>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     db.get_highlights(&pdf_path).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn update_highlight_note(state: State<'_, AppState>, id: String, note: String) -> Result<Highlight, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
     db.update_highlight_note(&uuid, &note, "user")
         .map_err(|e| e.to_string())
@@ -822,14 +854,14 @@ fn update_highlight_note(state: State<'_, AppState>, id: String, note: String) -
 
 #[tauri::command]
 fn delete_highlight(state: State<'_, AppState>, id: String) -> Result<bool, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
     db.delete_highlight(&uuid, "user").map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn search_highlights(state: State<'_, AppState>, query: String) -> Result<Vec<Highlight>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     db.search_highlights(&query).map_err(|e| e.to_string())
 }
 
@@ -837,13 +869,13 @@ fn search_highlights(state: State<'_, AppState>, query: String) -> Result<Vec<Hi
 
 #[tauri::command]
 fn get_sync_status(state: State<'_, AppState>) -> Result<SyncStatus, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     db.get_sync_status().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn sync_page(state: State<'_, AppState>, page_id: String) -> Result<Vec<u8>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     let uuid = uuid::Uuid::parse_str(&page_id).map_err(|e| e.to_string())?;
     db.page_to_automerge(&uuid).map_err(|e| e.to_string())
 }
@@ -854,7 +886,7 @@ fn get_version_history(
     page_id: String,
     limit: Option<usize>,
 ) -> Result<Vec<VersionInfo>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     let uuid = uuid::Uuid::parse_str(&page_id).map_err(|e| e.to_string())?;
     db.get_version_history(&uuid, limit).map_err(|e| e.to_string())
 }
@@ -865,7 +897,7 @@ fn restore_version(
     page_id: String,
     version_hash: String,
 ) -> Result<(), String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     let uuid = uuid::Uuid::parse_str(&page_id).map_err(|e| e.to_string())?;
     db.restore_version(&uuid, &version_hash, "user")
         .map_err(|e| e.to_string())
@@ -875,13 +907,13 @@ fn restore_version(
 
 #[tauri::command]
 fn plugin_storage_get(state: State<'_, AppState>, plugin_name: String, key: String) -> Result<Option<String>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     db.plugin_storage_get(&plugin_name, &key).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn plugin_storage_set(state: State<'_, AppState>, plugin_name: String, key: String, value: String) -> Result<(), String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     db.plugin_storage_set(&plugin_name, &key, &value).map_err(|e| e.to_string())
 }
 
@@ -889,31 +921,31 @@ fn plugin_storage_set(state: State<'_, AppState>, plugin_name: String, key: Stri
 
 #[tauri::command]
 fn add_css_snippet(state: State<'_, AppState>, name: String, css: String, source: String) -> Result<CssSnippet, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     db.add_snippet(&name, &css, &source, "user").map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn list_css_snippets(state: State<'_, AppState>) -> Result<Vec<CssSnippet>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     db.list_snippets().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn toggle_css_snippet(state: State<'_, AppState>, name: String) -> Result<CssSnippet, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     db.toggle_snippet(&name).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn delete_css_snippet(state: State<'_, AppState>, name: String) -> Result<bool, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     db.delete_snippet(&name).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn get_enabled_css_snippets(state: State<'_, AppState>) -> Result<Vec<CssSnippet>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     db.get_enabled_snippets().map_err(|e| e.to_string())
 }
 
@@ -921,7 +953,7 @@ fn get_enabled_css_snippets(state: State<'_, AppState>) -> Result<Vec<CssSnippet
 // loss if interrupted, lost id/created_at). This exposes the existing in-place update.
 #[tauri::command]
 fn update_css_snippet(state: State<'_, AppState>, name: String, css: String) -> Result<CssSnippet, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     db.update_snippet_css(&name, &css).map_err(|e| e.to_string())
 }
 
@@ -935,7 +967,7 @@ fn clip_content(
     url: Option<String>,
     tags: Option<Vec<String>>,
 ) -> Result<Page, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
 
     // Create the page
     let page = db
@@ -1209,7 +1241,7 @@ async fn fetch_og_inner(url: &str) -> std::result::Result<OgMetadata, Box<dyn st
 
 #[tauri::command]
 fn get_block(state: State<'_, AppState>, id: String) -> Result<Option<BlockWithPage>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
     Ok(db.get_blocks_with_pages(&[uuid]).map_err(|e| e.to_string())?.pop())
 }
@@ -1217,7 +1249,7 @@ fn get_block(state: State<'_, AppState>, id: String) -> Result<Option<BlockWithP
 /// Several blocks (each with its page title) in one call; unknown ids skipped.
 #[tauri::command]
 fn get_blocks(state: State<'_, AppState>, ids: Vec<String>) -> Result<Vec<BlockWithPage>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     let uuids = ids
         .iter()
         .map(|i| uuid::Uuid::parse_str(i))
@@ -1230,41 +1262,41 @@ fn get_blocks(state: State<'_, AppState>, ids: Vec<String>) -> Result<Vec<BlockW
 
 #[tauri::command]
 fn archive_page(state: State<'_, AppState>, id: String) -> Result<(), String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
     db.archive_page(&uuid).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn unarchive_page(state: State<'_, AppState>, id: String) -> Result<(), String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
     db.unarchive_page(&uuid).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn archive_folder(state: State<'_, AppState>, id: String) -> Result<u32, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
     db.archive_folder(&uuid).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn unarchive_folder(state: State<'_, AppState>, id: String) -> Result<(), String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
     db.unarchive_folder(&uuid).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn list_archived(state: State<'_, AppState>) -> Result<Vec<ArchiveItem>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     db.list_archived_items().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn archived_count(state: State<'_, AppState>) -> Result<u32, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     db.archived_count().map_err(|e| e.to_string())
 }
 
@@ -1272,21 +1304,21 @@ fn archived_count(state: State<'_, AppState>) -> Result<u32, String> {
 
 #[tauri::command]
 fn trash_page(state: State<'_, AppState>, id: String) -> Result<(), String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
     db.trash_page(&uuid).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn trash_folder(state: State<'_, AppState>, id: String) -> Result<u32, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
     db.trash_folder(&uuid).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn restore_from_trash(state: State<'_, AppState>, id: String, item_type: String) -> Result<(), String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
     if item_type == "folder" {
         db.restore_folder(&uuid).map_err(|e| e.to_string())
@@ -1297,20 +1329,20 @@ fn restore_from_trash(state: State<'_, AppState>, id: String, item_type: String)
 
 #[tauri::command]
 fn permanently_delete(state: State<'_, AppState>, id: String, item_type: String) -> Result<(), String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
     db.delete_from_trash(&uuid, &item_type, "user").map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn list_trash(state: State<'_, AppState>) -> Result<Vec<TrashItem>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     db.list_trash().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn empty_trash(state: State<'_, AppState>) -> Result<u32, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     db.empty_trash("user").map_err(|e| e.to_string())
 }
 
@@ -1329,11 +1361,8 @@ fn current_notebook_key(state: &AppState) -> Result<String, String> {
 fn lock_db_for_notebook<'a>(
     state: &'a AppState,
     key: &str,
-) -> minotes_core::error::Result<std::sync::MutexGuard<'a, Database>> {
-    let db = state
-        .db
-        .lock()
-        .map_err(|e| minotes_core::error::Error::Git(format!("DB lock poisoned: {e}")))?;
+) -> minotes_core::error::Result<DbGuard<'a>> {
+    let db = state.db_guard().map_err(minotes_core::error::Error::Git)?;
     let current = state
         .current_notebook
         .lock()
@@ -1355,6 +1384,7 @@ fn git_available() -> bool {
 #[tauri::command(async)]
 fn git_sync_enable(state: State<'_, AppState>) -> Result<GitSyncStatus, String> {
     refuse_read_only(&state)?;
+    refuse_encrypted(&state)?;
     let key = current_notebook_key(&state)?;
     sync_manager::enable_sync_with(&key, || lock_db_for_notebook(&state, &key))
         .map_err(|e| e.to_string())
@@ -1364,6 +1394,15 @@ fn git_sync_enable(state: State<'_, AppState>) -> Result<GitSyncStatus, String> 
 fn git_sync_disable(state: State<'_, AppState>) -> Result<(), String> {
     let key = current_notebook_key(&state)?;
     sync_manager::disable_sync(&key).map_err(|e| e.to_string())
+}
+
+/// Git sync is off for encrypted notebooks until the encrypted mirror exists
+/// (PRD-encryption §4.5 / step 5, PRD-git-sync §3.6).
+fn refuse_encrypted(state: &AppState) -> Result<(), String> {
+    if state.session.lock().map_err(|e| e.to_string())?.notebook.is_encrypted() {
+        return Err("Sync is off for encrypted notebooks: they have no plaintext markdown copy to sync".into());
+    }
+    Ok(())
 }
 
 fn refuse_read_only(state: &AppState) -> Result<(), String> {
@@ -1376,6 +1415,7 @@ fn refuse_read_only(state: &AppState) -> Result<(), String> {
 #[tauri::command(async)]
 fn git_sync(state: State<'_, AppState>) -> Result<GitSyncResult, String> {
     refuse_read_only(&state)?;
+    refuse_encrypted(&state)?;
     let key = current_notebook_key(&state)?;
     // Export (DB lock) → pull/push (no lock) → import only if the pull brought
     // remote commits (DB lock; pages edited during the network phase are kept).
@@ -1402,14 +1442,14 @@ fn git_sync_status(state: State<'_, AppState>) -> Result<GitSyncStatus, String> 
 /// Count pending TODOs across all pages.
 #[tauri::command]
 fn get_pending_todo_count(db: tauri::State<AppState>) -> Result<usize, String> {
-    let conn = db.db.lock().map_err(|e| e.to_string())?;
+    let conn = db.db_guard()?;
     conn.count_pending_todos().map_err(|e| e.to_string())
 }
 
 /// List all pending TODOs across all pages with source page titles.
 #[tauri::command]
 fn list_pending_todos(db: tauri::State<AppState>) -> Result<Vec<serde_json::Value>, String> {
-    let conn = db.db.lock().map_err(|e| e.to_string())?;
+    let conn = db.db_guard()?;
     let todos = conn.list_pending_todos().map_err(|e| e.to_string())?;
     Ok(todos
         .into_iter()
@@ -1422,7 +1462,7 @@ fn list_pending_todos(db: tauri::State<AppState>) -> Result<Vec<serde_json::Valu
 /// List all pending TODOs with page IDs for navigation.
 #[tauri::command]
 fn list_pending_todos_with_page_ids(db: tauri::State<AppState>) -> Result<Vec<serde_json::Value>, String> {
-    let conn = db.db.lock().map_err(|e| e.to_string())?;
+    let conn = db.db_guard()?;
     let todos = conn.list_pending_todos_with_page_ids().map_err(|e| e.to_string())?;
     Ok(todos
         .into_iter()
@@ -1434,10 +1474,27 @@ fn list_pending_todos_with_page_ids(db: tauri::State<AppState>) -> Result<Vec<se
 
 // ── Whiteboards (DB-backed storage; keyed by the id in `{{whiteboard:<id>}}`) ──
 
+/// UI state that names content (recent pages), kept in the notebook's database
+/// for encrypted notebooks (PRD-encryption §4.5). Null when never set.
+#[tauri::command]
+fn get_ui_state(state: State<'_, AppState>, key: String) -> Result<Option<String>, String> {
+    let db = state.db_guard()?;
+    db.get_ui_state(&key).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_ui_state(state: State<'_, AppState>, key: String, value: String) -> Result<(), String> {
+    if state.session.lock().map_err(|e| e.to_string())?.held_by.is_some() {
+        return Ok(()); // read-only window: not remembered
+    }
+    let db = state.db_guard()?;
+    db.set_ui_state(&key, &value).map_err(|e| e.to_string())
+}
+
 /// Returns the whiteboard's JSON data, or null if it has never been saved.
 #[tauri::command]
 fn get_whiteboard(state: State<'_, AppState>, id: String) -> Result<Option<String>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     db.get_whiteboard(&id)
         .map(|wb| wb.map(|w| w.data))
         .map_err(|e| e.to_string())
@@ -1445,7 +1502,7 @@ fn get_whiteboard(state: State<'_, AppState>, id: String) -> Result<Option<Strin
 
 #[tauri::command]
 fn save_whiteboard(state: State<'_, AppState>, id: String, data: String) -> Result<(), String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     db.save_whiteboard(&id, &data).map(|_| ()).map_err(|e| e.to_string())
 }
 
@@ -1454,7 +1511,7 @@ fn save_whiteboard(state: State<'_, AppState>, id: String, data: String) -> Resu
 /// permanent deletes.)
 #[tauri::command]
 fn gc_whiteboards(state: State<'_, AppState>) -> Result<Vec<String>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     db.gc_whiteboards().map_err(|e| e.to_string())
 }
 
@@ -1469,7 +1526,7 @@ fn gc_whiteboards(state: State<'_, AppState>) -> Result<Vec<String>, String> {
 /// existing nor in the list. Returns the restored blocks in input order.
 #[tauri::command]
 fn restore_blocks(state: State<'_, AppState>, blocks: Vec<RestoreBlock>) -> Result<Vec<Block>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     db.restore_blocks(&blocks, "user").map_err(|e| e.to_string())
 }
 
@@ -1488,7 +1545,7 @@ fn get_properties_batch(
     state: State<'_, AppState>,
     entity_ids: Vec<String>,
 ) -> Result<HashMap<String, Vec<Property>>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
     let mut out = HashMap::new();
     for id in entity_ids {
         let Ok(uuid) = uuid::Uuid::parse_str(&id) else { continue };
@@ -1685,6 +1742,8 @@ pub fn run() {
             list_pending_todos,
             list_pending_todos_with_page_ids,
             get_whiteboard,
+            get_ui_state,
+            set_ui_state,
             save_whiteboard,
             gc_whiteboards,
             restore_blocks,
@@ -1725,6 +1784,18 @@ pub fn run() {
             notebooks::outside_edit_set_blocks,
             platform::get_platform_capabilities,
             notebook_transfer::export_notebook_zip,
+            // ── Encryption ──
+            encryption_commands::create_encrypted_notebook,
+            encryption_commands::unlock_notebook,
+            encryption_commands::lock_notebook,
+            encryption_commands::change_passphrase,
+            encryption_commands::recover_with_key,
+            encryption_commands::regenerate_recovery_key,
+            encryption_commands::set_remember_device,
+            encryption_commands::encryption_plan,
+            encryption_commands::encrypt_notebook,
+            encryption_commands::decrypt_notebook,
+            encryption_commands::rotate_notebook_key,
             notebook_transfer::import_notebook_zip,
             // ── Import / attachments ──
             import_commands::store_attachment,

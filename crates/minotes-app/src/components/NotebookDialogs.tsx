@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState } from "react";
+import Modal from "./Modal";
 import * as api from "../lib/api";
 import { showToast } from "../lib/toast";
 import { errorMessage } from "../lib/errors";
@@ -7,29 +8,8 @@ import {
   exportNotebook, formatSize, importNotebookFromZip, notebooksChanged, pickFolder, prettyPath, switchNotebook, timeAgo,
   useCapabilities,
 } from "../lib/notebooks";
-
-function Modal({ title, onClose, children, wide, testId }: {
-  title: string; onClose: () => void; children: ReactNode; wide?: boolean; testId?: string;
-}) {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); onClose(); }
-    };
-    window.addEventListener("keydown", onKey, true);
-    return () => window.removeEventListener("keydown", onKey, true);
-  }, [onClose]);
-  return (
-    <div className="nb-modal-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className={`nb-modal${wide ? " wide" : ""}`} role="dialog" aria-modal="true" aria-label={title} data-testid={testId}>
-        <div className="nb-modal-header">
-          <span className="nb-modal-title">{title}</span>
-          <button className="settings-close-btn" onClick={onClose} aria-label="Close" title="Close (Esc)">×</button>
-        </div>
-        <div className="nb-modal-body">{children}</div>
-      </div>
-    </div>
-  );
-}
+import { passphraseProblem } from "../lib/passphrase";
+import { PassphraseFields, RecoveryKeyPanel } from "./EncryptionDialogs";
 
 /** Same check as minotes-core notebook::validate_name. */
 function nameProblem(name: string, existing: string[]): string | null {
@@ -73,8 +53,14 @@ export function NewNotebookDialog({ existingNames, onClose }: { existingNames: s
   const [defaultLoc, setDefaultLoc] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [encrypt, setEncrypt] = useState(false);
+  const [pass, setPass] = useState("");
+  const [passConfirm, setPassConfirm] = useState("");
+  /** After creating an encrypted notebook: its recovery key, shown once. */
+  const [created, setCreated] = useState<{ nb: api.NotebookInfo; key: string } | null>(null);
   const caps = useCapabilities();
   const problem = nameProblem(name, existingNames);
+  const passProblem = encrypt ? passphraseProblem(pass, passConfirm) : null;
 
   useEffect(() => {
     let cancelled = false;
@@ -93,10 +79,18 @@ export function NewNotebookDialog({ existingNames, onClose }: { existingNames: s
   };
 
   const create = async () => {
-    if (!name.trim() || problem || busy) return;
+    if (!name.trim() || problem || passProblem || busy) return;
     setBusy(true);
     setError(null);
     try {
+      if (encrypt) {
+        const r = await api.createEncryptedNotebook(name.trim(), caps.choose_location ? location : undefined, pass);
+        setPass("");
+        setPassConfirm("");
+        setCreated({ nb: r.notebook, key: r.recovery_key });
+        notebooksChanged();
+        return;
+      }
       const nb = await api.createNotebook(name.trim(), caps.choose_location ? location : undefined);
       await switchNotebook(nb.key);
       notebooksChanged();
@@ -108,6 +102,30 @@ export function NewNotebookDialog({ existingNames, onClose }: { existingNames: s
       setBusy(false);
     }
   };
+
+  const openCreated = async () => {
+    if (!created) return;
+    try {
+      await switchNotebook(created.nb.key);
+      notebooksChanged();
+      showToast(`Created encrypted notebook “${created.nb.name}”`);
+    } catch (e) {
+      showToast(`Couldn't open “${created.nb.name}”: ${errorMessage(e)}`);
+    }
+    onClose();
+  };
+
+  if (created) {
+    return (
+      <Modal
+        title={`“${created.nb.name}” is ready`}
+        onClose={() => { if (window.confirm("Close without confirming you saved the recovery key?")) openCreated(); }}
+        testId="new-notebook-dialog"
+      >
+        <RecoveryKeyPanel notebook={created.nb.name} recoveryKey={created.key} onDone={openCreated} doneLabel="Open the notebook" />
+      </Modal>
+    );
+  }
 
   return (
     <Modal title="New notebook" onClose={onClose} testId="new-notebook-dialog">
@@ -144,13 +162,26 @@ export function NewNotebookDialog({ existingNames, onClose }: { existingNames: s
       </div>
       )}
       {caps.choose_location && cloud && <CloudWarning service={cloud} />}
+      <label className="enc-check">
+        <input type="checkbox" checked={encrypt} onChange={e => setEncrypt(e.target.checked)} data-testid="new-notebook-encrypt" />
+        Encrypt this notebook
+      </label>
+      {encrypt && (
+        <>
+          <div className="nb-hint">
+            Everything in it is encrypted with a passphrase. It has no plain-markdown copy and git sync is off
+            for it. You'll get a recovery key next — the only way in if the passphrase is forgotten.
+          </div>
+          <PassphraseFields value={pass} confirm={passConfirm} onChange={setPass} onConfirm={setPassConfirm} idPrefix="new-notebook" />
+        </>
+      )}
       {error && <div className="nb-field-error" role="alert">{error}</div>}
       <div className="nb-modal-actions">
         <button className="btn btn-sm" onClick={onClose}>Cancel</button>
         <button
           className="btn btn-sm btn-primary"
           onClick={create}
-          disabled={!name.trim() || !!problem || busy}
+          disabled={!name.trim() || !!problem || !!passProblem || busy}
           data-testid="new-notebook-create"
         >
           {busy ? "Creating…" : "Create notebook"}

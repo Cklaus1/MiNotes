@@ -16,6 +16,11 @@
 //! percent-encoded file name (see [`encode_name`]); only the hash identifies
 //! the file, so a reference stays valid whatever the page is renamed to.
 //!
+//! **Encrypted notebooks** (PRD-encryption §4.5) keep the bytes inside the
+//! database instead (`attachment_blobs`), so SQLCipher covers them and no
+//! plaintext file exists next to the notebook. [`Database::attachment_file`] is
+//! then `None`; read through [`Database::attachment_bytes`].
+//!
 //! Garbage collection ([`Database::gc_attachments`]) follows the whiteboard
 //! rule: an attachment is kept while any block (live, trashed or archived), a
 //! template, or an undo-able event references it.
@@ -58,6 +63,10 @@ CREATE TABLE IF NOT EXISTS block_attachments (
     PRIMARY KEY (block_id, hash)
 );
 CREATE INDEX IF NOT EXISTS idx_block_attachments_hash ON block_attachments(hash);
+CREATE TABLE IF NOT EXISTS attachment_blobs (
+    hash        TEXT PRIMARY KEY,
+    data        BLOB NOT NULL
+);
 ";
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -367,6 +376,17 @@ impl Database {
         if bytes.len() as u64 > MAX_ATTACHMENT_BYTES {
             return Err(too_large(name, bytes.len() as u64));
         }
+        if self.encrypted {
+            let hash = hex(&Sha256::digest(bytes));
+            let ext = sanitize_ext(name, mime);
+            return self.tx(|| {
+                self.conn.execute(
+                    "INSERT OR IGNORE INTO attachment_blobs (hash, data) VALUES (?1, ?2)",
+                    rusqlite::params![hash, bytes],
+                )?;
+                self.register_attachment(&hash, name, mime, &ext, bytes.len() as u64)
+            });
+        }
         let dir = self.require_store()?;
         let hash = hex(&Sha256::digest(bytes));
         let ext = sanitize_ext(name, mime);
@@ -394,6 +414,14 @@ impl Database {
         let name = name.unwrap_or(&own).to_string();
         if meta.len() > MAX_ATTACHMENT_BYTES {
             return Err(too_large(&name, meta.len()));
+        }
+        if self.encrypted {
+            // Inside the database: never a plaintext copy in the store.
+            let mut bytes = Vec::with_capacity(meta.len() as usize);
+            fs::File::open(path)
+                .and_then(|f| f.take(MAX_ATTACHMENT_BYTES + 1).read_to_end(&mut bytes))
+                .map_err(|e| io_err("Cannot read", path, e))?;
+            return self.store_attachment_bytes(&name, mime, &bytes);
         }
         let dir = self.require_store()?;
         let tmp = temp_path(&dir);
@@ -481,9 +509,71 @@ impl Database {
         Ok(rows)
     }
 
-    /// The stored file of an attachment (derived from its hash only).
+    /// The stored file of an attachment (derived from its hash only). `None` in
+    /// an encrypted notebook, whose attachments are inside the database.
     pub fn attachment_file(&self, hash: &str) -> Option<PathBuf> {
+        if self.encrypted {
+            return None;
+        }
         find_file(&self.attachments_dir()?, hash)
+    }
+
+    /// An attachment's bytes, wherever they are kept (file or database).
+    pub fn attachment_bytes(&self, hash: &str) -> Result<Option<Vec<u8>>> {
+        if !is_valid_hash(hash) {
+            return Ok(None);
+        }
+        if self.encrypted {
+            return Ok(self
+                .conn
+                .query_row("SELECT data FROM attachment_blobs WHERE hash = ?1", [hash], |r| r.get::<_, Vec<u8>>(0))
+                .optional()?);
+        }
+        match self.attachment_file(hash) {
+            Some(p) => Ok(Some(fs::read(&p).map_err(|e| io_err("Cannot read", &p, e))?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Copy every attachment file of `store` into the database (encrypting a
+    /// notebook). Returns the files copied in, for the caller to delete once the
+    /// encrypted copy is verified. Each file's content is checked against its hash.
+    pub fn import_attachment_files_into_db(&self, store: &Path) -> Result<Vec<PathBuf>> {
+        let mut moved = Vec::new();
+        for a in self.list_attachments()? {
+            let Some(file) = find_file(store, &a.hash) else { continue };
+            let bytes = fs::read(&file).map_err(|e| io_err("Cannot read", &file, e))?;
+            if hex(&Sha256::digest(&bytes)) != a.hash {
+                return Err(Error::InvalidInput(format!("{} does not match its hash", file.display())));
+            }
+            self.conn.execute(
+                "INSERT OR IGNORE INTO attachment_blobs (hash, data) VALUES (?1, ?2)",
+                rusqlite::params![a.hash, bytes],
+            )?;
+            moved.push(file);
+        }
+        Ok(moved)
+    }
+
+    /// Write every attachment kept in the database out to `store` (decrypting a
+    /// notebook), then empty `attachment_blobs`. Returns how many were written.
+    pub fn export_attachment_blobs(&self, store: &Path) -> Result<usize> {
+        let mut n = 0;
+        for a in self.list_attachments()? {
+            let data: Option<Vec<u8>> = self
+                .conn
+                .query_row("SELECT data FROM attachment_blobs WHERE hash = ?1", [&a.hash], |r| r.get(0))
+                .optional()?;
+            let Some(data) = data else { continue };
+            let dest = file_path(store, &a.hash, &a.ext);
+            if let Some(parent) = dest.parent() {
+                fs::create_dir_all(parent).map_err(|e| io_err("Cannot create", parent, e))?;
+            }
+            crate::repo::export::atomic_write(&dest, &data).map_err(|e| io_err("Cannot write", &dest, e))?;
+            n += 1;
+        }
+        self.conn.execute("DELETE FROM attachment_blobs", [])?;
+        Ok(n)
     }
 
     /// Keep `block_attachments` in step with a block's content. Called with the
@@ -556,6 +646,7 @@ impl Database {
         }
         self.conn.execute("DELETE FROM attachments WHERE hash = ?1", [hash])?;
         self.conn.execute("DELETE FROM block_attachments WHERE hash = ?1", [hash])?;
+        self.conn.execute("DELETE FROM attachment_blobs WHERE hash = ?1", [hash])?;
         if let Some(dir) = self.attachments_dir() {
             if let Some(p) = find_file(&dir, hash) {
                 let _ = fs::remove_file(&p);
@@ -802,5 +893,98 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let db = Database::open(&tmp.path().join("g.db")).unwrap();
         assert_eq!(db.attachments_dir().unwrap(), tmp.path().join("g.attachments"));
+    }
+
+    // ── Encrypted notebooks (PRD-encryption §4.5): attachments inside the DB ──
+
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+        for e in fs::read_dir(dir).into_iter().flatten().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                walk(&p, out);
+            } else {
+                out.push(p);
+            }
+        }
+    }
+
+    #[test]
+    fn encrypted_notebook_keeps_attachments_inside_the_database() {
+        let tmp = tempfile::tempdir().unwrap();
+        let key = crate::crypto::DataKey::generate();
+        let db_path = tmp.path().join(crate::notebook::DB_FILE);
+        let marker = b"%PDF-1.4 OKAPI-ATTACHMENT-MARKER";
+        let (a, b);
+        {
+            let db = Database::create_encrypted(&db_path, &key).unwrap();
+            a = db.store_attachment_bytes("secret.pdf", Some("application/pdf"), marker).unwrap().attachment;
+            let src = tmp.path().join("outside-src.txt");
+            fs::write(&src, b"second OKAPI file").unwrap();
+            b = db.store_attachment_file(&src, Some("note.txt"), None).unwrap().attachment;
+            fs::remove_file(&src).unwrap();
+            assert!(db.attachment_file(&a.hash).is_none(), "no file path in an encrypted notebook");
+            assert_eq!(db.attachment_bytes(&a.hash).unwrap().unwrap(), marker);
+            assert_eq!(db.attachment_bytes(&b.hash).unwrap().unwrap(), b"second OKAPI file");
+            assert!(db.attachment_bytes(&"0".repeat(64)).unwrap().is_none());
+            // Deduplicated like the file store.
+            assert!(!db.store_attachment_bytes("again.pdf", None, marker).unwrap().created);
+        }
+        // Nothing but the encrypted database (and its WAL/SHM) was written.
+        let mut files = Vec::new();
+        walk(tmp.path(), &mut files);
+        assert!(!tmp.path().join("attachments").exists());
+        for f in &files {
+            let bytes = fs::read(f).unwrap();
+            assert!(!bytes.windows(5).any(|w| w == b"OKAPI"), "{} holds attachment bytes", f.display());
+        }
+        // GC removes the blob of an unreferenced attachment (after the grace period).
+        let db = Database::open_encrypted(&db_path, &key).unwrap();
+        db.conn.execute("UPDATE attachments SET created_at = '2000-01-01T00:00:00Z'", []).unwrap();
+        let p = db.create_page("P", None, false, None, "user").unwrap();
+        db.create_block(&p.id, &a.markdown(), None, None, "user").unwrap();
+        let gone = db.gc_attachments().unwrap();
+        assert_eq!(gone, vec![b.hash.clone()]);
+        assert!(db.attachment_bytes(&b.hash).unwrap().is_none());
+        assert!(db.attachment_bytes(&a.hash).unwrap().is_some());
+    }
+
+    #[test]
+    fn attachment_files_move_into_the_database_and_back_out() {
+        let tmp = tempfile::tempdir().unwrap();
+        let plain = Database::open(&tmp.path().join("p.db")).unwrap();
+        let a = plain.store_attachment_bytes("pic.png", Some("image/png"), b"\x89PNG fake").unwrap().attachment;
+        let store = plain.attachments_dir().unwrap();
+        // An encrypted database with the same rows (as a conversion makes it).
+        let key = crate::crypto::DataKey::generate();
+        let enc = Database::create_encrypted(&tmp.path().join("e.minotes"), &key).unwrap();
+        enc.register_attachment(&a.hash, &a.name, Some(&a.mime), &a.ext, a.size).unwrap();
+        let moved = enc.import_attachment_files_into_db(&store).unwrap();
+        assert_eq!(moved, vec![plain.attachment_file(&a.hash).unwrap()]);
+        assert_eq!(enc.attachment_bytes(&a.hash).unwrap().unwrap(), b"\x89PNG fake");
+        // A file whose content doesn't match its hash is refused.
+        fs::write(&moved[0], b"tampered").unwrap();
+        assert!(enc.import_attachment_files_into_db(&store).is_err());
+        // Back out (decrypting): written to a store, blobs emptied.
+        let out = tmp.path().join("out-store");
+        assert_eq!(enc.export_attachment_blobs(&out).unwrap(), 1);
+        assert_eq!(fs::read(find_file(&out, &a.hash).unwrap()).unwrap(), b"\x89PNG fake");
+        let n: i64 = enc.conn.query_row("SELECT count(*) FROM attachment_blobs", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn export_of_an_encrypted_page_includes_its_attachments() {
+        let tmp = tempfile::tempdir().unwrap();
+        let key = crate::crypto::DataKey::generate();
+        let db = Database::create_encrypted(&tmp.path().join("e.minotes"), &key).unwrap();
+        let a = db.store_attachment_bytes("pic.png", Some("image/png"), b"\x89PNG fake").unwrap().attachment;
+        let p = db.create_page("With image", None, false, None, "user").unwrap();
+        db.create_block(&p.id, &a.markdown(), None, None, "user").unwrap();
+        let (_md, copies) = db.render_page_for_export(&p, Path::new("With image.md")).unwrap();
+        assert_eq!(copies.len(), 1);
+        let out = tmp.path().join("export");
+        let (written, _) = crate::repo::export::apply_attachment_copies(&out, &copies).unwrap();
+        assert_eq!(written, 1);
+        assert_eq!(fs::read(out.join(&copies[0].rel)).unwrap(), b"\x89PNG fake");
     }
 }

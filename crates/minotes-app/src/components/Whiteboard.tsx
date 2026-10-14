@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback, type CSSProperties } from "react";
 import { isTauri, savePngToDownloads } from "../lib/api";
+import { confirmPlaintextExport } from "../lib/encryption";
 import { loadWhiteboard, persistWhiteboard } from "../lib/whiteboardUtils";
 import { showToast } from "../lib/toast";
 import { registerFlush } from "../lib/pendingEdits";
@@ -1472,9 +1473,11 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
     onClose(hasContent);
   }, [flushSave, onClose]);
 
-  const exportPng = useCallback(() => {
+  const exportPng = useCallback(async () => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+    // An encrypted notebook: the image is written unencrypted — ask once.
+    if (!(await confirmPlaintextExport())) return;
     const filename = `whiteboard-${whiteboardId}.png`;
 
     if (isTauri) {

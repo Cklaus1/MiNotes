@@ -201,8 +201,10 @@ Needed by import; useful everywhere else (paste/drop an image into a note).
   with the same "referenced by any block or undo-able event" rule as whiteboards.
 - **Limits**: per-file cap (default 200 MB) and a preview-time total; both
   reported, never silent.
-- **Encryption**: in an encrypted notebook, attachment files are encrypted with a
-  key derived from the notebook key (see `PRD-encryption.md` §4.5).
+- **Encryption**: in an encrypted notebook, attachments are kept inside the encrypted
+  database (`attachment_blobs`) instead of as files — built; see `PRD-encryption.md` §4.5.
+  (Originally: attachment files encrypted with a
+  key derived from the notebook key.)
 
 Attachments are a prerequisite phase of this PRD (§7).
 

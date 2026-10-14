@@ -318,6 +318,11 @@ fn now() -> String {
 /// `force_full` (startup, "Rebuild markdown copy", git sync) re-exports
 /// everything and prunes the whole tree.
 pub fn prepare(db: &Database, target: &MirrorTarget, force_full: bool) -> Result<Prepared> {
+    // An encrypted notebook has no plaintext markdown copy (PRD-encryption §4.5):
+    // refuse here, whichever caller forgot to check `mirror_enabled`.
+    if db.is_encrypted() {
+        return Err(Error::InvalidInput("An encrypted notebook has no markdown copy".into()));
+    }
     let t0 = Instant::now();
     let old = target.state_path.as_deref().map(load_state).unwrap_or_default();
     let dir_s = target.dir.display().to_string();
@@ -722,6 +727,9 @@ pub fn apply(target: &MirrorTarget, prepared: Prepared) -> Result<MirrorReport> 
 /// Outside edits of the mirror are imported first (see [`crate::outside`]), so a
 /// pass never writes over them.
 pub fn run(db: &Database, target: &MirrorTarget, force_full: bool) -> Result<MirrorReport> {
+    if db.is_encrypted() {
+        return Err(Error::InvalidInput("An encrypted notebook has no markdown copy".into()));
+    }
     let outside = match crate::outside::import_outside_edits(db, target, &crate::outside::Scope::All) {
         Ok(r) => r,
         Err(e) => crate::outside::OutsideReport { errors: vec![e.to_string()], ..Default::default() },

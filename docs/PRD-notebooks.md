@@ -240,7 +240,7 @@ migrations, never the notebook lock, 200 ms busy timeout — off the UI thread
 total. Notebooks that can't be read are skipped with a quiet note ("Skipped: Work
 (not available)"): missing folder, busy (held exclusively), unreadable, out of
 time, or **locked** — the hook for encrypted notebooks: a `notebook.json` with an
-`encryption` entry is "not searchable while locked" until unlocking exists.
+`encryption` entry is "not searchable while locked" — an encrypted notebook is searchable only while it is unlocked in this process (PRD-encryption).
 Opening a hit switches notebooks with the normal switch flow, opens the page and
 reveals the block. CLI: `minotes search <q> --all-notebooks` (every format
 carries the notebook name; CSV prints skipped notebooks on stderr).

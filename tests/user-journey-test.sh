@@ -3407,6 +3407,106 @@ if [[ -n "$SRV64" ]]; then kill "$SRV64" 2>/dev/null; wait "$SRV64" 2>/dev/null;
 unset MINOTES_TEST_IMAGE_ORIGIN
 
 # ═══════════════════════════════════════════════
+journey "65. I keep a private notebook encrypted — create, lock, unlock, recover"
+# PRD-encryption §5: "Encrypt this notebook" in New notebook…, the recovery key
+# shown once, Lock now, the unlock screen (wrong passphrase refused), the
+# recovery-key flow, Ctrl+Shift+L, and no titles left in webview storage.
+# ═══════════════════════════════════════════════
+A65="const api=await import('/src/lib/api.ts');"
+NB65="Vault65 $(date +%s)"
+PASS65="correct horse battery staple"
+setv65() { ev "(()=>{const i=document.querySelector('$1');if(!i)return 'no input';const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;set.call(i,'$2');i.dispatchEvent(new Event('input',{bubbles:true}));return 'ok'})()" >/dev/null; }
+click65() { ev "(()=>{const b=document.querySelector('$1');if(!b)return 'none';b.click();return 'ok'})()" | tr -d '"'; }
+api "closePanel()" >/dev/null; press "Escape"; sleep 0.5
+HOME65=$(ev "(async()=>{$A65 return (await api.getNotebookSession()).key})()" | tr -d '"')
+
+step "New notebook… with 'Encrypt this notebook' asks for a strong passphrase twice"
+ev "document.querySelector('[data-testid=notebook-switcher]').click()" >/dev/null; sleep 0.5
+ev "[...document.querySelectorAll('.nb-menu-action')].find(b=>b.textContent.startsWith('New'))?.click()" >/dev/null; sleep 0.5
+setv65 "[data-testid=new-notebook-name]" "$NB65"
+click65 "[data-testid=new-notebook-encrypt]" >/dev/null; sleep 0.3
+setv65 "[data-testid=new-notebook-passphrase]" "password1"
+setv65 "[data-testid=new-notebook-passphrase-confirm]" "password1"
+sleep 0.3
+R=$(ev "(()=>{const d=document.querySelector('[data-testid=new-notebook-dialog]');return d.querySelector('[data-testid=new-notebook-create]').disabled+'|'+(document.querySelector('[data-testid=new-notebook-strength]')?.textContent||'')})()" | tr -d '"')
+[[ "$R" == true\|*"too easy"* ]] && pass "A weak passphrase is refused ($R)" || fail "Weak passphrase" "$R"
+setv65 "[data-testid=new-notebook-passphrase]" "$PASS65"
+setv65 "[data-testid=new-notebook-passphrase-confirm]" "$PASS65 x"
+sleep 0.3
+R=$(ev "document.querySelector('[data-testid=new-notebook-create]').disabled" | tr -d '"')
+[[ "$R" == "true" ]] && pass "Mismatched repeat is refused" || fail "Mismatch" "$R"
+setv65 "[data-testid=new-notebook-passphrase-confirm]" "$PASS65"
+sleep 0.3
+click65 "[data-testid=new-notebook-create]" >/dev/null
+for _ in $(seq 1 30); do sleep 0.5; RK65=$(ev "document.querySelector('[data-testid=recovery-key]')?.textContent||''" | tr -d '"'); [[ -n "$RK65" ]] && break; done
+[[ "$RK65" =~ ^[A-Z2-7]{7}(-[A-Z2-7]{7}){7}$ ]] && pass "The recovery key is shown once: 8 groups of 7 ($RK65)" || fail "Recovery key" "$RK65"
+R=$(ev "document.querySelector('[data-testid=recovery-done]')?.disabled" | tr -d '"')
+[[ "$R" == "true" ]] && pass "Can't continue before ticking 'I have saved my recovery key'" || fail "Saved checkbox" "$R"
+ss "65-recovery-key"
+click65 "[data-testid=recovery-saved]" >/dev/null; sleep 0.2
+click65 "[data-testid=recovery-done]" >/dev/null
+for _ in $(seq 1 20); do sleep 0.5; R=$(ev "document.querySelector('[data-testid=notebook-switcher]')?.innerText||''" | tr -d '"'); [[ "$R" == *"$NB65"* ]] && break; done
+L=$(ev "!!document.querySelector('[data-testid=notebook-lock-icon]')" | tr -d '"')
+[[ "$R" == *"$NB65"* && "$L" == "true" ]] && pass "Opened, with a lock icon by its name" || fail "Open encrypted notebook" "$R lock=$L"
+ev "(async()=>{$A65 const p=await api.createPage('Narwhal65 plans');await api.createBlock(p.id,'narwhal65 secret line');return 1})()" >/dev/null
+api "navigateTo('Narwhal65 plans')" >/dev/null; sleep 1.5
+
+step "Lock now: only the unlock screen remains, and nothing can be read"
+ev "document.querySelector('[data-testid=notebook-switcher]').click()" >/dev/null; sleep 0.5
+click65 "[data-testid=menu-lock-now]" >/dev/null
+for _ in $(seq 1 20); do sleep 0.5; R=$(ev "!!document.querySelector('[data-testid=unlock-screen]')" | tr -d '"'); [[ "$R" == "true" ]] && break; done
+R=$(ev "[!!document.querySelector('[data-testid=unlock-screen]'),!!document.querySelector('.sidebar'),document.body.innerText.includes('Narwhal65')].join('|')" | tr -d '"')
+[[ "$R" == "true|false|false" ]] && pass "Unlock screen only, no sidebar, no titles ($R)" || fail "Locked view" "$R"
+R=$(ev "(async()=>{$A65 try{await api.listPages(10);return 'read'}catch(e){return String(e).split(':')[0]}})()" | tr -d '"')
+[[ "$R" == "NOTEBOOK_LOCKED" ]] && pass "Data commands refuse while locked" || fail "Locked data" "$R"
+R=$(ev "JSON.stringify(Object.keys(localStorage).map(k=>k+'='+localStorage.getItem(k))).includes('Narwhal65')" | tr -d '"')
+[[ "$R" == "false" ]] && pass "No title of it in webview storage (recent pages live in its database)" || fail "Title in localStorage" "$R"
+ss "65-unlock-screen"
+
+step "A wrong passphrase is refused; the right one opens it again"
+setv65 "[data-testid=unlock-passphrase]" "not my passphrase"
+click65 "[data-testid=unlock-submit]" >/dev/null
+for _ in $(seq 1 10); do sleep 0.5; R=$(ev "document.querySelector('[data-testid=unlock-error]')?.textContent||''" | tr -d '"'); [[ -n "$R" ]] && break; done
+[[ "$R" == "Wrong passphrase." ]] && pass "Inline: Wrong passphrase." || fail "Wrong passphrase message" "$R"
+setv65 "[data-testid=unlock-passphrase]" "$PASS65"
+click65 "[data-testid=unlock-submit]" >/dev/null
+for _ in $(seq 1 20); do sleep 0.5; R=$(ev "!document.querySelector('[data-testid=unlock-screen]')&&!!document.querySelector('.sidebar')" | tr -d '"'); [[ "$R" == "true" ]] && break; done
+R2=$(ev "(async()=>{$A65 return (await api.listPages(100)).map(p=>p.title).filter(t=>t.startsWith('Narwhal65')).join('|')})()" | tr -d '"')
+[[ "$R" == "true" && "$R2" == "Narwhal65 plans" ]] && pass "Unlocked: the page is back" || fail "Unlock" "$R $R2"
+
+step "Forgot the passphrase: the recovery key sets a new one and issues a new key"
+press "Control+Shift+L"
+for _ in $(seq 1 20); do sleep 0.5; R=$(ev "!!document.querySelector('[data-testid=unlock-screen]')" | tr -d '"'); [[ "$R" == "true" ]] && break; done
+[[ "$R" == "true" ]] && pass "Ctrl+Shift+L locks it" || fail "Ctrl+Shift+L" "$R"
+click65 "[data-testid=unlock-toggle-recovery]" >/dev/null; sleep 0.3
+setv65 "[data-testid=unlock-recovery-key]" "$(echo "$RK65" | tr 'A-Z' 'a-z')"
+setv65 "[data-testid=recover-passphrase]" "brand new passphrase sixty five"
+setv65 "[data-testid=recover-passphrase-confirm]" "brand new passphrase sixty five"
+click65 "[data-testid=unlock-submit]" >/dev/null
+for _ in $(seq 1 20); do sleep 0.5; NEWRK=$(ev "document.querySelector('[data-testid=recovery-key]')?.textContent||''" | tr -d '"'); [[ -n "$NEWRK" ]] && break; done
+[[ -n "$NEWRK" && "$NEWRK" != "$RK65" ]] && pass "Recovered (lower-case key accepted); a new recovery key is shown" || fail "Recovery" "$NEWRK"
+click65 "[data-testid=recovery-saved]" >/dev/null; sleep 0.2; click65 "[data-testid=recovery-done]" >/dev/null
+for _ in $(seq 1 20); do sleep 0.5; R=$(ev "!document.querySelector('[data-testid=unlock-screen]')" | tr -d '"'); [[ "$R" == "true" ]] && break; done
+R=$(ev "(async()=>{const e=await import('/src/lib/encryption.ts');await e.lockNow();let old='';try{await e.unlock('$PASS65');old='opened'}catch(x){old=String(x).split(':')[0]}await e.unlock('brand new passphrase sixty five');return old})()" | tr -d '"')
+[[ "$R" == "WRONG_PASSPHRASE" ]] && pass "The old passphrase no longer works; the new one does" || fail "New passphrase" "$R"
+
+step "From the unlock screen I can open another notebook; this one stays locked"
+ev "(async()=>{const e=await import('/src/lib/encryption.ts');await e.lockNow();return 1})()" >/dev/null; sleep 1
+ev "[...document.querySelectorAll('.enc-others-list button')].find(b=>!b.textContent.includes('🔒'))?.click()" >/dev/null
+for _ in $(seq 1 20); do sleep 0.5; R=$(ev "!document.querySelector('[data-testid=unlock-screen]')&&!!document.querySelector('.sidebar')" | tr -d '"'); [[ "$R" == "true" ]] && break; done
+R2=$(ev "(async()=>{$A65 const l=await api.listNotebooks();const v=l.find(n=>n.name==='$NB65');return (v?v.encrypted+'/'+v.locked:'missing')+'|'+((await api.getNotebookSession()).encrypted)})()" | tr -d '"')
+[[ "$R" == "true" && "$R2" == "true/true|false" ]] && pass "Another notebook opened; the encrypted one is listed as locked ($R2)" || fail "Open another" "$R $R2"
+
+step "Settings → Security offers to encrypt a plain notebook (and explains what goes)"
+api "openSettings()" >/dev/null; sleep 1
+R=$(ev "!!document.querySelector('[data-section=security] [data-testid=security-encrypt]')" | tr -d '"')
+[[ "$R" == "true" ]] && pass "'Encrypt this notebook…' is there" || fail "Security section" "$R"
+ss "65-security-settings"
+api "closePanel()" >/dev/null; press "Escape"; sleep 0.5
+[[ -n "$HOME65" ]] && ev "(async()=>{const n=await import('/src/lib/notebooks.ts');await n.switchNotebook('$HOME65');return 1})()" >/dev/null
+sleep 1
+
+# ═══════════════════════════════════════════════
 close_app
 
 # ═══════════════════════════════════════════════

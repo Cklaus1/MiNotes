@@ -1104,6 +1104,9 @@ pub(crate) struct AttachmentCopy {
     pub(crate) rel: PathBuf,
     pub(crate) src: PathBuf,
     pub(crate) size: u64,
+    /// The bytes themselves, for an encrypted notebook (its attachments are
+    /// inside the database, there is no `src` file).
+    pub(crate) data: Option<Vec<u8>>,
 }
 
 impl Database {
@@ -1119,14 +1122,24 @@ impl Database {
         let (md, used) = crate::repo::attachments::rewrite_for_mirror(&md, depth);
         let mut copies = Vec::new();
         for (hash, enc) in used {
-            let Some(src) = self.attachment_file(&hash) else { continue };
-            let size = fs::metadata(&src).map(|m| m.len()).unwrap_or(0);
+            let (src, size, data) = match self.attachment_file(&hash) {
+                Some(src) => {
+                    let size = fs::metadata(&src).map(|m| m.len()).unwrap_or(0);
+                    (src, size, None)
+                }
+                None if self.is_encrypted() => match self.attachment_bytes(&hash)? {
+                    Some(d) => (PathBuf::new(), d.len() as u64, Some(d)),
+                    None => continue,
+                },
+                None => continue,
+            };
             let name = sanitize_component(&crate::repo::attachments::decode_name(&enc));
             copies.push(AttachmentCopy {
                 rel: Path::new(crate::repo::attachments::MIRROR_DIR).join(&hash).join(name),
                 hash,
                 src,
                 size,
+                data,
             });
         }
         Ok((md, copies))
@@ -1158,7 +1171,11 @@ pub(crate) fn apply_attachment_copies(root: &Path, copies: &[AttachmentCopy]) ->
             fs::create_dir_all(parent).map_err(|e| crate::error::Error::InvalidInput(format!("Cannot create dir: {e}")))?;
         }
         let tmp = dest.with_file_name(format!(".{}{TMP_SUFFIX}", Uuid::now_v7().simple()));
-        let r = fs::copy(&c.src, &tmp).and_then(|_| fs::rename(&tmp, &dest));
+        let r = match &c.data {
+            Some(d) => fs::write(&tmp, d),
+            None => fs::copy(&c.src, &tmp).map(drop),
+        }
+        .and_then(|_| fs::rename(&tmp, &dest));
         if let Err(e) = r {
             let _ = fs::remove_file(&tmp);
             eprintln!("[minotes-mirror] could not copy attachment {}: {e}", c.rel.display());

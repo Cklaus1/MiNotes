@@ -1,6 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
+import LockGate from "./components/LockGate";
 import "./styles.css";
 import "./lib/testModules";
 
@@ -63,7 +64,9 @@ class ErrorBoundary extends React.Component<
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     <ErrorBoundary>
-      <App />
+      <LockGate>
+        <App />
+      </LockGate>
     </ErrorBoundary>
   </React.StrictMode>
 );

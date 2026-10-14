@@ -19,6 +19,7 @@ import { blocksToFlow, extractLabel, type LayoutDirection, type MindMapNodeData 
 import { loadCollapsed, saveCollapsed } from "./collapseStore";
 import { buildMindMapSvg, svgToPng } from "./exportImage";
 import MindMapNode from "./MindMapNode";
+import { confirmPlaintextExport } from "../../lib/encryption";
 
 const nodeTypes = { mindmapNode: MindMapNode };
 
@@ -85,6 +86,8 @@ function autoCollapsed(blocks: Block[]): Set<string> {
 
 /** Save a file: browser download, or (desktop) PNG to Downloads / text to the clipboard. */
 async function deliverExport(filename: string, data: Blob, kind: string): Promise<void> {
+  // An encrypted notebook: the export is written unencrypted — ask once.
+  if (!(await confirmPlaintextExport())) return;
   if (api.isTauri) {
     // The desktop webview has no download manager: ask where to save.
     const bytes = Array.from(new Uint8Array(await data.arrayBuffer()));
