@@ -312,7 +312,7 @@ encrypted notebooks; 4b webview storage (`ui_state`) and legacy whiteboard copie
 | Risk | Mitigation |
 |---|---|
 | User loses passphrase and recovery key | Recovery key is mandatory at setup and re-printable while unlocked; plain-language warning; nothing else is possible by design. |
-| A plaintext copy is missed | The leak test in §7 runs in CI against every release. **[needs-human: there is no CI yet (ARCH X-1); choosing a provider/budget is open (ARCH §7 Q4). Until then the leak test runs in `cargo test` and the desktop journeys.]** |
+| A plaintext copy is missed | The leak test in §7 runs in CI against every release. **[needs-human: there is no CI yet (ARCH X-1); choosing a provider/budget is open (ARCH §7 Q4). Until then the leak test runs in `cargo test` and the desktop journeys.]** [Resolved 2026-10-14: CI now exists — `ci.yml` runs `cargo test` (the core leak tests: db/WAL, conversion, zip, encrypted sync repo + git objects) on every change; `nightly.yml` runs the desktop journeys, including D13's and D14's leak scans.] |
 | Keychain entry leaks the DEK to other software in the session | Opt-in, explained; auto-lock; "Forget on this device". |
 | Conversion interrupted | Resumable with verification before any deletion. |
 | Build complexity (vendored OpenSSL on Windows/Android) | Spike first (step 1) before committing to the rest. |
