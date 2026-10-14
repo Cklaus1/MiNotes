@@ -123,7 +123,7 @@ pub fn get_branch(dir: &Path) -> Result<Option<String>> {
     }
 }
 
-fn require_branch(dir: &Path) -> Result<String> {
+pub(crate) fn require_branch(dir: &Path) -> Result<String> {
     get_branch(dir)?.ok_or_else(|| Error::Git("Sync directory is on a detached HEAD".to_string()))
 }
 
@@ -277,6 +277,88 @@ fn abort_with(dir: &Path, msg: String) -> Error {
 /// rebase is aborted and an error returned rather than committing markers.
 pub fn auto_resolve_conflicts(dir: &Path) -> Result<Vec<String>> {
     let host = get_hostname();
+    resolve_rebase_conflicts(dir, &mut |file| resolve_with_conflict_copy(dir, file, &host))
+}
+
+/// The plaintext strategy for one conflicted file: the upstream side becomes a
+/// separate-page conflict copy, the local edit stays.
+fn resolve_with_conflict_copy(dir: &Path, file: &str, host: &str) -> Result<()> {
+    // Save the upstream side (stage :2) as a separate-page conflict copy.
+    let (other, _, has_upstream) = run_git(dir, &["show", &format!(":2:{file}")])?;
+    if has_upstream && !other.is_empty() {
+        let copy_path = conflict_copy_path(dir, file, host)
+            .ok_or_else(|| Error::Git(format!("Cannot build conflict copy path for {file}")))?;
+        let body = if file.ends_with(".md") {
+            let stem = Path::new(file)
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| "Untitled".to_string());
+            crate::repo::sync::rewrite_as_conflict_copy(&other, &stem, host)
+        } else {
+            other
+        };
+        let copy_rel = copy_path.strip_prefix(dir).unwrap_or(&copy_path).to_path_buf();
+        if let Some(link) = crate::repo::export::symlink_below(dir, &copy_rel) {
+            return Err(Error::Git(format!(
+                "Not writing conflict copy {}: symbolic link at {}",
+                copy_rel.display(),
+                link.display()
+            )));
+        }
+        if let Some(parent) = copy_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        crate::repo::export::atomic_write(&copy_path, body.as_bytes())
+            .map_err(|e| Error::Git(format!("Failed to write conflict copy {}: {e}", copy_path.display())))?;
+    }
+    keep_local_side(dir, file)
+}
+
+/// Keep our local edit (stage :3). If there is no local side (we deleted it,
+/// they modified it), drop the file.
+pub(crate) fn keep_local_side(dir: &Path, file: &str) -> Result<()> {
+    let (_, _, ok) = run_git(dir, &["checkout", "--theirs", "--", file])?;
+    if !ok {
+        let _ = run_git(dir, &["rm", "-q", "--cached", "--ignore-unmatch", "--", file])?;
+        if crate::repo::export::symlink_below(dir, Path::new(file).parent().unwrap_or(Path::new(""))).is_none() {
+            let _ = std::fs::remove_file(dir.join(file));
+        }
+    }
+    Ok(())
+}
+
+/// Blob ids of a conflicted file's stages: (1 base, 2 upstream, 3 local).
+pub(crate) fn conflict_stages(dir: &Path, file: &str) -> Result<[Option<String>; 3]> {
+    let (stdout, stderr, ok) = run_git(dir, &["ls-files", "-u", "-z", "--", file])?;
+    if !ok {
+        return Err(Error::Git(format!("git ls-files -u failed: {stderr}")));
+    }
+    let mut out: [Option<String>; 3] = [None, None, None];
+    for rec in stdout.split('\0').filter(|s| !s.is_empty()) {
+        // "<mode> <sha> <stage>\t<path>"
+        let meta = rec.split('\t').next().unwrap_or("");
+        let parts: Vec<&str> = meta.split_whitespace().collect();
+        if let [_, sha, stage] = parts.as_slice() {
+            if let Ok(n) = stage.parse::<usize>() {
+                if (1..=3).contains(&n) {
+                    out[n - 1] = Some(sha.to_string());
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// A blob's content as text (`git cat-file blob`).
+pub(crate) fn blob_text(dir: &Path, sha: &str) -> Result<Option<String>> {
+    let (stdout, _, ok) = run_git(dir, &["cat-file", "blob", sha])?;
+    Ok(if ok { Some(stdout) } else { None })
+}
+
+/// Drive a stopped `pull --rebase` to completion, resolving every conflicted
+/// file with `resolve` (any error aborts the rebase). Bounded; never commits
+/// conflict markers.
+pub(crate) fn resolve_rebase_conflicts(dir: &Path, resolve: &mut dyn FnMut(&str) -> Result<()>) -> Result<Vec<String>> {
     let mut all_resolved: Vec<String> = Vec::new();
 
     for _ in 0..MAX_REBASE_STEPS {
@@ -285,43 +367,7 @@ pub fn auto_resolve_conflicts(dir: &Path) -> Result<Vec<String>> {
         }
         let conflicted = unmerged_files(dir)?;
         for file in &conflicted {
-            // Save the upstream side (stage :2) as a separate-page conflict copy.
-            let (other, _, has_upstream) = run_git(dir, &["show", &format!(":2:{file}")])?;
-            if has_upstream && !other.is_empty() {
-                let copy_path = conflict_copy_path(dir, file, &host)
-                    .ok_or_else(|| abort_with(dir, format!("Cannot build conflict copy path for {file}")))?;
-                let body = if file.ends_with(".md") {
-                    let stem = Path::new(file)
-                        .file_stem()
-                        .map(|s| s.to_string_lossy().to_string())
-                        .unwrap_or_else(|| "Untitled".to_string());
-                    crate::repo::sync::rewrite_as_conflict_copy(&other, &stem, &host)
-                } else {
-                    other
-                };
-                let copy_rel = copy_path.strip_prefix(dir).unwrap_or(&copy_path).to_path_buf();
-                if let Some(link) = crate::repo::export::symlink_below(dir, &copy_rel) {
-                    return Err(abort_with(
-                        dir,
-                        format!("Not writing conflict copy {}: symbolic link at {}", copy_rel.display(), link.display()),
-                    ));
-                }
-                if let Some(parent) = copy_path.parent() {
-                    let _ = std::fs::create_dir_all(parent);
-                }
-                crate::repo::export::atomic_write(&copy_path, body.as_bytes()).map_err(|e| {
-                    abort_with(dir, format!("Failed to write conflict copy {}: {e}", copy_path.display()))
-                })?;
-            }
-            // Keep our local edit (stage :3). If there is no local side (we deleted
-            // it, they modified it), drop it — their version survives as the copy.
-            let (_, _, ok) = run_git(dir, &["checkout", "--theirs", "--", file])?;
-            if !ok {
-                let _ = run_git(dir, &["rm", "-q", "--cached", "--ignore-unmatch", "--", file])?;
-                if crate::repo::export::symlink_below(dir, Path::new(file).parent().unwrap_or(Path::new(""))).is_none() {
-                    let _ = std::fs::remove_file(dir.join(file));
-                }
-            }
+            resolve(file).map_err(|e| abort_with(dir, e.to_string()))?;
             all_resolved.push(file.clone());
         }
 
@@ -629,7 +675,7 @@ pub(crate) fn run_git_timeout(dir: &Path, args: &[&str], timeout: Duration) -> R
 }
 
 /// Classify a git error message into a user-friendly description.
-fn classify_git_error(stderr: &str) -> String {
+pub(crate) fn classify_git_error(stderr: &str) -> String {
     let lower = stderr.to_lowercase();
     if lower.contains("could not resolve hostname") || lower.contains("connection refused") {
         "Network error — check your internet connection".to_string()

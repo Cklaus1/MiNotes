@@ -376,7 +376,7 @@ impl Database {
         if bytes.len() as u64 > MAX_ATTACHMENT_BYTES {
             return Err(too_large(name, bytes.len() as u64));
         }
-        if self.encrypted {
+        if self.key.is_some() {
             let hash = hex(&Sha256::digest(bytes));
             let ext = sanitize_ext(name, mime);
             return self.tx(|| {
@@ -415,7 +415,7 @@ impl Database {
         if meta.len() > MAX_ATTACHMENT_BYTES {
             return Err(too_large(&name, meta.len()));
         }
-        if self.encrypted {
+        if self.key.is_some() {
             // Inside the database: never a plaintext copy in the store.
             let mut bytes = Vec::with_capacity(meta.len() as usize);
             fs::File::open(path)
@@ -512,7 +512,7 @@ impl Database {
     /// The stored file of an attachment (derived from its hash only). `None` in
     /// an encrypted notebook, whose attachments are inside the database.
     pub fn attachment_file(&self, hash: &str) -> Option<PathBuf> {
-        if self.encrypted {
+        if self.key.is_some() {
             return None;
         }
         find_file(&self.attachments_dir()?, hash)
@@ -523,7 +523,7 @@ impl Database {
         if !is_valid_hash(hash) {
             return Ok(None);
         }
-        if self.encrypted {
+        if self.key.is_some() {
             return Ok(self
                 .conn
                 .query_row("SELECT data FROM attachment_blobs WHERE hash = ?1", [hash], |r| r.get::<_, Vec<u8>>(0))

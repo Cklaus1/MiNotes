@@ -1006,9 +1006,9 @@ pub struct PreparedExport {
 /// What the pruner needs to know about the database.
 pub(crate) struct PruneInputs {
     known: HashSet<Uuid>,
-    trashed: HashSet<Uuid>,
+    pub(crate) trashed: HashSet<Uuid>,
     known_folders: HashSet<Uuid>,
-    trashed_folders: HashSet<Uuid>,
+    pub(crate) trashed_folders: HashSet<Uuid>,
     /// Boards referenced by live or archived pages.
     wb_referenced: HashSet<String>,
     /// Every board in the DB: id -> updated_at.

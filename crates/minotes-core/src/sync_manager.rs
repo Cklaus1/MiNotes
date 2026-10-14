@@ -42,7 +42,7 @@ use crate::mirror::{MirrorTarget, FS_LOCK as SYNC_LOCK};
 use crate::repo::export::ExportOptions;
 use crate::repo::sync::{SyncOptions, SyncResult};
 
-const IMPORT_ACTOR: &str = "git-sync";
+pub(crate) const IMPORT_ACTOR: &str = "git-sync";
 const STATE_FILE: &str = "minotes-sync-state.json";
 
 /// The notebook a sync is for (`key` = the active notebook key).
@@ -182,21 +182,26 @@ fn write_config(key: &str, config: &SyncConfig) -> Result<()> {
 
 /// Per-repo sync state (kept inside `.git`, never committed).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-struct RepoState {
+pub(crate) struct RepoState {
     /// Commit whose tree has been fully imported into the DB.
-    imported_head: Option<String>,
+    pub(crate) imported_head: Option<String>,
     /// Deletions from another device that the mass-delete guard refused to
     /// apply, waiting for the user. Their files stay deleted (the mirror does not
     /// write them back) until the user picks "Move to trash" or "Keep them".
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    held: Option<HeldState>,
+    pub(crate) held: Option<HeldState>,
+    /// Encrypted notebooks: git conflicts kept the local file; the other
+    /// device's version (blob ids only) waits to be merged per block once the
+    /// database is open (see `sync_encrypted`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) enc_merges: Vec<crate::sync_encrypted::PendingMerge>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-struct HeldState {
-    page_ids: Vec<Uuid>,
-    folder_ids: Vec<Uuid>,
-    held_at: String,
+pub(crate) struct HeldState {
+    pub(crate) page_ids: Vec<Uuid>,
+    pub(crate) folder_ids: Vec<Uuid>,
+    pub(crate) held_at: String,
 }
 
 /// Deletions held back by the mass-delete guard, as shown to the user.
@@ -221,14 +226,14 @@ pub fn held_export_options(dir: &Path) -> ExportOptions {
     }
 }
 
-fn read_state(dir: &Path) -> RepoState {
+pub(crate) fn read_state(dir: &Path) -> RepoState {
     std::fs::read_to_string(dir.join(".git").join(STATE_FILE))
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default()
 }
 
-fn write_state(dir: &Path, st: &RepoState) -> Result<()> {
+pub(crate) fn write_state(dir: &Path, st: &RepoState) -> Result<()> {
     let json = serde_json::to_string(st)?;
     crate::repo::export::atomic_write(&dir.join(".git").join(STATE_FILE), json.as_bytes())
         .map_err(|e| Error::Git(format!("Failed to write sync state: {e}")))
@@ -334,7 +339,7 @@ pub fn resolve_held_deletions(db: &Database, key: &str, move_to_trash: bool) -> 
     resolve_held_deletions_in_dir(db, &sync_dir_for_notebook(key), move_to_trash)
 }
 
-fn ensure_gitignore(dir: &Path) {
+pub(crate) fn ensure_gitignore(dir: &Path) {
     let path = dir.join(".gitignore");
     if crate::repo::export::is_symlink(&path) {
         return; // never written through
@@ -382,7 +387,7 @@ fn ensure_attachment_gitignore(dir: &Path) {
 }
 // ── End import ──
 
-fn commit_message() -> String {
+pub(crate) fn commit_message() -> String {
     format!("sync: {} @ {}", git_cmd::get_hostname(), Utc::now().to_rfc3339())
 }
 
@@ -427,7 +432,7 @@ pub struct GitSyncResult {
 }
 
 impl GitSyncResult {
-    fn refused(msg: &str) -> Self {
+    pub(crate) fn refused(msg: &str) -> Self {
         GitSyncResult {
             success: false,
             pages_exported: 0,
@@ -600,6 +605,15 @@ where
     F: Fn() -> Result<G>,
 {
     let sync_dir = target.dir.as_path();
+    if lock_db()?.is_encrypted() {
+        // Fails closed (before anything is committed or pushed) when the remote
+        // holds another notebook.
+        let r = crate::sync_encrypted::cycle(sync_dir, lock_db, true)?;
+        if let Some(e) = r.error.filter(|_| !r.offline) {
+            return Err(Error::Git(e));
+        }
+        return Ok(());
+    }
     if !git_cmd::is_git_repo(sync_dir) {
         git_cmd::init_repo(sync_dir)?;
     }
@@ -943,6 +957,13 @@ where
 {
     let sync_dir = target.dir.as_path();
     let _guard = SYNC_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    // An encrypted notebook syncs encrypted files only (sync_encrypted).
+    if lock_db()?.is_encrypted() {
+        if !git_cmd::is_git_repo(sync_dir) {
+            return Err(Error::Git("Sync directory is not a git repo".to_string()));
+        }
+        return crate::sync_encrypted::cycle(sync_dir, &lock_db, false);
+    }
     if !git_cmd::is_git_repo(sync_dir) {
         return Err(Error::Git("Sync directory is not a git repo".to_string()));
     }

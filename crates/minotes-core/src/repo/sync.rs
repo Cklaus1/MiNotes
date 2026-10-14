@@ -632,7 +632,7 @@ impl Database {
     }
 
     /// Ids of folders changed locally (by anyone but `import_actor`) after `since`.
-    fn folders_modified_since(&self, since: DateTime<Utc>, import_actor: &str) -> Result<HashSet<Uuid>> {
+    pub(crate) fn folders_modified_since(&self, since: DateTime<Utc>, import_actor: &str) -> Result<HashSet<Uuid>> {
         let t = since.to_rfc3339();
         let mut stmt = self.conn.prepare(
             "SELECT entity_id FROM events
@@ -655,7 +655,7 @@ impl Database {
     /// on disk or still holds imported pages, was changed locally after the
     /// export, or holds a page edited locally after the export; guarded against
     /// mass deletion like pages.
-    fn trash_removed_folders(
+    pub(crate) fn trash_removed_folders(
         &self,
         ids: &[Uuid],
         in_use: &HashSet<Uuid>,
@@ -1326,7 +1326,7 @@ impl Database {
     }
 
     /// Keep a remote version of `page`'s file as its own page "(conflict from <host>)".
-    fn keep_conflict_copy(&self, theirs: &str, page: &crate::models::Page, rel: &Path, actor: &str, host: &str, result: &mut SyncResult) -> Result<()> {
+    pub(crate) fn keep_conflict_copy(&self, theirs: &str, page: &crate::models::Page, rel: &Path, actor: &str, host: &str, result: &mut SyncResult) -> Result<()> {
         let content = rewrite_as_conflict_copy(theirs, &page.title, host);
         let mut copy = ImportFile::from_text(rel, &content);
         if self.get_page_by_title(copy.fm.title.as_deref().unwrap_or(""))?.is_some() {
@@ -1401,7 +1401,7 @@ impl Database {
     /// Trash pages whose file was removed upstream (a deletion on another device,
     /// propagated as a file removal by git). Skips pages that still have a file
     /// (e.g. moved), pages edited locally since the export, and already-trashed pages.
-    fn trash_removed_pages(
+    pub(crate) fn trash_removed_pages(
         &self,
         ids: &[Uuid],
         seen: &HashSet<Uuid>,

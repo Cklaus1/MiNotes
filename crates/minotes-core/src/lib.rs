@@ -19,4 +19,5 @@ pub mod notebook_zip;
 pub mod outside;
 pub mod repo;
 pub mod search;
+pub mod sync_encrypted;
 pub mod sync_manager;
