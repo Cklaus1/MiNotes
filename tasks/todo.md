@@ -16,5 +16,5 @@
 - [x] E13 browser journey 65 — c69760c
 - [x] E14 desktop journey D13 + leak scan — 16214ad
 - [x] E16 overhead at scale — measured (micro-benchmark), recorded in PRD §10
-- [ ] E17 encrypted mirror + git sync — BLOCKED-ON-DEPENDENCY (main has no F-2/F-7 yet)
+- [x] E17 encrypted git sync — 4259d26 (core), 80fb347 (app), d6f8a3f (journey D14)
 - [x] E18 docs

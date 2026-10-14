@@ -1,6 +1,6 @@
 # PRD: Notebook Encryption
 
-Status: built except encrypted sync (step 5, blocked) — see §10 · Owner: Chris Klaus · Rewritten 2026-10-10
+Status: built, including encrypted git sync (step 5) — see §10 · Owner: Chris Klaus · Rewritten 2026-10-10
 
 > **Supersedes the per-folder design.** The earlier version of this PRD encrypted
 > individual fields (block content, page titles, property values) per Project
@@ -202,7 +202,7 @@ Everything that would leak must be handled explicitly:
 | Copy | Encrypted notebook behaviour |
 |---|---|
 | Markdown mirror (`notes/`) | **Off by default.** Option: an *encrypted mirror* — each file encrypted with a key derived from the DEK (age-style, one file per page, filenames are opaque ids). Readable only by MiNotes; exists so git sync has files to move. |
-| Git sync | Syncs the encrypted mirror. Merges become "newer file wins per page" (ciphertext cannot be three-way merged); conflicting edits keep both as today's conflict-copy pages after decryption. The remote sees file count, sizes and timing only. |
+| Git sync | Syncs the encrypted mirror. Merges become "newer file wins per page" (ciphertext cannot be three-way merged); conflicting edits keep both as today's conflict-copy pages after decryption. The remote sees file count, sizes and timing only. [REVISED 2026-10-14 (built): **per-block merge is kept**, not "newer file wins" — a git conflict on a page file keeps the local file and records the other side's blob ids; once the database is open both versions are decrypted and merged per block against the common ancestor with the plain sync's F-2 merge, so edits to different blocks both survive and only a block changed on both sides becomes a conflict-copy page (today's rule). Format: `p/` `f/` `w/` `a/` one `.mne` file per page / folder / whiteboard / attachment, `MNE1:` + base64(nonce ‖ AES-256-GCM), key HKDF(DEK, "minotes sync file v1"), the path as associated data; names are HKDF(DEK, "minotes sync names v1")-keyed hashes of ids; a page decrypts to the plain mirror's markdown, so F-7 block properties sync unchanged. `.minotes-encryption.json` carries the key slots and a key check: another device joins with the passphrase ("Join encrypted notebook…"); a remote whose key check differs, or a plain remote, is refused before anything is rebased, imported or pushed. ⚠ close call: publishing the slots lets the git host try passphrases offline — the same exposure as a copied notebook folder (§2), Argon2id being the defence; see §9 Q6.] |
 | Export / publish site | Allowed while unlocked, with a one-time "this writes unencrypted files" confirmation. |
 | Whiteboard legacy localStorage copies | Deleted when a notebook is encrypted. |
 | Webview storage (settings, collapsed state, recent pages) | Recent-page titles and anything content-derived move into the database; only non-sensitive UI preferences stay in webview storage. |
@@ -273,7 +273,7 @@ Everything that would leak must be handled explicitly:
    the frontend turns into the unlock dialog.
 4. Frontend: dialogs, lock state in the notebook switcher, auto-lock timer,
    clearing caches on lock.
-5. Encrypted mirror + sync adaptation (can ship after 1–4: until then, encrypted
+5. Encrypted mirror + sync adaptation [built 2026-10-14: `core/src/sync_encrypted.rs`] (can ship after 1–4: until then, encrypted
    notebooks simply have mirror and sync off).
 6. CLI: prompt / env / keychain.
 7. Mock backend: lock state and wrong-passphrase behaviour (no real crypto) so
@@ -350,6 +350,14 @@ encrypted notebooks; 4b webview storage (`ui_state`) and legacy whiteboard copie
    locked notebook is which?) for little protection. v1 builds §4.4 as written;
    nothing beyond it is adopted.
 
+6. Publishing the key slots in the sync repo (needed to join with the passphrase)
+   lets whoever can read the remote try passphrases offline. **needs-human
+   (confirm):** options (a) publish — built; the exposure equals a copied
+   notebook folder, Argon2id (64 MiB, t=3) is the defence and the strength
+   minimum applies; (b) don't publish — joining then needs `notebook.json` copied
+   by hand or a recovery-key-only slot; (c) a per-notebook choice. Recommendation:
+   (a), documented in the sync settings.
+
 ## 10. Build status (build-loop 2026-10-13)
 
 Harness: `tasks/build-loop.md` (DAG), `tasks/todo.md`, `tasks/lessons.md`,
@@ -367,7 +375,7 @@ Harness: `tasks/build-loop.md` (DAG), `tasks/todo.md`, `tasks/lessons.md`,
 | 3 App commands, locked state | Built | `src-tauri/src/encryption_commands.rs`, `lib.rs` (`db_guard`) |
 | 4 UI: unlock screen, create, Security settings, lock / auto-lock | Built | `components/LockGate.tsx`, `EncryptionDialogs.tsx`, `SecuritySettings.tsx` |
 | 4b Webview storage (`ui_state`) | Built | `lib/webviewState.ts`, `core/src/repo/ui_state.rs` |
-| 5 Encrypted mirror + git sync | **Not started — blocked on a dependency**: it waits for the F-2/F-7 sync fixes on main (same files). Until then sync is off for encrypted notebooks. | — |
+| 5 Encrypted mirror + git sync | Built (after main's F-2/F-7): encrypted files only, per-block merge after decryption, fail closed on a foreign remote, join with the passphrase. | `core/src/sync_encrypted.rs`, `encryption_commands::join_encrypted_notebook`, journey D14 |
 | 6 CLI (keychain → `MINOTES_PASSPHRASE` → prompt; `notebook create --encrypt`, `encrypt`, `decrypt`) | Built | `minotes-cli/src/unlock.rs` |
 | 7 Mock backend | Built | `lib/encryptionMock.ts` |
 
@@ -382,6 +390,5 @@ blocks): writes +13 % (dominated by fsync), 300 searches +0 %, 500 page reads +3
 — inside the ~15 % budget. The full `scale-tour.sh` run on an encrypted notebook
 was not done.
 
-Not built / deferred (see `tasks/opportunities.md`): encrypted sync (step 5),
-biometric / Android Keystore (Q4), OS screen-lock detection for auto-lock, the CI
+Not built / deferred (see `tasks/opportunities.md`): biometric / Android Keystore (Q4), OS screen-lock detection for auto-lock, the CI
 leak test (needs-human: no CI).

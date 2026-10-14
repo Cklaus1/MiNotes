@@ -162,6 +162,16 @@ version becomes a conflict-copy page after decryption", the same keep-both rule.
 Commit messages must never contain content (they don't today). The remote learns
 only file count, sizes and timing.
 
+**Built (2026-10-14):** git moves one `.mne` file per page / folder / whiteboard /
+attachment plus `.minotes-encryption.json` (key slots + key check). Better than
+"newer file wins": a git conflict keeps the local file and records the other
+side's version; after decryption it is merged **per block** with the F-2 merge
+(different blocks both survive; the same block keeps a conflict-copy page). A
+remote holding another notebook (different key) or plain markdown is refused
+before anything is rebased, imported or pushed. Other devices use "Join encrypted
+notebook…" with the passphrase. F-6 (a copied folder asks before it syncs)
+applies unchanged. See `PRD-encryption.md` §4.5 and `core/src/sync_encrypted.rs`.
+
 ## 4. Feature status
 
 | Feature | Status | Where |
@@ -188,7 +198,7 @@ only file count, sizes and timing.
 | Add a remote from the app | Not started (terminal only) | n/a |
 | Git sync from the CLI | Not started (only `sync-dir`, no git) | `minotes-cli/src/commands/sync.rs` |
 | Sync on top of the notebooks mirror | Not started (blocked on notebooks Phase 2) | n/a |
-| Encrypted-notebook sync | Not started (blocked on encryption step 5) | n/a |
+| Encrypted-notebook sync | Built: encrypted files only, per-block merge after decryption, fail closed on a foreign remote, join with the passphrase (PRD-encryption §4.5) | `sync_encrypted.rs` |
 | Version history UI | Not started | n/a |
 | Tests: two-device conflict, rename+edit, whiteboards, folders, deletion, edit-during-network | Done (~48 core tests) | `sync_manager.rs`, `git_cmd.rs`, `repo/sync.rs` |
 

@@ -21,3 +21,7 @@
   unit test missed (switch flush wrote an encrypted notebook's attachments to notes/).
   → For "nothing may be written" properties, scan the real app's files end to end, and
   put the guard in core too (defence in depth), not only at the call site.
+- A browser-suite run serves the live source tree through Vite: frontend edits made
+  while it ran were hot-reloaded into the middle of the "baseline" (the menu assertion
+  failed against a menu item added minutes later). → Don't edit `crates/minotes-app/src`
+  while a browser run is going; take baselines before frontend work.

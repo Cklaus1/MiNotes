@@ -39,3 +39,17 @@ Each entry: proposed severity · what · where · why deferred.
   before/after look with `scale-tour.sh` timings.
 - P3 · `export.rs` gained an `AttachmentCopy.data` field for encrypted exports — touches a
   file the concurrent F-2/F-7 work also edits; expect a small merge.
+
+## Found while building E17 (encrypted sync)
+- P2 · Changing the passphrase does not update the sync repo's key file (it is written
+  only when absent), so a device joining later needs the passphrase that was current
+  when sync was turned on (or the recovery key at that time). Rewrite the key file on
+  the device that changed it. `core/src/sync_encrypted.rs` `ensure_key_file`.
+- P3 · Encrypted sync never prunes whiteboard / attachment files, and keeps the file of a
+  page that was permanently deleted here (only trashed pages are pruned): the repo only
+  grows, and such a page stays on other devices. Needs an exported-ids manifest like
+  the plain mirror's.
+- P3 · Commit messages carry the hostname (`sync: <host> @ <time>`) — for encrypted
+  notebooks that is the one readable detail besides sizes and timing.
+- P3 · Browser mock: "Join encrypted notebook…" is desktop-only (git), so the browser
+  suite can't cover it; D14 does.
