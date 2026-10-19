@@ -286,3 +286,218 @@ fn joining_with_a_wrong_passphrase_creates_nothing() {
     assert!(!crate::notebook::list().iter().any(|n| n.name == "Intruder"));
     assert_eq!(remote_head(&remote), before);
 }
+
+/// The remote's key file (at the tip of main).
+fn remote_key_file(remote: &Path) -> KeyFile {
+    let (text, e, ok) = git_cmd::run_git(remote, &["show", &format!("main:{KEY_FILE}")]).unwrap();
+    assert!(ok, "{e}");
+    read_key_file_text(&text).unwrap()
+}
+
+const NEW_PASS: &str = "a brand new passphrase, longer";
+
+// Opportunity P2 (E17): a passphrase change (or a new recovery key) reaches the
+// sync repo's key file, so a device joining later uses the CURRENT passphrase;
+// a device that is already syncing keeps working (same data key) and never
+// writes its older slots back.
+#[test]
+fn a_passphrase_change_reaches_the_sync_repo_and_devices_keep_syncing() {
+    if !git_cmd::git_available() {
+        return;
+    }
+    let h = FakeHome::new();
+    let remote = bare_remote(h.path());
+    let a = device_a(h.path(), &remote);
+    let p = a.db.create_page("Plan", None, false, None, "user").unwrap();
+    a.db.create_block(&p.id, "line one", None, None, "user").unwrap();
+    assert!(a.sync(true).success);
+    let b = device_b(h.path(), &remote);
+    assert!(b.sync(true).success);
+
+    crate::encryption::change_passphrase_with(&a.nb, crate::crypto::Secret::Passphrase(PASS), NEW_PASS, FAST).unwrap();
+    let r = a.sync(false);
+    assert!(r.success, "{r:?}");
+    let slots_a = crate::notebook::read_meta(a.nb.root().unwrap()).unwrap().encryption.unwrap();
+    assert_eq!(remote_key_file(&remote).encryption, slots_a, "the new slots are published");
+
+    // B (old slots locally) keeps syncing both ways and doesn't revert the key file.
+    b.db.create_block(&p.id, "from B", None, None, "user").unwrap();
+    let r = b.sync(false);
+    assert!(r.success, "{r:?}");
+    assert!(b.sync(false).success);
+    assert_eq!(remote_key_file(&remote).encryption, slots_a, "B never writes its older slots back");
+    assert!(a.sync(false).success);
+    assert!(a.texts("Plan").contains(&"from B".to_string()));
+
+    // A device joining now: the old passphrase fails, the new one works.
+    let old = join_from_remote(remote.to_str().unwrap(), &h.path().join("MiNotes/Late"), "Late", PASS).err().expect("old refused");
+    assert!(matches!(old, Error::WrongPassphrase), "{old:?}");
+    let nb = join_from_remote(remote.to_str().unwrap(), &h.path().join("MiNotes/Late2"), "Late2", NEW_PASS).unwrap();
+    let late = Dev { db: nb.open_db().unwrap(), nb };
+    assert!(late.sync(true).success);
+    assert_eq!(late.texts("Plan"), ["line one", "from B"]);
+
+    // A new recovery key is published the same way (the old one stops joining).
+    let rk_old_slots = remote_key_file(&remote).encryption;
+    let rk = crate::encryption::regenerate_recovery_key(&a.nb, NEW_PASS).unwrap();
+    assert!(a.sync(false).success);
+    assert_ne!(remote_key_file(&remote).encryption, rk_old_slots);
+    let nb = join_from_remote(remote.to_str().unwrap(), &h.path().join("MiNotes/ByRecovery"), "ByRecovery", &rk.display()).unwrap();
+    assert!(nb.open_db().is_ok());
+    for repo in [a.dir(), b.dir(), remote.clone()] {
+        assert_no_plaintext(&repo, &["line one", "from B", "Plan"]);
+    }
+}
+
+// Rotating the data key re-encrypts the sync repo (edits another device pushed
+// before the rotation are pulled with the old key first, not lost); a device
+// still on the old key fails closed with "the key was changed" and leaves the
+// remote untouched; a device joining afterwards gets everything.
+#[test]
+fn a_key_rotation_reencrypts_the_repo_and_old_key_devices_fail_closed() {
+    if !git_cmd::git_available() {
+        return;
+    }
+    let h = FakeHome::new();
+    let remote = bare_remote(h.path());
+    let a = device_a(h.path(), &remote);
+    let p = a.db.create_page("Plan", None, false, None, "user").unwrap();
+    a.db.create_block(&p.id, "line one", None, None, "user").unwrap();
+    assert!(a.sync(true).success);
+    let b = device_b(h.path(), &remote);
+    assert!(b.sync(true).success);
+    let old_check = remote_key_file(&remote).key_check;
+    b.db.create_block(&p.id, "pushed by B before the rotation", None, None, "user").unwrap();
+    assert!(b.sync(false).success);
+
+    // A rotates (its database must be closed for the conversion).
+    let Dev { nb, db } = a;
+    drop(db);
+    crate::encryption::rotate_key_with(&nb, PASS, FAST, &mut |_| Ok(())).unwrap();
+    let a = Dev { db: nb.open_db().unwrap(), nb };
+    let r = a.sync(false);
+    assert!(r.success, "{r:?}");
+    assert!(a.texts("Plan").contains(&"pushed by B before the rotation".to_string()), "B's edit was pulled first");
+    let kf = remote_key_file(&remote);
+    assert_ne!(kf.key_check, old_check);
+    assert_eq!(kf.key_check, SyncKeys::new(&a.db.data_key().unwrap()).key_check());
+    assert_eq!(kf.generation, 2);
+    assert_eq!(kf.previous_key_checks, vec![old_check.clone()]);
+    // Every file is under the new key: none of the old names is left.
+    let (files, _, _) = git_cmd::run_git(&remote, &["ls-tree", "-r", "--name-only", "main"]).unwrap();
+    let keys_a = SyncKeys::new(&a.db.data_key().unwrap());
+    for f in files.lines().filter(|f| f.ends_with(".mne")) {
+        let (text, _, ok) = git_cmd::run_git(&remote, &["show", &format!("main:{f}")]).unwrap();
+        assert!(ok && decode_entry(&keys_a, f, &text).is_ok(), "{f} is not under the new key");
+    }
+    assert!(a.sync(false).success, "A keeps syncing");
+
+    // B, still on the old key: refused, nothing pulled or pushed.
+    let before = remote_head(&remote);
+    b.db.create_block(&p.id, "B after the rotation", None, None, "user").unwrap();
+    let r = b.sync(false);
+    assert!(!r.success);
+    let msg = r.error.unwrap_or_default();
+    assert!(msg.contains("changed (rotated) on another device"), "{msg}");
+    assert_eq!(remote_head(&remote), before, "the remote is untouched");
+    assert!(!b.texts("Plan").is_empty(), "B's notes are unchanged");
+
+    // A new device joins with the passphrase: everything, under the new key.
+    let nb = join_from_remote(remote.to_str().unwrap(), &h.path().join("MiNotes/After"), "After", PASS).unwrap();
+    let c = Dev { db: nb.open_db().unwrap(), nb };
+    assert!(c.sync(true).success);
+    assert_eq!(c.texts("Plan"), ["line one", "pushed by B before the rotation"]);
+    for repo in [a.dir(), b.dir(), c.dir(), remote.clone()] {
+        assert_no_plaintext(&repo, &["line one", "pushed by B", "B after the rotation"]);
+    }
+}
+
+fn today_journals(d: &Dev) -> Vec<crate::models::Page> {
+    let date = chrono::NaiveDate::from_ymd_opt(2026, 10, 15).unwrap();
+    d.db.list_pages(Some(1000)).unwrap().into_iter().filter(|p| p.is_journal && p.journal_date == Some(date)).collect()
+}
+
+/// Today's journal as the app shows it (the page with the day's title).
+fn shown_journal(d: &Dev) -> crate::models::Page {
+    d.db.find_journal(chrono::NaiveDate::from_ymd_opt(2026, 10, 15).unwrap()).unwrap().expect("today's journal")
+}
+
+// Nightly D14 failure (2026-10-15): both devices create today's journal on their
+// own (random ids, same title). Sync used to keep both, as "Journal/…" and
+// "Journal/… (2)", and which page got the suffix depended on the order the
+// files were imported — the devices could disagree, and then each one's export
+// rewrote the other's journal title at every sync. Once both devices touched
+// the same journal file in one round, the per-block merge saw the title change
+// as a conflict and kept a "(conflict from …)" page although no block
+// conflicted. The disagreement is forced here with the order that always makes
+// it (each device imports the other's journal before seeing its rename), then
+// D14's different-block edits run with A's startup sync before or after its edit
+// (no git conflict on the page / a git conflict on it).
+fn journals_of_one_day(startup_sync_first: bool) {
+    let date = chrono::NaiveDate::from_ymd_opt(2026, 10, 15).unwrap();
+    let h = FakeHome::new();
+    let remote = bare_remote(h.path());
+    let a = device_a(h.path(), &remote);
+    let ja = a.db.get_or_create_journal(date, None, "user").unwrap();
+    a.db.create_block(&ja.id, "jotted on A", None, None, "user").unwrap();
+    let p = a.db.create_page("Lynx", None, false, None, "user").unwrap();
+    let x = a.db.create_block(&p.id, "first line", None, None, "user").unwrap();
+    let y = a.db.create_block(&p.id, "second line", None, None, "user").unwrap();
+    assert!(a.sync(true).success);
+    let b = device_b(h.path(), &remote);
+    // B opens today's journal before its first sync: its own page.
+    let jb = b.db.get_or_create_journal(date, None, "user").unwrap();
+    b.db.create_block(&jb.id, "jotted on B", None, None, "user").unwrap();
+    assert!(b.sync(true).success);
+    assert!(a.sync(false).success);
+
+    // B edits a block and syncs, then writes in today's journal; A edits another
+    // block (before or after its startup sync) and syncs.
+    b.db.update_block(&y.id, Some("second line — B"), "user").unwrap();
+    assert!(b.sync(false).success);
+    b.db.create_block(&shown_journal(&b).id, "later on B", None, None, "user").unwrap();
+    if startup_sync_first {
+        assert!(a.sync(false).success);
+    }
+    a.db.update_block(&x.id, Some("first line — A"), "user").unwrap();
+    let r = a.sync(false);
+    assert!(r.success, "{r:?}");
+    assert_eq!(r.conflicts_resolved > 0, !startup_sync_first, "git conflicted on the page iff A edited before pulling");
+    assert!(a.sync(false).success);
+    for _ in 0..3 {
+        assert!(b.sync(false).success);
+        assert!(a.sync(false).success);
+    }
+
+    for d in [&a, &b] {
+        assert_eq!(d.texts("Lynx"), ["first line — A", "second line — B"]);
+        let titles = d.titles();
+        assert!(!titles.iter().any(|t| t.contains("conflict")), "{titles:?}");
+        let j = today_journals(d);
+        assert_eq!(j.len(), 1, "one journal for the day: {titles:?}");
+        assert_eq!(j[0].id, ja.id.min(jb.id), "the same page on both devices");
+        assert_eq!(j[0].title, "Journal/2026-10-15");
+        let texts: Vec<String> = d.db.get_page_blocks(&j[0].id).unwrap().into_iter().map(|b| b.content).collect();
+        for t in ["jotted on A", "jotted on B", "later on B"] {
+            assert!(texts.contains(&t.to_string()), "{t} missing: {texts:?}");
+        }
+    }
+    // Stable: another round commits nothing.
+    let head = remote_head(&remote);
+    assert!(a.sync(false).success && b.sync(false).success && a.sync(false).success);
+    assert_eq!(remote_head(&remote), head, "no title ping-pong");
+}
+
+#[test]
+fn journals_of_one_day_merge_into_one_page_startup_sync_after_the_edit() {
+    if git_cmd::git_available() {
+        journals_of_one_day(false);
+    }
+}
+
+#[test]
+fn journals_of_one_day_merge_into_one_page_startup_sync_before_the_edit() {
+    if git_cmd::git_available() {
+        journals_of_one_day(true);
+    }
+}

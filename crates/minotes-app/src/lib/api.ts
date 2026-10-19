@@ -668,13 +668,17 @@ export const joinEncryptedNotebook = (remote: string, name: string, location: st
 export const unlockNotebook = (secret: string, recovery: boolean, remember: boolean) =>
   invoke<NotebookSession>("unlock_notebook", { secret, recovery, remember });
 export const lockNotebook = () => invoke<NotebookSession>("lock_notebook");
+/** New key slots (passphrase, recovery key, data key) reach the sync repo's key
+ *  file at the next sync: run it now, so a device joining later can use them. */
+const syncKeySlots = <T,>(p: Promise<T>): Promise<T> =>
+  p.then(r => { window.dispatchEvent(new Event("minotes-trigger-sync")); return r; });
 export const changePassphrase = (currentPassphrase: string, newPassphrase: string) =>
-  invoke<void>("change_passphrase", { currentPassphrase, newPassphrase });
+  syncKeySlots(invoke<void>("change_passphrase", { currentPassphrase, newPassphrase }));
 /** Forgotten passphrase: returns the NEW recovery key (shown once). */
 export const recoverWithKey = (recoveryKey: string, newPassphrase: string) =>
-  invoke<string>("recover_with_key", { recoveryKey, newPassphrase });
+  syncKeySlots(invoke<string>("recover_with_key", { recoveryKey, newPassphrase }));
 export const regenerateRecoveryKey = (passphrase: string) =>
-  invoke<string>("regenerate_recovery_key", { passphrase });
+  syncKeySlots(invoke<string>("regenerate_recovery_key", { passphrase }));
 export const setRememberDevice = (remember: boolean) =>
   invoke<NotebookSession>("set_remember_device", { remember });
 export const encryptionPlan = () => invoke<EncryptionPlan>("encryption_plan");
@@ -682,7 +686,7 @@ export const encryptionPlan = () => invoke<EncryptionPlan>("encryption_plan");
 export const encryptNotebook = (passphrase: string) => invoke<string>("encrypt_notebook", { passphrase });
 export const decryptNotebook = (passphrase: string) => invoke<void>("decrypt_notebook", { passphrase });
 /** New data key (and recovery key, returned); remembered devices are forgotten. */
-export const rotateNotebookKey = (passphrase: string) => invoke<string>("rotate_notebook_key", { passphrase });
+export const rotateNotebookKey = (passphrase: string) => syncKeySlots(invoke<string>("rotate_notebook_key", { passphrase }));
 /** Native picker for a notebook .zip. Null when cancelled. */
 export const pickZipNative = (title: string) =>
   invoke<string | null>("plugin:dialog|open", {
@@ -906,7 +910,10 @@ export interface GitSyncResult {
   success: boolean;
   pages_exported: number;
   pages_imported: number;
+  /** Files git conflicted on (merged per block — see conflict_pages). */
   conflicts_resolved: number;
+  /** "(conflict from …)" pages kept: a block changed on both devices. */
+  conflict_pages?: string[];
   error: string | null;
   /** Per-file problems importing the other device's changes. */
   import_errors?: string[];

@@ -282,7 +282,7 @@ pub fn auto_resolve_conflicts(dir: &Path) -> Result<Vec<String>> {
 
 /// The plaintext strategy for one conflicted file: the upstream side becomes a
 /// separate-page conflict copy, the local edit stays.
-fn resolve_with_conflict_copy(dir: &Path, file: &str, host: &str) -> Result<()> {
+pub(crate) fn resolve_with_conflict_copy(dir: &Path, file: &str, host: &str) -> Result<()> {
     // Save the upstream side (stage :2) as a separate-page conflict copy.
     let (other, _, has_upstream) = run_git(dir, &["show", &format!(":2:{file}")])?;
     if has_upstream && !other.is_empty() {
