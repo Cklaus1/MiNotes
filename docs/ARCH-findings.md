@@ -149,6 +149,7 @@ code splitting (U-14), accessibility (U-15), whiteboard conflict handling
 | B-13 | Low | Verified | Cross-notebook link resolution holds the DB lock while opening other notebooks | S |
 | B-14 | Low | Fixed | Release build honours a dev-only OpenRouter URL override (key goes with it) | S |
 | B-15 | Low | Verified | `attachment://` reads whole files into memory | S |
+| B-16 | High | Verified | Keychain calls on the main thread froze the app for up to 2 min on Linux without a secret service (found by the nightly CI flake). **Fixed:** every keychain call is time-limited (3 s) on a helper thread and skipped for the session once unresponsive | S |
 | U-11 | Low | Verified | Tauri `listen()` leaks when cleanup runs before it resolves | S |
 | U-12 | Low | Verified | Search results overwritten by a slower older query | S |
 | U-13 | Low | Likely | `BlockItem` memo ignores callback props | S |

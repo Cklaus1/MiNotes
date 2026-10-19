@@ -50,24 +50,33 @@ pub(crate) fn forget_runtime() {
 /// (key, keychain usable). A missing entry still means the keychain works.
 #[cfg(not(target_os = "android"))]
 fn keychain_read() -> (Option<String>, bool) {
-    match keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER).and_then(|e| e.get_password()) {
+    // Guarded: with no secret service a keychain call can block for minutes, and
+    // this runs on the main thread (AI settings / Ask panel status).
+    minotes_core::keychain::guarded(|| match keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER).and_then(|e| e.get_password()) {
         Ok(k) => (Some(k), true),
         Err(keyring::Error::NoEntry) => (None, true),
         Err(_) => (None, false),
-    }
+    })
+    .unwrap_or((None, false))
 }
 
 #[cfg(not(target_os = "android"))]
 fn keychain_write(key: &str) -> Result<(), String> {
-    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER).map_err(|e| e.to_string())?;
-    entry.set_password(key).map_err(|e| e.to_string())
+    let key = key.to_string();
+    minotes_core::keychain::guarded(move || {
+        let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER).map_err(|e| e.to_string())?;
+        entry.set_password(&key).map_err(|e| e.to_string())
+    })
+    .unwrap_or_else(|| Err("The keychain is not responding".into()))
 }
 
 #[cfg(not(target_os = "android"))]
 fn keychain_delete() {
-    if let Ok(e) = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER) {
-        let _ = e.delete_credential();
-    }
+    let _ = minotes_core::keychain::guarded(|| {
+        if let Ok(e) = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER) {
+            let _ = e.delete_credential();
+        }
+    });
 }
 
 // Android: no keychain backend yet (an Android Keystore-backed store is a

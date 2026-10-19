@@ -63,6 +63,10 @@ win() { x xwininfo -root -tree 2>/dev/null | awk '/"MiNotes"/ {print $1; exit}';
 need() { for t in "$@"; do command -v "$t" >/dev/null || { echo "missing tool: $t" >&2; exit 2; }; done; }
 record() { printf '%s\t%s\t%s\n' "$1" "$2" "${3:-}" >>"$RESULTS"; }
 
+# Is anything listening on TCP port $1? (Reads the socket table: a connect probe
+# can hang on hosts that drop packets to closed ports.)
+listening() { ss -ltnH "sport = :$1" 2>/dev/null | grep -q .; }
+
 stop_app() {
   [ -f "$STATE/wd.sid" ] && { wd quit >/dev/null 2>&1 || true; rm -f "$STATE/wd.sid"; }
   if alive app; then
@@ -78,6 +82,9 @@ stop_app() {
   # closed cleanly; they'd keep the profile's database open.
   for _ in $(seq 1 20); do [ -z "$(win)" ] && break; sleep 0.25; done
   if [ -n "$(win)" ]; then x xdotool search --name '^MiNotes$' 2>/dev/null | head -1 | xargs -r -I{} timeout 5 xdotool windowkill {} 2>/dev/null || true; sleep 1; fi
+  # The next launch reuses these ports; starting tauri-driver while the previous
+  # one is still releasing them makes the new session fail ("remote end closed").
+  for _ in $(seq 1 40); do listening "$WD_PORT" || listening "$((WD_PORT + 1))" || break; sleep 0.25; done
 }
 
 # Run the app on a private D-Bus session: on this WSL host, connecting to the
@@ -86,7 +93,13 @@ stop_app() {
 DBUS_PREFIX=()
 if [ "${DESKTOP_CHECK_DBUS:-1}" = 1 ] && command -v dbus-run-session >/dev/null; then DBUS_PREFIX=(dbus-run-session --); fi
 
-launch() { # $1 = webdriver 0|1
+# Cold starts on a CI runner are much slower than locally: give them more time
+# (DESKTOP_CHECK_LAUNCH_TIMEOUT, seconds, covers the window and the test API) and
+# relaunch once before declaring the launch failed.
+LAUNCH_TIMEOUT="${DESKTOP_CHECK_LAUNCH_TIMEOUT:-40}"
+LAUNCH_ATTEMPTS="${DESKTOP_CHECK_LAUNCH_ATTEMPTS:-2}"
+
+launch_once() { # $1 = webdriver 0|1; returns non-zero if the app isn't usable
   export WAYLAND_DISPLAY= GDK_BACKEND=x11 LIBGL_ALWAYS_SOFTWARE=1 \
     WEBKIT_DISABLE_COMPOSITING_MODE=1 WEBKIT_DISABLE_DMABUF_RENDERER=1
   echo "$1" >"$STATE/mode"
@@ -97,20 +110,41 @@ launch() { # $1 = webdriver 0|1
     { [ -x "$TD" ] && command -v WebKitWebDriver >/dev/null; } || {
       echo "webdriver mode needs: apt-get install webkit2gtk-driver && cargo install tauri-driver --locked" >&2; exit 2; }
     HOME="$APP_HOME" setsid nohup "${DBUS_PREFIX[@]}" "$TD" --port "$WD_PORT" --native-port "$((WD_PORT + 1))" >"$STATE/app.log" 2>&1 </dev/null &
-    echo $! >"$STATE/app.pid"; sleep 2
-    wd new "$BIN"
+    echo $! >"$STATE/app.pid"
+    # Wait for the new driver to listen rather than sleeping a fixed time.
+    for _ in $(seq 1 60); do listening "$WD_PORT" && break; alive app || break; sleep 0.25; done
+    listening "$WD_PORT" || { echo "tauri-driver never started listening on $WD_PORT" >&2; return 1; }
+    sleep 0.5
+    wd new "$BIN" || { echo "webdriver session could not start" >&2; return 1; }
   else
     HOME="$APP_HOME" setsid nohup "${DBUS_PREFIX[@]}" "$BIN" >"$STATE/app.log" 2>&1 </dev/null &
     echo $! >"$STATE/app.pid"
   fi
-  for _ in $(seq 1 40); do [ -n "$(win)" ] && break; alive app || break; sleep 1; done
-  [ -n "$(win)" ] || { echo "app window never appeared:" >&2; tail -10 "$STATE/app.log" >&2; exit 1; }
+  local start=$SECONDS
+  for _ in $(seq 1 "$LAUNCH_TIMEOUT"); do [ -n "$(win)" ] && break; alive app || break; sleep 1; done
+  [ -n "$(win)" ] || { echo "app window never appeared:" >&2; tail -10 "$STATE/app.log" >&2; return 1; }
   if [ "$1" = 1 ]; then
-    wd wait 'window.__MINOTES__ && typeof window.__MINOTES__.navigateTo === "function"' 30 || true
+    local left=$((LAUNCH_TIMEOUT - (SECONDS - start))); [ "$left" -ge 15 ] || left=15
+    # Ready = the app's test API exists, or an encrypted notebook's unlock screen
+    # is showing (it replaces the app, so navigateTo only appears after unlocking).
+    wd wait '(window.__MINOTES__ && typeof window.__MINOTES__.navigateTo === "function") || !!document.querySelector("[data-testid=unlock-screen]")' "$left" \
+      || { echo "app window appeared but neither the test API nor the unlock screen became ready" >&2; return 1; }
     sleep 1
   else
     sleep 4   # first paint + initial data load
   fi
+}
+
+launch() { # $1 = webdriver 0|1
+  local attempt
+  for attempt in $(seq 1 "$LAUNCH_ATTEMPTS"); do
+    launch_once "$1" && return 0
+    if [ "$attempt" -lt "$LAUNCH_ATTEMPTS" ]; then
+      echo "launch attempt $attempt failed; relaunching" >&2
+    fi
+    stop_app   # never leave a half-started app behind (it would get the next run's input)
+  done
+  exit 1
 }
 
 cmd="${1:-}"; shift || true

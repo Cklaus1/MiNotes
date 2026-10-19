@@ -13,6 +13,38 @@ use crate::error::{Error, Result};
 
 const SERVICE: &str = "minotes-notebook-key";
 
+/// How long one keychain call may take. On Linux with no running secret service,
+/// a call makes D-Bus try to start one and can block for up to two minutes.
+const KEYCHAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Set once a keychain call timed out: the keychain is treated as unavailable for
+/// the rest of this process instead of stalling every later call.
+static UNRESPONSIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Run an OS keychain call off the caller's thread with a time limit. `None` when
+/// the keychain didn't answer in time (or already stopped answering earlier) —
+/// callers treat that as "no keychain". The abandoned call finishes on its own.
+pub fn guarded<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Option<T> {
+    use std::sync::atomic::Ordering;
+    if UNRESPONSIVE.load(Ordering::Relaxed) {
+        return None;
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("minotes-keychain".into())
+        .spawn(move || {
+            let _ = tx.send(f());
+        })
+        .ok()?;
+    match rx.recv_timeout(KEYCHAIN_TIMEOUT) {
+        Ok(v) => Some(v),
+        Err(_) => {
+            UNRESPONSIVE.store(true, Ordering::Relaxed);
+            None
+        }
+    }
+}
+
 #[cfg(debug_assertions)]
 fn fake_dir() -> Option<std::path::PathBuf> {
     std::env::var_os("MINOTES_FAKE_KEYCHAIN_DIR").filter(|v| !v.is_empty()).map(std::path::PathBuf::from)
@@ -40,10 +72,13 @@ pub fn available() -> bool {
     }
     #[cfg(not(target_os = "android"))]
     {
-        matches!(
-            keyring::Entry::new(SERVICE, "availability-probe").and_then(|e| e.get_password()),
-            Ok(_) | Err(keyring::Error::NoEntry)
-        )
+        guarded(|| {
+            matches!(
+                keyring::Entry::new(SERVICE, "availability-probe").and_then(|e| e.get_password()),
+                Ok(_) | Err(keyring::Error::NoEntry)
+            )
+        })
+        .unwrap_or(false)
     }
     #[cfg(target_os = "android")]
     {
@@ -60,9 +95,13 @@ pub fn remember(notebook_key: &str, key: &DataKey) -> Result<()> {
     }
     #[cfg(not(target_os = "android"))]
     {
-        entry(notebook_key)?
-            .set_password(&key.to_hex())
-            .map_err(|e| Error::InvalidInput(format!("Could not store the key in the keychain: {e}")))
+        let (nb, hex) = (notebook_key.to_string(), zeroize::Zeroizing::new(key.to_hex()));
+        guarded(move || {
+            entry(&nb)?
+                .set_password(&hex)
+                .map_err(|e| Error::InvalidInput(format!("Could not store the key in the keychain: {e}")))
+        })
+        .unwrap_or_else(|| Err(Error::InvalidInput("The keychain is not responding".into())))
     }
     #[cfg(target_os = "android")]
     {
@@ -79,7 +118,8 @@ pub fn recall(notebook_key: &str) -> Option<DataKey> {
     }
     #[cfg(not(target_os = "android"))]
     {
-        let hex = zeroize::Zeroizing::new(entry(notebook_key).ok()?.get_password().ok()?);
+        let nb = notebook_key.to_string();
+        let hex = guarded(move || entry(&nb).ok()?.get_password().ok().map(zeroize::Zeroizing::new))??;
         DataKey::from_hex(&hex).ok()
     }
     #[cfg(target_os = "android")]
@@ -100,8 +140,13 @@ pub fn forget(notebook_key: &str) {
         return;
     }
     #[cfg(not(target_os = "android"))]
-    if let Ok(e) = entry(notebook_key) {
-        let _ = e.delete_credential();
+    {
+        let nb = notebook_key.to_string();
+        let _ = guarded(move || {
+            if let Ok(e) = entry(&nb) {
+                let _ = e.delete_credential();
+            }
+        });
     }
 }
 
@@ -128,5 +173,22 @@ mod tests {
         remember("../x", &key).unwrap();
         assert!(dir.path().join(format!("{SERVICE}-___x")).is_file());
         std::env::remove_var("MINOTES_FAKE_KEYCHAIN_DIR");
+    }
+
+    /// A keychain that never answers (no secret service on Linux) costs one short
+    /// wait, then is skipped — callers never block for minutes.
+    #[test]
+    fn unresponsive_keychain_times_out_and_is_skipped() {
+        use std::sync::atomic::Ordering;
+        use std::time::{Duration, Instant};
+        UNRESPONSIVE.store(false, Ordering::Relaxed);
+        assert_eq!(guarded(|| 7), Some(7));
+        let t = Instant::now();
+        assert_eq!(guarded(|| std::thread::sleep(Duration::from_secs(30))), None);
+        assert!(t.elapsed() < KEYCHAIN_TIMEOUT + Duration::from_secs(2), "{:?}", t.elapsed());
+        let t = Instant::now();
+        assert_eq!(guarded(|| 7), None, "skipped once it stopped answering");
+        assert!(t.elapsed() < Duration::from_millis(100));
+        UNRESPONSIVE.store(false, Ordering::Relaxed);
     }
 }

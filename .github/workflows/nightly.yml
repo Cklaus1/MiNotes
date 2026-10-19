@@ -22,6 +22,10 @@ env:
   # Private display / WebDriver port for desktop.sh (nothing else runs here).
   DESKTOP_CHECK_DISPLAY: "97"
   DESKTOP_CHECK_WD_PORT: "4455"
+  # Cold app starts on the runner (software GL, first WebKit cache) are slow:
+  # wait up to 120 s for the window + test API, and relaunch once before failing.
+  DESKTOP_CHECK_LAUNCH_TIMEOUT: "120"
+  DESKTOP_CHECK_LAUNCH_ATTEMPTS: "2"
 
 jobs:
   desktop:
