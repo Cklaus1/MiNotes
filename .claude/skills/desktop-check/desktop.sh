@@ -189,7 +189,7 @@ shot)
 click) x xdotool mousemove "${1:?x}" "${2:?y}" click 1 ;;
 key)   x xdotool key "$@" ;;
 type)  x xdotool type --delay 15 -- "$*" ;;
-cli)   [ -x "$CLI" ] || { echo "no CLI at $CLI" >&2; exit 1; }; "$CLI" --notebook "$DB" "$@" ;;
+cli)   [ -x "$CLI" ] || { echo "no CLI at $CLI" >&2; exit 1; }; HOME="$APP_HOME" "$CLI" --notebook "$DB" "$@" ;;   # scratch HOME: registry/keychain lookups never see the real ~/.minotes
 js)       wd js "${1:?usage: js '<async function body>'}" ;;
 eval)     wd eval "${1:?usage: eval '<expression>'}" ;;
 press)    wd press "${1:?usage: press <Combo>}" ;;
