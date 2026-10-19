@@ -202,7 +202,7 @@ Everything that would leak must be handled explicitly:
 | Copy | Encrypted notebook behaviour |
 |---|---|
 | Markdown mirror (`notes/`) | **Off by default.** Option: an *encrypted mirror* — each file encrypted with a key derived from the DEK (age-style, one file per page, filenames are opaque ids). Readable only by MiNotes; exists so git sync has files to move. |
-| Git sync | Syncs the encrypted mirror. Merges become "newer file wins per page" (ciphertext cannot be three-way merged); conflicting edits keep both as today's conflict-copy pages after decryption. The remote sees file count, sizes and timing only. [REVISED 2026-10-14 (built): **per-block merge is kept**, not "newer file wins" — a git conflict on a page file keeps the local file and records the other side's blob ids; once the database is open both versions are decrypted and merged per block against the common ancestor with the plain sync's F-2 merge, so edits to different blocks both survive and only a block changed on both sides becomes a conflict-copy page (today's rule). Format: `p/` `f/` `w/` `a/` one `.mne` file per page / folder / whiteboard / attachment, `MNE1:` + base64(nonce ‖ AES-256-GCM), key HKDF(DEK, "minotes sync file v1"), the path as associated data; names are HKDF(DEK, "minotes sync names v1")-keyed hashes of ids; a page decrypts to the plain mirror's markdown, so F-7 block properties sync unchanged. `.minotes-encryption.json` carries the key slots and a key check: another device joins with the passphrase ("Join encrypted notebook…"); a remote whose key check differs, or a plain remote, is refused before anything is rebased, imported or pushed. ⚠ close call: publishing the slots lets the git host try passphrases offline — the same exposure as a copied notebook folder (§2), Argon2id being the defence; see §9 Q6.] |
+| Git sync | Syncs the encrypted mirror. Merges become "newer file wins per page" (ciphertext cannot be three-way merged); conflicting edits keep both as today's conflict-copy pages after decryption. The remote sees file count, sizes and timing only. [REVISED 2026-10-14 (built): **per-block merge is kept**, not "newer file wins" — a git conflict on a page file keeps the local file and records the other side's blob ids; once the database is open both versions are decrypted and merged per block against the common ancestor with the plain sync's F-2 merge, so edits to different blocks both survive and only a block changed on both sides becomes a conflict-copy page (today's rule). Format: `p/` `f/` `w/` `a/` one `.mne` file per page / folder / whiteboard / attachment, `MNE1:` + base64(nonce ‖ AES-256-GCM), key HKDF(DEK, "minotes sync file v1"), the path as associated data; names are HKDF(DEK, "minotes sync names v1")-keyed hashes of ids; a page decrypts to the plain mirror's markdown, so F-7 block properties sync unchanged. `.minotes-encryption.json` carries the key slots and a key check: another device joins with the passphrase ("Join encrypted notebook…"); a remote whose key check differs, or a plain remote, is refused before anything is rebased, imported or pushed. ⚠ close call: publishing the slots lets the git host try passphrases offline — the same exposure as a copied notebook folder (§2), Argon2id being the defence; see §9 Q6 (decided: publish).] [REVISED 2026-10-19 (built): **key changes follow.** A new passphrase or recovery key (change, recover, regenerate) is written to `.minotes-encryption.json` at the next sync (the app syncs right after the change): slots the repo never held were made on this device and are published; slots found in the key file's git history are older and never overwrite it. Other devices keep their own local slots (a remote can't hand a device slots it can't check — a hostile remote could otherwise lock it out) and keep syncing, since the data key is unchanged. Older key files stay in git history, so a passphrase change does not revoke an old passphrase from someone who already has the repo — rotation is the answer to a compromise. **Rotation:** the rotating device keeps the old key sealed under the new one in `.git` (never committed), syncs once more with the old key (nothing pushed before the rotation is lost), then rewrites every `.mne` file under the new key and the key file with the new key check and slots, `generation + 1` and the old check in `previous_key_checks`, in one commit; a refused push drops it and retries. A device still on the old key fails closed (`KEY_CHANGED`: "this notebook's key was changed (rotated) on another device… join again with the passphrase"), nothing pulled or pushed; old commits stay readable with the old key. **needs-human:** re-keying such a device in place (adopt the new key from the remote's slots with the passphrase, re-encrypt its database, keep its unsynced edits) instead of re-joining.] |
 | Export / publish site | Allowed while unlocked, with a one-time "this writes unencrypted files" confirmation. |
 | Whiteboard legacy localStorage copies | Deleted when a notebook is encrypted. |
 | Webview storage (settings, collapsed state, recent pages) | Recent-page titles and anything content-derived move into the database; only non-sensitive UI preferences stay in webview storage. |
@@ -350,13 +350,20 @@ encrypted notebooks; 4b webview storage (`ui_state`) and legacy whiteboard copie
    locked notebook is which?) for little protection. v1 builds §4.4 as written;
    nothing beyond it is adopted.
 
-6. Publishing the key slots in the sync repo (needed to join with the passphrase)
-   lets whoever can read the remote try passphrases offline. **needs-human
-   (confirm):** options (a) publish — built; the exposure equals a copied
-   notebook folder, Argon2id (64 MiB, t=3) is the defence and the strength
-   minimum applies; (b) don't publish — joining then needs `notebook.json` copied
-   by hand or a recovery-key-only slot; (c) a per-notebook choice. Recommendation:
-   (a), documented in the sync settings.
+6. ~~Publishing the key slots in the sync repo (needed to join with the passphrase)
+   lets whoever can read the remote try passphrases offline.~~ **Decided
+   (owner, 2026-10-19): (a) publish the key slots in the sync repo — as built.**
+   Options were (a) publish; (b) don't publish — joining then needs
+   `notebook.json` copied by hand or a recovery-key-only slot; (c) a per-notebook
+   choice. Accepted exposure: anyone who can read the remote (the git host, or
+   whoever obtains the repo) can try passphrases offline against the passphrase
+   slot — the same exposure as a copied notebook folder (§2). Defence: Argon2id
+   (64 MiB, t = 3, p = 4 — parameters stored in the slot and raisable) and the
+   enforced strength minimum (§9 Q3, "fair"); the recovery key is 256 random bits
+   and not guessable. Consequences built with it: a passphrase change or new
+   recovery key is published to the key file (§4.5), and older slots remain in
+   git history — rotating the data key is the remedy after a suspected leak. To
+   be stated in the sync settings' help text.
 
 ## 10. Build status (build-loop 2026-10-13)
 
@@ -375,7 +382,7 @@ Harness: `tasks/build-loop.md` (DAG), `tasks/todo.md`, `tasks/lessons.md`,
 | 3 App commands, locked state | Built | `src-tauri/src/encryption_commands.rs`, `lib.rs` (`db_guard`) |
 | 4 UI: unlock screen, create, Security settings, lock / auto-lock | Built | `components/LockGate.tsx`, `EncryptionDialogs.tsx`, `SecuritySettings.tsx` |
 | 4b Webview storage (`ui_state`) | Built | `lib/webviewState.ts`, `core/src/repo/ui_state.rs` |
-| 5 Encrypted mirror + git sync | Built (after main's F-2/F-7): encrypted files only, per-block merge after decryption, fail closed on a foreign remote, join with the passphrase. | `core/src/sync_encrypted.rs`, `encryption_commands::join_encrypted_notebook`, journey D14 |
+| 5 Encrypted mirror + git sync | Built (after main's F-2/F-7): encrypted files only, per-block merge after decryption, fail closed on a foreign remote, join with the passphrase. 2026-10-19: key slots follow passphrase / recovery-key changes; rotation re-encrypts the repo, old-key devices fail closed (KEY_CHANGED); same-day journals fold into one page (the D14 nightly race). | `core/src/sync_encrypted.rs`, `encryption_commands::join_encrypted_notebook`, journey D14 |
 | 6 CLI (keychain → `MINOTES_PASSPHRASE` → prompt; `notebook create --encrypt`, `encrypt`, `decrypt`) | Built | `minotes-cli/src/unlock.rs` |
 | 7 Mock backend | Built | `lib/encryptionMock.ts` |
 

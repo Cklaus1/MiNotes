@@ -120,7 +120,8 @@ status: draft                      # page properties as frontmatter keys
 | Situation | Result | User sees |
 |---|---|---|
 | Different pages, or different parts of one page | git merges | nothing |
-| Same lines of one page changed on both devices | Local version stays. The other device's version becomes a **separate page** `"<title> (conflict from <device>)"` with a fresh page id and fresh block ids, file `<name>.conflict-<host>.md` | Toast: both versions kept, compare and merge or delete the copy |
+| Same lines of one page changed on both devices | Local version stays. The other device's version becomes a **separate page** `"<title> (conflict from <device>)"` with a fresh page id and fresh block ids, file `<name>.conflict-<host>.md` [REVISED 2026-10-19: a git conflict on a page file no longer makes a conflict copy by itself. The local file is kept, the other version's blob is recorded, and after the import it is merged **per block** against the common ancestor (the F-2 merge, `Database::merge_remote_version` — the same path as encrypted sync). Edits to different blocks — even adjacent lines, which git's line merge calls a conflict — both survive whichever order the startup sync and the edit happened in; only a block (or the title / a page property) changed on both sides keeps the copy page. Without a usable ancestor the base is what both sides agree on. Non-page files keep the `.conflict-<host>` copy.] | Toast only when a copy page was kept (`GitSyncResult.conflict_pages`) |
+| Both devices created today's journal (each app does) | [Added 2026-10-19] One journal per day: the page with the smaller id (UUIDv7 — the earlier one) is kept on every device, the other's blocks move into it (empty placeholder blocks dropped) and the other page goes to the Trash. Before: "Journal/<day> (2)", whose title the devices could disagree on — every sync rewrote it and a merge then kept a spurious conflict copy (nightly D14, 2026-10-15). | nothing |
 | Deleted on one device, edited on the other | The edit survives (as the page or as the conflict copy) | toast if a copy was made |
 | Upstream deletes > 20 pages or > 50% of the notebook in one pass | **Refused** by the mass-delete guard | nothing today (gap, §6 P0) |
 | Same whiteboard changed on both devices | Newer `updated_at` wins (sidecar) | nothing (known limitation) |
@@ -171,6 +172,14 @@ remote holding another notebook (different key) or plain markdown is refused
 before anything is rebased, imported or pushed. Other devices use "Join encrypted
 notebook…" with the passphrase. F-6 (a copied folder asks before it syncs)
 applies unchanged. See `PRD-encryption.md` §4.5 and `core/src/sync_encrypted.rs`.
+
+**Added 2026-10-19:** a new passphrase or recovery key is published to
+`.minotes-encryption.json` at the next sync (the app syncs right away), so a device
+joining later uses the current passphrase; devices already syncing keep their own
+local slots and keep working. Rotating the data key re-encrypts the whole repo
+(after one last sync with the old key) and bumps the key file's `generation`;
+devices still on the old key fail closed ("this notebook's key was changed on
+another device") until they join again. See `PRD-encryption.md` §4.5.
 
 ## 4. Feature status
 

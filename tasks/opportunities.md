@@ -41,10 +41,33 @@ Each entry: proposed severity · what · where · why deferred.
   file the concurrent F-2/F-7 work also edits; expect a small merge.
 
 ## Found while building E17 (encrypted sync)
-- P2 · Changing the passphrase does not update the sync repo's key file (it is written
-  only when absent), so a device joining later needs the passphrase that was current
-  when sync was turned on (or the recovery key at that time). Rewrite the key file on
-  the device that changed it. `core/src/sync_encrypted.rs` `ensure_key_file`.
+- ~~P2 · Changing the passphrase does not update the sync repo's key file~~ **Done
+  2026-10-19** (a43a01b): new slots are published at the next sync; rotation
+  re-encrypts the repo and old-key devices fail closed (`KEY_CHANGED`).
+
+## Found while fixing the D14 race / key-file gap (2026-10-19)
+- P2 · needs-human · A device on a rotated-away key must re-join (new folder); re-key
+  in place (unlock the remote's new slots with the passphrase, rotate the local DB
+  to that key, keep unsynced edits) is a product decision. `sync_encrypted.rs`.
+- P2 · Devices other than the one that changed the passphrase keep their old local
+  slots (by design — a remote can't push slots a device can't verify). A "your
+  passphrase was changed on another device — use the new one here too?" prompt
+  (unlock with the new passphrase against the remote's slots, then adopt them)
+  would make one passphrase everywhere. needs-human (UX).
+- P3 · Same-day journal pairs that already exist as "Journal/<day> (2)" from before
+  the fold are not merged retroactively (only new incoming journals fold). A one-off
+  repair on sync would tidy them. `repo/sync.rs` `fold_journals`.
+- P3 · PageView's empty-page auto-block calls `api.createPage(page.title)` for any
+  journal it shows with no blocks; if that title is free (e.g. the page was renamed
+  by sync) it creates a stray non-journal page. Use `getJournal(date)` instead.
+  `components/PageView.tsx` ~l.317.
+- P3 · Non-journal pages created with the same title on two devices still become
+  "<title> (2)" and the devices can disagree on which is which (rename fails
+  silently when the title is taken) → title ping-pong. Encrypted import now takes
+  known pages first (as plain does), which avoids the common order; a deterministic
+  tie-break (smaller id keeps the title) would remove it. `repo/sync.rs` `sync_page`.
+- P3 · D14 "C imported nothing" once returned '' (1 of 6 local runs, old binary): the
+  `ev` right after creating a notebook on a fresh profile can race the app. Harness.
 - P3 · Encrypted sync never prunes whiteboard / attachment files, and keeps the file of a
   page that was permanently deleted here (only trashed pages are pruned): the repo only
   grows, and such a page stays on other devices. Needs an exported-ids manifest like

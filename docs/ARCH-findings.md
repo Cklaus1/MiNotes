@@ -206,6 +206,19 @@ never mark the head imported until skipped pages are absorbed.
 > Tests: `test_remote_edit_survives_a_local_edit_during_sync` (the proof),
 > `test_same_block_edited_on_both_sides_keeps_a_conflict_copy`,
 > `test_protected_page_untouched_by_the_pull_makes_no_copy`.
+>
+> **Extended 2026-10-19** (nightly D14 race): the same rule now covers a *git*
+> conflict on a page file — the local file is kept, the other version's blob is
+> recorded and merged per block after the import (`merge_remote_version`, shared
+> with encrypted sync) — so whether the edit came before or after the pull no
+> longer decides between a clean merge and a conflict page (git's line merge
+> flagged edits to adjacent blocks). Without a usable base (none, add/add, or the
+> ancestor's file at that path belonged to another page) the base is what both
+> sides agree on (the old rule kept the whole remote file as a copy). Same-day
+> journals from two devices fold into one page (smaller id). Tests:
+> `test_different_blocks_merge_when_the_edit_came_before_the_pull` /
+> `…_pull_came_before_the_edit`, `test_journals_of_one_day_from_two_devices_become_one_page`,
+> `sync_encrypted::tests::journals_of_one_day_*`.
 
 **F-3 Dropped-in markdown is rewritten lossily.** *High, Verified.* New files in
 `notes/` go through the sync codec, which drops YAML list values

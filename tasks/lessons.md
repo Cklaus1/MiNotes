@@ -25,3 +25,14 @@
   while it ran were hot-reloaded into the middle of the "baseline" (the menu assertion
   failed against a menu item added minutes later). → Don't edit `crates/minotes-app/src`
   while a browser run is going; take baselines before frontend work.
+- D14 failed once in CI with a "(conflict from …)" page; ~40 randomised core
+  interleavings of "startup sync vs edit" on the edited page found nothing, because
+  the conflict was on a page the test never touched (today's journal, created by
+  each app on its own). → For a flaky "unexpected page" failure, first list every
+  page on both devices with ids and the repo's per-commit file list (a churning file
+  in every commit points at the culprit), and model what the *app* writes (journal
+  view, auto-created empty block) — not only what the test writes.
+- Restoring saved sources with `tar xf` kept their old mtimes, so cargo didn't
+  rebuild and a test run silently tested the previous code (384 instead of 386
+  tests). → `touch` files restored from an archive before building; check the test
+  count.
