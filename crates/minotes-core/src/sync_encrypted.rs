@@ -453,7 +453,7 @@ fn pull_with_resolve(dir: &Path) -> Result<u32> {
             // Remember the other versions even if the rebase failed part-way.
             if !merges.is_empty() {
                 let mut st = sync_manager::read_state(dir);
-                st.enc_merges.extend(merges);
+                st.merges.extend(merges);
                 sync_manager::write_state(dir, &st)?;
             }
             Ok(resolved?.len() as u32)
@@ -619,9 +619,17 @@ fn import(
         folders = rest;
     }
 
-    // Pages.
+    // Pages — those this device knows first, so a rename frees its title before
+    // a new page claims it (the plain import's order).
     let mut seen: HashSet<Uuid> = HashSet::new();
+    let mut pages: Vec<(bool, &String, &Entry)> = Vec::new();
     for (rel, e) in &entries {
+        if let Entry::Page { id, .. } = e {
+            pages.push((db.get_page(id)?.is_none(), rel, e));
+        }
+    }
+    pages.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(b.1)));
+    for (_, rel, e) in pages {
         let Entry::Page { id, folder_id, markdown } = e else { continue };
         let file = ImportFile::from_text(&page_rel(rel), markdown);
         if file.fm.id != Some(*id) {
@@ -707,7 +715,7 @@ fn import(
 
     // Versions a git conflict kept aside: merge them now.
     let mut st = sync_manager::read_state(dir);
-    let merges = std::mem::take(&mut st.enc_merges);
+    let merges = std::mem::take(&mut st.merges);
     let mut left = Vec::new();
     for m in merges {
         if let Err(e) = apply_pending_merge(db, dir, keys, &m, &host, &mut r) {
@@ -715,7 +723,7 @@ fn import(
             left.push(m);
         }
     }
-    st.enc_merges = left;
+    st.merges = left;
     sync_manager::write_state(dir, &st)?;
     Ok(r)
 }
@@ -765,33 +773,19 @@ fn apply_pending_merge(db: &Database, dir: &Path, keys: &SyncKeys, m: &PendingMe
         None => None,
     };
     match theirs {
-        Entry::Page { id, folder_id, markdown } => {
-            let page = db.get_page(&id)?;
-            let trashed = match &page {
-                Some(_) => db.is_trashed(&id)?,
-                None => true,
-            };
-            if trashed || m.local_deleted {
-                // Deleted here, changed there: keep their version as its own page.
-                match page {
-                    Some(p) => {
-                        let mut sr = SyncResult::default();
-                        db.tx(|| db.keep_conflict_copy(&markdown, &p, &page_rel(&m.path), IMPORT_ACTOR, host, &mut sr))?;
-                        r.conflict_copies.extend(sr.conflict_copies);
-                    }
-                    None => {
-                        let file = ImportFile::from_text(&page_rel(&m.path), &markdown);
-                        let folder = folder_id.filter(|f| db.get_folder(f).ok().flatten().is_some());
-                        db.tx(|| db.sync_page(&file, folder, IMPORT_ACTOR, r, &mut HashSet::new(), &HashSet::new(), None))?;
-                    }
-                }
-                return Ok(());
-            }
+        Entry::Page { folder_id, markdown, .. } => {
             let base_md = match base {
                 Some(Entry::Page { markdown, .. }) => Some(markdown),
                 _ => None,
             };
-            merge_page(db, &id, &m.path, &markdown, base_md.as_deref(), host, r);
+            let folder = folder_id.filter(|f| db.get_folder(f).ok().flatten().is_some());
+            let mut sr = SyncResult::default();
+            db.merge_remote_version(&page_rel(&m.path), &markdown, base_md.as_deref(), folder, IMPORT_ACTOR, host, &mut sr)?;
+            r.errors.extend(sr.errors);
+            r.pages_merged.extend(sr.pages_merged);
+            r.conflict_copies.extend(sr.conflict_copies);
+            r.pages_created.extend(sr.pages_created);
+            r.pages_updated.extend(sr.pages_updated);
         }
         Entry::Whiteboard { id, updated_at, data } => import_whiteboard(db, &id, &updated_at, &data, r),
         _ => {}
@@ -847,9 +841,10 @@ where
 
     let base = if enabling { flushed_head.clone() } else { sync_manager::read_state(dir).imported_head };
     let pending = pending_since(dir, base.as_deref())?;
-    let has_merges = !sync_manager::read_state(dir).enc_merges.is_empty();
+    let has_merges = !sync_manager::read_state(dir).merges.is_empty();
     let mut pages_imported = 0u32;
     let mut import_errors = Vec::new();
+    let mut conflict_pages = Vec::new();
     if git.error.is_none() && (pending.is_some() || has_merges) {
         let db = lock_db()?;
         let r = import(&db, dir, &keys, pending.as_ref(), Some(export.export_time))?;
@@ -877,6 +872,7 @@ where
         sync_manager::write_state(dir, &st)?;
         pages_imported = (r.pages_created.len() + r.pages_updated.len() + r.pages_deleted.len() + r.pages_merged.len()) as u32;
         import_errors = r.errors.clone();
+        conflict_pages = r.conflict_copies.clone();
     } else if git.error.is_none() && pending.is_none() && enabling {
         sync_manager::write_state(dir, &{
             let mut st = sync_manager::read_state(dir);
@@ -894,6 +890,7 @@ where
         pages_exported: export.pages_exported,
         pages_imported,
         conflicts_resolved: git.conflicts_resolved,
+        conflict_pages,
         offline: git.error.as_deref().map(sync_manager::is_offline_error).unwrap_or(false),
         error,
         import_errors,

@@ -27,7 +27,7 @@
 //! user confirms once ([`confirm_sync`]), which strips command-running keys from
 //! its `.git/config` and records the folder in this machine's private state.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
@@ -190,11 +190,11 @@ pub(crate) struct RepoState {
     /// write them back) until the user picks "Move to trash" or "Keep them".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) held: Option<HeldState>,
-    /// Encrypted notebooks: git conflicts kept the local file; the other
-    /// device's version (blob ids only) waits to be merged per block once the
-    /// database is open (see `sync_encrypted`).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(crate) enc_merges: Vec<crate::sync_encrypted::PendingMerge>,
+    /// Page files a git conflict kept local: the other device's version (blob
+    /// ids only) waits to be merged per block once the database is open
+    /// (`Database::merge_remote_version`; encrypted notebooks decrypt it first).
+    #[serde(default, rename = "enc_merges", skip_serializing_if = "Vec::is_empty")]
+    pub(crate) merges: Vec<crate::sync_encrypted::PendingMerge>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -411,7 +411,12 @@ pub struct GitSyncResult {
     pub success: bool,
     pub pages_exported: u32,
     pub pages_imported: u32,
+    /// Files git conflicted on (page files are merged per block).
     pub conflicts_resolved: u32,
+    /// "(conflict from …)" pages kept because a block (or the title, or a page
+    /// property) changed on both devices.
+    #[serde(default)]
+    pub conflict_pages: Vec<String>,
     pub error: Option<String>,
     /// Per-file import problems (the rest of the import still went through;
     /// the commit is re-imported next cycle).
@@ -438,6 +443,7 @@ impl GitSyncResult {
             pages_exported: 0,
             pages_imported: 0,
             conflicts_resolved: 0,
+            conflict_pages: vec![],
             error: Some(msg.to_string()),
             import_errors: vec![],
             held_deletions: None,
@@ -755,14 +761,81 @@ pub fn export_and_commit_target(db: &Database, target: &MirrorTarget) -> Result<
     Ok(ExportPhase { pages_exported: report.pages_rendered as u32, export_time, large_attachments: report.large_attachments })
 }
 
+/// A page file of the mirror (not a sidecar, marker or conflict copy).
+fn is_page_file(rel: &str) -> bool {
+    let p = Path::new(rel);
+    rel.ends_with(".md")
+        && !p.components().any(|c| c.as_os_str().to_string_lossy().starts_with('.'))
+        && !crate::repo::sync::is_conflict_copy_name(p)
+}
+
+/// Pull --rebase; a git conflict on a page file keeps the local file and
+/// records the other version (blob ids) to merge per block once the database is
+/// open ([`apply_page_merges`]) — git's line merge would turn two edits of
+/// neighbouring blocks into a conflict. Other files keep the local version and
+/// the other one as a `.conflict-<host>` sibling, as before.
 fn pull_with_resolve(sync_dir: &Path) -> Result<u32> {
     match git_cmd::pull_rebase(sync_dir) {
         Ok(_) => Ok(0),
         Err(e) if e.to_string().contains("merge_conflict") => {
-            Ok(git_cmd::auto_resolve_conflicts(sync_dir)?.len() as u32)
+            let host = git_cmd::get_hostname();
+            let mut merges: Vec<crate::sync_encrypted::PendingMerge> = Vec::new();
+            let resolved = git_cmd::resolve_rebase_conflicts(sync_dir, &mut |file| {
+                if !is_page_file(file) {
+                    return git_cmd::resolve_with_conflict_copy(sync_dir, file, &host);
+                }
+                let [base, theirs, local] = git_cmd::conflict_stages(sync_dir, file)?;
+                if let Some(theirs) = theirs {
+                    merges.push(crate::sync_encrypted::PendingMerge {
+                        path: file.to_string(),
+                        base,
+                        theirs,
+                        local_deleted: local.is_none(),
+                    });
+                }
+                git_cmd::keep_local_side(sync_dir, file)
+            });
+            // Remember the other versions even if the rebase failed part-way.
+            if !merges.is_empty() {
+                let mut st = read_state(sync_dir);
+                st.merges.extend(merges);
+                write_state(sync_dir, &st)?;
+            }
+            Ok(resolved?.len() as u32)
         }
         Err(e) => Err(e),
     }
+}
+
+/// Merge the versions a git conflict kept aside ([`pull_with_resolve`]). One
+/// that fails stays recorded (and is an import error, so the commit is
+/// imported again next time).
+fn apply_page_merges(db: &Database, sync_dir: &Path, r: &mut SyncResult) -> Result<()> {
+    let mut st = read_state(sync_dir);
+    if st.merges.is_empty() {
+        return Ok(());
+    }
+    let host = git_cmd::get_hostname();
+    let mut left = Vec::new();
+    for m in std::mem::take(&mut st.merges) {
+        let res = (|| -> Result<()> {
+            let theirs = git_cmd::blob_text(sync_dir, &m.theirs)?.ok_or_else(|| Error::Git(format!("missing blob {}", m.theirs)))?;
+            let base = match &m.base {
+                Some(b) => git_cmd::blob_text(sync_dir, b)?,
+                None => None,
+            };
+            let rel = Path::new(&m.path);
+            let file = crate::repo::sync::ImportFile::from_text(rel, &theirs);
+            let folder = db.ensure_folder_path(&file.folder, IMPORT_ACTOR, r, &mut HashMap::new())?;
+            db.merge_remote_version(rel, &theirs, base.as_deref(), folder, IMPORT_ACTOR, &host, r)
+        })();
+        if let Err(e) = res {
+            r.errors.push(format!("{}: could not merge the other device's changes: {e}", m.path));
+            left.push(m);
+        }
+    }
+    st.merges = left;
+    write_state(sync_dir, &st)
 }
 
 /// Phase 2: pull --rebase (auto-resolving conflicts) and push. No DB access.
@@ -874,6 +947,7 @@ fn apply_import_opts(db: &Database, sync_dir: &Path, pending: &PendingImport, mu
     opts.trash_folder_ids = pending.removed_folder_ids.clone();
     let mut r = db.sync_dir_with(sync_dir, IMPORT_ACTOR, &opts)?;
     merge_skipped_pages(db, sync_dir, pending, &mut r);
+    apply_page_merges(db, sync_dir, &mut r)?;
     for e in &r.errors {
         eprintln!("[minotes-sync] import: {e}");
     }
@@ -981,6 +1055,7 @@ where
     // Phase 3 (DB lock, only if the pull brought something in)
     let mut pages_imported = 0u32;
     let mut import_errors = Vec::new();
+    let mut conflict_pages = Vec::new();
     if let Some(pending) = pending_import(sync_dir)? {
         let db = lock_db()?;
         let r = apply_import(&db, sync_dir, &pending, Some(export.export_time))?;
@@ -988,8 +1063,17 @@ where
         if let Err(e) = crate::outside::adopt_pulled_files(&db, target, pending.changed_paths.as_deref()) {
             eprintln!("[minotes-sync] could not re-baseline pulled files: {e}");
         }
-        pages_imported = (r.pages_created.len() + r.pages_updated.len() + r.pages_deleted.len()) as u32;
+        pages_imported = (r.pages_created.len() + r.pages_updated.len() + r.pages_deleted.len() + r.pages_merged.len()) as u32;
         import_errors = r.errors.clone();
+        conflict_pages = r.conflict_copies.clone();
+    } else if !read_state(sync_dir).merges.is_empty() {
+        // Versions a git conflict kept aside whose merge failed last time.
+        let db = lock_db()?;
+        let mut r = SyncResult::default();
+        apply_page_merges(&db, sync_dir, &mut r)?;
+        pages_imported = (r.pages_created.len() + r.pages_updated.len() + r.pages_merged.len()) as u32;
+        import_errors = r.errors.clone();
+        conflict_pages = r.conflict_copies.clone();
     }
     let held_deletions = {
         let db = lock_db()?;
@@ -1010,6 +1094,7 @@ where
         pages_exported: export.pages_exported,
         pages_imported,
         conflicts_resolved: git.conflicts_resolved,
+        conflict_pages,
         error,
         import_errors,
         held_deletions,
@@ -1197,6 +1282,93 @@ mod tests {
             let copy = pages.iter().find(|pg| is_conflict_page(&pg.title)).expect("conflict page");
             assert!(contents(db, &copy.id).contains(&"A text".to_string()));
             assert!(contents(db, &copy.id).contains(&"untouched".to_string()));
+        }
+    }
+
+    // The plain side of the D14 race: device A edits one block, B another. If A's
+    // startup sync pulled B's commit first, the files fast-forward and both edits
+    // survive; if A edited first, git conflicted on the page file (the edited
+    // lines are adjacent) and B's edit used to end up only in a "(conflict from …)"
+    // page. Now a git conflict on a page file is merged per block (F-2), whichever
+    // order the sync and the edit happen in.
+    fn different_blocks_two_devices(startup_sync_first: bool) {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_remote, a, b) = setup_remote_and_devices(tmp.path());
+        let db_a = Database::open_in_memory().unwrap();
+        let db_b = Database::open_in_memory().unwrap();
+        let p = db_a.create_page("Doc", None, false, None, "user").unwrap();
+        let x = db_a.create_block(&p.id, "one", None, None, "user").unwrap();
+        let y = db_a.create_block(&p.id, "two", None, None, "user").unwrap();
+        cycle(&a, &db_a);
+        cycle(&b, &db_b);
+        db_b.update_block(&y.id, Some("two — B"), "user").unwrap();
+        cycle(&b, &db_b);
+        if startup_sync_first {
+            cycle(&a, &db_a);
+        }
+        db_a.update_block(&x.id, Some("one — A"), "user").unwrap();
+        let r = cycle(&a, &db_a);
+        assert_eq!(r.conflicts_resolved > 0, !startup_sync_first, "git conflicted iff A edited before pulling");
+        cycle(&a, &db_a);
+        cycle(&b, &db_b);
+        cycle(&a, &db_a);
+        for (db, dir) in [(&db_a, &a), (&db_b, &b)] {
+            assert_eq!(db.get_page_blocks(&p.id).unwrap().into_iter().map(|b| b.content).collect::<Vec<_>>(), ["one — A", "two — B"]);
+            assert_eq!(titles(db), ["Doc"], "no conflict page");
+            for f in all_md_files(dir) {
+                assert!(!f.contains(".conflict-"), "{f}");
+                assert!(!git_cmd::has_conflict_markers(&std::fs::read_to_string(dir.join(&f)).unwrap()), "{f} has markers");
+            }
+        }
+    }
+
+    #[test]
+    fn test_different_blocks_merge_when_the_edit_came_before_the_pull() {
+        if git_cmd::git_available() {
+            different_blocks_two_devices(false);
+        }
+    }
+
+    #[test]
+    fn test_different_blocks_merge_when_the_pull_came_before_the_edit() {
+        if git_cmd::git_available() {
+            different_blocks_two_devices(true);
+        }
+    }
+
+    // Both devices create today's journal before they first sync: one file path,
+    // two page ids. They become one journal (the smaller id), with both devices'
+    // lines, on both devices — no "(2)" page, no conflict page.
+    #[test]
+    fn test_journals_of_one_day_from_two_devices_become_one_page() {
+        if !git_cmd::git_available() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let (_remote, a, b) = setup_remote_and_devices(tmp.path());
+        let db_a = Database::open_in_memory().unwrap();
+        let db_b = Database::open_in_memory().unwrap();
+        let d = chrono::NaiveDate::from_ymd_opt(2026, 10, 15).unwrap();
+        let ja = db_a.get_or_create_journal(d, None, "user").unwrap();
+        db_a.create_block(&ja.id, "morning on A", None, None, "user").unwrap();
+        db_a.create_block(&ja.id, "", None, None, "user").unwrap();
+        let jb = db_b.get_or_create_journal(d, None, "user").unwrap();
+        db_b.create_block(&jb.id, "", None, None, "user").unwrap();
+        db_b.create_block(&jb.id, "evening on B", None, None, "user").unwrap();
+        cycle(&a, &db_a);
+        cycle(&b, &db_b);
+        db_a.create_block(&db_a.find_journal(d).unwrap().unwrap().id, "later on A", None, None, "user").unwrap();
+        for _ in 0..3 {
+            cycle(&a, &db_a);
+            cycle(&b, &db_b);
+        }
+        for db in [&db_a, &db_b] {
+            assert_eq!(titles(db), ["Journal/2026-10-15"], "one journal, no conflict page");
+            let j = db.find_journal(d).unwrap().unwrap();
+            assert_eq!(j.id, ja.id.min(jb.id));
+            let mut texts = contents(db, &j.id);
+            texts.retain(|t| !t.is_empty());
+            assert_eq!(texts, ["evening on B", "later on A", "morning on A"]);
         }
     }
 

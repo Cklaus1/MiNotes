@@ -286,3 +286,93 @@ fn joining_with_a_wrong_passphrase_creates_nothing() {
     assert!(!crate::notebook::list().iter().any(|n| n.name == "Intruder"));
     assert_eq!(remote_head(&remote), before);
 }
+
+fn today_journals(d: &Dev) -> Vec<crate::models::Page> {
+    let date = chrono::NaiveDate::from_ymd_opt(2026, 10, 15).unwrap();
+    d.db.list_pages(Some(1000)).unwrap().into_iter().filter(|p| p.is_journal && p.journal_date == Some(date)).collect()
+}
+
+/// Today's journal as the app shows it (the page with the day's title).
+fn shown_journal(d: &Dev) -> crate::models::Page {
+    d.db.find_journal(chrono::NaiveDate::from_ymd_opt(2026, 10, 15).unwrap()).unwrap().expect("today's journal")
+}
+
+// Nightly D14 failure (2026-10-15): both devices create today's journal on their
+// own (random ids, same title). Sync used to keep both, as "Journal/…" and
+// "Journal/… (2)", and which page got the suffix depended on the order the
+// files were imported — the devices could disagree, and then each one's export
+// rewrote the other's journal title at every sync. Once both devices touched
+// the same journal file in one round, the per-block merge saw the title change
+// as a conflict and kept a "(conflict from …)" page although no block
+// conflicted. The disagreement is forced here with the order that always makes
+// it (each device imports the other's journal before seeing its rename), then
+// D14's different-block edits run with A's startup sync before or after its edit
+// (no git conflict on the page / a git conflict on it).
+fn journals_of_one_day(startup_sync_first: bool) {
+    let date = chrono::NaiveDate::from_ymd_opt(2026, 10, 15).unwrap();
+    let h = FakeHome::new();
+    let remote = bare_remote(h.path());
+    let a = device_a(h.path(), &remote);
+    let ja = a.db.get_or_create_journal(date, None, "user").unwrap();
+    a.db.create_block(&ja.id, "jotted on A", None, None, "user").unwrap();
+    let p = a.db.create_page("Lynx", None, false, None, "user").unwrap();
+    let x = a.db.create_block(&p.id, "first line", None, None, "user").unwrap();
+    let y = a.db.create_block(&p.id, "second line", None, None, "user").unwrap();
+    assert!(a.sync(true).success);
+    let b = device_b(h.path(), &remote);
+    // B opens today's journal before its first sync: its own page.
+    let jb = b.db.get_or_create_journal(date, None, "user").unwrap();
+    b.db.create_block(&jb.id, "jotted on B", None, None, "user").unwrap();
+    assert!(b.sync(true).success);
+    assert!(a.sync(false).success);
+
+    // B edits a block and syncs, then writes in today's journal; A edits another
+    // block (before or after its startup sync) and syncs.
+    b.db.update_block(&y.id, Some("second line — B"), "user").unwrap();
+    assert!(b.sync(false).success);
+    b.db.create_block(&shown_journal(&b).id, "later on B", None, None, "user").unwrap();
+    if startup_sync_first {
+        assert!(a.sync(false).success);
+    }
+    a.db.update_block(&x.id, Some("first line — A"), "user").unwrap();
+    let r = a.sync(false);
+    assert!(r.success, "{r:?}");
+    assert_eq!(r.conflicts_resolved > 0, !startup_sync_first, "git conflicted on the page iff A edited before pulling");
+    assert!(a.sync(false).success);
+    for _ in 0..3 {
+        assert!(b.sync(false).success);
+        assert!(a.sync(false).success);
+    }
+
+    for d in [&a, &b] {
+        assert_eq!(d.texts("Lynx"), ["first line — A", "second line — B"]);
+        let titles = d.titles();
+        assert!(!titles.iter().any(|t| t.contains("conflict")), "{titles:?}");
+        let j = today_journals(d);
+        assert_eq!(j.len(), 1, "one journal for the day: {titles:?}");
+        assert_eq!(j[0].id, ja.id.min(jb.id), "the same page on both devices");
+        assert_eq!(j[0].title, "Journal/2026-10-15");
+        let texts: Vec<String> = d.db.get_page_blocks(&j[0].id).unwrap().into_iter().map(|b| b.content).collect();
+        for t in ["jotted on A", "jotted on B", "later on B"] {
+            assert!(texts.contains(&t.to_string()), "{t} missing: {texts:?}");
+        }
+    }
+    // Stable: another round commits nothing.
+    let head = remote_head(&remote);
+    assert!(a.sync(false).success && b.sync(false).success && a.sync(false).success);
+    assert_eq!(remote_head(&remote), head, "no title ping-pong");
+}
+
+#[test]
+fn journals_of_one_day_merge_into_one_page_startup_sync_after_the_edit() {
+    if git_cmd::git_available() {
+        journals_of_one_day(false);
+    }
+}
+
+#[test]
+fn journals_of_one_day_merge_into_one_page_startup_sync_before_the_edit() {
+    if git_cmd::git_available() {
+        journals_of_one_day(true);
+    }
+}

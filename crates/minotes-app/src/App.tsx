@@ -473,6 +473,22 @@ export default function App() {
 
   // ── Git Sync ──
 
+  // After a sync brought changes: re-open the page shown. A journal is found
+  // again by its date — sync merges two devices' journals of one day into one
+  // page, so the one shown may now be in the Trash.
+  const reopenAfterSync = useCallback(async () => {
+    const p = activePage?.page;
+    if (!p) return;
+    if (p.is_journal && p.journal_date) {
+      const tree = await api.getJournal(p.journal_date).catch(() => null);
+      if (tree && tree.page.id !== p.id && activePageIdRef.current === p.id) {
+        openJournal(p.journal_date).catch(() => {});
+        return;
+      }
+    }
+    openPage(p.id).catch(() => {});
+  }, [activePage, openPage, openJournal]);
+
   const triggerSync = useCallback(async () => {
     if (syncingRef.current) return;
     try {
@@ -495,9 +511,12 @@ export default function App() {
         setSyncState("idle");
         setSyncErrorMsg(null);
         setSyncStatus(prev => prev ? { ...prev, last_sync: new Date().toISOString() } : prev);
-        if (result.conflicts_resolved > 0) {
+        // Git conflicts are merged per block; only a block changed on both
+        // devices keeps the other version as a separate page.
+        const copies = result.conflict_pages?.length ?? 0;
+        if (copies > 0) {
           showToast(
-            `⚠ Sync conflict in ${result.conflicts_resolved} page(s) — both versions were kept. ` +
+            `⚠ Sync conflict in ${copies} page(s) — both versions were kept. ` +
               `Your local version stays in place; the other device's version was saved as a separate page ` +
               `titled "… (conflict from <device>)". Compare them and merge or delete the copy.`,
             10000,
@@ -505,7 +524,7 @@ export default function App() {
         }
         if (result.pages_imported > 0) {
           refresh();
-          if (activePage) openPage(activePage.page.id).catch(() => {});
+          reopenAfterSync();
         }
       } else if (result.offline) {
         // Remote unreachable: not a failure — local edits are kept and synced later.
@@ -519,7 +538,7 @@ export default function App() {
         // An import problem still brought the rest of the other device's changes.
         if (result.pages_imported > 0) {
           refresh();
-          if (activePage) openPage(activePage.page.id).catch(() => {});
+          reopenAfterSync();
         }
       }
     } catch (e) {
@@ -528,7 +547,7 @@ export default function App() {
     } finally {
       syncingRef.current = false;
     }
-  }, [activePage, refresh, openPage, openJournal]);
+  }, [refresh, reopenAfterSync]);
 
   // Files of the markdown copy edited in another app were imported: reload the
   // open page if it was one of them (the sidebar refreshes on its own).

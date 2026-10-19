@@ -906,7 +906,10 @@ export interface GitSyncResult {
   success: boolean;
   pages_exported: number;
   pages_imported: number;
+  /** Files git conflicted on (merged per block — see conflict_pages). */
   conflicts_resolved: number;
+  /** "(conflict from …)" pages kept: a block changed on both devices. */
+  conflict_pages?: string[];
   error: string | null;
   /** Per-file problems importing the other device's changes. */
   import_errors?: string[];

@@ -930,6 +930,13 @@ impl Database {
                 result.pages_unchanged += 1;
             }
         } else {
+            // Another device's journal for a day this device has a journal for
+            // too (each device creates today's journal on its own): one page.
+            if let (Some(id), true, Some(date)) = (fm.id, fm.is_journal, fm.date) {
+                if let Some(local) = self.local_journal_to_fold(date, &id)? {
+                    return self.fold_journals(&local, file, id, &title, date, folder_id, actor, result, seen_page_ids, &new_blocks);
+                }
+            }
             let mut title = title;
             if self.get_page_by_title(&title)?.is_some() {
                 // Unknown id but the title is taken by a different local page (e.g.
@@ -955,6 +962,88 @@ impl Database {
             result.pages_created.push(title);
         }
 
+        Ok(())
+    }
+
+    /// The live local journal for `date` that another device's journal page
+    /// `incoming` (unknown here) is folded with: the one holding the day's title,
+    /// else any journal of that date (lowest id).
+    fn local_journal_to_fold(&self, date: NaiveDate, incoming: &Uuid) -> Result<Option<crate::models::Page>> {
+        if let Some(p) = self.find_journal(date)? {
+            if p.is_journal && p.journal_date == Some(date) && p.id != *incoming && !self.is_archived_page(&p.id)? {
+                return Ok(Some(p));
+            }
+        }
+        let id: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT id FROM pages WHERE is_journal = 1 AND journal_date = ?1 AND id != ?2
+                   AND id NOT IN (SELECT page_id FROM trash) AND id NOT IN (SELECT page_id FROM archive)
+                 ORDER BY id LIMIT 1",
+                rusqlite::params![date.to_string(), incoming.to_string()],
+                |r| r.get(0),
+            )
+            .ok();
+        match id.and_then(|s| Uuid::parse_str(&s).ok()) {
+            Some(id) => self.get_page(&id),
+            None => Ok(None),
+        }
+    }
+
+    fn is_archived_page(&self, id: &Uuid) -> Result<bool> {
+        Ok(self.conn.query_row("SELECT COUNT(*) FROM archive WHERE page_id = ?1", [id.to_string()], |r| r.get::<_, i64>(0))? > 0)
+    }
+
+    /// Two devices' journals for the same day become ONE page — the one with the
+    /// smaller id (UUIDv7: the earlier created), so every device makes the same
+    /// choice without talking to the others. The other page's blocks move into
+    /// it after its own (ids, nesting and properties kept; empty blocks — the
+    /// first block the app adds to a journal it shows — are dropped), and:
+    /// - the local page is kept: the incoming page is never created here;
+    /// - the incoming page is kept: it is created with the day's title and the
+    ///   local page, emptied, goes to the Trash — so its file is removed and the
+    ///   other devices drop it too.
+    ///
+    /// Before this, the second journal was imported as "<title> (2)", and which
+    /// page got the suffix depended on the order files were imported: two devices
+    /// could disagree, rewrite each other's titles at every sync, and a merge of a
+    /// journal touched on both sides then kept a "(conflict from …)" page.
+    #[allow(clippy::too_many_arguments)]
+    fn fold_journals(
+        &self,
+        local: &crate::models::Page,
+        file: &ImportFile,
+        incoming_id: Uuid,
+        title: &str,
+        date: NaiveDate,
+        folder_id: Option<Uuid>,
+        actor: &str,
+        result: &mut SyncResult,
+        seen_page_ids: &mut HashSet<Uuid>,
+        incoming_blocks: &[ParsedBlock],
+    ) -> Result<()> {
+        let local_md = self.render_page_markdown(local)?;
+        let local_blocks = parse_markdown_blocks(&strip_frontmatter(&local_md));
+        if local.id < incoming_id {
+            let combined = append_folded_blocks(local_blocks, incoming_blocks);
+            self.reconcile_page_blocks(&local.id, &combined, actor, result, None)?;
+            seen_page_ids.insert(local.id);
+            result.pages_updated.push(local.title.clone());
+        } else {
+            let combined = append_folded_blocks(incoming_blocks.to_vec(), &local_blocks);
+            // Free the day's title, then create the kept page and move the blocks.
+            let parked = self.unique_page_title(&local.title)?;
+            self.rename_page(&local.id, &parked, actor)?;
+            let page = self.create_page_with_id(incoming_id, title, None, true, Some(date), actor)?;
+            seen_page_ids.insert(page.id);
+            if let Some(fid) = folder_id {
+                self.move_page_to_folder(&page.id, Some(&fid), actor)?;
+            }
+            self.apply_fm_properties(&page.id, &file.fm.props, actor, result, &file.rel.display().to_string())?;
+            self.reconcile_page_blocks(&page.id, &combined, actor, result, None)?;
+            self.trash_page(&local.id)?;
+            result.pages_created.push(title.to_string());
+        }
         Ok(())
     }
 
@@ -1138,9 +1227,8 @@ impl Database {
     ///
     /// On a conflict, everything that merged cleanly is still applied, the local
     /// text stays in place, and the whole remote file is kept as a separate page
-    /// "<title> (conflict from <host>)". Without a base (no earlier import) the
-    /// remote file is kept as such a page whenever it differs from the page. So
-    /// the remote side is never dropped.
+    /// "<title> (conflict from <host>)". Without a base (see below) the base is
+    /// what both sides agree on. So the remote side is never dropped.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn merge_into_protected_page(
         &self,
@@ -1179,21 +1267,38 @@ impl Database {
             .collect();
         let t_title = t_file.fm.title.clone().filter(|t| !t.trim().is_empty()).unwrap_or_else(|| t_file.stem.clone());
 
+        // The base: the file of THIS page at the common ancestor. Without one (no
+        // earlier import, both sides added the file, or the ancestor's file at
+        // that path was another page) the base is what both sides agree on: then
+        // blocks only the remote has are added, blocks only this side has stay,
+        // and a block (or the title, or a property) the sides disagree on is a
+        // conflict — nothing is dropped, nothing local is overwritten.
         let b_file = base.map(|b| ImportFile::from_text(rel, b)).filter(|b| b.fm.id == Some(*page_id));
-        let Some(b_file) = b_file else {
-            // No common ancestor: identical → nothing; otherwise keep theirs aside.
-            let same = t_title == page.title
-                && t_blocks.len() == local.len()
-                && t_blocks.iter().all(|pb| pb.id.and_then(|i| local.get(&i)).map(|(k, _)| *k == key_of(pb)).unwrap_or(false));
-            if !same {
-                self.keep_conflict_copy(theirs, &page, rel, actor, host, result)?;
-            }
-            return Ok(());
-        };
-        let b_blocks = parse_markdown_blocks(&strip_frontmatter(&b_file.content));
-        let base_map: HashMap<Uuid, Key> = b_blocks.iter().filter_map(|pb| pb.id.map(|i| (i, key_of(pb)))).collect();
-        let base_markerless: HashSet<String> =
-            b_blocks.iter().filter(|pb| pb.id.is_none()).map(|pb| normalize_content(&pb.content)).collect();
+        let (base_map, base_markerless, b_title, b_props): (HashMap<Uuid, Key>, HashSet<String>, Option<String>, Vec<(String, String)>) =
+            match &b_file {
+                Some(b_file) => {
+                    let b_blocks = parse_markdown_blocks(&strip_frontmatter(&b_file.content));
+                    (
+                        b_blocks.iter().filter_map(|pb| pb.id.map(|i| (i, key_of(pb)))).collect(),
+                        b_blocks.iter().filter(|pb| pb.id.is_none()).map(|pb| normalize_content(&pb.content)).collect(),
+                        Some(b_file.fm.title.clone().filter(|t| !t.trim().is_empty()).unwrap_or_else(|| b_file.stem.clone())),
+                        b_file.fm.props.clone(),
+                    )
+                }
+                None => (
+                    t_blocks
+                        .iter()
+                        .filter_map(|pb| {
+                            let id = pb.id?;
+                            let (lk, _) = local.get(&id)?;
+                            (*lk == key_of(pb)).then(|| (id, lk.clone()))
+                        })
+                        .collect(),
+                    local.values().map(|(k, _)| k.0.clone()).collect(),
+                    (t_title == page.title).then(|| page.title.clone()),
+                    t_file.fm.props.iter().filter(|p| local_page_props.contains(p)).cloned().collect(),
+                ),
+            };
 
         let mut conflict = false;
         let mut applied = 0usize;
@@ -1279,10 +1384,9 @@ impl Database {
             crate::outside::park_blocks_as(self, &page.title, REMOVED_BY_SYNC, &park, actor)?;
             applied += park.len();
         }
-        // Title.
-        let b_title = b_file.fm.title.clone().filter(|t| !t.trim().is_empty()).unwrap_or_else(|| b_file.stem.clone());
-        if t_title != b_title && t_title != page.title {
-            if page.title == b_title && self.get_page_by_title(&t_title)?.is_none() {
+        // Title (without a base, a different remote title is a conflict).
+        if t_title != page.title && b_title.as_deref() != Some(t_title.as_str()) {
+            if b_title.as_deref() == Some(page.title.as_str()) && self.get_page_by_title(&t_title)?.is_none() {
                 self.rename_page(page_id, &t_title, actor)?;
                 applied += 1;
             } else {
@@ -1291,11 +1395,11 @@ impl Database {
         }
         // Page properties, per key.
         let get = |v: &[(String, String)], k: &str| v.iter().find(|(x, _)| x == k).map(|(_, v)| v.clone());
-        let mut keys: Vec<String> = t_file.fm.props.iter().chain(b_file.fm.props.iter()).map(|(k, _)| k.clone()).collect();
+        let mut keys: Vec<String> = t_file.fm.props.iter().chain(b_props.iter()).map(|(k, _)| k.clone()).collect();
         keys.sort();
         keys.dedup();
         for k in keys {
-            let (t, b, l) = (get(&t_file.fm.props, &k), get(&b_file.fm.props, &k), get(&local_page_props, &k));
+            let (t, b, l) = (get(&t_file.fm.props, &k), get(&b_props, &k), get(&local_page_props, &k));
             if t == b || t == l {
                 continue;
             }
@@ -1323,6 +1427,49 @@ impl Database {
             self.keep_conflict_copy(theirs, &page, rel, actor, host, result)?;
         }
         Ok(())
+    }
+
+    /// The other device's version of a page file that a git conflict kept local
+    /// (both devices changed the file, or both added one at the same path):
+    /// - same page here → merged per block against the common ancestor `base`
+    ///   ([`merge_into_protected_page`](Self::merge_into_protected_page)) — also
+    ///   when this device's file is gone because the page was renamed or moved
+    ///   (plain mirror paths follow the title);
+    /// - in the Trash here, changed there → kept as a conflict page;
+    /// - a page this device doesn't have (another page that took the same file
+    ///   name, e.g. the other device's journal of the same day, or one deleted
+    ///   here for good) → imported by its own id (journals of one day fold into
+    ///   one page);
+    /// - a hand-written file without an id → kept as a conflict page.
+    ///
+    /// `folder_id`: the folder for a page created here. Runs in one transaction.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn merge_remote_version(
+        &self,
+        rel: &Path,
+        theirs: &str,
+        base: Option<&str>,
+        folder_id: Option<Uuid>,
+        actor: &str,
+        host: &str,
+        result: &mut SyncResult,
+    ) -> Result<()> {
+        let file = ImportFile::from_text(rel, theirs);
+        self.tx(|| {
+            let Some(id) = file.fm.id else {
+                let copy = rewrite_as_conflict_copy(theirs, &file.stem, host);
+                let copy = ImportFile::from_text(rel, &copy);
+                let title = copy.fm.title.clone().unwrap_or_default();
+                self.sync_page(&copy, folder_id, actor, result, &mut HashSet::new(), &HashSet::new(), None)?;
+                result.conflict_copies.push(title);
+                return Ok(());
+            };
+            match self.get_page(&id)? {
+                Some(p) if self.is_trashed(&id)? => self.keep_conflict_copy(theirs, &p, rel, actor, host, result),
+                Some(_) => self.merge_into_protected_page(&id, rel, theirs, base, actor, host, result),
+                None => self.sync_page(&file, folder_id, actor, result, &mut HashSet::new(), &HashSet::new(), None),
+            }
+        })
     }
 
     /// Keep a remote version of `page`'s file as its own page "(conflict from <host>)".
@@ -1527,7 +1674,7 @@ impl Database {
 }
 // ── End import ──
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct ParsedBlock {
     pub(crate) depth: usize,
     pub(crate) content: String,
@@ -1562,6 +1709,32 @@ pub(crate) fn split_id_marker(line: &str) -> (String, Option<Uuid>) {
         }
     }
     (line.to_string(), None)
+}
+
+/// `kept` followed by the blocks of `other` it doesn't have yet (journal fold):
+/// a block already in `kept` is skipped with its subtree, and so is an empty
+/// block without properties or children (a journal's placeholder first block).
+fn append_folded_blocks(mut kept: Vec<ParsedBlock>, other: &[ParsedBlock]) -> Vec<ParsedBlock> {
+    let have: HashSet<Uuid> = kept.iter().filter_map(|b| b.id).collect();
+    let mut skip_below: Option<usize> = None;
+    for (i, b) in other.iter().enumerate() {
+        if let Some(d) = skip_below {
+            if b.depth > d {
+                continue;
+            }
+            skip_below = None;
+        }
+        let has_children = other.get(i + 1).map(|n| n.depth > b.depth).unwrap_or(false);
+        if b.id.map(|id| have.contains(&id)).unwrap_or(false) {
+            skip_below = Some(b.depth);
+            continue;
+        }
+        if normalize_content(&b.content).trim().is_empty() && b.props.is_empty() && !has_children {
+            continue;
+        }
+        kept.push(b.clone());
+    }
+    kept
 }
 
 /// Normalize block content for change detection: CRLF/CR → LF and trailing

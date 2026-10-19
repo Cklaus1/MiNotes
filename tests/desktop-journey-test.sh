@@ -1041,9 +1041,10 @@ journey "D14. My encrypted notebook syncs between two devices — and git never 
 # PRD-encryption §4.5 / step 5: device A turns sync on for an encrypted notebook;
 # the remote gets only opaque .mne files + a key file. Device B joins with the
 # passphrase (a wrong one creates nothing), sees everything; edits to different
-# blocks on both devices merge per block. Device C (its own notebook, same
-# passphrase, another key) is refused and the remote is untouched. A copied
-# encrypted folder still asks before it syncs (F-6). Leak scan: every file under
+# blocks on both devices merge per block — with the edit made before and after
+# the relaunched app's own startup sync — and each device keeps ONE journal for
+# today. Device C (its own notebook, same passphrase, another key) is refused
+# and the remote is untouched. A copied encrypted folder still asks before it syncs (F-6). Leak scan: every file under
 # both HOMEs and TMPDIRs, every decompressed git object of both repos and the remote.
 # ═══════════════════════════════════════════════
 if ! command -v git >/dev/null; then
@@ -1073,20 +1074,27 @@ leaks14() {
   done
   echo "$hits"
 }
-# A relaunched device opens its encrypted notebook locked: unlock it.
+# A relaunched device opens its encrypted notebook locked: unlock it (with its
+# own passphrase: $2, default PASS14). The app then syncs on start by itself.
 relaunch14() {
   device "$1" keep || true
   waitfor "!!document.querySelector('[data-testid=unlock-screen]')" 30
-  ev "(async()=>{const e=await import('/src/lib/encryption.ts');await e.unlock('$PASS14');return 1})()" >/dev/null
+  ev "(async()=>{const e=await import('/src/lib/encryption.ts');await e.unlock('${2:-$PASS14}');return 1})()" >/dev/null
   waitfor "!!window.__MINOTES__?.navigateTo && !document.querySelector('[data-testid=unlock-screen]')" 20
 }
 blocks14() { ev "(async()=>{$A14 const t=await api.getPageTree('Lynx14Title');return t.blocks.map(b=>b.content).filter(c=>!c.startsWith('{{')).join(' ¦ ')})()"; }
+# Wait (up to $2 s) until the page shows text $1 — i.e. the app's own startup sync brought it.
+until14() { local i; for i in $(seq 1 "${2:-30}"); do [[ "$(blocks14)" == *"$1"* ]] && return 0; sleep 1; done; return 1; }
+# No conflict page, and ONE journal (today's — each device created its own).
+pages14() { ev "(async()=>{$A14 const ps=await api.listPages(1000);return ps.some(p=>p.title.includes('conflict'))+'|'+ps.filter(p=>p.is_journal).map(p=>p.title.replace(/[0-9-]+/,'D')).join(',')})()"; }
+cli14() { HOME="$STATE/$1" MINOTES_PASSPHRASE="$PASS14" "$REPO_ROOT/target/debug/minotes" --notebook "$2" "${@:3}" 2>&1; }
 
 step "Device A: an encrypted notebook, written, with sync turned on"
 gitcfg14 enc14a; gitcfg14 enc14b; gitcfg14 enc14c
 device enc14a || true
 R=$(ev "(async()=>{$A14 const r=await api.createEncryptedNotebook('Vault14',undefined,'$PASS14');await window.__MINOTES__.switchNotebook(r.notebook.key);const f=await api.createFolder('Lynx14Folder');const p=await api.createPage('Lynx14Title');await api.movePageToFolder(p.id,f.id);const b=await api.createBlock(p.id,'lynx14 first line');await api.createBlock(p.id,'lynx14 second line');await api.setProperty(b.id,'block','status','lynx14prop');await api.saveWhiteboard('wb14','{\"notes\":[{\"text\":\"lynx14board\"}]}');await api.createBlock(p.id,'{{whiteboard:wb14}}');return (await api.getNotebookSession()).encrypted})()")
 is "Encrypted notebook written" "$R" "true"
+L1ID14=$(ev "(async()=>{$A14 const t=await api.getPageTree('Lynx14Title');return t.blocks.find(x=>x.content==='lynx14 first line').id})()")
 NOTES14A="$STATE/enc14a/MiNotes/Vault14/notes"
 mkdir -p "$NOTES14A"; HOME="$STATE/enc14a" git -C "$NOTES14A" init -q -b main; HOME="$STATE/enc14a" git -C "$NOTES14A" remote add origin "$R14"
 is "A turns sync on" "$(ev "$ENABLE14")" "enabled=true"
@@ -1107,19 +1115,47 @@ is "B joined, encrypted, sync on" "$R" "true|true"
 is "B has the page, in order" "$(blocks14)" "lynx14 first line ¦ lynx14 second line"
 is "…in its folder, with the block property and the whiteboard" "$(ev "(async()=>{$A14 const t=await api.getPageTree('Lynx14Title');const b=t.blocks.find(x=>x.content==='lynx14 first line');const props=await api.getProperties(b.id);const tree=JSON.stringify(await api.getFolderTree());const wb=await api.getWhiteboard('wb14');return [tree.includes('Lynx14Folder'),props.some(p=>p.key==='status'&&p.value==='lynx14prop'),(wb||'').includes('lynx14board')].join('|')})()")" "true|true|true"
 
-step "Both devices edit different lines — both edits arrive everywhere"
+# Nightly 2026-10-15 failed here with a "(conflict from …)" page: both devices'
+# apps create today's journal (random ids, one title); sync kept them as
+# "Journal/…" and "Journal/… (2)", the devices could disagree about which was
+# which (import order), rewrote each other's journal titles at every sync, and a
+# merge of a journal both had touched kept a conflict copy. Journals of one day
+# now fold into one page. Both orders of "the app's startup sync" vs "my edit"
+# run here, deterministically.
+step "Both devices edit different lines; A's edit is made before its startup sync (git conflict, merged per block)"
 ev "(async()=>{$A14 const t=await api.getPageTree('Lynx14Title');const b=t.blocks.find(x=>x.content==='lynx14 second line');await api.updateBlock(b.id,'lynx14 second line — edited on B');return 1})()" >/dev/null
 is "B syncs" "$(ev "$SYNC14")" "ok|conflicts=0"
+# A edits while its app is closed (the CLI), so the edit is in A's first export.
+R=$(cli14 enc14a Vault14 block update "$L1ID14" --content 'lynx14 first line — edited on A')
+[[ "$R" == *"edited on A"* ]] && pass "A edits line 1 before the app (and its sync) starts" || fail "CLI edit on A" "$R"
 relaunch14 enc14a
-ev "(async()=>{$A14 const t=await api.getPageTree('Lynx14Title');const b=t.blocks.find(x=>x.content==='lynx14 first line');await api.updateBlock(b.id,'lynx14 first line — edited on A');return 1})()" >/dev/null
 R=$(ev "$SYNC14")
 [[ "$R" == ok* ]] && pass "A syncs ($R)" || fail "A sync" "$R"
 is "A has both edits (merged per block)" "$(blocks14)" "lynx14 first line — edited on A ¦ lynx14 second line — edited on B"
 ev "$SYNC14" >/dev/null
+is "A: no conflict page, one journal" "$(pages14)" "false|Journal/D"
+
+step "Again — now each device's startup sync runs before the edit (fast-forward)"
 relaunch14 enc14b
-ev "$SYNC14" >/dev/null
-is "B has both edits too" "$(blocks14)" "lynx14 first line — edited on A ¦ lynx14 second line — edited on B"
-is "No conflict page on either device" "$(ev "(async()=>{$A14 return String((await api.listPages(1000)).some(p=>p.title.includes('conflict')))})()")" "false"
+until14 "edited on A" 30 && pass "B's startup sync brought A's edit" || fail "B startup sync" "$(blocks14)"
+is "B has both edits" "$(blocks14)" "lynx14 first line — edited on A ¦ lynx14 second line — edited on B"
+ev "(async()=>{$A14 const t=await api.getPageTree('Lynx14Title');const b=t.blocks.find(x=>x.content.startsWith('lynx14 second line'));await api.updateBlock(b.id,'lynx14 second line — round 2 on B');return 1})()" >/dev/null
+is "B syncs round 2" "$(ev "$SYNC14")" "ok|conflicts=0"
+relaunch14 enc14a
+until14 "round 2 on B" 30 && pass "A's startup sync brought B's round-2 edit" || fail "A startup sync" "$(blocks14)"
+ev "(async()=>{$A14 const t=await api.getPageTree('Lynx14Title');const b=t.blocks.find(x=>x.content.startsWith('lynx14 first line'));await api.updateBlock(b.id,'lynx14 first line — round 2 on A');return 1})()" >/dev/null
+is "A syncs round 2 without a git conflict" "$(ev "$SYNC14")" "ok|conflicts=0"
+is "A has both round-2 edits" "$(blocks14)" "lynx14 first line — round 2 on A ¦ lynx14 second line — round 2 on B"
+is "A: still no conflict page, one journal" "$(pages14)" "false|Journal/D"
+
+step "B picks up round 2 — and nothing keeps churning"
+relaunch14 enc14b
+until14 "round 2 on A" 30 && pass "B's startup sync brought A's round-2 edit" || fail "B round 2" "$(blocks14)"
+is "B syncs" "$(ev "$SYNC14")" "ok|conflicts=0"
+is "B: no conflict page, one journal" "$(pages14)" "false|Journal/D"
+ev "$SYNC14" >/dev/null; sleep 2; ev "$SYNC14" >/dev/null
+HEAD14=$(remote_head14); ev "$SYNC14" >/dev/null
+is "Stable: another sync commits nothing (no title ping-pong)" "$(remote_head14)" "$HEAD14"
 
 step "Device C: its own encrypted notebook, same passphrase, another key — refused, remote untouched"
 BEFORE14=$(remote_head14)
@@ -1131,6 +1167,7 @@ R=$(ev "$ENABLE14")
 [[ "$R" == ERR*"different encrypted notebook"* ]] && pass "Refused: another notebook's remote" || fail "C was not refused" "$R"
 is "The remote is untouched" "$(remote_head14)" "$BEFORE14"
 is "C imported nothing" "$(ev "(async()=>{$A14 return String((await api.listPages(1000)).some(p=>p.title==='Lynx14Title'))})()")" "false"
+
 
 step "A copied encrypted notebook folder still asks before it syncs (F-6)"
 COPY14="$STATE/enc14c/Copied Vault14"
