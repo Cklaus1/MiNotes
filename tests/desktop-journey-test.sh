@@ -1043,8 +1043,11 @@ journey "D14. My encrypted notebook syncs between two devices — and git never 
 # passphrase (a wrong one creates nothing), sees everything; edits to different
 # blocks on both devices merge per block — with the edit made before and after
 # the relaunched app's own startup sync — and each device keeps ONE journal for
-# today. Device C (its own notebook, same passphrase, another key) is refused
-# and the remote is untouched. A copied encrypted folder still asks before it syncs (F-6). Leak scan: every file under
+# today. A changes the passphrase: the remote's key slots follow, B keeps
+# syncing. Device C (its own notebook, same passphrase, another key) is refused
+# and the remote is untouched; joining the shared notebook from C needs the NEW
+# passphrase. A copied
+# encrypted folder still asks before it syncs (F-6). Leak scan: every file under
 # both HOMEs and TMPDIRs, every decompressed git object of both repos and the remote.
 # ═══════════════════════════════════════════════
 if ! command -v git >/dev/null; then
@@ -1055,6 +1058,7 @@ git init -q --bare -b main "$R14"
 export TMPDIR="$STATE/enc14-tmp"
 A14="const api=await import('/src/lib/api.ts');"
 PASS14="correct horse battery staple"
+NEWPASS14="violet otter juggles nine lanterns"
 M14=("Lynx14Title" "lynx14 first line" "lynx14 second line" "Lynx14Folder" "lynx14prop" "lynx14board")
 gitcfg14() { mkdir -p "$STATE/$1"; printf '[user]\n\tname = %s\n\temail = %s@example.test\n[init]\n\tdefaultBranch = main\n' "$1" "$1" >"$STATE/$1/.gitconfig"; }
 SYNC14="(async()=>{$A14 const r=await api.gitSync();return (r.error||'ok')+'|conflicts='+(r.conflicts_resolved??0)})()"
@@ -1148,11 +1152,19 @@ is "A syncs round 2 without a git conflict" "$(ev "$SYNC14")" "ok|conflicts=0"
 is "A has both round-2 edits" "$(blocks14)" "lynx14 first line — round 2 on A ¦ lynx14 second line — round 2 on B"
 is "A: still no conflict page, one journal" "$(pages14)" "false|Journal/D"
 
-step "B picks up round 2 — and nothing keeps churning"
+# Opportunity P2 (E17): a new passphrase reaches the sync repo's key file, so a
+# device joining later uses it; a device already syncing keeps its own and works on.
+step "A changes the passphrase: the sync repo's key slots follow; B keeps syncing"
+KF14_BEFORE=$(git --git-dir="$R14" rev-parse -q --verify "main:.minotes-encryption.json" 2>/dev/null)
+R=$(ev "(async()=>{$A14 try{await api.changePassphrase('$PASS14','$NEWPASS14');const r=await api.gitSync();return r.error||'ok'}catch(e){return 'ERR '+e}})()")
+is "Passphrase changed and synced" "$R" "ok"
+KF14_AFTER=$(git --git-dir="$R14" rev-parse -q --verify "main:.minotes-encryption.json" 2>/dev/null)
+[[ -n "$KF14_AFTER" && "$KF14_AFTER" != "$KF14_BEFORE" ]] && pass "The remote's key file was rewritten" || fail "Key file not updated" "$KF14_BEFORE -> $KF14_AFTER"
 relaunch14 enc14b
-until14 "round 2 on A" 30 && pass "B's startup sync brought A's round-2 edit" || fail "B round 2" "$(blocks14)"
+until14 "round 2 on A" 30 && pass "B (old passphrase on this device) still syncs: has A's round-2 edit" || fail "B after the passphrase change" "$(blocks14)"
 is "B syncs" "$(ev "$SYNC14")" "ok|conflicts=0"
 is "B: no conflict page, one journal" "$(pages14)" "false|Journal/D"
+is "B's sync left the new key slots in place" "$(git --git-dir="$R14" rev-parse -q --verify "main:.minotes-encryption.json" 2>/dev/null)" "$KF14_AFTER"
 ev "$SYNC14" >/dev/null; sleep 2; ev "$SYNC14" >/dev/null
 HEAD14=$(remote_head14); ev "$SYNC14" >/dev/null
 is "Stable: another sync commits nothing (no title ping-pong)" "$(remote_head14)" "$HEAD14"
@@ -1168,13 +1180,21 @@ R=$(ev "$ENABLE14")
 is "The remote is untouched" "$(remote_head14)" "$BEFORE14"
 is "C imported nothing" "$(ev "(async()=>{$A14 return String((await api.listPages(1000)).some(p=>p.title==='Lynx14Title'))})()")" "false"
 
+step "A device joining after the passphrase change needs the NEW passphrase"
+R=$(ev "(async()=>{$A14 try{await api.joinEncryptedNotebook('$R14','Vault14 D',undefined,'$PASS14');return 'joined'}catch(e){return String(e).split(':')[0]}})()")
+is "The old passphrase is refused" "$R" "WRONG_PASSPHRASE"
+R=$(ev "(async()=>{$A14 const nb=await api.joinEncryptedNotebook('$R14','Vault14 D',undefined,'$NEWPASS14');await window.__MINOTES__.switchNotebook(nb.key);const s=await api.gitSyncEnable();return s.enabled})()")
+is "The new one joins, sync on" "$R" "true"
+is "…and has the notes" "$(blocks14)" "lynx14 first line — round 2 on A ¦ lynx14 second line — round 2 on B"
+is "…with one journal and no conflict page" "$(pages14)" "false|Journal/D"
+BEFORE14=$(remote_head14)
 
 step "A copied encrypted notebook folder still asks before it syncs (F-6)"
 COPY14="$STATE/enc14c/Copied Vault14"
 cp -r "$STATE/enc14a/MiNotes/Vault14" "$COPY14"
 ev "(async()=>{$A14 const nb=await api.openNotebookFolder('$COPY14');const n=await import('/src/lib/notebooks.ts');await n.switchNotebook(nb.key);return 1})()" >/dev/null
 waitfor "!!document.querySelector('[data-testid=unlock-screen]')" 20 && pass "The copy opens locked" || fail "Copy not locked" "$(ev "(async()=>{$A14 return JSON.stringify(await api.getNotebookSession())})()")"
-ev "(async()=>{const e=await import('/src/lib/encryption.ts');await e.unlock('$PASS14');return 1})()" >/dev/null
+ev "(async()=>{const e=await import('/src/lib/encryption.ts');await e.unlock('$NEWPASS14');return 1})()" >/dev/null
 waitfor "!!window.__MINOTES__?.navigateTo && !document.querySelector('[data-testid=unlock-screen]')" 20
 R=$(ev "(async()=>{$A14 const s=await api.gitSyncStatus();const r=await api.gitSync();return s.needs_confirmation+'|'+(r.needs_confirmation??false)})()")
 is "Sync waits for confirmation on this computer" "$R" "true|true"

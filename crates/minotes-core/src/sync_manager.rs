@@ -195,6 +195,10 @@ pub(crate) struct RepoState {
     /// (`Database::merge_remote_version`; encrypted notebooks decrypt it first).
     #[serde(default, rename = "enc_merges", skip_serializing_if = "Vec::is_empty")]
     pub(crate) merges: Vec<crate::sync_encrypted::PendingMerge>,
+    /// Encrypted notebooks: this device rotated the data key and the repo is not
+    /// re-encrypted with the new one yet (see `sync_encrypted`, "Key rotation").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) rekey: Option<crate::sync_encrypted::PendingRekey>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]

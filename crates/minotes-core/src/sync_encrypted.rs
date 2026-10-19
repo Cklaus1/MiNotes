@@ -140,8 +140,33 @@ fn hex(b: &[u8]) -> String {
 pub(crate) struct KeyFile {
     pub(crate) version: u32,
     pub(crate) key_check: String,
+    /// Bumped by every key rotation (1 = the notebook's first data key).
+    #[serde(default = "first_generation")]
+    pub(crate) generation: u32,
+    /// Key checks of the data keys this notebook had before (rotations), so a
+    /// device still on an old key is told the key changed — not "another notebook".
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) previous_key_checks: Vec<String>,
     pub(crate) encryption: EncryptionInfo,
 }
+
+fn first_generation() -> u32 {
+    1
+}
+
+/// A key rotation this device made that the sync repo doesn't have yet: the
+/// files are still encrypted with the old data key, which is kept here (sealed
+/// with the new key, inside `.git`, never committed) until everything is
+/// re-encrypted and pushed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PendingRekey {
+    /// Key check of the old data key (the repo's) and of the new one (this notebook's).
+    pub from: String,
+    pub to: String,
+    pub old_key: String,
+}
+
+const REKEY_AAD: &str = ".git/minotes-rekey";
 
 // ── Entries ──
 
@@ -239,13 +264,56 @@ fn read_key_file_text(text: &str) -> Result<KeyFile> {
     serde_json::from_str(text).map_err(|e| Error::InvalidInput(format!("{KEY_FILE} is malformed: {e}")))
 }
 
-/// Write the key file when the repo has none; refuse a repo made with another key.
+fn write_key_file(dir: &Path, kf: &KeyFile) -> Result<()> {
+    if let Some(link) = crate::repo::export::symlink_below(dir, Path::new(KEY_FILE)) {
+        return Err(Error::InvalidInput(format!("Not writing {KEY_FILE}: symbolic link at {}", link.display())));
+    }
+    let json = serde_json::to_string_pretty(kf)? + "\n";
+    crate::repo::export::atomic_write(&dir.join(KEY_FILE), json.as_bytes())
+        .map_err(|e| Error::InvalidInput(format!("Cannot write {KEY_FILE}: {e}")))
+}
+
+/// Did the repo ever hold these key slots? Every slot carries a fresh random
+/// nonce (and the passphrase slot a fresh salt), so slots made by a passphrase
+/// change here never equal an earlier version of the key file.
+fn slots_in_history(dir: &Path, info: &EncryptionInfo) -> Result<bool> {
+    let (out, _, ok) = git_cmd::run_git(dir, &["log", "--format=%H", "--", KEY_FILE])?;
+    if !ok {
+        return Ok(false);
+    }
+    for rev in out.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        if let Some(text) = git_cmd::show_file_at(dir, rev, KEY_FILE)? {
+            if read_key_file_text(&text).map(|kf| kf.encryption == *info).unwrap_or(false) {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// Write the key file when the repo has none; refuse a repo made with another
+/// key; publish this notebook's key slots when they changed **here** (a new
+/// passphrase or recovery key — the data key, and so the key check, is the
+/// same), so a device joining later uses the current passphrase.
+///
+/// Which side is newer: slots this device has that the repo never held were
+/// made here and are published; slots the repo held before are an older version
+/// (another device changed the passphrase since) and never overwrite the repo's.
+/// Other devices keep their own local slots (a remote can't hand a device key
+/// slots it can't check), and keep syncing: the data key didn't change.
+/// `info: None` (re-encrypting after a rotation) leaves the slots alone.
 fn ensure_key_file(dir: &Path, keys: &SyncKeys, info: Option<&EncryptionInfo>) -> Result<()> {
     match crate::repo::export::read_text_below(dir, Path::new(KEY_FILE)) {
         Ok(text) => {
-            let kf = read_key_file_text(&text)?;
+            let mut kf = read_key_file_text(&text)?;
             if kf.key_check != keys.key_check() {
-                return Err(mismatch());
+                return Err(mismatch(&kf, keys));
+            }
+            if let Some(info) = info {
+                if kf.encryption != *info && !slots_in_history(dir, info)? {
+                    kf.encryption = info.clone();
+                    write_key_file(dir, &kf)?;
+                }
             }
             Ok(())
         }
@@ -253,15 +321,27 @@ fn ensure_key_file(dir: &Path, keys: &SyncKeys, info: Option<&EncryptionInfo>) -
             let Some(info) = info else {
                 return Err(Error::InvalidInput("The notebook's key slots are not available".into()));
             };
-            let kf = KeyFile { version: 1, key_check: keys.key_check(), encryption: info.clone() };
-            let json = serde_json::to_string_pretty(&kf)? + "\n";
-            crate::repo::export::atomic_write(&dir.join(KEY_FILE), json.as_bytes())
-                .map_err(|e| Error::InvalidInput(format!("Cannot write {KEY_FILE}: {e}")))
+            let kf = KeyFile {
+                version: 1,
+                key_check: keys.key_check(),
+                generation: first_generation(),
+                previous_key_checks: Vec::new(),
+                encryption: info.clone(),
+            };
+            write_key_file(dir, &kf)
         }
     }
 }
 
-fn mismatch() -> Error {
+/// The remote (or the repo) holds a key file whose key isn't this notebook's.
+fn mismatch(kf: &KeyFile, keys: &SyncKeys) -> Error {
+    if kf.previous_key_checks.contains(&keys.key_check()) {
+        return Error::Git(format!(
+            "{KEY_CHANGED}: this notebook\u{2019}s key was changed (rotated) on another device, so this device can no longer \
+             read or write its sync files. Nothing was pulled or pushed, and your notes here are unchanged. To keep syncing, \
+             open the notebook on this device again with \u{201c}Join an encrypted notebook\u{201d} and the passphrase."
+        ));
+    }
     Error::Git(
         "This sync remote belongs to a different encrypted notebook (another key): nothing was pulled or pushed. \
          Use \u{201c}Join an encrypted notebook\u{201d} to open it, or sync this notebook to an empty remote."
@@ -269,32 +349,52 @@ fn mismatch() -> Error {
     )
 }
 
-/// Fetch the remote branch and check its key file before anything else touches
-/// the repo. Ok(()) also for an empty remote (nothing to check yet).
-pub(crate) fn check_remote(dir: &Path, keys: &SyncKeys) -> Result<()> {
+/// Prefix of the error a device on a rotated-away key gets (fail closed).
+pub const KEY_CHANGED: &str = "KEY_CHANGED";
+
+/// What the remote branch holds, fetched.
+enum Remote {
+    /// No remote configured, or an empty one (our first push creates it).
+    Empty,
+    Keyed(KeyFile),
+    /// Commits, but no key file: plain notes, or something else.
+    Unkeyed,
+}
+
+fn fetch_remote(dir: &Path) -> Result<Remote> {
     if !git_cmd::has_remote(dir) {
-        return Ok(());
+        return Ok(Remote::Empty);
     }
     let branch = git_cmd::require_branch(dir)?;
     let (_, stderr, ok) = git_cmd::run_git(dir, &["fetch", "--no-tags", "origin", &branch])?;
     if !ok {
         if stderr.contains("couldn't find remote ref") {
-            return Ok(()); // empty remote: our first push creates it
+            return Ok(Remote::Empty);
         }
         return Err(Error::Git(git_cmd::classify_git_error(&stderr)));
     }
     match git_cmd::show_file_at(dir, "FETCH_HEAD", KEY_FILE)? {
-        Some(text) => {
-            if read_key_file_text(&text)?.key_check != keys.key_check() {
-                return Err(mismatch());
-            }
-            Ok(())
-        }
-        None => Err(Error::Git(
-            "This sync remote holds notes that are not this encrypted notebook's (no key file): nothing was pulled or pushed. \
-             Sync an encrypted notebook to an empty remote of its own."
-                .into(),
-        )),
+        Some(text) => Ok(Remote::Keyed(read_key_file_text(&text)?)),
+        None => Ok(Remote::Unkeyed),
+    }
+}
+
+fn unkeyed() -> Error {
+    Error::Git(
+        "This sync remote holds notes that are not this encrypted notebook's (no key file): nothing was pulled or pushed. \
+         Sync an encrypted notebook to an empty remote of its own."
+            .into(),
+    )
+}
+
+/// Fetch the remote branch and check its key file before anything else touches
+/// the repo. Ok(()) also for an empty remote (nothing to check yet).
+pub(crate) fn check_remote(dir: &Path, keys: &SyncKeys) -> Result<()> {
+    match fetch_remote(dir)? {
+        Remote::Empty => Ok(()),
+        Remote::Keyed(kf) if kf.key_check == keys.key_check() => Ok(()),
+        Remote::Keyed(kf) => Err(mismatch(&kf, keys)),
+        Remote::Unkeyed => Err(unkeyed()),
     }
 }
 
@@ -824,20 +924,42 @@ where
         let db = lock_db()?;
         keys_of(&db)?
     };
-    if let Err(e) = check_remote(dir, &keys) {
-        if enabling {
-            return Err(e);
-        }
-        return Ok(sync_manager::GitSyncResult::refused(&e.to_string()));
+    if let Some(old) = pending_rekey(dir, &keys)? {
+        return rekey_cycle(dir, lock_db, enabling, &keys, &old);
     }
+    if let Err(e) = check_remote(dir, &keys) {
+        return refuse(e, enabling);
+    }
+    cycle_with(dir, lock_db, enabling, &keys, info_for(dir).as_ref())
+}
 
+fn refuse(e: Error, enabling: bool) -> Result<sync_manager::GitSyncResult> {
+    if enabling {
+        return Err(e);
+    }
+    let msg = e.to_string();
+    Ok(sync_manager::GitSyncResult { offline: sync_manager::is_offline_error(&msg), ..sync_manager::GitSyncResult::refused(&msg) })
+}
+
+/// Export, pull/push and import with `keys` (the remote was checked).
+/// `info`: the slots to publish (None: leave the key file's slots alone).
+fn cycle_with<G, F>(
+    dir: &Path,
+    lock_db: &F,
+    enabling: bool,
+    keys: &SyncKeys,
+    info: Option<&EncryptionInfo>,
+) -> Result<sync_manager::GitSyncResult>
+where
+    G: Deref<Target = Database>,
+    F: Fn() -> Result<G>,
+{
     let (export, flushed_head) = {
         let db = lock_db()?;
-        let info = info_for(dir);
-        let exp = export_and_commit(&db, dir, &keys, info.as_ref())?;
+        let exp = export_and_commit(&db, dir, keys, info)?;
         (exp, git_cmd::rev_parse_head(dir)?)
     };
-    let git = pull_push(dir, &keys)?;
+    let git = pull_push(dir, keys)?;
 
     let base = if enabling { flushed_head.clone() } else { sync_manager::read_state(dir).imported_head };
     let pending = pending_since(dir, base.as_deref())?;
@@ -847,7 +969,7 @@ where
     let mut conflict_pages = Vec::new();
     if git.error.is_none() && (pending.is_some() || has_merges) {
         let db = lock_db()?;
-        let r = import(&db, dir, &keys, pending.as_ref(), Some(export.export_time))?;
+        let r = import(&db, dir, keys, pending.as_ref(), Some(export.export_time))?;
         let mut st = sync_manager::read_state(dir);
         if !r.held_page_ids.is_empty() || !r.held_folder_ids.is_empty() {
             let mut h = st.held.take().unwrap_or_default();
@@ -898,6 +1020,182 @@ where
         warnings: export.large_attachments.iter().map(|a| format!("{a} is over 50 MB and was not synced")).collect(),
         needs_confirmation: false,
     })
+}
+
+// ── Key rotation ──
+//
+// Rotating the data key (PRD-encryption §4.2) changes every sync key: file
+// names, file encryption and the key check. The device that rotated keeps the
+// old key sealed in its `.git` (see `PendingRekey`) and, at its next sync:
+//   1. syncs once more with the OLD key — so edits other devices pushed before
+//      the rotation are pulled and merged, not lost;
+//   2. re-encrypts the whole repo with the new key: every `.mne` file is
+//      rewritten under its new name, and the key file gets the new key check,
+//      the new slots, `generation + 1` and the old key check in
+//      `previous_key_checks`; one commit, pushed.
+// If the push is refused (another device pushed meanwhile) the re-encrypting
+// commit is dropped and the whole step runs again next time. Other devices,
+// still on the old key, then fail closed (`KEY_CHANGED`): nothing is pulled or
+// pushed until the notebook is joined again with the passphrase.
+
+/// Record a rotation of `nb`'s data key from `old` to `new` for its sync repo
+/// (before the database is swapped: a crash after the swap still finds it; a
+/// rotation that rolls back leaves a record whose `to` matches no key, ignored).
+/// No-op when the notebook has no encrypted sync repo.
+pub fn prepare_rekey(nb: &crate::notebook::Notebook, old: &DataKey, new: &DataKey) -> Result<()> {
+    let dir = nb.mirror_dir();
+    if !git_cmd::is_git_repo(&dir) {
+        return Ok(());
+    }
+    let (old_keys, new_keys) = (SyncKeys::new(old), SyncKeys::new(new));
+    let mut st = sync_manager::read_state(&dir);
+    // A rotation that never reached the repo: the repo still holds the older key.
+    let from = match &st.rekey {
+        Some(r) if r.to == old_keys.key_check() => r.from.clone(),
+        _ => old_keys.key_check(),
+    };
+    let repo_key = match &st.rekey {
+        Some(r) if r.to == old_keys.key_check() => {
+            let k = open_old_key(&old_keys, r)?;
+            Zeroizing::new(*k.bytes())
+        }
+        _ => Zeroizing::new(*old.bytes()),
+    };
+    st.rekey = Some(PendingRekey { from, to: new_keys.key_check(), old_key: new_keys.seal(REKEY_AAD, &repo_key[..]) });
+    sync_manager::write_state(&dir, &st)
+}
+
+fn open_old_key(keys: &SyncKeys, r: &PendingRekey) -> Result<DataKey> {
+    let raw = keys.open(REKEY_AAD, &r.old_key)?;
+    let bytes: [u8; 32] = raw[..].try_into().map_err(|_| Error::InvalidInput("Malformed key rotation record".into()))?;
+    Ok(DataKey::from_bytes(bytes))
+}
+
+/// The old sync keys when this device rotated the key and the repo isn't
+/// re-encrypted yet. A record for another key (a rotation that rolled back) is dropped.
+fn pending_rekey(dir: &Path, keys: &SyncKeys) -> Result<Option<SyncKeys>> {
+    let mut st = sync_manager::read_state(dir);
+    let Some(r) = st.rekey.clone() else { return Ok(None) };
+    if r.to != keys.key_check() {
+        st.rekey = None;
+        sync_manager::write_state(dir, &st)?;
+        return Ok(None);
+    }
+    let old = SyncKeys::new(&open_old_key(keys, &r)?);
+    if old.key_check() != r.from {
+        return Err(Error::InvalidInput("The key rotation record does not match the old key".into()));
+    }
+    Ok(Some(old))
+}
+
+fn finish_rekey(dir: &Path) -> Result<()> {
+    let mut st = sync_manager::read_state(dir);
+    st.rekey = None;
+    sync_manager::write_state(dir, &st)
+}
+
+/// A cycle while this device's key rotation is not in the repo yet (see above).
+fn rekey_cycle<G, F>(dir: &Path, lock_db: &F, enabling: bool, new: &SyncKeys, old: &SyncKeys) -> Result<sync_manager::GitSyncResult>
+where
+    G: Deref<Target = Database>,
+    F: Fn() -> Result<G>,
+{
+    let remote = match fetch_remote(dir) {
+        Ok(r) => r,
+        Err(e) => return refuse(e, enabling),
+    };
+    let info = info_for(dir);
+    match &remote {
+        // Already re-encrypted (a push whose bookkeeping didn't finish).
+        Remote::Keyed(kf) if kf.key_check == new.key_check() => {
+            finish_rekey(dir)?;
+            return cycle_with(dir, lock_db, enabling, new, info.as_ref());
+        }
+        Remote::Keyed(kf) if kf.key_check != old.key_check() => return refuse(mismatch(kf, old), enabling),
+        Remote::Unkeyed => return refuse(unkeyed(), enabling),
+        _ => {}
+    }
+    // The repo (local, and the remote if any) is on the old key: one more cycle
+    // with it, so nothing pushed before the rotation is lost.
+    let local_old = match crate::repo::export::read_text_below(dir, Path::new(KEY_FILE)) {
+        Ok(text) => read_key_file_text(&text)?.key_check == old.key_check(),
+        Err(_) => false,
+    };
+    let mut result = if local_old || matches!(remote, Remote::Keyed(_)) {
+        let r = cycle_with(dir, lock_db, enabling, old, None)?;
+        if !r.success {
+            return Ok(r);
+        }
+        r
+    } else {
+        sync_manager::GitSyncResult { success: true, error: None, ..sync_manager::GitSyncResult::refused("") }
+    };
+    if !sync_manager::read_state(dir).merges.is_empty() {
+        result.success = false;
+        result.error = Some("The key rotation is synced once the other device's changes are merged".into());
+        return Ok(result);
+    }
+    let Some(info) = info else {
+        return Err(Error::InvalidInput("The notebook's key slots are not available".into()));
+    };
+    let pre = git_cmd::rev_parse_head(dir)?;
+    {
+        let db = lock_db()?;
+        reencrypt(&db, dir, old, new, &info)?;
+    }
+    if git_cmd::has_remote(dir) {
+        if let Err(e) = git_cmd::push(dir) {
+            // Drop the re-encrypting commit; the next cycle pulls with the old key first.
+            if let Some(pre) = &pre {
+                let _ = git_cmd::run_git(dir, &["reset", "--hard", "-q", pre]);
+            }
+            let msg = format!("The new key is published at the next sync ({e})");
+            return Ok(sync_manager::GitSyncResult {
+                success: false,
+                offline: sync_manager::is_offline_error(&e.to_string()),
+                error: Some(msg),
+                ..result
+            });
+        }
+    }
+    let mut st = sync_manager::read_state(dir);
+    st.rekey = None;
+    st.imported_head = git_cmd::rev_parse_head(dir)?;
+    sync_manager::write_state(dir, &st)?;
+    result.error = None;
+    result.success = true;
+    Ok(result)
+}
+
+/// Rewrite every file of the repo with the new key and commit (no push).
+fn reencrypt(db: &Database, dir: &Path, old: &SyncKeys, new: &SyncKeys, info: &EncryptionInfo) -> Result<()> {
+    let prev = match crate::repo::export::read_text_below(dir, Path::new(KEY_FILE)) {
+        Ok(text) => Some(read_key_file_text(&text)?),
+        Err(_) => None,
+    };
+    let mut previous_key_checks = prev.as_ref().map(|k| k.previous_key_checks.clone()).unwrap_or_default();
+    if prev.is_some() && !previous_key_checks.contains(&old.key_check()) {
+        previous_key_checks.push(old.key_check());
+    }
+    for kind in [PAGES, FOLDERS, WHITEBOARDS, ATTACHMENTS] {
+        for (_, rel) in list_kind(dir, kind) {
+            let path = crate::repo::export::safe_join(dir, Path::new(&rel))?;
+            std::fs::remove_file(&path).map_err(|e| Error::InvalidInput(format!("Cannot remove {rel}: {e}")))?;
+        }
+    }
+    write_key_file(
+        dir,
+        &KeyFile {
+            version: 1,
+            key_check: new.key_check(),
+            generation: prev.as_ref().map(|k| k.generation + 1).unwrap_or(first_generation()),
+            previous_key_checks,
+            encryption: info.clone(),
+        },
+    )?;
+    export(db, dir, new)?;
+    git_cmd::commit_all(dir, &sync_manager::commit_message())?;
+    Ok(())
 }
 
 // ── Joining ──

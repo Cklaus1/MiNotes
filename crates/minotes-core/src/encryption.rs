@@ -504,6 +504,9 @@ pub fn rotate_key_with(nb: &Notebook, passphrase: &str, params: KdfParams, injec
     let old = info_of(nb)?.unlock(Secret::Passphrase(passphrase))?;
     let new = DataKey::generate();
     let (info, rk) = EncryptionInfo::new(&new, passphrase, params)?;
+    // The sync repo is re-encrypted with the new key at the next sync (written
+    // before the swap, so a crash after it still finds the record).
+    crate::sync_encrypted::prepare_rekey(nb, &old, &new)?;
     convert(nb, ConvertOp::Rotate, Some(&old), Some(&new), Some(info), inject)?;
     remember_unlocked(&nb.key, new);
     Ok(rk)
