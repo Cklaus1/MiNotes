@@ -9,6 +9,7 @@ import BlockItem from "./BlockItem";
 import type { BlockItemHandle, DropPosition, FocusPosition } from "./BlockItem";
 import { applyDrop, dropPlacement, outlineOrder } from "../lib/blockTree";
 import { mergeMarkdown } from "../editor/mergeBlocks";
+import { noteBlockContent, refreshShownBlockRefs } from "../lib/blockRefs";
 import { caretAfterMarkdown } from "../editor/staticRender";
 import BacklinksPanel from "./BacklinksPanel";
 import UnlinkedRefsPanel from "./UnlinkedRefsPanel";
@@ -171,6 +172,9 @@ export default function PageView({
       return merged;
     });
   }, [pageTree]);
+  // A (re)loaded tree may come with blocks changed elsewhere (another page, the
+  // CLI, sync): re-read what the ((refs)) and embeds on screen show.
+  useEffect(() => { refreshShownBlockRefs(); }, [pageTree]);
   const [pageProps, setPageProps] = useState<Property[]>([]);
   const [zoomedBlockId, setZoomedBlockId] = useState<string | null>(null);
   const [showProps, setShowProps] = useState(false);
@@ -559,6 +563,7 @@ export default function PageView({
   // still in flight saves once it exists (in order, through the op queue).
   const handleBlockUpdate = (id: string, content: string) => {
     markEdited(id, content);
+    noteBlockContent(rid(id), content); // ((refs)) to this block follow the edit
     setLocalBlocks(prev => prev.map(b => b.id === id ? { ...b, content } : b));
     if (isTempId(id) && !idMapRef.current.has(id)) {
       enqueue(async () => { await onUpdateBlockRef.current(rid(id), content); });
@@ -1203,6 +1208,7 @@ export default function PageView({
         const block = filteredVisibleBlocks[blockIndex];
         if (!block) return false;
         onUpdateBlock(block.id, markdown);
+        noteBlockContent(block.id, markdown); // as handleBlockUpdate (an editor save) does
         setLocalBlocks(prev => prev.map(b => b.id === block.id ? { ...b, content: markdown } : b));
         return true;
       },

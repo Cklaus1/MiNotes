@@ -20,6 +20,7 @@ import { runTableAction, isInTable, type TableAction } from "../editor/tables";
 import { useIsFlashcard, makeFlashcard, removeFlashcard, FLASHCARD_HINT } from "../lib/cards";
 import { showToast } from "../lib/toast";
 import { isRemoteSrc } from "../lib/remoteImages";
+import { getBlockRef, hydrateBlockRefs, requestBlockRefs, subscribeBlockRefs } from "../lib/blockRefs";
 import "../editor/editor.css";
 
 // Lazy-load CM6 editor — only downloaded when obsidianEditorEnabled
@@ -102,6 +103,7 @@ function StaticBlockContent({ content, onPageLinkClick, onBlockRefClick, onToggl
   useLayoutEffect(() => {
     ref.current?.replaceChildren(renderBlockStatic(content));
     if (content.includes("::")) hydrateNotebookLinks(ref.current);
+    if (content.includes("((") && ref.current) hydrateBlockRefs(ref.current);
   }, [content]);
   const handleClick = (e: React.MouseEvent) => {
     const t = e.target as HTMLElement;
@@ -146,6 +148,38 @@ function StaticBlockContent({ content, onPageLinkClick, onBlockRefClick, onToggl
   return (
     <div className="block-content">
       <div ref={ref} className={`${staticRootClass()} block-static`} translate="no" onClick={handleClick} />
+    </div>
+  );
+}
+
+const EMBED_RE = /\{\{embed \(\(([0-9a-fA-F-]{36})\)\)\}\}/g;
+
+/** One `{{embed ((uuid))}}`: the referenced block, rendered, with its page; live (lib/blockRefs). */
+function EmbedCard({ blockId, onOpen }: { blockId: string; onOpen?: (blockId: string) => void }) {
+  const [, bump] = useState(0);
+  useEffect(() => {
+    const off = subscribeBlockRefs(() => bump(n => n + 1));
+    requestBlockRefs([blockId]);
+    bump(n => n + 1); // it may have arrived between the first render and now
+    return off;
+  }, [blockId]);
+  const ref = getBlockRef(blockId);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const content = ref?.content;
+  useLayoutEffect(() => {
+    if (!bodyRef.current) return;
+    if (content === undefined) { bodyRef.current.replaceChildren(); return; }
+    bodyRef.current.replaceChildren(renderBlockStatic(content));
+    if (content.includes("((")) hydrateBlockRefs(bodyRef.current);
+  }, [content]);
+  return (
+    <div className={`block-transclusion${ref === null ? " is-missing" : ""}`} data-embed-id={blockId} onClick={() => ref && onOpen?.(blockId)}>
+      <span className="block-transclusion-label">
+        {ref === undefined ? "Loading…" : ref === null ? "Embedded block no longer exists" : ref.pageTitle}
+      </span>
+      <div className="block-content block-transclusion-content">
+        <div ref={bodyRef} className={`${staticRootClass()} block-static`} translate="no" />
+      </div>
     </div>
   );
 }
@@ -259,16 +293,9 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
   const linkPreviewMatch = block.content.match(/^\{\{link-preview:(https?:\/\/[^}]+)\}\}$/);
   const linkPreviewUrl = linkPreviewMatch ? linkPreviewMatch[1] : null;
 
-  // Feature 9: Block Transclusion state
-  const [transcludedBlocks, setTranscludedBlocks] = useState<Map<string, Block>>(new Map());
-  const blockRefPattern = /\(\(([0-9a-fA-F-]{8,36})\)\)/g;
-  const blockRefIds: string[] = [];
-  let refMatch: RegExpExecArray | null;
-  const contentForRefs = block.content;
-  const refRegex = new RegExp(blockRefPattern.source, "g");
-  while ((refMatch = refRegex.exec(contentForRefs)) !== null) {
-    blockRefIds.push(refMatch[1]);
-  }
+  // Block embeds ({{embed ((uuid))}}) show the referenced block as a card; a plain
+  // ((uuid)) is only an inline chip (C-12: it used to get a card too).
+  const embedIds = [...new Set([...block.content.matchAll(EMBED_RE)].map(m => m[1]))];
 
   // Live-markdown reader, filled in once the editor hook has run (below). Ctrl+Enter
   // must cycle based on what the user sees NOW, not the last-saved block.content prop
@@ -546,24 +573,6 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
     api.fetchOgMetadata(linkPreviewUrl).then(setOgMeta).catch(() => setOgMeta(null));
   }, [linkPreviewUrl]);
 
-  // Feature 9: Fetch transcluded block content
-  const blockRefKey = blockRefIds.join(",");
-  useEffect(() => {
-    if (blockRefIds.length === 0) { setTranscludedBlocks(new Map()); return; }
-    let cancelled = false;
-    const fetchAll = async () => {
-      const entries = new Map<string, Block>();
-      try {
-        // One call for every referenced block (unknown ids are skipped).
-        for (const b of await api.getBlocks(blockRefIds)) entries.set(b.id, b);
-      } catch {}
-      // Drop stale results: the content changed (or we unmounted) mid-fetch.
-      if (!cancelled) setTranscludedBlocks(entries);
-    };
-    fetchAll();
-    return () => { cancelled = true; };
-  }, [blockRefKey]);
-
   // Listen for settings changes
   useEffect(() => {
     const handler = (e: Event) => {
@@ -840,19 +849,10 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
         );
       })()}
 
-      {/* Feature 9: Block Transclusion — show referenced blocks inline */}
-      {blockRefIds.length > 0 && transcludedBlocks.size > 0 && (
+      {/* Block embeds: the referenced blocks as cards under this block */}
+      {embedIds.length > 0 && (
         <div className="block-transclusions">
-          {blockRefIds.map((bid) => {
-            const tb = transcludedBlocks.get(bid);
-            if (!tb) return null;
-            return (
-              <div key={bid} className="block-transclusion" onClick={() => onBlockRefClick?.(bid)}>
-                <span className="block-transclusion-label">Transcluded block</span>
-                <div className="block-transclusion-content">{tb.content}</div>
-              </div>
-            );
-          })}
+          {embedIds.map((bid) => <EmbedCard key={bid} blockId={bid} onOpen={onBlockRefClick} />)}
         </div>
       )}
 

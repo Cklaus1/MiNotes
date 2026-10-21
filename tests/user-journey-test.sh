@@ -3877,6 +3877,45 @@ R=$(row74 bold74)
 [[ "$R" == *"Target74 renamed"* ]] && pass "Backlink row updated: $R" || fail "Backlinks stale after rename" "$R"
 
 # ═══════════════════════════════════════════════
+journey "75. A block reference shows the referenced text, and an embed shows the block (UX review C-12)"
+# ((uuid)) chips showed the uuid, every plain reference also got a
+# "TRANSCLUDED BLOCK" box repeating it, and nothing updated until a reload.
+# Now: ((uuid)) = one inline chip with the live text; {{embed ((uuid))}} = the card.
+# ═══════════════════════════════════════════════
+A75="const api=await import('/src/lib/api.ts');"
+ev "(async()=>{$A75 const o=await api.createPage('Other75 page');const s=await api.createBlock(o.id,'Source text 75 with **bold**');const p=await api.createPage('Ref75 page');await api.createBlock(p.id,'see ((' + s.id + ')) here');await api.createBlock(p.id,'{{embed ((' + s.id + '))}}');await api.createBlock(p.id,'local75 source');await api.createBlock(p.id,'');window.__S75=s.id;return 1})()" >/dev/null
+api "navigateTo('Ref75 page')" >/dev/null; sleep 2
+ev "document.activeElement?.blur()" >/dev/null; sleep 0.5
+chip75() { ev "(()=>{const b=[...document.querySelectorAll('.block-list > .block')].find(x=>x.textContent.includes('$1'));const c=b?.querySelector('.block-content .block-ref');return c?c.textContent:'none'})()" | tr -d '"'; }
+card75() { ev "(()=>{const b=[...document.querySelectorAll('.block-list > .block')][$1];return [...(b?.querySelectorAll('.block-transclusion')||[])].map(t=>t.innerText.replace(/\\s+/g,' ').trim()).join('|')||'none'})()" | tr -d '"'; }
+
+step "A plain ((ref)) is one chip with the referenced text — no uuid, no box"
+R=$(chip75 "here"); C=$(card75 0)
+[[ "$R" == "Source text 75 with bold" ]] && pass "Chip reads \"$R\"" || fail "Chip text" "$R"
+[[ "$C" == "none" ]] && pass "No transclusion box under a plain reference" || fail "Box repeats the reference" "$C"
+
+step "{{embed ((ref))}} shows the referenced block as a card, with its page"
+C=$(card75 1)
+[[ "$C" == *"Source text 75 with bold"* && "${C,,}" == *"other75 page"* ]] && pass "Embed card: $C" || fail "Embed card" "$C"
+ss "75-block-refs"
+
+step "Editing the source updates the chip and the card without a reload"
+ev "(async()=>{$A75 const p=await api.getPageTree('Ref75 page');const loc=p.blocks.find(b=>b.content==='local75 source');await api.updateBlock(p.blocks[0].id,'see (('+loc.id+')) here');window.__L75=loc.id;return 1})()" >/dev/null
+api "navigateTo('Other75 page')" >/dev/null; sleep 1; api "navigateTo('Ref75 page')" >/dev/null; sleep 2
+ev "document.activeElement?.blur()" >/dev/null; sleep 0.3
+I75=$(ev "window.__MINOTES__.getBlocks().findIndex(b=>b.content==='local75 source')" | tr -d '"')
+api "setBlockContent($I75, 'local75 changed')" >/dev/null; sleep 1
+R=$(chip75 "here")
+[[ "$R" == "local75 changed" ]] && pass "Chip followed the edit: \"$R\"" || fail "Chip stale after the source changed" "$R"
+
+step "The (( picker shows which page each block is on"
+api "focusBlock(3)" >/dev/null; sleep 0.3
+ev "(async()=>{for(const ch of '((Source text 75'){document.execCommand('insertText',false,ch);await new Promise(r=>setTimeout(r,20))}return 1})()" >/dev/null; sleep 1.2
+R=$(ev "[...document.querySelectorAll('.slash-menu-item')].map(i=>i.innerText.replace(/\\s+/g,' ')).join('|')" | tr -d '"')
+api "pressKeyInBlock(3, 'Escape', {focus:false})" >/dev/null
+[[ "$R" == *"Source text 75"*"Other75 page"* ]] && pass "Picker: $R" || fail "Picker without page names" "$R"
+
+# ═══════════════════════════════════════════════
 close_app
 
 # ═══════════════════════════════════════════════

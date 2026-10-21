@@ -5,11 +5,14 @@ import {
   useState,
   useCallback,
 } from "react";
+import { refLabel } from "../lib/blockRefs";
 
 interface BlockRefItem {
   id: string;
   content: string;
+  /** The page the block is on (shown under its text). */
   pageTitle?: string;
+  pageId?: string;
 }
 
 interface BlockRefMenuProps {
@@ -83,11 +86,7 @@ export const BlockRefMenu = forwardRef<
           onClick={() => selectItem(index)}
           onMouseEnter={() => setSelectedIndex(index)}
         >
-          <span className="slash-menu-item-title">
-            {item.content.length > 60
-              ? item.content.slice(0, 60) + "..."
-              : item.content || "(empty block)"}
-          </span>
+          <span className="slash-menu-item-title">{refLabel(item.content, 60)}</span>
           {item.pageTitle && (
             <span className="slash-menu-item-description">
               {item.pageTitle}

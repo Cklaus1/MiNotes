@@ -76,6 +76,8 @@ describe("markdown → doc → markdown is identical", () => {
     ["tag at start", "#urgent fix it", ["tag"]],
     ["nested tag", "filed under #area/home", ["tag"]],
     ["block ref", `as said in ((${UUID}))`, ["blockRef"]],
+    ["block embed", `{{embed ((${UUID}))}}`, ["blockRef"]],
+    ["block embed inside text", `see {{embed ((${UUID}))}} and ((${UUID}))`, ["blockRef"]],
     ["heading 1", "# Title", ["heading"]],
     ["heading 2", "## Section", ["heading"]],
     ["heading 3", "### Sub", ["heading"]],
