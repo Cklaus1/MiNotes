@@ -3636,6 +3636,30 @@ ev "(async()=>{const t=await import('/src/lib/theme.ts');t.setTheme('$TH66');ret
 [[ "$R" == "#eff1f5|239,241,245" ]] && pass "Light theme: the graph canvas is light ($R)" || fail "Graph canvas ignores the theme" "$R"
 press "Escape"; sleep 0.5
 
+step "Mind map: the radial layout has no overlapping nodes (C-18)"
+M66="Launch66 $(date +%s)"
+ev "(async()=>{$A66 const p=await api.createPage('$M66');await api.createBlock(p.id,'# $M66');const ph=await api.createBlock(p.id,'## Phase66 planning');for(const t of ['Collect customer quotes for the launch','Prepare FAQ','Write the press release draft']){const b=await api.createBlock(p.id,t,ph.id);await api.createBlock(p.id,t.split(' ')[0]+' detail one',b.id);await api.createBlock(p.id,t.split(' ')[0]+' detail two',b.id)}const m=await api.createBlock(p.id,'Marketing66 see [[Getting Started]]');for(let i=0;i<6;i++)await api.createBlock(p.id,'Channel '+i+' with a fairly long label to wrap',m.id);const q=await api.createBlock(p.id,'TODO QA66 sign-off');await api.createBlock(p.id,'Smoke test',q.id);await api.createBlock(p.id,'Single66');return 1})()" >/dev/null
+api "navigateTo('$M66')" >/dev/null; sleep 1.5
+ev "document.activeElement?.blur()" >/dev/null; press "Control+m"; sleep 3
+for _ in $(seq 1 10); do N=$(ev "document.querySelectorAll('.mm-node').length" | tr -d '"'); [[ "$N" -ge 20 ]] 2>/dev/null && break; sleep 1; done
+ev "(()=>{const b=[...document.querySelectorAll('.mindmap-toolbar .btn-sm')].find(b=>b.textContent.includes('Layout'));b&&b.click();setTimeout(()=>{const r=[...document.querySelectorAll('.mindmap-dropdown button')].find(x=>x.textContent.includes('Radial'));r&&r.click()},300);return 1})()" >/dev/null; sleep 2.5
+OVLMM66="(()=>{const R=[...document.querySelectorAll('.react-flow__node')].map(n=>n.getBoundingClientRect());let o=0;for(let i=0;i<R.length;i++)for(let j=i+1;j<R.length;j++){const a=R[i],b=R[j];if(a.left<b.right-1&&b.left<a.right-1&&a.top<b.bottom-1&&b.top<a.bottom-1)o++}const v=document.querySelector('.mindmap-overlay').getBoundingClientRect();const out=R.filter(r=>r.left<v.left-1||r.right>v.right+1||r.top<v.top-1||r.bottom>v.bottom+1).length;return R.length+':'+o+':'+out})()"
+R=$(ev "$OVLMM66" | tr -d '"'); IFS=: read -r NN OO OUT <<< "$R"
+[[ "$NN" -ge 20 && "$OO" == "0" ]] 2>/dev/null && pass "Radial: $NN nodes, no two node boxes overlap" || fail "Radial layout overlaps" "nodes:overlaps:outside=$R"
+ss "66-mindmap-radial"
+
+step "Mind map: it refits when its area is resized"
+ev "(()=>{document.querySelector('.mindmap-overlay').style.width='55%';return 1})()" >/dev/null; sleep 1.2
+R=$(ev "$OVLMM66" | tr -d '"'); IFS=: read -r NN OO OUT <<< "$R"
+ev "(()=>{document.querySelector('.mindmap-overlay').style.width='';return 1})()" >/dev/null; sleep 0.8
+[[ "$OUT" == "0" ]] && pass "After shrinking, every node is still inside the map ($R)" || fail "No refit on resize" "nodes:overlaps:outside=$R"
+
+step "Mind map: Markdown export keeps [[links]] and headings, and the title once"
+ev "(()=>{const m=[...document.querySelectorAll('.mindmap-toolbar .btn-sm')].find(b=>b.textContent.includes('Export'));m&&m.click();setTimeout(()=>{const b=[...document.querySelectorAll('.mindmap-dropdown button')].find(x=>x.textContent.includes('Markdown'));b&&b.click()},300);return 1})()" >/dev/null; sleep 2
+R=$(ev "(()=>{const s=(window.__x66?.saves||[]).filter(x=>/\\.md\$/.test(x.name)).pop();if(!s)return 'none';const t=s.text||'';return [t.includes('[[Getting Started]]'),t.includes('- ## Phase66 planning'),t.split('\\n').filter(l=>l.includes('$M66')).length,t.includes('- TODO QA66 sign-off'),/\\n    - Collect detail one/.test(t)].join(',')})()" | tr -d '"')
+[[ "$R" == "true,true,1,true,true" ]] && pass "Outline: links, headings, TODO and nesting kept; title once" || fail "Markdown export" "$R"
+press "Escape"; sleep 0.5; press "Escape"; sleep 0.5
+
 # ═══════════════════════════════════════════════
 close_app
 

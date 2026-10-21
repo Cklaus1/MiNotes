@@ -144,6 +144,140 @@ function nodeBox(label: string, extra: number, minWidth: number): { width: numbe
 
 export type LayoutDirection = "LR" | "TB" | "radial";
 
+/** Free space kept between node boxes in the radial layout (also absorbs the
+ *  difference between the estimated and the rendered node size). */
+const RADIAL_GAP = 28;
+
+/**
+ * Radial (sunburst) layout: the root in the centre, depth d on ring d.
+ * Every subtree gets an angular wedge proportional to its leaf count, and a node
+ * sits in the middle of its wedge — so children stay next to their parent and
+ * edges never cross. Each ring's radius is the smallest that keeps
+ *  - neighbours on the ring apart: the chord between two centres must clear
+ *    both boxes along that chord (exact box/box separation), and
+ *  - consecutive rings apart: the ring gap is at least the sum of the two
+ *    rings' largest half-diagonals (circumradii), so no box can touch a box on
+ *    another ring.
+ * Returns each node's centre.
+ */
+export function radialLayout(
+  rootId: string,
+  edges: { source: string; target: string }[],
+  size: (id: string) => { width: number; height: number },
+): Map<string, { x: number; y: number }> {
+  const kids = new Map<string, string[]>();
+  for (const e of edges) {
+    const l = kids.get(e.source);
+    if (l) l.push(e.target); else kids.set(e.source, [e.target]);
+  }
+  const leaves = new Map<string, number>();
+  const countLeaves = (id: string, guard: Set<string>): number => {
+    if (guard.has(id)) return 1;
+    guard.add(id);
+    const ch = kids.get(id) ?? [];
+    const n = ch.length === 0 ? 1 : ch.reduce((s, c) => s + countLeaves(c, guard), 0);
+    leaves.set(id, n);
+    return n;
+  };
+  countLeaves(rootId, new Set());
+
+  // Angles (wedge middles) and depths, starting at the top, clockwise.
+  const angle = new Map<string, number>();
+  const depth = new Map<string, number>();
+  const assign = (id: string, a0: number, a1: number, d: number, guard: Set<string>) => {
+    if (guard.has(id)) return;
+    guard.add(id);
+    angle.set(id, (a0 + a1) / 2);
+    depth.set(id, d);
+    const ch = kids.get(id) ?? [];
+    const total = ch.reduce((s, c) => s + (leaves.get(c) ?? 1), 0) || 1;
+    let a = a0;
+    for (const c of ch) {
+      const span = ((a1 - a0) * (leaves.get(c) ?? 1)) / total;
+      assign(c, a, a + span, d + 1, guard);
+      a += span;
+    }
+  };
+  assign(rootId, -Math.PI / 2, (3 * Math.PI) / 2, 0, new Set());
+
+  const rings: string[][] = [];
+  for (const [id, d] of depth) {
+    if (d === 0) continue;
+    (rings[d - 1] ??= []).push(id);
+  }
+  // Half the box's extent along the radius through its centre.
+  const radialHalf = (id: string) => {
+    const s = size(id), a = angle.get(id) ?? 0;
+    return (Math.abs(s.width * Math.cos(a)) + Math.abs(s.height * Math.sin(a))) / 2;
+  };
+
+  const radius: number[] = [];
+  let prevRadius = 0;
+  let prevHalf = Math.max(size(rootId).width, size(rootId).height) / 2;
+  for (let i = 0; i < rings.length; i++) {
+    const ring = (rings[i] ?? []).sort((a, b) => angle.get(a)! - angle.get(b)!);
+    const maxHalf = Math.max(...ring.map(radialHalf));
+    let r = prevRadius + prevHalf + maxHalf + RADIAL_GAP;
+    if (ring.length > 1) {
+      for (let j = 0; j < ring.length; j++) {
+        const a = ring[j], b = ring[(j + 1) % ring.length];
+        let delta = angle.get(b)! - angle.get(a)!;
+        if (j === ring.length - 1) delta += 2 * Math.PI; // wrap-around pair
+        if (delta <= 1e-6) continue;
+        const sa = size(a), sb = size(b);
+        // Direction of the chord between the two centres.
+        const phi = (angle.get(a)! + angle.get(b)! + (j === ring.length - 1 ? 2 * Math.PI : 0)) / 2 + Math.PI / 2;
+        const cos = Math.abs(Math.cos(phi)), sin = Math.abs(Math.sin(phi));
+        const needX = cos > 1e-6 ? ((sa.width + sb.width) / 2 + RADIAL_GAP) / cos : Infinity;
+        const needY = sin > 1e-6 ? ((sa.height + sb.height) / 2 + RADIAL_GAP) / sin : Infinity;
+        const chord = Math.min(needX, needY);
+        const sinHalf = Math.sin(Math.min(delta, Math.PI) / 2);
+        r = Math.max(r, chord / (2 * sinHalf));
+      }
+    }
+    radius[i] = r;
+    prevRadius = r;
+    prevHalf = maxHalf;
+  }
+
+  // The ring rules are tight, not exhaustive (two boxes on neighbouring rings at
+  // different angles can still touch): check every pair, and push the outer of
+  // two touching rings — and everything beyond it — outward until none do.
+  const ids = [...depth.keys()];
+  const place = (id: string) => {
+    const d = depth.get(id)!;
+    if (d === 0) return { x: 0, y: 0 };
+    const r = radius[d - 1], a = angle.get(id)!;
+    return { x: r * Math.cos(a), y: r * Math.sin(a) };
+  };
+  if (ids.length <= 1500) {
+    for (let iter = 0; iter < 40; iter++) {
+      const boxes = ids.map((id) => ({ id, d: depth.get(id)!, c: place(id), s: size(id) }));
+      let worst = -1;
+      for (let i = 0; i < boxes.length; i++) {
+        for (let j = i + 1; j < boxes.length; j++) {
+          const a = boxes[i], b = boxes[j];
+          if (Math.abs(a.c.x - b.c.x) < (a.s.width + b.s.width) / 2 + RADIAL_GAP / 2 &&
+              Math.abs(a.c.y - b.c.y) < (a.s.height + b.s.height) / 2 + RADIAL_GAP / 2) {
+            worst = worst === -1 ? Math.max(a.d, b.d) : Math.min(worst, Math.max(a.d, b.d));
+          }
+        }
+      }
+      if (worst < 1) break;
+      for (let d = worst; d <= radius.length; d++) radius[d - 1] *= 1.12;
+    }
+  }
+
+  const out = new Map<string, { x: number; y: number }>();
+  out.set(rootId, { x: 0, y: 0 });
+  for (const [id, d] of depth) {
+    if (d === 0) continue;
+    const r = radius[d - 1], a = angle.get(id)!;
+    out.set(id, { x: r * Math.cos(a), y: r * Math.sin(a) });
+  }
+  return out;
+}
+
 export function blocksToFlow(
   blocks: Block[],
   pageTitle: string,
@@ -275,7 +409,7 @@ export function blocksToFlow(
       id: `e-${parentNodeId}-${block.id}`,
       source: parentNodeId,
       target: block.id,
-      type: isRadial ? "default" : "smoothstep",
+      type: isRadial ? "straight" : "smoothstep",
       animated: false,
     });
 
@@ -297,61 +431,21 @@ export function blocksToFlow(
     addBlock(block, rootId);
   }
 
-  // Compute layout
-  dagre.layout(g);
-
   if (isRadial) {
-    // Transform dagre's TB layout to radial (polar) coordinates
-    // Root stays at center; each rank becomes a ring
-    const rootPos = g.node(rootId);
-    const cx = rootPos?.x ?? 0;
-    const cy = rootPos?.y ?? 0;
-
-    // Group nodes by their dagre Y (rank), excluding root
-    const rankMap = new Map<number, string[]>();
+    const size = (id: string) => {
+      const n = g.node(id);
+      return { width: n?.width ?? 150, height: n?.height ?? NODE_LINE_HEIGHT };
+    };
+    const centres = radialLayout(rootId, edges, size);
     for (const node of nodes) {
-      if (node.id === rootId) continue;
-      const pos = g.node(node.id);
-      if (!pos) continue;
-      const rank = Math.round(pos.y);
-      if (!rankMap.has(rank)) rankMap.set(rank, []);
-      rankMap.get(rank)!.push(node.id);
+      const c = centres.get(node.id) ?? { x: 0, y: 0 };
+      const { width, height } = size(node.id);
+      node.position = { x: c.x - width / 2, y: c.y - height / 2 };
     }
+    const cx = 0, cy = 0;
 
-    // Sort ranks by Y value (distance from root)
-    const sortedRanks = Array.from(rankMap.keys()).sort((a, b) => a - b);
-
-    // Assign radial positions
-    for (let ri = 0; ri < sortedRanks.length; ri++) {
-      const rank = sortedRanks[ri];
-      const nodeIds = rankMap.get(rank)!;
-      const radius = (ri + 1) * 160; // ring spacing
-      const angleStep = (2 * Math.PI) / nodeIds.length;
-      const angleOffset = -Math.PI / 2; // start from top
-
-      for (let ni = 0; ni < nodeIds.length; ni++) {
-        const nodeId = nodeIds[ni];
-        const angle = angleOffset + ni * angleStep;
-        const node = nodes.find((n) => n.id === nodeId)!;
-        const pos = g.node(nodeId);
-        const w = pos?.width ?? 150;
-        const h = pos?.height ?? 40;
-        node.position = {
-          x: cx + radius * Math.cos(angle) - w / 2,
-          y: cy + radius * Math.sin(angle) - h / 2,
-        };
-      }
-    }
-
-    // Center root node
-    const rn = nodes.find((n) => n.id === rootId)!;
-    const rp = g.node(rootId);
-    if (rn && rp) {
-      rn.position = { x: cx - (rp.width ?? 0) / 2, y: cy - (rp.height ?? 0) / 2 };
-    }
-
-    // Radial: compute handle positions per node based on angle from center
-    // Edges should enter from the side facing the center, exit from the side facing outward
+    // Handles: an edge enters a node on the side facing the centre and leaves
+    // on the side facing outward.
     for (const node of nodes) {
       if (node.id === rootId) {
         // Root: source handles on all sides — use Bottom as default
@@ -359,12 +453,8 @@ export function blocksToFlow(
         node.targetPosition = Position.Top;
         continue;
       }
-      const pos = node.position;
-      const nodeCx = pos.x + 75; // approximate node center
-      const nodeCy = pos.y + 20;
-      const dx = nodeCx - cx;
-      const dy = nodeCy - cy;
-      const angle = Math.atan2(dy, dx);
+      const c = centres.get(node.id) ?? { x: 0, y: 0 };
+      const angle = Math.atan2(c.y - cy, c.x - cx);
 
       // Target handle faces toward center, source faces away
       if (angle > -Math.PI / 4 && angle <= Math.PI / 4) {
@@ -386,6 +476,7 @@ export function blocksToFlow(
       }
     }
   } else {
+    dagre.layout(g);
     // Apply computed positions (linear layout)
     for (const node of nodes) {
       const pos = g.node(node.id);
