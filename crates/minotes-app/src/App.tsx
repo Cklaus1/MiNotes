@@ -19,6 +19,7 @@ import SettingsPanel from "./components/SettingsPanel";
 import FolderSettingsPanel from "./components/FolderSettingsPanel";
 import TasksView from "./components/TasksView";
 import { cleanupGeneratedTodoPagesOnce } from "./lib/tasks";
+import { composeWindowTitle, journalTitle, setWindowTitle } from "./lib/windowTitle";
 import * as api from "./lib/api";
 import { localDateKey, shiftDateKey } from "./lib/dates";
 import { isTauri } from "./lib/api";
@@ -38,7 +39,7 @@ import { getSettings } from "./lib/settings";
 import NotebookBanner from "./components/NotebookBanner";
 import { listenOutsideEdits, OUTSIDE_PAGES_CHANGED } from "./lib/outsideEdits";
 import {
-  NOTEBOOK_SWITCHED, setNextExportDest, setNextPickedFolder, setNextZipPick, switchNotebook, useCapabilities,
+  NOTEBOOK_SWITCHED, NOTEBOOKS_CHANGED, setNextExportDest, setNextPickedFolder, setNextZipPick, switchNotebook, useCapabilities,
 } from "./lib/notebooks";
 import { OPEN_IN_NOTEBOOK, type OpenInNotebook } from "./lib/crossNotebook";
 import { setPendingReveal } from "./lib/pendingReveal";
@@ -907,6 +908,29 @@ export default function App() {
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, [openJournal, createPage, activePage, whiteboardId, canvasMode, openNewWhiteboard, openPage, refresh]);
+
+  // Window title: "Page — Notebook — MiNotes", following navigation, the view
+  // shown, and notebook switches / renames. (Locked: LockGate sets it.)
+  const [notebookName, setNotebookName] = useState("");
+  useEffect(() => {
+    const load = () => { api.getNotebookSession().then(s => setNotebookName(s?.name ?? "")).catch(() => {}); };
+    load();
+    window.addEventListener(NOTEBOOK_SWITCHED, load);
+    window.addEventListener(NOTEBOOKS_CHANGED, load);
+    return () => {
+      window.removeEventListener(NOTEBOOK_SWITCHED, load);
+      window.removeEventListener(NOTEBOOKS_CHANGED, load);
+    };
+  }, []);
+  const viewLabel = showTasks ? "Tasks"
+    : canvasMode === "graph" ? "Graph"
+    : canvasMode === "pages" ? "All pages"
+    : activePage ? (activePage.page.is_journal && activePage.page.journal_date ? journalTitle(activePage.page.journal_date) : activePage.page.title)
+    : pendingJournalDate ? journalTitle(pendingJournalDate)
+    : null;
+  useEffect(() => {
+    setWindowTitle(composeWindowTitle(viewLabel, notebookName));
+  }, [viewLabel, notebookName]);
 
   // Alt+↑ / Alt+↓: previous / next journal day, while a journal day is shown
   // (a written one or an empty one). Not in text fields; a key something else

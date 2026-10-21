@@ -3469,6 +3469,8 @@ click65 "[data-testid=menu-lock-now]" >/dev/null
 for _ in $(seq 1 20); do sleep 0.5; R=$(ev "!!document.querySelector('[data-testid=unlock-screen]')" | tr -d '"'); [[ "$R" == "true" ]] && break; done
 R=$(ev "[!!document.querySelector('[data-testid=unlock-screen]'),!!document.querySelector('.sidebar'),document.body.innerText.includes('Narwhal65')].join('|')" | tr -d '"')
 [[ "$R" == "true|false|false" ]] && pass "Unlock screen only, no sidebar, no titles ($R)" || fail "Locked view" "$R"
+R=$(ev "document.title" | tr -d '"')
+[[ "$R" == "Locked — $NB65 — MiNotes" ]] && pass "Window title: \"$R\" (no page title)" || fail "Locked window title" "$R"
 R=$(ev "(async()=>{$A65 try{await api.listPages(10);return 'read'}catch(e){return String(e).split(':')[0]}})()" | tr -d '"')
 [[ "$R" == "NOTEBOOK_LOCKED" ]] && pass "Data commands refuse while locked" || fail "Locked data" "$R"
 R=$(ev "JSON.stringify(Object.keys(localStorage).map(k=>k+'='+localStorage.getItem(k))).includes('Narwhal65')" | tr -d '"')
@@ -3837,6 +3839,25 @@ R=$(ev "(()=>{const b=document.querySelector('[data-testid=new-notebook-create]'
 ss "71-disabled-create"
 press "Escape"; sleep 0.3
 
+# ═══════════════════════════════════════════════
+journey "72. The window title names the page and the notebook"
+# ═══════════════════════════════════════════════
+A72="const api=await import('/src/lib/api.ts');"
+api "closePanel()" >/dev/null; press "Escape"; sleep 0.3
+NBNAME72=$(ev "(async()=>{$A72 return (await api.getNotebookSession()).name})()" | tr -d '"')
+HOME72=$(ev "(async()=>{$A72 return (await api.getNotebookSession()).key})()" | tr -d '"')
+S72=$(date +%s)
+OTHER72=$(ev "(async()=>{$A72 const n=await api.createNotebook('Title72 $S72');return n.key})()" | tr -d '"')
+api "navigateTo('Project Alpha')" >/dev/null; sleep 1.5
+R=$(ev "document.title" | tr -d '"')
+[[ "$R" == "Project Alpha — $NBNAME72 — MiNotes" ]] && pass "Title: $R" || fail "Window title on a page" "$R"
+api "navigateTo('Getting Started')" >/dev/null; sleep 1.5
+R=$(ev "document.title" | tr -d '"')
+[[ "$R" == "Getting Started — $NBNAME72 — MiNotes" ]] && pass "Follows navigation: $R" || fail "Title after navigating" "$R"
+ev "(async()=>{const n=await import('/src/lib/notebooks.ts');await n.switchNotebook('$OTHER72');return 1})()" >/dev/null; sleep 2
+R=$(ev "document.title" | tr -d '"')
+[[ "$R" == *" — Title72 $S72 — MiNotes" ]] && pass "Follows a notebook switch: $R" || fail "Title after switching notebooks" "$R"
+ev "(async()=>{const n=await import('/src/lib/notebooks.ts');await n.switchNotebook('$HOME72');return 1})()" >/dev/null; sleep 2
 
 # ═══════════════════════════════════════════════
 close_app
