@@ -81,6 +81,7 @@ export default function CanvasMode({
             pageTitle={pageTitle}
             blocks={blocks}
             onRefreshPage={onRefreshPage}
+            onOpenPage={(title) => { onPageClick(title); onClose(); }}
           />
         );
       case "pages":

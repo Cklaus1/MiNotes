@@ -4,6 +4,7 @@ import { attachClosestEdge, extractClosestEdge, type Edge } from "@atlaskit/prag
 import type { Block } from "../../lib/api";
 import * as api from "../../lib/api";
 import { extractTaskLabel, detectTodoState } from "../mindmap/blocksToFlow";
+import { useEscapeToClose } from "../../lib/escapeStack";
 
 interface Props {
   block: Block;
@@ -16,11 +17,13 @@ interface Props {
   isFocused: boolean;
   onFocus: (id: string) => void;
   onOpenSidePanel: (blockId: string) => void;
+  /** Open a [[wiki link]]'s page (closes the board). */
+  onOpenPage: (title: string) => void;
   onDelete: (block: Block) => void;
   onRefresh: () => void;
 }
 
-function KanbanCard({ block, subBlockCount, columnId, columns, onMoveTo, columnColor, isFocused, onFocus, onOpenSidePanel, onDelete, onRefresh }: Props) {
+function KanbanCard({ block, subBlockCount, columnId, columns, onMoveTo, columnColor, isFocused, onFocus, onOpenSidePanel, onOpenPage, onDelete, onRefresh }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [closestEdge, setClosestEdge] = useState<Edge | null>(null);
@@ -34,10 +37,18 @@ function KanbanCard({ block, subBlockCount, columnId, columns, onMoveTo, columnC
   const label = extractTaskLabel(block.content, 240);
   const todoState = detectTodoState(block.content);
 
-  const wikiLinks: string[] = [];
+  // [[Page]] / [[Page|label]] chips; a cross-notebook [[Notebook::Page]] is shown
+  // but opens the card (the board can't switch notebooks).
+  const wikiLinks: { target: string; label: string }[] = [];
   const re = /\[\[(.+?)\]\]/g;
   let m;
-  while ((m = re.exec(block.content)) !== null) wikiLinks.push(m[1]);
+  while ((m = re.exec(block.content)) !== null) {
+    const [target, label] = m[1].split("|");
+    wikiLinks.push({ target: target.trim(), label: (label ?? target).trim() });
+  }
+
+  // Escape closes only the context menu, not the board.
+  useEscapeToClose(!!contextMenu, () => setContextMenu(null));
 
   useEffect(() => {
     const el = ref.current;
@@ -129,7 +140,7 @@ function KanbanCard({ block, subBlockCount, columnId, columns, onMoveTo, columnC
             onBlur={finishEdit}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); finishEdit(); }
-              if (e.key === "Escape") setEditing(false);
+              if (e.key === "Escape") { e.preventDefault(); setEditing(false); }
               e.stopPropagation();
             }}
             aria-label="Edit card"
@@ -144,10 +155,20 @@ function KanbanCard({ block, subBlockCount, columnId, columns, onMoveTo, columnC
             <span className="kanban-card-text">{label}</span>
             {wikiLinks.length > 0 && (
               <div className="kanban-card-links">
-                {wikiLinks.map((page, i) => (
-                  <span key={i} className="kanban-wiki-link" onClick={(e) => { e.stopPropagation(); onOpenSidePanel(block.id); }}>
-                    [[{page}]]
-                  </span>
+                {wikiLinks.map((l, i) => (
+                  <button
+                    key={i}
+                    type="button"
+                    className="kanban-wiki-link"
+                    title={l.target.includes("::") ? "Open the card" : `Open “${l.target}”`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (l.target.includes("::")) onOpenSidePanel(block.id);
+                      else onOpenPage(l.target);
+                    }}
+                  >
+                    {l.label}
+                  </button>
                 ))}
               </div>
             )}

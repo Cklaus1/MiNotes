@@ -4571,10 +4571,20 @@ body.theme-light { /* matches our light theme */ }
   background: rgba(137, 180, 250, 0.06);
 }
 
-.kanban-column-body.drag-over {
-  background: rgba(137, 180, 250, 0.04);
-  border-radius: 0 0 10px 10px;
+/* A card dragged anywhere over a column (header, cards, empty area, footer). */
+.kanban-column.drag-over {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-secondary));
+  box-shadow: 0 0 0 1px var(--accent) inset;
 }
+
+/* No text selection on the board while a card or column is dragged. */
+.kanban-container.is-dragging,
+.kanban-container.is-dragging * {
+  -webkit-user-select: none;
+  user-select: none;
+}
+.kanban-column-header { -webkit-user-select: none; user-select: none; }
 
 .kanban-color-bar {
   height: 3px;
@@ -4991,9 +5001,14 @@ body.theme-light { /* matches our light theme */ }
 }
 
 .kanban-wiki-link {
+  font: inherit;
   font-size: 11px;
   color: var(--accent);
   cursor: pointer;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border: none;
+  border-radius: 4px;
+  padding: 1px 6px;
 }
 
 .kanban-wiki-link:hover {
@@ -5208,7 +5223,8 @@ body.theme-light { /* matches our light theme */ }
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  z-index: 50;
+  /* Above its click-away backdrop (.kanban-ctx-backdrop, z-index 99). */
+  z-index: 100;
   width: 160px;
 }
 

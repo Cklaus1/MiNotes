@@ -7,6 +7,11 @@ import * as api from "../../lib/api";
 import { extractLabel, extractTaskLabel } from "../mindmap/blocksToFlow";
 import KanbanColumn from "./KanbanColumn";
 import { buildKanbanModel, UNSORTED_ID, UNSORTED_TITLE } from "./kanbanModel";
+import { useEscapeToClose } from "../../lib/escapeStack";
+
+/** Block property holding a column's colour (on the column's section block). */
+const KANBAN_COLOR_PROP = "kanban-color";
+const isColour = (v: string) => /^#[0-9a-fA-F]{6}$/.test(v.trim());
 
 const COLUMN_COLORS = ["#89b4fa", "#a6e3a1", "#f9e2af", "#f38ba8", "#cba6f7", "#89dceb", "#fab387"];
 
@@ -15,6 +20,8 @@ interface Props {
   pageTitle: string;
   blocks: Block[];
   onRefreshPage: () => void;
+  /** Open a page by title ([[wiki link]] chips on cards). */
+  onOpenPage: (title: string) => void;
 }
 
 interface UndoEntry {
@@ -22,7 +29,7 @@ interface UndoEntry {
   undo: () => Promise<unknown>;
 }
 
-export default function KanbanView({ pageId, pageTitle, blocks, onRefreshPage }: Props) {
+export default function KanbanView({ pageId, pageTitle, blocks, onRefreshPage, onOpenPage }: Props) {
   const [focusedCardId, setFocusedCardId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [sidePanelBlockId, setSidePanelBlockId] = useState<string | null>(null);
@@ -91,22 +98,71 @@ export default function KanbanView({ pageId, pageTitle, blocks, onRefreshPage }:
     return counts;
   }, [blocks]);
 
-  // Column colors stored in localStorage
-  const [columnColors, setColumnColors] = useState<Record<string, string>>(() => {
+  // Column colours travel with the board: a `kanban-color` property on the
+  // column's section block (synced like any block property). Only the virtual
+  // "No section" column, which has no block, keeps its colour in this device's
+  // localStorage — as every column did before (migrated on first open).
+  const legacyKey = `kanban-colors-${pageId}`;
+  const readLegacy = useCallback((): Record<string, string> => {
+    try { return JSON.parse(localStorage.getItem(legacyKey) ?? "{}"); } catch { return {}; }
+  }, [legacyKey]);
+  const writeLegacy = useCallback((m: Record<string, string>) => {
     try {
-      return JSON.parse(localStorage.getItem(`kanban-colors-${pageId}`) ?? "{}");
-    } catch { return {}; }
-  });
+      if (Object.keys(m).length) localStorage.setItem(legacyKey, JSON.stringify(m));
+      else localStorage.removeItem(legacyKey);
+    } catch { /* best effort */ }
+  }, [legacyKey]);
+  const [columnColors, setColumnColors] = useState<Record<string, string>>(() => readLegacy());
+
+  const columnIdsKey = columns.map((c) => c.id).join(",");
+  useEffect(() => {
+    let cancelled = false;
+    const ids = columnIdsKey ? columnIdsKey.split(",") : [];
+    (ids.length ? api.getPropertiesBatch(ids) : Promise.resolve({} as Record<string, api.Property[]>)).then((props) => {
+      if (cancelled) return;
+      const legacy = readLegacy();
+      const next: Record<string, string> = {};
+      if (legacy[UNSORTED_ID]) next[UNSORTED_ID] = legacy[UNSORTED_ID];
+      for (const id of ids) {
+        const stored = props[id]?.find((p) => p.key === KANBAN_COLOR_PROP)?.value ?? null;
+        if (stored && isColour(stored)) next[id] = stored;
+        else if (legacy[id] && isColour(legacy[id])) {
+          next[id] = legacy[id];
+          api.setProperty(id, "block", KANBAN_COLOR_PROP, legacy[id]).then(() => {
+            const l = readLegacy(); delete l[id]; writeLegacy(l);
+          }).catch(() => {});
+        }
+      }
+      setColumnColors(next);
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [columnIdsKey, readLegacy, writeLegacy]);
 
   const setColumnColor = useCallback((colId: string, color: string | null) => {
     setColumnColors((prev) => {
       const next = { ...prev };
-      if (color) next[colId] = color;
-      else delete next[colId];
-      localStorage.setItem(`kanban-colors-${pageId}`, JSON.stringify(next));
+      if (color) next[colId] = color; else delete next[colId];
       return next;
     });
-  }, [pageId]);
+    if (colId === UNSORTED_ID) {
+      const l = readLegacy();
+      if (color) l[colId] = color; else delete l[colId];
+      writeLegacy(l);
+      return;
+    }
+    const op = color ? api.setProperty(colId, "block", KANBAN_COLOR_PROP, color) : api.deleteProperty(colId, KANBAN_COLOR_PROP);
+    op.catch((e) => showToast(`Couldn't save the column colour: ${e}`));
+  }, [readLegacy, writeLegacy, showToast]);
+
+  // Escape closes the card side panel only (topmost), never the board under it.
+  useEscapeToClose(!!sidePanelBlockId, () => setSidePanelBlockId(null));
+
+  // While a card or column is dragged nothing on the board gets text-selected.
+  const [dragging, setDragging] = useState(false);
+  useEffect(() => monitorForElements({
+    onDragStart: () => { window.getSelection()?.removeAllRanges(); setDragging(true); },
+    onDrop: () => setDragging(false),
+  }), []);
 
   const filteredCardIdsByColumn = useMemo(() => {
     const map = new Map<string, string[]>();
@@ -323,7 +379,7 @@ export default function KanbanView({ pageId, pageTitle, blocks, onRefreshPage }:
   }
 
   return (
-    <div className="kanban-container">
+    <div className={`kanban-container${dragging ? " is-dragging" : ""}`}>
       <div className="kanban-toolbar">
         <input
           className="kanban-search-input"
@@ -358,6 +414,7 @@ export default function KanbanView({ pageId, pageTitle, blocks, onRefreshPage }:
             onToggleCollapse={toggleCollapse}
             onFocusCard={setFocusedCardId}
             onOpenSidePanel={setSidePanelBlockId}
+            onOpenPage={onOpenPage}
             onDeleteCard={handleDeleteCard}
             onDeleteColumn={handleDeleteColumn}
             onRefresh={onRefreshPage}

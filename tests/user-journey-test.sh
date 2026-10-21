@@ -3558,6 +3558,47 @@ else
   fail "Could not intercept exports — skipped to protect Downloads" "$WR"
 fi
 
+step "Kanban: the colour picker can really be clicked, and the colour stays with the board (C-16)"
+K66="Board66 $(date +%s)"
+KCOLS66=$(ev "(async()=>{$A66 const p=await api.createPage('$K66');const a=await api.createBlock(p.id,'## Todo66');const b=await api.createBlock(p.id,'## Done66');await api.createBlock(p.id,'Card66 see [[Getting Started]]',a.id);await api.createBlock(p.id,'Other66',a.id);return a.id+','+b.id})()" | tr -d '"')
+KA66=${KCOLS66%,*}; KB66=${KCOLS66#*,}
+api "navigateTo('$K66')" >/dev/null; sleep 1.5
+OPENKB66="(()=>{const b=[...document.querySelectorAll('.stats-mode-btn')].find(b=>b.textContent.includes('Kanban'));b&&b.click();return !!b})()"
+ev "$OPENKB66" >/dev/null; sleep 2
+ev "document.querySelector('[data-column-id=\"$KA66\"] .kanban-color-btn')?.click()" >/dev/null; sleep 0.5
+# A real click lands on whatever is on top at that point — not .click() on the swatch.
+R=$(ev "(()=>{const s=document.querySelector('[data-column-id=\"$KA66\"] .kanban-color-swatch[data-color=\"#a6e3a1\"]');if(!s)return 'no swatch';const r=s.getBoundingClientRect();const top=document.elementFromPoint(r.left+r.width/2,r.top+r.height/2);if(top!==s)return 'covered by '+(top?.className||top?.tagName);top.click();return 'clicked'})()" | tr -d '"')
+sleep 1
+C=$(ev "document.querySelector('[data-column-id=\"$KA66\"] .kanban-color-bar')?.style.background||'none'" | tr -d '"')
+[[ "$R" == "clicked" && ( "$C" == *"166, 227, 161"* || "$C" == *"a6e3a1"* ) ]] && pass "The swatch is on top and the click applies the colour ($C)" || fail "Colour picker click" "$R / $C"
+P=$(ev "(async()=>{$A66 return (await api.getProperties('$KA66')).filter(p=>p.key==='kanban-color').map(p=>p.value).join()})()" | tr -d '"')
+[[ "$P" == "#a6e3a1" ]] && pass "Saved with the board: kanban-color:: #a6e3a1 on the column block (syncs)" || fail "Colour not persisted on the block" "$P"
+press "Escape"; sleep 0.5
+ev "document.querySelector('.canvas-back-btn')?.click()" >/dev/null; sleep 1
+# Not from this device's localStorage: forget any kanban colours kept there.
+ev "(()=>{Object.keys(localStorage).filter(k=>k.startsWith('kanban-colors-')).forEach(k=>localStorage.removeItem(k));return 1})()" >/dev/null
+ev "$OPENKB66" >/dev/null; sleep 2
+C=$(ev "document.querySelector('[data-column-id=\"$KA66\"] .kanban-color-bar')?.style.background||'none'" | tr -d '"')
+[[ "$C" == *"166, 227, 161"* || "$C" == *"a6e3a1"* ]] && pass "Reopened board shows the colour again" || fail "Colour lost on reopen" "$C"
+
+step "Kanban: Escape closes only the topmost popover, not the board"
+ev "document.querySelector('[data-column-id=\"$KB66\"] .kanban-color-btn')?.click()" >/dev/null; sleep 0.4
+press "Escape"; sleep 0.6
+R=$(ev "!!document.querySelector('.kanban-color-picker')+'|'+!!document.querySelector('.kanban-container')" | tr -d '"')
+[[ "$R" == "false|true" ]] && pass "Esc closed the colour picker; the board stays open" || fail "Esc in kanban" "$R"
+ss "66-kanban"
+
+step "Kanban: a card dropped anywhere on a column (here: its header) moves there"
+# Native HTML5 drag events, as the browser sends them during a mouse drag.
+R=$(ev "(async()=>{const card=[...document.querySelectorAll('.kanban-card')].find(c=>c.textContent.includes('Other66'));const head=document.querySelector('[data-column-id=\"$KB66\"] .kanban-column-header');if(!card||!head)return 'missing';const dt=new DataTransfer();const at=(el)=>{const r=el.getBoundingClientRect();return {clientX:r.left+r.width/2,clientY:r.top+r.height/2}};const fire=(el,type)=>el.dispatchEvent(new DragEvent(type,{bubbles:true,cancelable:true,dataTransfer:dt,...at(el)}));fire(card,'dragstart');await new Promise(r=>setTimeout(r,50));fire(head,'dragenter');fire(head,'dragover');await new Promise(r=>setTimeout(r,80));const hl=head.closest('.kanban-column').classList.contains('drag-over');const sel=getComputedStyle(document.querySelector('.kanban-card-text')).userSelect;fire(head,'drop');fire(card,'dragend');await new Promise(r=>setTimeout(r,1500));$A66 const t=await api.getPageTree('$K66');const b=t.blocks.find(b=>b.content==='Other66');return hl+'|'+sel+'|'+(b&&b.parent_id==='$KB66')})()" | tr -d '"')
+[[ "$R" == "true|none|true" ]] && pass "Column highlighted, no text selection while dragging, card moved to Done66" || fail "Whole-column drop" "$R"
+
+step "Kanban: a [[wiki link]] chip on a card opens that page"
+sleep 1
+ev "[...document.querySelectorAll('.kanban-wiki-link')].find(b=>b.textContent==='Getting Started')?.click()" >/dev/null; sleep 2
+R=$(ev "!!document.querySelector('.kanban-container')+'|'+(window.__MINOTES__.getCurrentPage()||'')" | tr -d '"')
+[[ "$R" == "false|"*"Getting Started"* ]] && pass "Chip opened Getting Started (board closed)" || fail "Wiki chip" "$R"
+
 # ═══════════════════════════════════════════════
 close_app
 
