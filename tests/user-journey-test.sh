@@ -3667,6 +3667,21 @@ R=$(ev "(async()=>{$A68 const t=await api.getFolderTree();const o=t.folders.find
 R=$(shown68 "$(frow68 Sub68)")
 [[ "$R" == "shown" ]] && pass "…and shown under it" || fail "Sub-project not shown" "$R"
 
+step "A pinned page still shows in its project"
+ev "(async()=>{$A68 await api.addFavorite('$PIN68');window.dispatchEvent(new Event('minotes-sidebar-refresh'));return 1})()" >/dev/null; sleep 1
+R=$(ev "[...document.querySelectorAll('.sidebar .page-item')].filter(e=>e.textContent.includes('Page68 inner')).length" | tr -d '"')
+[[ "$R" == "2" ]] && pass "Listed under Pinned and in its project" || fail "Pinned page hidden from its project" "$R rows"
+ev "(async()=>{$A68 await api.removeFavorite('$PIN68');window.dispatchEvent(new Event('minotes-sidebar-refresh'));return 1})()" >/dev/null
+
+step "An archived page leaves Recent in the search palette"
+api "navigateTo('Page68 outer')" >/dev/null; sleep 1.5
+api "navigateTo('Page68 deep')" >/dev/null; sleep 1.5
+ev "(async()=>{$A68 const p=await api.getPageTree('Page68 outer');await api.archivePage(p.page.id);window.dispatchEvent(new Event('minotes-sidebar-refresh'));return 1})()" >/dev/null; sleep 0.5
+api "openSearch()" >/dev/null; sleep 1
+R=$(ev "(()=>{const s=[...document.querySelectorAll('.command-palette-item')].map(e=>e.textContent);return s.some(t=>t.includes('Page68 outer'))+'|'+s.some(t=>t.includes('Page68 deep'))})()" | tr -d '"')
+[[ "$R" == "false|true" ]] && pass "Recent: the archived page is gone, the others stay" || fail "Archived page still in Recent" "$R"
+press "Escape"; sleep 0.3; api "closePanel()" >/dev/null
+
 
 # ═══════════════════════════════════════════════
 close_app

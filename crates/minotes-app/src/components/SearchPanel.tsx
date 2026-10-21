@@ -87,6 +87,9 @@ export default function SearchPanel({
   const [others, setOthers] = useState<api.CrossSearch | null>(null);
   const [othersLoading, setOthersLoading] = useState(false);
   const latestQuery = useRef("");
+  // Pages that can be shown (not trashed/archived, also not via their project):
+  // Recent lists only these. Null until loaded.
+  const [visibleIds, setVisibleIds] = useState<Set<string> | null>(null);
 
   const isCommandMode = query.startsWith(">");
   const commandQuery = isCommandMode ? query.slice(1).trim().toLowerCase() : "";
@@ -124,8 +127,17 @@ export default function SearchPanel({
       setOthers(null);
       setAllNotebooks(getSettings().searchAllNotebooks);
       api.listPages(1000).then(setPages).catch(() => {});
+      setVisibleIds(null);
+      api.getFolderTree().then(tree => {
+        const ids = new Set<string>(tree.root_pages.map(p => p.id));
+        const walk = (fs: api.FolderTree[]) => { for (const f of fs) { f.pages.forEach(p => ids.add(p.id)); walk(f.children ?? []); } };
+        walk(tree.folders);
+        setVisibleIds(ids);
+      }).catch(() => setVisibleIds(null));
     }
   }, [open]);
+
+  const recent = visibleIds ? getRecentPages().filter(r => visibleIds.has(r.id)).slice(0, 5) : [];
 
   const doSearch = useCallback(async (q: string) => {
     latestQuery.current = q;
@@ -212,6 +224,14 @@ export default function SearchPanel({
       return;
     }
 
+    // Empty query: the arrows and Enter work on Recent.
+    if (!query && recent.length > 0 && ["ArrowDown", "ArrowUp", "Enter"].includes(e.key)) {
+      e.preventDefault();
+      if (e.key === "ArrowDown") setSelectedIndex(i => Math.min(i + 1, recent.length - 1));
+      else if (e.key === "ArrowUp") setSelectedIndex(i => Math.max(i - 1, 0));
+      else { onPageClick(recent[Math.min(selectedIndex, recent.length - 1)].id); onClose(); }
+      return;
+    }
     const total = filteredPages.length + results.length + otherHits.length + (canCreate ? 1 : 0);
     if (e.key === "ArrowDown") {
       e.preventDefault();
@@ -295,10 +315,10 @@ export default function SearchPanel({
             </>
           ) : (
             <>
-              {!query && getRecentPages().length > 0 && (
+              {!query && recent.length > 0 && (
                 <>
                   <div className="command-palette-section">&#128336; Recent</div>
-                  {getRecentPages().slice(0, 5).map((r, i) => (
+                  {recent.map((r, i) => (
                     <div
                       key={r.id}
                       className={`command-palette-item ${i === selectedIndex ? "selected" : ""}`}

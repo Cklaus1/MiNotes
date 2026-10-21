@@ -566,10 +566,10 @@ export default function Sidebar({
             )}
 
             {/* Pages (not in any project, excluding pinned) */}
-            {treeData && treeData.root_pages.filter(p => !p.is_journal && !pinnedIds.has(p.id)).length > 0 && (
+            {treeData && treeData.root_pages.filter(p => !p.is_journal).length > 0 && (
               <>
               <div className="sidebar-section-title">
-                Pages <span className="sidebar-section-count">({treeData.root_pages.filter(p => !p.is_journal && !pinnedIds.has(p.id)).length})</span>
+                Pages <span className="sidebar-section-count">({treeData.root_pages.filter(p => !p.is_journal).length})</span>
               </div>
               <div
                 className="root-drop-zone"
@@ -578,7 +578,7 @@ export default function Sidebar({
                 onDrop={handleDropOnRoot}
               >
                 {treeData.root_pages
-                  .filter(p => !p.is_journal && !pinnedIds.has(p.id))
+                  .filter(p => !p.is_journal)
                   .sort((a, b) => (b.updated_at ?? "").localeCompare(a.updated_at ?? ""))
                   .map(page => (
                   <DraggablePage
@@ -1149,8 +1149,8 @@ function FolderItem({
   const [subError, setSubError] = useState<string | null>(null);
 
   const PAGE_CAP = 8;
+  // Pinned pages stay listed in their project too (Pinned is a shortcut, not a place).
   const sortedPages = [...folder.pages]
-    .filter(p => !pinnedIds?.has(p.id))
     .sort((a, b) => (b.updated_at ?? "").localeCompare(a.updated_at ?? ""));
   const ownPages = sortedPages.length;
   // The count includes pages in subprojects: what opening the project leads to.
