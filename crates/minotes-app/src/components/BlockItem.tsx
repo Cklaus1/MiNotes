@@ -186,7 +186,31 @@ interface Props {
   onZoomIn?: () => void;
   onShiftClick?: (blockId: string) => void;
   onOpenWhiteboard?: (whiteboardId: string) => void;
-  onDragReorder?: (draggedBlockId: string, targetBlockId: string, position: "above" | "below") => void;
+  onDragReorder?: (draggedBlockId: string, targetBlockId: string, position: DropPosition) => void;
+}
+
+/** Where a dragged block lands relative to the block under the pointer. */
+export type DropPosition = "above" | "below" | "child";
+
+/** Pointer this far right of the block's left edge (bullet + text start) drops as a child. */
+const CHILD_DROP_OFFSET = 56;
+
+function dropPositionAt(el: HTMLElement, clientX: number, clientY: number): DropPosition {
+  const rect = el.getBoundingClientRect();
+  if (clientY < rect.top + rect.height / 2) return "above";
+  return clientX > rect.left + CHILD_DROP_OFFSET ? "child" : "below";
+}
+
+/** A drag image showing the block's text (WebKitGTK otherwise shows a blank square). */
+function setBlockDragImage(e: React.DragEvent, blockEl: HTMLElement | null) {
+  if (!blockEl || typeof e.dataTransfer.setDragImage !== "function") return;
+  const text = (blockEl.querySelector(".block-content") as HTMLElement | null)?.innerText.trim() ?? "";
+  const ghost = document.createElement("div");
+  ghost.className = "block-drag-ghost";
+  ghost.textContent = (text.split("\n")[0] || "(empty block)").slice(0, 80);
+  document.body.appendChild(ghost);
+  try { e.dataTransfer.setDragImage(ghost, 10, 12); } catch {}
+  setTimeout(() => ghost.remove(), 0);
 }
 
 const BlockItem = forwardRef<BlockItemHandle, Props>(({
@@ -206,7 +230,7 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
   const [editingProp, setEditingProp] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
-  const [dropPosition, setDropPosition] = useState<"above" | "below" | null>(null);
+  const [dropPosition, setDropPosition] = useState<DropPosition | null>(null);
   const isCard = useIsFlashcard(block.id);
   // Set when the context menu was opened on a table cell (shows table items).
   const [menuInTable, setMenuInTable] = useState(false);
@@ -625,7 +649,7 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
   return (
     <div
       ref={rootRef}
-      className={`block${selected ? " selected" : ""}${isCard ? " is-flashcard" : ""}${collapsed && hasChildren ? " is-collapsed" : ""}${dropPosition === "above" ? " drop-above" : ""}${dropPosition === "below" ? " drop-below" : ""}`}
+      className={`block${selected ? " selected" : ""}${isCard ? " is-flashcard" : ""}${collapsed && hasChildren ? " is-collapsed" : ""}${dropPosition ? ` drop-${dropPosition}` : ""}`}
       data-depth={depth > 0 ? String(depth) : undefined}
       style={depth > 0 || (collapsed && hasChildren) ? ({
         ...(depth > 0 ? { "--depth": depth } : {}),
@@ -645,19 +669,26 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
         }
       }}
       onDragOver={(e) => {
-        if (!onDragReorder) return;
+        if (!onDragReorder || !e.dataTransfer.types.includes("text/block-id")) return;
         e.preventDefault();
         e.stopPropagation();
-        const rect = e.currentTarget.getBoundingClientRect();
-        setDropPosition(e.clientY < rect.top + rect.height / 2 ? "above" : "below");
+        e.dataTransfer.dropEffect = "move";
+        const pos = dropPositionAt(e.currentTarget, e.clientX, e.clientY);
+        if (pos !== dropPosition) setDropPosition(pos);
       }}
-      onDragLeave={() => setDropPosition(null)}
+      onDragLeave={(e) => {
+        // Moving onto a child element of this block isn't leaving it.
+        if (e.relatedTarget instanceof Node && e.currentTarget.contains(e.relatedTarget)) return;
+        setDropPosition(null);
+      }}
       onDrop={(e) => {
         e.preventDefault();
         e.stopPropagation();
         const draggedId = e.dataTransfer.getData("text/block-id");
-        if (draggedId && draggedId !== block.id && dropPosition && onDragReorder) {
-          onDragReorder(draggedId, block.id, dropPosition);
+        // From the drop point itself: the dragover state may not have rendered yet.
+        const pos = e.clientX || e.clientY ? dropPositionAt(e.currentTarget, e.clientX, e.clientY) : dropPosition;
+        if (draggedId && draggedId !== block.id && pos && onDragReorder) {
+          onDragReorder(draggedId, block.id, pos);
         }
         setDropPosition(null);
       }}
@@ -670,7 +701,9 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
           onDragStart={(e) => {
             e.dataTransfer.setData("text/block-id", block.id);
             e.dataTransfer.effectAllowed = "move";
-            (e.currentTarget.closest(".block") as HTMLElement)?.classList.add("dragging");
+            const el = e.currentTarget.closest(".block") as HTMLElement | null;
+            setBlockDragImage(e, el);
+            el?.classList.add("dragging");
           }}
           onDragEnd={(e) => {
             (e.currentTarget.closest(".block") as HTMLElement)?.classList.remove("dragging");

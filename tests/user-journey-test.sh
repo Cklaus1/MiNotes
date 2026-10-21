@@ -3668,6 +3668,54 @@ V2=$(vis68)
 [[ "$V2" == "parent68|child68|grandchild68|second child68|other68|other child68" ]] && pass "Expand all shows everything again" || fail "Expand all" "$V2"
 
 # ═══════════════════════════════════════════════
+journey "69. I drag blocks around and the outline stays right (UX review C-13)"
+# After a drop the list was sorted by position across parents (positions are
+# per parent), so the outline rendered scrambled until a reload. HTML5 drag
+# events are dispatched on the real handle / target elements.
+# ═══════════════════════════════════════════════
+A69="const api=await import('/src/lib/api.ts');"
+ev "(async()=>{$A69 const p=await api.createPage('Drag69 page');const a=await api.createBlock(p.id,'A69');await api.createBlock(p.id,'a1 69',a.id);await api.createBlock(p.id,'a2 69',a.id);const b=await api.createBlock(p.id,'B69');await api.createBlock(p.id,'b1 69',b.id);await api.createBlock(p.id,'C69');return 1})()" >/dev/null
+api "navigateTo('Drag69 page')" >/dev/null; sleep 2
+# shown outline: text@depth, in DOM order
+shown69() { ev "[...document.querySelectorAll('.block-list > .block')].map(b=>b.querySelector('.block-content')?.innerText.trim()+'@'+(b.dataset.depth||0)).join('|')" | tr -d '"'; }
+# stored outline (the backend's outline order), same format
+stored69() { ev "(async()=>{$A69 const t=await api.getPageTree('Drag69 page');const d=new Map();for(const b of t.blocks)d.set(b.id,b.parent_id?d.get(b.parent_id)+1:0);return t.blocks.map(b=>b.content+'@'+d.get(b.id)).join('|')})()" | tr -d '"'; }
+# drag69 <dragged text> <target text> <above|below|child>
+drag69() { ev "(async()=>{const tick=()=>new Promise(r=>setTimeout(r,60));const blk=t=>[...document.querySelectorAll('.block-list > .block')].find(b=>b.querySelector('.block-content')?.innerText.trim()===t);const src=blk('$1'),dst=blk('$2');if(!src||!dst)return 'missing';window.__dragImage69='';const orig=DataTransfer.prototype.setDragImage;DataTransfer.prototype.setDragImage=function(el,x,y){window.__dragImage69=el?.textContent||'';try{orig.call(this,el,x,y)}catch{}};const dt=new DataTransfer();const h=src.querySelector(':scope > .block-drag-handle');const r=dst.getBoundingClientRect();const x=('$3'==='child')?r.left+90:r.left+30;const y=('$3'==='above')?r.top+3:r.bottom-3;h.dispatchEvent(new DragEvent('dragstart',{bubbles:true,cancelable:true,dataTransfer:dt}));dst.dispatchEvent(new DragEvent('dragenter',{bubbles:true,cancelable:true,dataTransfer:dt,clientX:x,clientY:y}));dst.dispatchEvent(new DragEvent('dragover',{bubbles:true,cancelable:true,dataTransfer:dt,clientX:x,clientY:y}));await tick();const cls=dst.className;dst.dispatchEvent(new DragEvent('drop',{bubbles:true,cancelable:true,dataTransfer:dt,clientX:x,clientY:y}));h.dispatchEvent(new DragEvent('dragend',{bubbles:true,dataTransfer:dt}));DataTransfer.prototype.setDragImage=orig;return cls})()" | tr -d '"'; }
+
+step "Dragging a parent below a sibling moves its whole subtree, and the outline renders in order at once"
+R=$(drag69 A69 B69 below); sleep 0.4
+S=$(shown69)
+[[ "$S" == "B69@0|b1 69@1|A69@0|a1 69@1|a2 69@1|C69@0" ]] && pass "Rendered outline right after the drop" || fail "Scrambled outline after drop" "$S"
+sleep 1; T=$(stored69)
+[[ "$T" == "$S" ]] && pass "Rendered outline = stored outline" || fail "Rendered ≠ stored" "shown=$S stored=$T"
+ss "69-after-drop"
+
+step "The drag image is the block's text, not a blank square"
+D=$(ev "window.__dragImage69||''" | tr -d '"')
+[[ "$D" == *"A69"* ]] && pass "Drag image shows \"$D\"" || fail "No text drag image" "$D"
+
+step "Dropping with the pointer moved right makes the block a child"
+R=$(drag69 C69 B69 child); sleep 0.4
+[[ "$R" == *"drop-child"* ]] && pass "The drop line shows it will nest (drop-child)" || fail "No child drop indicator" "$R"
+S=$(shown69)
+[[ "$S" == "B69@0|C69@1|b1 69@1|A69@0|a1 69@1|a2 69@1" ]] && pass "C69 is now B69's first child" || fail "Drop as child" "$S"
+sleep 1; T=$(stored69)
+[[ "$T" == "$S" ]] && pass "…and that is what was stored" || fail "Child drop stored" "shown=$S stored=$T"
+
+step "Dragging a child above a top-level block outdents it there"
+R=$(drag69 "a2 69" B69 above); sleep 0.4
+S=$(shown69)
+[[ "$S" == "a2 69@0|B69@0|C69@1|b1 69@1|A69@0|a1 69@1" ]] && pass "a2 moved above B69 at the top level" || fail "Drag child to top" "$S"
+sleep 1; T=$(stored69)
+[[ "$T" == "$S" ]] && pass "…stored the same" || fail "Stored after outdent-drag" "shown=$S stored=$T"
+
+step "A block can't be dropped into its own subtree"
+R=$(drag69 B69 "b1 69" child); sleep 0.6
+S=$(shown69)
+[[ "$S" == "a2 69@0|B69@0|C69@1|b1 69@1|A69@0|a1 69@1" ]] && pass "Nothing changed" || fail "Dropped into own subtree" "$S"
+
+# ═══════════════════════════════════════════════
 close_app
 
 # ═══════════════════════════════════════════════

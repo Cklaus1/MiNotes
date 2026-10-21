@@ -725,12 +725,41 @@ body {
   opacity: 0.4;
 }
 
+/* Drop indicators: drawn, not bordered, so the outline doesn't shift by 2px. */
 .block.drop-above {
-  border-top: 2px solid var(--accent);
+  box-shadow: inset 0 2px 0 var(--accent);
 }
 
 .block.drop-below {
-  border-bottom: 2px solid var(--accent);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+/* Drop as a child: the line starts at the child indent. */
+.block.drop-child {
+  background-image: linear-gradient(var(--accent), var(--accent));
+  background-size: calc(100% - 36px) 2px;
+  background-position: 36px 100%;
+  background-repeat: no-repeat;
+}
+
+/* Drag image: the block's text (WebKitGTK showed a blank square). Rendered
+   off-screen only for the moment setDragImage copies it. */
+.block-drag-ghost {
+  position: fixed;
+  top: -1000px;
+  left: -1000px;
+  max-width: 360px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  border: 1px solid var(--accent);
+  font-size: 13px;
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
 }
 
 /* Collapse toggle for parent blocks: left of the bullet, above everything else. */

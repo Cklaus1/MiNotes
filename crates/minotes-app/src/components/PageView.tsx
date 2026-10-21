@@ -6,7 +6,8 @@ import { setPendingReveal, takePendingReveal } from "../lib/pendingReveal";
 import { getSettings } from "../lib/settings";
 import { localDateKey } from "../lib/dates";
 import BlockItem from "./BlockItem";
-import type { BlockItemHandle, FocusPosition } from "./BlockItem";
+import type { BlockItemHandle, DropPosition, FocusPosition } from "./BlockItem";
+import { applyDrop, dropPlacement, outlineOrder } from "../lib/blockTree";
 import BacklinksPanel from "./BacklinksPanel";
 import UnlinkedRefsPanel from "./UnlinkedRefsPanel";
 import LinkPreview from "./LinkPreview";
@@ -41,32 +42,6 @@ let tempIdCounter = 0;
 const TEMP_PREFIX = "tmp-";
 const newTempId = () => `${TEMP_PREFIX}${Date.now().toString(36)}-${++tempIdCounter}`;
 const isTempId = (id: string) => id.startsWith(TEMP_PREFIX);
-
-/** Depth-first outline order (siblings by position) — the order the list renders in. */
-function outlineOrder(list: Block[]): Block[] {
-  const ids = new Set(list.map(b => b.id));
-  const kids = new Map<string, Block[]>();
-  for (const b of list) {
-    const key = b.parent_id && ids.has(b.parent_id) ? b.parent_id : "__root__";
-    const arr = kids.get(key) ?? [];
-    arr.push(b);
-    kids.set(key, arr);
-  }
-  const out: Block[] = [];
-  const seen = new Set<string>();
-  const walk = (key: string) => {
-    for (const b of (kids.get(key) ?? []).slice().sort((x, y) => x.position - y.position)) {
-      if (seen.has(b.id)) continue;
-      seen.add(b.id);
-      out.push(b);
-      walk(b.id);
-    }
-  };
-  walk("__root__");
-  // Anything unreachable (cycles) keeps its place at the end rather than vanishing.
-  for (const b of list) if (!seen.has(b.id)) out.push(b);
-  return out;
-}
 
 const propError = (e: unknown) => String((e as any)?.message ?? e);
 
@@ -749,13 +724,13 @@ export default function PageView({
     markEdited(prevBlock.id, mergedContent);
     pendingDeletesRef.current.set(blockId, Date.now());
     const moves = new Map(movedChildren.map(m => [m.id, m]));
-    setLocalBlocks(prev => prev
+    setLocalBlocks(prev => outlineOrder(prev
       .map(b => {
         if (b.id === prevBlock.id) return { ...b, content: mergedContent };
         const m = moves.get(b.id);
         return m ? { ...b, parent_id: m.toParentId, position: m.toPosition } : b;
       })
-      .filter(b => b.id !== blockId));
+      .filter(b => b.id !== blockId)));
     setFocusBlockId(prevBlock.id);
     await enqueue(async () => {
       try {
@@ -958,59 +933,30 @@ export default function PageView({
   toggleCollapseRef.current = toggleCollapse;
   const toggleCollapseLive = useCallback((id: string) => toggleCollapseRef.current(id), []);
 
-  // Drag-to-reorder blocks
-  const handleDragReorder = useCallback(async (draggedBlockId: string, targetBlockId: string, position: "above" | "below") => {
-    const target = blocks.find(b => b.id === targetBlockId);
-    if (!target) return;
-
-    const siblings = blocks
-      .filter(b => (b.parent_id ?? null) === (target.parent_id ?? null))
-      .sort((a, b) => a.position - b.position);
-    const targetSibIdx = siblings.findIndex(b => b.id === targetBlockId);
-
-    let newPos: number;
-    let needsRenormalize = false;
-    if (position === "above") {
-      const prev = targetSibIdx > 0 ? siblings[targetSibIdx - 1].position : 0;
-      newPos = (prev + target.position) / 2;
-      if (target.position - prev < 0.001) needsRenormalize = true;
-    } else {
-      const next = targetSibIdx < siblings.length - 1 ? siblings[targetSibIdx + 1].position : target.position + 1;
-      newPos = (target.position + next) / 2;
-      if (next - target.position < 0.001) needsRenormalize = true;
-    }
-
-    if (needsRenormalize) {
-      // Precision exhausted — renormalize all sibling positions to integers
-      const ordered = siblings.filter(b => b.id !== draggedBlockId);
-      const insertIdx = position === "above"
-        ? ordered.findIndex(b => b.id === targetBlockId)
-        : ordered.findIndex(b => b.id === targetBlockId) + 1;
-      ordered.splice(insertIdx, 0, { id: draggedBlockId } as (typeof siblings)[0]);
-      newPos = insertIdx + 1;
-      // Persist renormalized positions for all other siblings
-      for (let i = 0; i < ordered.length; i++) {
-        if (ordered[i].id !== draggedBlockId) {
-          api.reorderBlock(ordered[i].id, target.parent_id ?? undefined, i + 1).catch(() => {});
-        }
-      }
-    }
-
-    // Optimistic update — update position and re-sort
-    setLocalBlocks(prev =>
-      prev
-        .map(b => b.id === draggedBlockId ? { ...b, parent_id: target.parent_id, position: newPos } : b)
-        .sort((a, b) => a.position - b.position)
-    );
-
-    // Persist — reorderBlock handles null parent_id for root-level blocks
+  // Drag-to-reorder blocks (C-13). The dragged block keeps its subtree, and the
+  // list is rebuilt in outline order: positions are per parent, so the old plain
+  // position sort rendered the outline scrambled until a reload.
+  const handleDragReorder = async (draggedBlockId: string, targetBlockId: string, where: DropPosition) => {
+    const current = localBlocksRef.current;
+    const target = current.find(b => b.id === targetBlockId);
+    if (!target || !current.some(b => b.id === draggedBlockId)) return;
+    const next = applyDrop(current, draggedBlockId, targetBlockId, where);
+    if (!next) return; // onto itself / into its own subtree
+    const plan = dropPlacement(current, draggedBlockId, target, where);
+    if (where === "child" && collapsedBlocksRef.current.has(target.id)) setCollapsed(target.id, false);
+    flushSync(() => setLocalBlocks(next));
     try {
-      await api.reorderBlock(draggedBlockId, target.parent_id ?? undefined, newPos);
+      await enqueue(async () => {
+        const parent = plan.parentId ? rid(plan.parentId) : undefined;
+        for (const [id, pos] of plan.renumber) await api.reorderBlock(rid(id), parent, pos);
+        await api.reorderBlock(rid(draggedBlockId), parent, plan.position);
+      });
     } catch (e) {
       console.error("reorder_block failed:", e);
-      onRefreshPage(); // Revert optimistic update on failure
+      showToast("Could not move the block");
     }
-  }, [blocks, onRefreshPage]);
+    onRefreshPage(); // the stored order wins
+  };
 
   // Build block tree structure for computing depth and children info
   const blockTreeInfo = useMemo(() => {
@@ -1437,7 +1383,7 @@ export default function PageView({
   const dragReorderRef = useRef(handleDragReorder);
   dragReorderRef.current = handleDragReorder;
   const handleDragReorderLive = useCallback(
-    (dragged: string, target: string, pos: "above" | "below") => dragReorderRef.current(dragged, target, pos), []);
+    (dragged: string, target: string, pos: DropPosition) => dragReorderRef.current(dragged, target, pos), []);
 
   // UX-013: Block ref click handler — navigate to the block's page
   // Read through a ref: BlockItem (memoized) keeps the first callback it got.
