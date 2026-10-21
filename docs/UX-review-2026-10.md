@@ -1,6 +1,6 @@
 # UI review: every feature, rated
 
-Status: review complete, nothing fixed yet · Owner: Chris Klaus · Reviewed 2026-10-19
+Status: review complete; Waves 1–3 fixed (see the wave notes in §3), Wave 4 open · Owner: Chris Klaus · Reviewed 2026-10-19
 Build reviewed: `main` at `9741b30` (debug build, production frontend + CSP).
 
 ## 1. How this was done
@@ -74,7 +74,7 @@ Average **5.2 / 10** across 72 features. Nothing scores 10; the best is 9
 | Large page (1,200 blocks) | 6 | Typing fine; ~10 s to open (no virtualisation) |
 | Empty page | 7 | Clear placeholder; inconsistent wording |
 | Hashtags `#tag` | 1 | **Typing `#urgent ` saves as `[tag]t`** (data corruption) |
-| Themes / narrow window | 7 | Both themes coherent; faint light-theme bullets; sidebar can't collapse |
+| Themes / narrow window | 7 | **Partly fixed** (`aff6c6a`: the sidebar collapses, a drawer below 900 px; faint bullets not touched) — Both themes coherent; faint light-theme bullets; sidebar can't collapse |
 
 ### Navigation, organisation, notebooks
 
@@ -89,14 +89,14 @@ Average **5.2 / 10** across 72 features. Nothing scores 10; the best is 9
 | Search palette (Ctrl+K) | 5 | **Partly fixed** (`a0b0fd8`: plain-text block results with their page, word-by-word title match, visible checkbox; fuzzy ranking is Wave 4) — Fast and keyboard-friendly; raw markup/UUIDs in results; no fuzzy matching |
 | Command palette (`>`) | 4 | Only 10 commands |
 | Cross-notebook `[[NB::Page]]` links | 7 | Clear states; a locked target is a dead end; no way back |
-| Notebook switcher / New notebook / encryption | 7 | **Partly fixed** (`3b9c8b1`: disabled buttons in the notebook dialogs look disabled and say why; switch progress is Wave 3) — Excellent copy and recovery flow; disabled buttons look enabled; 5–10 s switches with no progress |
+| Notebook switcher / New notebook / encryption | 7 | **Fixed** (`3b9c8b1`: disabled buttons in the notebook dialogs look disabled and say why; `4e09469`: a switch shows a busy pill at once, holds input and ends with “Opened …”) — Excellent copy and recovery flow; disabled buttons look enabled; 5–10 s switches with no progress |
 | Manage notebooks | 6 | **Fixed** (`efd9451`: rows keep their order, errors clear, Open per row, lock badge, quiet Delete) — Safe delete; list re-sorts after rename (the next click hit the wrong notebook) |
-| Unlock / recovery / Lock now | 7 | Clear; lock takes ~5 s with no feedback |
-| Settings → Security | 7 | Complete and honest; unreadable dropdowns |
-| Shortcuts (help + do they work) | 5 | Full list buried in Settings; Ctrl+N opens a native `prompt()`; no back/forward |
+| Unlock / recovery / Lock now | 7 | **Fixed** (`4e09469`: lock and unlock show progress at once and end with a toast) — Clear; lock takes ~5 s with no feedback |
+| Settings → Security | 7 | **Fixed** (`8ec2aff`: the app's own selects, both themes) — Complete and honest; unreadable dropdowns |
+| Shortcuts (help + do they work) | 5 | **Partly fixed** (`52217c5`: Ctrl+/ and the palette open the list; `b100798`: Ctrl+N opens the in-app New page field; back/forward is Wave 4) — Full list buried in Settings; Ctrl+N opens a native `prompt()`; no back/forward |
 | Window title | 2 | **Fixed** (`fad7c73`: "Page — Notebook — MiNotes", "Locked — Notebook — MiNotes") — Always "MiNotes" |
-| Narrow window (800 / 600 px) | 4 | Sidebar can't collapse; 600 px layout's Menu tab does nothing |
-| Theme and contrast | 6 | Clean; tooltips cover menus; native dropdowns unreadable in dark theme |
+| Narrow window (800 / 600 px) | 4 | **Partly fixed** (`aff6c6a`: collapsible sidebar, a drawer below 900 px; the ≤768 px Menu tab is unchanged — not reachable on the desktop) — Sidebar can't collapse; 600 px layout's Menu tab does nothing |
+| Theme and contrast | 6 | **Fixed** (`33a1581` the `--text-muted` cycle, `8ec2aff` selects/checkboxes/radios, `e3c1ac5`+`660a0fa` the app's tooltip, `f3cb932` remaining fixed colours) — Clean; tooltips cover menus; native dropdowns unreadable in dark theme |
 
 ### Visual views
 
@@ -118,7 +118,7 @@ Average **5.2 / 10** across 72 features. Nothing scores 10; the best is 9
 
 | Feature | Score | Verdict |
 |---|---|---|
-| Settings panel | 5 | Changes apply instantly; 2,700 px scroll, unreadable dropdowns, misleading "AI Assistant" section — **Fixed** (`abcc76d`: "Smart suggestions", says nothing is sent, "AI provider…" row) |
+| Settings panel | 5 | Changes apply instantly; 2,700 px scroll, unreadable dropdowns, misleading "AI Assistant" section — **Fixed** (`abcc76d`: "Smart suggestions", says nothing is sent, "AI provider…" row; `52217c5`: a sticky section index; `8ec2aff`: readable selects) |
 | Markdown copy status / Rebuild / Open folder | 7 | Clear, live status; paths cut off; Open folder gives no feedback |
 | Outside edits of the markdown copy | 9 | Live update with Undo; deleted file → Trash with Restore |
 | Git sync end to end | 4 | Robust engine, but **no way to set a remote in the app**, no "Sync now", duplicate pages on first join — **Fixed**: duplicates (`29f6908`, C-9), "Sync now" in Settings and the palette + status chip (`6721a80`, `abcc76d`); the remote field is Wave 4 |
@@ -127,7 +127,7 @@ Average **5.2 / 10** across 72 features. Nothing scores 10; the best is 9
 | Copied-folder trust banner | 7 | Clear and safe; Settings doesn't show sync is paused — **Fixed** (`6721a80`: "Paused — waiting for your OK" with "Sync it here"; the other computer's "Last synced" is not shown) |
 | Sync error states | 3 | A missing remote shows only a silent grey "Offline" — **Fixed** (`6721a80`: offline vs remote-not-found vs auth; chip tooltip, click → error, Retry; error in Settings; "Last synced" only after a push) |
 | Import (Obsidian, Evernote) | 8 | Excellent preview, report and undo; undo has no confirmation — **Fixed** (`93911f8`: confirm with the page count and the edited pages it keeps) |
-| AI setup | 7 | Very good privacy wording; hard to find (not in Settings), controls unstyled — **Fixed** (findability, `abcc76d`: Settings row, palette "Ask AI" / "AI Settings", shortcuts listed); styling is Wave 3 |
+| AI setup | 7 | Very good privacy wording; hard to find (not in Settings), controls unstyled — **Fixed** (findability, `abcc76d`: Settings row, palette "Ask AI" / "AI Settings", shortcuts listed; styling `8ec2aff`: radios, checkboxes, the "▸ Advanced" button) |
 | Ask panel | 7 | Streamed answer with clickable citations; slow to report a dead server; no Retry — **Fixed** (`abcc76d`: 2 s connect timeout for a server on this computer, "isn't running", Retry) |
 | Privacy / remote images (settings view) | 6 | Works; Wikimedia images always fail (no User-Agent sent) |
 | Security / encryption (settings view) | 4 | Clear dialogs, but confirmations are broken (see C-1 below) |
@@ -241,6 +241,64 @@ browser 79–84 (+ title and disabled-button checks in 65), desktop D18 (real
 clicks: nested projects, Tasks toggle → database, Prev ×3 at one spot, rename in
 Manage notebooks, `xdotool getwindowname`).
 
+**Wave 3 notes — one UI system (2026-10-21).** All twelve items, each its own
+commit on top of `3a307a7`. (1) `33a1581`: the Obsidian-compat block defined
+`--text-muted: var(--text-muted)`; muted text inherited the normal colour and
+everything *drawn* with it (borders, the AI select's arrow, sync dots) vanished.
+Removed, and the muted tokens raised to AA (dark `#9399b2`, light `#565970`)
+because fixing the cycle made muted text appear for the first time; a vitest
+lint now fails on any custom-property cycle. (2) `8ec2aff`: selects, checkboxes
+and radios are drawn by the app (`appearance: none`, theme arrow and check mark,
+`color-scheme` per theme) with zero-specificity `:where()` rules; the open
+option list is still GTK's own popup (readable, light) — replacing it would
+need a custom listbox. (3) `8ec2aff`/`53ede19`: every disabled button and
+control looks disabled (`.btn-gated` folded into the base styles); primary
+buttons that silently did nothing now say why (import, join, move notebook,
+read-only rebuild/encrypt, Open folder outside the desktop app). (4)
+`e3c1ac5`/`660a0fa`: `lib/tooltip.ts` — every `title` gets the app's bubble;
+it lifts the hovered element's and its ancestors' titles while hovered
+(WebKitGTK otherwise drew the *row's* title over the page menu) and restores
+them on leave, never shows while a menu/popover/dialog is open unless the
+element is inside it, never over a menu, placed away from the pointer. (5)
+`5e8d81e`: `lib/layers.ts` — one Esc rule: popover > menu > dialog > side panel
+> canvas, newest first; ~20 window-level Escape handlers became layer
+registrations; canvases with their own Esc steps yield while covered; the
+editor yields Esc to an open layer (ProseMirror always `preventDefault`s Esc,
+so it marks the key with `yieldEscape`). Before: Settings over the graph, the
+palette over the graph and the notebook menu over Settings each closed two
+things (journey 85 on the base: 3 of 5 failed). (6) `4e09469`: `lib/busy.ts` —
+switch, lock, unlock and notebook .zip export/import show a busy pill in the
+same task as the click (D19: 3 ms), hold input and end with a toast; import and
+Sync now already had progress + toast. D10's "type then switch at once" race
+did not reproduce standalone or under 28–40 busy CPU loops (5 + 3 + 6 runs);
+an earlier full run's database showed the edit arriving *after* the check, i.e.
+the barrier didn't see it. Two holes closed: the editor flush now reads
+ProseMirror's pending DOM changes first (`domObserver.forceFlush`), and the
+switch lets input already queued reach the page (`settleInput`) before the
+barrier, then holds all keys until the new notebook is open — nothing can be
+typed into a view that is going away. (7) `b100798`: no `prompt()` left: Ctrl+N
+and the palette's New Page open the sidebar's own field (or `promptDialog` when
+the sidebar is hidden); the browser-mode path fallbacks use `promptDialog`; the
+dialog lint forbids `prompt(`. (8) `9b0b92f`: core `repo/page_titles.rs`
+(`find_pages_by_title`, `title_in_use`, `find_journal_page`,
+`list_journal_pages`, `link_candidates`; the name `search_page_titles` was
+taken by the cross-notebook search) + Tauri commands + mock; All Pages and the
+palette list every page. (9) `b684b64`: `lib/icons.ts` + `<Icon/>` (Lucide
+shapes as path data, no dependency); user-picked page/project emoji stay;
+lint against emoji UI icons; view-bar labels 11 px under 18 px icons. (10)
+`f3cb932`: kanban header band and status edges, links in notes (attachment
+links were the platform's blue/purple), danger/success text; the audit
+(`desktop-check/audit.js`, 14 screens × 2 themes) found one AA miss left, the
+page ⋮ button on the active row (4.45:1), fixed in `660a0fa`. (11) `52217c5`:
+`useDialogFocus` (focus in, Tab trapped, focus back to the opener — read during
+render, before an `autoFocus` field takes it) in `Modal` and every dialog
+frame; Settings has a sticky section index; Ctrl+/ and the palette open the
+shortcut list. (12) `aff6c6a`: the sidebar collapses (header button,
+Ctrl+Shift+\, remembered in localStorage) and is a drawer below 900 px.
+Journeys: browser 85–91 (21 of their 31 assertions fail on `3a307a7`),
+desktop D19. Not done: a custom option list for selects; slash-menu icons
+(Wave 4); the light theme's faint bullets.
+
 ## 4. Patterns behind the scores
 
 1. **The markdown round trip is the weak seam.** Tags, highlights, block
@@ -257,7 +315,7 @@ Manage notebooks, `xdotool getwindowname`).
    webview doesn't have: `confirm()`, `<a download>`, `prompt()` for Ctrl+N
    and Ctrl+P, native `<select>` styling. Each needs the app's own modal,
    save dialog or styled control.
-4. **No shared UI system.** Disabled buttons look enabled, native dropdowns
+4. **No shared UI system** (**fixed** in Wave 3, see its notes). Disabled buttons look enabled, native dropdowns
    are unreadable in the dark theme, tooltips cover menus, Esc closes too much
    or too little, icons are mixed emoji, slow operations (notebook switch,
    lock, unlock: 5–10 s) show no progress, and canvases ignore the theme.
@@ -289,7 +347,7 @@ virtual Tasks view instead of the "All TODOs" page (and remove existing ones)
 · C-9 don't import a fresh device's onboarding page on first join · User-Agent
 on outbound fetches · C-6 structure-aware paste.
 
-### Wave 3 — one UI system (M)
+### Wave 3 — one UI system (M) — done 2026-10-21 (see Wave 3 notes)
 Styled selects, checkboxes, radios and visible disabled states with a reason;
 custom tooltips that never cover menus; one rule for Esc (close the topmost
 thing only); progress states for switch/lock/unlock/import; theme variables
