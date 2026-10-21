@@ -15,11 +15,11 @@ import "@xyflow/react/dist/style.css";
 import type { Block } from "../../lib/api";
 import * as api from "../../lib/api";
 import { showToast, showUndoToast } from "../../lib/toast";
-import { blocksToFlow, extractLabel, type LayoutDirection, type MindMapNodeData } from "./blocksToFlow";
+import { blocksToFlow, extractLabel, isTitleHeading, type LayoutDirection, type MindMapNodeData } from "./blocksToFlow";
 import { loadCollapsed, saveCollapsed } from "./collapseStore";
 import { buildMindMapSvg, svgToPng } from "./exportImage";
 import MindMapNode from "./MindMapNode";
-import { confirmPlaintextExport } from "../../lib/encryption";
+import { saveExport } from "../../lib/exportFile";
 
 const nodeTypes = { mindmapNode: MindMapNode };
 
@@ -36,18 +36,41 @@ interface Props {
 
 // ── Markdown outline export ──
 
-function blocksToOutline(blocks: Block[], parentId: string | null, depth: number): string {
-  const children = blocks
-    .filter((b) => (b.parent_id ?? null) === parentId)
-    .sort((a, b) => a.position - b.position);
-  let result = "";
-  for (const block of children) {
-    const indent = "  ".repeat(depth);
-    const label = extractLabel(block.content);
-    result += `${indent}- ${label}\n`;
-    result += blocksToOutline(blocks, block.id, depth + 1);
+/**
+ * The page as a markdown outline: the blocks' own markdown (so [[wiki links]],
+ * headings, TODO markers and formatting survive), one "- " item per block,
+ * continuation lines indented under it. Like the map: empty blocks and a
+ * top-level heading that repeats the page title are skipped (their children
+ * move up), so the title isn't written twice.
+ */
+function blocksToOutline(blocks: Block[], pageTitle: string, branch?: Block): string {
+  const kids = new Map<string | null, Block[]>();
+  for (const b of blocks) {
+    const k = b.parent_id ?? null;
+    const l = kids.get(k);
+    if (l) l.push(b); else kids.set(k, [b]);
   }
-  return result;
+  for (const l of kids.values()) l.sort((a, b) => a.position - b.position);
+  const seen = new Set<string>();
+  const walk = (parentId: string | null, depth: number, list = kids.get(parentId) ?? []): string => {
+    let out = "";
+    for (const b of list) {
+      if (seen.has(b.id)) continue;
+      seen.add(b.id);
+      const text = b.content.trim();
+      if (!text || (!b.parent_id && isTitleHeading(text, pageTitle))) {
+        out += walk(b.id, depth);
+        continue;
+      }
+      const indent = "  ".repeat(depth);
+      const [first, ...rest] = text.split("\n");
+      out += `${indent}- ${first}\n`;
+      for (const line of rest) out += `${indent}  ${line}\n`;
+      out += walk(b.id, depth + 1);
+    }
+    return out;
+  };
+  return branch ? walk(null, 0, [branch]) : walk(null, 0);
 }
 
 // ── Context menu ──
@@ -82,28 +105,6 @@ function autoCollapsed(blocks: Block[]): Set<string> {
     return d;
   };
   return new Set(blocks.filter((b) => hasKids.has(b.id) && depthOf(b.id) >= AUTO_COLLAPSE_DEPTH).map((b) => b.id));
-}
-
-/** Save a file: browser download, or (desktop) PNG to Downloads / text to the clipboard. */
-async function deliverExport(filename: string, data: Blob, kind: string): Promise<void> {
-  // An encrypted notebook: the export is written unencrypted — ask once.
-  if (!(await confirmPlaintextExport())) return;
-  if (api.isTauri) {
-    // The desktop webview has no download manager: ask where to save.
-    const bytes = Array.from(new Uint8Array(await data.arrayBuffer()));
-    const path = await api.saveExportFile(filename, bytes);
-    if (path) showToast(`${kind} exported → ${path}`);
-    return;
-  }
-  const url = URL.createObjectURL(data);
-  const link = document.createElement("a");
-  link.download = filename;
-  link.href = url;
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-  showToast(`Exported ${filename}`);
 }
 
 const exportName = (title: string, ext: string) =>
@@ -623,12 +624,9 @@ function MindMapInner({ pageId, pageTitle, isJournal, journalDate, blocks, onClo
     if (!contextMenu) return;
     const block = blocks.find((b) => b.id === contextMenu.blockId);
     if (!block) return;
-    const label = extractLabel(block.content);
-    const childrenText = blocksToOutline(blocks, block.id, 1);
-    const text = `- ${label}\n${childrenText}`;
-    navigator.clipboard.writeText(text);
+    navigator.clipboard.writeText(blocksToOutline(blocks, pageTitle, block));
     setContextMenu(null);
-  }, [contextMenu, blocks]);
+  }, [contextMenu, blocks, pageTitle]);
 
   const handleFocusSubtree = useCallback(() => {
     if (!contextMenu) return;
@@ -638,6 +636,23 @@ function MindMapInner({ pageId, pageTitle, isJournal, journalDate, blocks, onClo
 
   // Export: a standalone SVG rebuilt from the layout (labels included), see exportImage.ts.
   const overlayRef = useRef<HTMLDivElement>(null);
+
+  // Refit when the window (the map's area) is resized — unless the user has
+  // panned or zoomed by hand since the last fit.
+  const userMovedRef = useRef(false);
+  const fitAll = useCallback(() => { userMovedRef.current = false; reactFlow.fitView(FIT_VIEW); }, [reactFlow]);
+  useEffect(() => {
+    const el = overlayRef.current;
+    if (!el) return;
+    let t: ReturnType<typeof setTimeout> | undefined;
+    const ro = new ResizeObserver(() => {
+      if (userMovedRef.current) return;
+      clearTimeout(t);
+      t = setTimeout(() => reactFlow.fitView(FIT_VIEW), 120);
+    });
+    ro.observe(el);
+    return () => { ro.disconnect(); clearTimeout(t); };
+  }, [reactFlow]);
 
   // Bring a newly added node into view (it may land outside the viewport).
   useEffect(() => {
@@ -666,7 +681,7 @@ function MindMapInner({ pageId, pageTitle, isJournal, journalDate, blocks, onClo
     if (!out) return;
     try {
       const png = await svgToPng(out.svg, out.width, out.height);
-      await deliverExport(exportName(pageTitle, "png"), png, "PNG");
+      await saveExport(exportName(pageTitle, "png"), png, "Mind map PNG");
     } catch (e) {
       showToast(`Export failed: ${e}`);
     }
@@ -676,16 +691,16 @@ function MindMapInner({ pageId, pageTitle, isJournal, journalDate, blocks, onClo
     const out = renderSvg();
     if (!out) return;
     try {
-      await deliverExport(exportName(pageTitle, "svg"), new Blob([out.svg], { type: "image/svg+xml" }), "SVG");
+      await saveExport(exportName(pageTitle, "svg"), new Blob([out.svg], { type: "image/svg+xml" }), "Mind map SVG");
     } catch (e) {
       showToast(`Export failed: ${e}`);
     }
   }, [pageTitle, renderSvg]);
 
   const handleExportMd = useCallback(async () => {
-    const outline = `# ${pageTitle}\n\n${blocksToOutline(blocks, null, 0)}`;
+    const outline = `# ${pageTitle}\n\n${blocksToOutline(blocks, pageTitle)}`;
     try {
-      await deliverExport(exportName(pageTitle, "md"), new Blob([outline], { type: "text/markdown" }), "Markdown outline");
+      await saveExport(exportName(pageTitle, "md"), new Blob([outline], { type: "text/markdown" }), "Markdown outline");
     } catch (e) {
       showToast(`Export failed: ${e}`);
     }
@@ -732,7 +747,7 @@ function MindMapInner({ pageId, pageTitle, isJournal, journalDate, blocks, onClo
         )}
 
         <div className="mindmap-toolbar-group">
-          <button className="btn btn-sm" onClick={() => reactFlow.fitView(FIT_VIEW)} title="Fit all nodes">
+          <button className="btn btn-sm" onClick={fitAll} title="Fit all nodes">
             Fit
           </button>
           <button className="btn btn-sm" onClick={() => reactFlow.zoomIn()} title="Zoom in">+</button>
@@ -749,19 +764,19 @@ function MindMapInner({ pageId, pageTitle, isJournal, journalDate, blocks, onClo
             <div className="mindmap-dropdown" onClick={() => setShowLayoutMenu(false)}>
               <button
                 className={direction === "LR" ? "active" : ""}
-                onClick={() => { setDirection("LR"); setTimeout(() => reactFlow.fitView(FIT_VIEW), 350); }}
+                onClick={() => { setDirection("LR"); setTimeout(fitAll, 350); }}
               >
                 ↔ Horizontal
               </button>
               <button
                 className={direction === "TB" ? "active" : ""}
-                onClick={() => { setDirection("TB"); setTimeout(() => reactFlow.fitView(FIT_VIEW), 350); }}
+                onClick={() => { setDirection("TB"); setTimeout(fitAll, 350); }}
               >
                 ↕ Vertical
               </button>
               <button
                 className={direction === "radial" ? "active" : ""}
-                onClick={() => { setDirection("radial"); setTimeout(() => reactFlow.fitView(FIT_VIEW), 350); }}
+                onClick={() => { setDirection("radial"); setTimeout(fitAll, 350); }}
               >
                 ◎ Radial
               </button>
@@ -795,6 +810,7 @@ function MindMapInner({ pageId, pageTitle, isJournal, journalDate, blocks, onClo
         onNodeContextMenu={onNodeContextMenu}
         onPaneClick={() => { setContextMenu(null); setSelectedNodeId(null); setShowLayoutMenu(false); setShowExportMenu(false); }}
         onViewportChange={onViewportChange}
+        onMoveStart={(e) => { if (e) userMovedRef.current = true; }}
         nodeTypes={nodeTypes}
         fitView
         fitViewOptions={FIT_VIEW}

@@ -1,7 +1,11 @@
 import type { PageTree } from "./api";
+import { exportFileName, saveExport } from "./exportFile";
+
+const escapeHtml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
 function mdToHtml(md: string): string {
-  let html = md;
+  // Note text is data: escape it before the markdown → HTML rewrites.
+  let html = escapeHtml(md);
   // Headings
   html = html.replace(/^#### (.+)$/gm, "<h4>$1</h4>");
   html = html.replace(/^### (.+)$/gm, "<h3>$1</h3>");
@@ -32,10 +36,10 @@ function mdToHtml(md: string): string {
 
 export function exportAsHtml(pageTree: PageTree): string {
   const { page, blocks } = pageTree;
-  const sorted = [...blocks].sort((a, b) => a.position - b.position);
-
-  let body = `<h1>${page.title}</h1>\n`;
-  for (const block of sorted) {
+  // Blocks come in outline order; positions are per parent, so never sort by them.
+  const title = escapeHtml(page.title);
+  let body = `<h1>${title}</h1>\n`;
+  for (const block of blocks) {
     if (!block.content.trim()) continue;
     body += mdToHtml(block.content) + "\n";
   }
@@ -45,7 +49,7 @@ export function exportAsHtml(pageTree: PageTree): string {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>${page.title}</title>
+<title>${title}</title>
 <style>
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 720px; margin: 40px auto; padding: 0 20px; color: #cdd6f4; background: #1e1e2e; line-height: 1.6; }
   h1 { font-size: 2em; border-bottom: 1px solid #45475a; padding-bottom: 8px; }
@@ -68,15 +72,10 @@ ${body}
 </html>`;
 }
 
-export function downloadHtml(pageTree: PageTree): void {
+/** "↗ Export" in page info: the save dialog on desktop, a download in the browser. */
+export function downloadHtml(pageTree: PageTree): Promise<unknown> {
   const html = exportAsHtml(pageTree);
-  const blob = new Blob([html], { type: "text/html" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `${pageTree.page.title.replace(/[^a-zA-Z0-9-_ ]/g, "")}.html`;
-  a.click();
-  URL.revokeObjectURL(url);
+  return saveExport(exportFileName(pageTree.page.title, "html", "page"), html, "Page", "text/html");
 }
 
 export function printPage(): void {

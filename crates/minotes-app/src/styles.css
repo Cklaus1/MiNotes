@@ -2943,6 +2943,8 @@ body {
 .pdf-canvas-wrapper {
   position: relative;
   display: inline-block;
+  /* As tall as the page, not the viewer (the text layer is laid over it). */
+  align-self: flex-start;
 }
 
 .pdf-canvas {
@@ -2950,12 +2952,88 @@ body {
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.3);
 }
 
+/* Highlights are painted here; the text layer above takes the mouse. */
 .pdf-overlay {
   position: absolute;
   top: 0;
   left: 0;
-  cursor: crosshair;
+  pointer-events: none;
 }
+
+/* pdf.js text layer (from pdfjs-dist/web/pdf_viewer.css, trimmed): transparent
+   text laid exactly over the rendered page so it can be selected. */
+.pdf-text-layer.textLayer {
+  position: absolute;
+  inset: 0;
+  overflow: clip;
+  opacity: 1;
+  line-height: 1;
+  text-align: initial;
+  -webkit-text-size-adjust: none;
+  text-size-adjust: none;
+  forced-color-adjust: none;
+  transform-origin: 0 0;
+  z-index: 1;
+  /* pdf.js sizes the layer with round(down, …, var(--scale-round-x/y)). */
+  --scale-round-x: 1px;
+  --scale-round-y: 1px;
+  --min-font-size: 1;
+  --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size));
+  --min-font-size-inv: calc(1 / var(--min-font-size));
+}
+.pdf-text-layer.textLayer :is(span, br) {
+  color: transparent;
+  position: absolute;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0% 0%;
+}
+.pdf-text-layer.textLayer > :not(.markedContent),
+.pdf-text-layer.textLayer .markedContent span:not(.markedContent) {
+  z-index: 1;
+  --font-height: 0;
+  font-size: calc(var(--text-scale-factor) * var(--font-height));
+  --scale-x: 1;
+  --rotate: 0deg;
+  transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv));
+}
+.pdf-text-layer.textLayer .markedContent { display: contents; }
+.pdf-text-layer.textLayer span[role="img"] { user-select: none; cursor: default; }
+.pdf-text-layer.textLayer ::selection { background: rgba(0, 90, 255, 0.3); }
+.pdf-text-layer.textLayer br::selection { background: transparent; }
+.pdf-text-layer.textLayer .endOfContent {
+  display: block;
+  position: absolute;
+  inset: 100% 0 0;
+  z-index: 0;
+  cursor: default;
+  user-select: none;
+}
+.pdf-text-layer.textLayer.selecting .endOfContent { top: 0; }
+
+.pdf-file-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pdf-color-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+
+/* Ctrl+P: recent PDFs */
+.pdf-open-choose { width: 100%; margin-bottom: 14px; }
+.pdf-open-recent-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); margin-bottom: 6px; }
+.pdf-open-recent { list-style: none; display: flex; flex-direction: column; gap: 2px; max-height: 300px; overflow-y: auto; }
+.pdf-open-recent-item {
+  display: flex; flex-direction: column; align-items: flex-start; width: 100%;
+  padding: 6px 8px; border: none; border-radius: 6px; background: transparent;
+  color: var(--text-primary); cursor: pointer; text-align: left; font: inherit;
+}
+.pdf-open-recent-item:hover, .pdf-open-recent-item:focus-visible { background: var(--bg-surface); }
+.pdf-open-recent-name { font-size: 13px; font-weight: 500; }
+.pdf-open-recent-path { font-size: 11px; color: var(--text-muted); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .pdf-sidebar {
   width: 280px;
@@ -4575,10 +4653,20 @@ body.theme-light { /* matches our light theme */ }
   background: rgba(137, 180, 250, 0.06);
 }
 
-.kanban-column-body.drag-over {
-  background: rgba(137, 180, 250, 0.04);
-  border-radius: 0 0 10px 10px;
+/* A card dragged anywhere over a column (header, cards, empty area, footer). */
+.kanban-column.drag-over {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-secondary));
+  box-shadow: 0 0 0 1px var(--accent) inset;
 }
+
+/* No text selection on the board while a card or column is dragged. */
+.kanban-container.is-dragging,
+.kanban-container.is-dragging * {
+  -webkit-user-select: none;
+  user-select: none;
+}
+.kanban-column-header { -webkit-user-select: none; user-select: none; }
 
 .kanban-color-bar {
   height: 3px;
@@ -4995,9 +5083,14 @@ body.theme-light { /* matches our light theme */ }
 }
 
 .kanban-wiki-link {
+  font: inherit;
   font-size: 11px;
   color: var(--accent);
   cursor: pointer;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border: none;
+  border-radius: 4px;
+  padding: 1px 6px;
 }
 
 .kanban-wiki-link:hover {
@@ -5212,7 +5305,8 @@ body.theme-light { /* matches our light theme */ }
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  z-index: 50;
+  /* Above its click-away backdrop (.kanban-ctx-backdrop, z-index 99). */
+  z-index: 100;
   width: 160px;
 }
 
@@ -5526,6 +5620,22 @@ body.theme-light { /* matches our light theme */ }
   white-space: nowrap;
   margin-top: auto;
 }
+
+.link-preview-status {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.link-preview-failed .link-preview-status { color: var(--text-muted); }
+.link-preview-skeleton {
+  height: 12px;
+  width: 60%;
+  border-radius: 4px;
+  background: var(--bg-surface);
+  animation: link-preview-pulse 1.2s ease-in-out infinite;
+}
+@keyframes link-preview-pulse { 50% { opacity: 0.45; } }
+@media (prefers-reduced-motion: reduce) { .link-preview-skeleton { animation: none; } }
+.link-preview-domain { font-weight: 500; }
 
 /* ── Feature 9: Block Transclusion ── */
 
@@ -6335,3 +6445,22 @@ img.img-broken {
 .remote-images-bar-btn:hover:not(:disabled) { text-decoration: underline; }
 .remote-images-bar-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 3px; }
 .remote-images-bar-btn:disabled { opacity: 0.6; cursor: default; }
+
+/* ── Overlays take the keyboard (focus target, no ring) ── */
+.canvas-layer:focus, .whiteboard:focus { outline: none; }
+
+/* The page underneath an overlay doesn't scroll or show its scrollbar. */
+body:has(.canvas-layer) .content,
+body:has(.canvas-layer) .sidebar-section,
+body:has(.pdf-viewer) .content { overflow: hidden; }
+
+/* Whiteboard: zoom and history controls */
+.whiteboard-zoom-pct { min-width: 52px; font-variant-numeric: tabular-nums; }
+.whiteboard-toolbar-sep { width: 1px; align-self: stretch; margin: 2px 4px; background: var(--border); }
+.whiteboard-toolbar .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* Draw tab with no board open */
+.canvas-draw-chooser { flex-direction: column; gap: 12px; text-align: center; padding: 24px; }
+.canvas-draw-chooser-title { font-size: 16px; font-weight: 600; color: var(--text-primary); }
+.canvas-draw-chooser-list { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+.canvas-draw-chooser-hint { font-size: 12px; color: var(--text-muted); max-width: 420px; }

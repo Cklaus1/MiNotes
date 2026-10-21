@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState, useCallback, type CSSProperties } from "react";
-import { isTauri, savePngToDownloads } from "../lib/api";
-import { confirmPlaintextExport } from "../lib/encryption";
+import { isTauri } from "../lib/api";
+import { saveExport } from "../lib/exportFile";
+import { boardToSvg } from "../lib/whiteboardSvg";
 import { loadWhiteboard, persistWhiteboard } from "../lib/whiteboardUtils";
 import { showToast } from "../lib/toast";
 import { registerFlush } from "../lib/pendingEdits";
 import { isRemoteSrc } from "../lib/remoteImages";
+import { useAppTheme } from "../lib/theme";
 
 interface StickyNote {
   id: string;
@@ -55,6 +57,24 @@ function getCalloutStyle(color: string) {
   return CALLOUT_STYLES[color] ?? { bg: "rgba(255,255,255,0.1)", text: color, border: "rgba(255,255,255,0.2)" };
 }
 
+// The board follows the theme: stored colours are the dark-canvas palette
+// (Catppuccin Mocha); on a light canvas each is drawn as its darker Latte twin,
+// so a stroke stays readable whichever theme it is viewed in.
+const LIGHT_INK: Record<string, string> = {
+  "#cdd6f4": "#4c4f69", // text
+  "#89b4fa": "#1e66f5", // blue
+  "#a6e3a1": "#40a02b", // green
+  "#f9e2af": "#df8e1d", // yellow
+  "#f38ba8": "#d20f39", // red
+};
+const inkFor = (color: string, bg: "dark" | "light") => (bg === "light" ? LIGHT_INK[color] ?? color : color);
+function calloutFor(color: string, bg: "dark" | "light") {
+  const s = getCalloutStyle(color);
+  if (bg === "dark") return s;
+  const ink = inkFor(color, bg);
+  return { bg: s.bg, text: ink, border: ink + "66" };
+}
+
 interface Arrow {
   id: string;
   x1: number;
@@ -82,7 +102,10 @@ interface WhiteboardData {
   boxes?: Box[];
   camera: { x: number; y: number; zoom: number };
   nextNoteId: number;
+  /** The canvas background in effect when saved (read by older versions). */
   canvasBg?: "dark" | "light";
+  /** "auto" (default) follows the app theme; "dark"/"light" pin it for this board. */
+  canvasTheme?: "auto" | "dark" | "light";
   showGrid?: boolean;
 }
 
@@ -175,12 +198,20 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
   const draggingElementRef = useRef<{ type: string; id: string; offsetX: number; offsetY: number } | null>(null);
   const [textSize, setTextSize] = useState<"S" | "M" | "L">("M");
   const [textStyle, setTextStyle] = useState<"callout" | "plain" | "sticky">("callout");
-  const [drawColor, setDrawColor] = useState(DRAW_COLORS[1]);
+  // Default ink: the text colour — light on a dark canvas, dark on a light one.
+  const [drawColor, setDrawColor] = useState(DRAW_COLORS[0]);
   const [noteColor, setNoteColor] = useState(NOTE_COLORS[0]);
   const [saveStatus, setSaveStatus] = useState<string | null>(null);
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [showCanvasSettings, setShowCanvasSettings] = useState(false);
-  const [canvasBg, setCanvasBg] = useState<"dark" | "light">(saved?.canvasBg ?? "light");
+  // Boards saved before the theme setting existed had "light" by default, so
+  // their old canvasBg is not a choice: they follow the theme too.
+  const [canvasBg, setCanvasBg] = useState<"auto" | "dark" | "light">(saved?.canvasTheme ?? "auto");
+  const appTheme = useAppTheme();
+  const effectiveBg: "dark" | "light" = canvasBg === "auto" ? appTheme : canvasBg;
+  const [zoomPct, setZoomPct] = useState(() => Math.round((saved?.camera?.zoom ?? 1) * 100));
+  const [canUndo, setCanUndo] = useState(false);
+  const [canRedo, setCanRedo] = useState(false);
   const [showGrid, setShowGrid] = useState(saved?.showGrid ?? false);
   const [undoSnapshot, setUndoSnapshot] = useState<{ notes: StickyNote[]; lines: Line[]; images: CanvasImage[]; texts: TextElement[]; arrows: Arrow[]; boxes: Box[] } | null>(null);
   const redoStackRef = useRef<Snapshot[]>([]);
@@ -228,8 +259,10 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
 
   // Redraw flag
   const needsRedrawRef = useRef(true);
-  const canvasBgRef = useRef(canvasBg);
-  canvasBgRef.current = canvasBg;
+  const canvasBgRef = useRef(effectiveBg);
+  canvasBgRef.current = effectiveBg;
+  const canvasThemeRef = useRef(canvasBg);
+  canvasThemeRef.current = canvasBg;
   const showGridRef = useRef(showGrid);
   showGridRef.current = showGrid;
   const selectedElementRef = useRef(selectedElement);
@@ -381,7 +414,9 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
     const h = canvas.height;
 
     // Clear — background color
-    const isDark = canvasBgRef.current === "dark";
+    const bgMode = canvasBgRef.current;
+    const isDark = bgMode === "dark";
+    const ink = (c: string) => inkFor(c, bgMode);
     ctx.fillStyle = isDark ? "#1e1e2e" : "#eff1f5";
     ctx.fillRect(0, 0, w, h);
 
@@ -414,7 +449,7 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
     // Draw lines
     for (const line of linesRef.current) {
       if (line.points.length < 2) continue;
-      ctx.strokeStyle = line.color;
+      ctx.strokeStyle = ink(line.color);
       ctx.lineWidth = line.width;
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
@@ -429,7 +464,7 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
     // Draw current drawing line
     const drawing = drawingRef.current;
     if (drawing.active && drawing.points.length >= 2) {
-      ctx.strokeStyle = drawColor;
+      ctx.strokeStyle = ink(drawColor);
       ctx.lineWidth = 2;
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
@@ -468,14 +503,14 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
 
     // Draw boxes
     for (const box of boxesRef.current) {
-      ctx.strokeStyle = box.color;
+      ctx.strokeStyle = ink(box.color);
       ctx.lineWidth = 2;
       ctx.strokeRect(box.x, box.y, box.width, box.height);
     }
 
     // Draw in-progress box
     if (boxDrawRef.current.active) {
-      ctx.strokeStyle = drawColor;
+      ctx.strokeStyle = ink(drawColor);
       ctx.lineWidth = 2;
       ctx.setLineDash([6, 4]);
       ctx.strokeRect(boxDrawRef.current.x, boxDrawRef.current.y, boxDrawRef.current.w, boxDrawRef.current.h);
@@ -484,13 +519,13 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
 
     // Draw arrows
     for (const arrow of arrowsRef.current) {
-      drawArrow(ctx, arrow.x1, arrow.y1, arrow.x2, arrow.y2, arrow.color);
+      drawArrow(ctx, arrow.x1, arrow.y1, arrow.x2, arrow.y2, ink(arrow.color));
     }
 
     // Draw in-progress arrow
     if (arrowDrawRef.current.active) {
       const a = arrowDrawRef.current;
-      drawArrow(ctx, a.x1, a.y1, a.x2, a.y2, drawColor);
+      drawArrow(ctx, a.x1, a.y1, a.x2, a.y2, ink(drawColor));
     }
 
     // Draw text elements (plain + callout)
@@ -511,7 +546,7 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
           if (w > maxW) maxW = w;
         }
         const totalH = textLines.length * lineHeight;
-        const style = getCalloutStyle(te.color);
+        const style = calloutFor(te.color, bgMode);
 
         // Background
         const rx = 8; // border radius
@@ -535,7 +570,7 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
         }
       } else {
         // Plain text
-        ctx.fillStyle = te.color;
+        ctx.fillStyle = ink(te.color);
         for (let i = 0; i < textLines.length; i++) {
           ctx.fillText(textLines[i], te.x, te.y + i * lineHeight);
         }
@@ -620,7 +655,7 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
         }
       }
       if (found) {
-        ctx.strokeStyle = "#89b4fa";
+        ctx.strokeStyle = isDark ? "#89b4fa" : "#1e66f5";
         ctx.lineWidth = 1.5 / cam.zoom;
         ctx.setLineDash([4 / cam.zoom, 4 / cam.zoom]);
         ctx.strokeRect(sx - 3, sy - 3, sw + 6, sh + 6);
@@ -701,10 +736,16 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
     return () => window.removeEventListener("resize", resize);
   }, [requestRedraw]);
 
+  // The board takes the keyboard while it is open: typed keys (tool shortcuts,
+  // Delete, Ctrl+Z…) must never reach the page editor hidden underneath.
+  useEffect(() => {
+    containerRef.current?.focus({ preventScroll: true });
+  }, []);
+
   // Mark redraw needed when state changes
   useEffect(() => {
     requestRedraw();
-  }, [notes, lines, texts, arrows, boxes, images, selectedElement, requestRedraw]);
+  }, [notes, lines, texts, arrows, boxes, images, selectedElement, effectiveBg, requestRedraw]);
 
   // ── Persistence: dirty flag + debounced save to the DB ──
   // Saves only happen when something actually changed (content, canvas
@@ -733,6 +774,7 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
       camera: { ...cameraRef.current },
       nextNoteId: nextNoteIdRef.current,
       canvasBg: canvasBgRef.current,
+      canvasTheme: canvasThemeRef.current,
       showGrid: showGridRef.current,
     };
     saveChainRef.current = saveChainRef.current
@@ -799,6 +841,8 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
         lastChangeAtRef.current = now;
       }
       prevSnapRef.current = cur;
+      setCanUndo(undoStackRef.current.length > 0);
+      setCanRedo(redoStackRef.current.length > 0);
     }
     prevSettingsRef.current = { canvasBg, showGrid };
     if (contentChanged || settingsChanged) markDirty();
@@ -819,6 +863,8 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
     redoStackRef.current.push(prevSnapRef.current);
     if (redoStackRef.current.length > MAX_UNDO) redoStackRef.current.shift();
     applySnapshot(snap);
+    setCanUndo(undoStackRef.current.length > 0);
+    setCanRedo(true);
   }, [applySnapshot]);
 
   const redo = useCallback(() => {
@@ -827,6 +873,8 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
     undoStackRef.current.push(prevSnapRef.current);
     if (undoStackRef.current.length > MAX_UNDO) undoStackRef.current.shift();
     applySnapshot(snap);
+    setCanUndo(true);
+    setCanRedo(redoStackRef.current.length > 0);
   }, [applySnapshot]);
 
   // ── Drag coalescing: apply at most one position update per animation frame ──
@@ -1298,12 +1346,28 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
       cam.x = mx - (mx - cam.x) * (newZoom / cam.zoom);
       cam.y = my - (my - cam.y) * (newZoom / cam.zoom);
       cam.zoom = newZoom;
+      setZoomPct(Math.round(newZoom * 100));
 
       requestRedraw();
       markDirty(); // camera is persisted; debounced
     },
     [requestRedraw, markDirty]
   );
+
+  /** Zoom buttons: zoom to `z` around the middle of the canvas. */
+  const zoomTo = useCallback((z: number) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const cam = cameraRef.current;
+    const newZoom = Math.max(0.1, Math.min(5, z));
+    const mx = canvas.width / 2, my = canvas.height / 2;
+    cam.x = mx - (mx - cam.x) * (newZoom / cam.zoom);
+    cam.y = my - (my - cam.y) * (newZoom / cam.zoom);
+    cam.zoom = newZoom;
+    setZoomPct(Math.round(newZoom * 100));
+    requestRedraw();
+    markDirty();
+  }, [requestRedraw, markDirty]);
 
   const handleContextMenu = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -1460,7 +1524,7 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
       cameraRef.current.zoom = startZoom + (targetZoom - startZoom) * ease;
       requestRedraw();
       if (t < 1) requestAnimationFrame(tick);
-      else markDirty();
+      else { markDirty(); setZoomPct(Math.round(targetZoom * 100)); }
     }
     requestAnimationFrame(tick);
   }, [requestRedraw, markDirty]);
@@ -1473,43 +1537,23 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
     onClose(hasContent);
   }, [flushSave, onClose]);
 
+  // Exports go through the save dialog (desktop) with a toast naming the file
+  // (lib/exportFile); an encrypted notebook is asked first.
   const exportPng = useCallback(async () => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    // An encrypted notebook: the image is written unencrypted — ask once.
-    if (!(await confirmPlaintextExport())) return;
-    const filename = `whiteboard-${whiteboardId}.png`;
+    const blob = await new Promise<Blob | null>((res) => canvas.toBlob(res, "image/png"));
+    if (!blob) { showToast("Whiteboard PNG export failed: the canvas could not be read", 8000); return; }
+    await saveExport(`whiteboard-${whiteboardId}.png`, blob, "Whiteboard PNG", "image/png");
+  }, [whiteboardId]);
 
-    if (isTauri) {
-      // Tauri mode: save directly to Downloads folder (WSL-aware)
-      canvas.toBlob(async (blob) => {
-        if (!blob) return;
-        const arrayBuf = await blob.arrayBuffer();
-        const data = Array.from(new Uint8Array(arrayBuf));
-        try {
-          const path = await savePngToDownloads(filename, data);
-          setSaveStatus(`Exported → ${path}`);
-        } catch (e) {
-          setSaveStatus(`Export failed: ${e}`);
-        }
-        setTimeout(() => setSaveStatus(null), 4000);
-      }, "image/png");
-    } else {
-      // Browser mode: trigger download (goes to browser's Downloads folder)
-      canvas.toBlob((blob) => {
-        if (!blob) return;
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement("a");
-        link.download = filename;
-        link.href = url;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        URL.revokeObjectURL(url);
-        setSaveStatus(`Exported → Downloads/${filename}`);
-        setTimeout(() => setSaveStatus(null), 3000);
-      }, "image/png");
-    }
+  const exportSvg = useCallback(async () => {
+    const svg = boardToSvg(
+      { notes: notesRef.current, lines: linesRef.current, images: imagesRef.current, texts: textsRef.current, arrows: arrowsRef.current, boxes: boxesRef.current },
+      { background: canvasBgRef.current === "dark" ? "#1e1e2e" : "#eff1f5", ink: (c) => inkFor(c, canvasBgRef.current), callout: (c) => calloutFor(c, canvasBgRef.current) },
+    );
+    if (!svg) { showToast("The whiteboard is empty — nothing to export"); return; }
+    await saveExport(`whiteboard-${whiteboardId}.svg`, new Blob([svg], { type: "image/svg+xml" }), "Whiteboard SVG", "image/svg+xml");
   }, [whiteboardId]);
 
   const clearCanvas = useCallback(() => {
@@ -1792,7 +1836,7 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
   })();
 
   return (
-    <div className="whiteboard" ref={containerRef}>
+    <div className={`whiteboard whiteboard-${effectiveBg}`} ref={containerRef} tabIndex={-1} data-canvas-theme={effectiveBg}>
       {/* ── Base toolbar ── */}
       <div className="whiteboard-toolbar">
         <div className="whiteboard-toolbar-group">
@@ -1822,7 +1866,7 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
                   <button
                     key={c}
                     className="whiteboard-color-swatch"
-                    style={{ background: c }}
+                    style={{ background: inkFor(c, effectiveBg) }}
                     onClick={() => {
                       const { type, id } = selectedElement;
                       if (type === "text") setTexts((prev) => prev.map((t) => t.id === id ? { ...t, color: c } : t));
@@ -1859,7 +1903,7 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
               <button
                 key={c}
                 className={`whiteboard-color-swatch ${(textStyle === "sticky" && mode === "text" ? noteColor : drawColor) === c ? "active" : ""}`}
-                style={{ background: c }}
+                style={{ background: textStyle === "sticky" && mode === "text" ? c : inkFor(c, effectiveBg) }}
                 onClick={() => textStyle === "sticky" && mode === "text" ? setNoteColor(c) : setDrawColor(c)}
               />
             ))}
@@ -1904,8 +1948,18 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
           </div>
         )}
 
+        {/* ── Undo / redo and zoom ── */}
+        <div className="whiteboard-toolbar-group" style={{ marginLeft: "auto" }}>
+          <button className="btn btn-sm" onClick={undo} disabled={!canUndo} title="Undo (Ctrl+Z)" aria-label="Undo">↶</button>
+          <button className="btn btn-sm" onClick={redo} disabled={!canRedo} title="Redo (Ctrl+Shift+Z)" aria-label="Redo">↷</button>
+          <span className="whiteboard-toolbar-sep" />
+          <button className="btn btn-sm" onClick={() => zoomTo(cameraRef.current.zoom / 1.2)} title="Zoom out" aria-label="Zoom out">−</button>
+          <button className="btn btn-sm whiteboard-zoom-pct" onClick={() => zoomTo(1)} title="Reset zoom to 100%" data-testid="whiteboard-zoom">{zoomPct}%</button>
+          <button className="btn btn-sm" onClick={() => zoomTo(cameraRef.current.zoom * 1.2)} title="Zoom in" aria-label="Zoom in">+</button>
+        </div>
+
         {/* ── Actions (always visible) ── */}
-        <div className="whiteboard-toolbar-group" style={{ marginLeft: "auto", position: "relative" }}>
+        <div className="whiteboard-toolbar-group" style={{ position: "relative" }}>
           {saveStatus && <span className="whiteboard-save-status">{saveStatus}</span>}
           <button className="btn btn-sm" onClick={() => {
             const input = document.createElement("input");
@@ -1921,7 +1975,8 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
           <button className="btn btn-sm" onClick={() => { setShowExportMenu(v => !v); setShowCanvasSettings(false); }}>Export ▾</button>
           {showExportMenu && (
             <div className="mindmap-dropdown" onClick={() => setShowExportMenu(false)}>
-              <button onClick={exportPng}>PNG Image</button>
+              <button onClick={exportPng}>PNG image (visible area)</button>
+              <button onClick={exportSvg}>SVG (whole board)</button>
             </div>
           )}
           <button className="btn btn-sm" onClick={clearCanvas} title="Clear">Clear</button>
@@ -1931,6 +1986,7 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
               <div className="wb-popover-row">
                 <span className="wb-popover-label">Background</span>
                 <div className="wb-settings-toggle">
+                  <button className={canvasBg === "auto" ? "active" : ""} onClick={() => { setCanvasBg("auto"); requestRedraw(); }} title="Follow the app theme">Auto</button>
                   <button className={canvasBg === "dark" ? "active" : ""} onClick={() => { setCanvasBg("dark"); requestRedraw(); }}>Dark</button>
                   <button className={canvasBg === "light" ? "active" : ""} onClick={() => { setCanvasBg("light"); requestRedraw(); }}>Light</button>
                 </div>
@@ -2025,9 +2081,9 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
               left: sx - (te.callout ? 10 * cam.zoom : 0),
               top: sy - (te.callout ? 10 * cam.zoom : 0),
               fontSize: fontSize * cam.zoom,
-              color: te.callout ? getCalloutStyle(te.color).text : te.color,
-              backgroundColor: te.callout ? getCalloutStyle(te.color).bg : "transparent",
-              borderColor: te.callout ? getCalloutStyle(te.color).border : "var(--accent)",
+              color: te.callout ? calloutFor(te.color, effectiveBg).text : inkFor(te.color, effectiveBg),
+              backgroundColor: te.callout ? calloutFor(te.color, effectiveBg).bg : "transparent",
+              borderColor: te.callout ? calloutFor(te.color, effectiveBg).border : "var(--accent)",
               minWidth: 120 * cam.zoom,
               minHeight: fontSize * 1.5 * cam.zoom,
               padding: te.callout ? `${10 * cam.zoom}px` : "2px 4px",

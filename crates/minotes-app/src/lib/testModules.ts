@@ -19,6 +19,7 @@ import * as pendingEdits from "./pendingEdits";
 import * as remoteImages from "./remoteImages";
 import * as encryption from "./encryption";
 import * as notebooks from "./notebooks";
+import * as theme from "./theme";
 import { registerTestApi } from "./testApi";
 
 registerTestApi({
@@ -34,5 +35,6 @@ registerTestApi({
     "/src/lib/remoteImages.ts": remoteImages,
     "/src/lib/encryption.ts": encryption,
     "/src/lib/notebooks.ts": notebooks,
+    "/src/lib/theme.ts": theme,
   },
 } as any);

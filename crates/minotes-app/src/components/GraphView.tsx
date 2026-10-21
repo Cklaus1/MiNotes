@@ -11,6 +11,7 @@ import {
   type SimulationLinkDatum,
 } from "d3-force";
 import * as api from "../lib/api";
+import { onThemeChange, themeColor } from "../lib/theme";
 import NotebookLabel from "./NotebookLabel";
 
 interface Props {
@@ -24,21 +25,38 @@ interface SimNode extends SimulationNodeDatum {
   block_count: number;
   link_count: number;
   radius: number;
+  /** Visible edges touching this node (label priority). */
+  degree: number;
 }
 
 interface SimEdge extends SimulationLinkDatum<SimNode> {
   weight: number;
 }
 
-const NODE_COLOR = "#89b4fa";
-const NODE_HOVER_COLOR = "#74c7ec";
-const EDGE_COLOR = "#45475a";
-const LABEL_COLOR = "#a6adc8";
-const BG_COLOR = "#1e1e2e";
+/** Canvas colours, read from the theme's CSS variables (light theme → light canvas). */
+interface GraphColors { bg: string; node: string; nodeHover: string; edge: string; label: string; labelHover: string }
+function readColors(): GraphColors {
+  return {
+    bg: themeColor("--bg-primary", "#1e1e2e"),
+    node: themeColor("--accent", "#89b4fa"),
+    nodeHover: themeColor("--accent-hover", "#74c7ec"),
+    edge: themeColor("--border", "#45475a"),
+    label: themeColor("--text-secondary", "#a6adc8"),
+    labelHover: themeColor("--text-primary", "#cdd6f4"),
+  };
+}
+
+/** A label drawn on screen (screen px) — kept for collision tests and tooling. */
+interface PlacedLabel { id: string; x: number; y: number; w: number; h: number }
 
 const LABEL_FONT = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
-const LABEL_MIN_ZOOM = 0.6; // labels are hidden below this zoom (except on hover)
+// Fit-to-view reserves room for labels from this zoom up; below it the labels
+// that fit are still drawn (collision culling decides), the fit just ignores them.
+const LABEL_MIN_ZOOM = 0.6;
 const LABEL_GAP = 3;
+const LABEL_PAD = 3; // screen px kept free around every drawn label
+// A press that moves less than this is a click (opens the page); more is a drag.
+const DRAG_THRESHOLD_PX = 4;
 const FIT_PADDING = 32; // screen px kept free around the fitted graph
 const FIT_MAX_ZOOM = 1.5;
 const HIDE_UNLINKED_KEY = "minotes-graph-hide-unlinked";
@@ -86,7 +104,11 @@ export default function GraphView({ onPageClick, onClose }: Props) {
     node: SimNode | null;
     active: boolean;
   }>({ node: null, active: false });
-  const animFrameRef = useRef<number>(0);
+  const colorsRef = useRef<GraphColors>(readColors());
+  // Neighbours of every node, and the nodes by degree (most linked first).
+  const neighboursRef = useRef<Map<SimNode, Set<SimNode>>>(new Map());
+  const byDegreeRef = useRef<SimNode[]>([]);
+  const labelsRef = useRef<PlacedLabel[]>([]);
 
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
@@ -103,9 +125,10 @@ export default function GraphView({ onPageClick, onClose }: Props) {
       canvas.height = h * dpr;
     }
 
+    const C = colorsRef.current;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
-    ctx.fillStyle = BG_COLOR;
+    ctx.fillStyle = C.bg;
     ctx.fillRect(0, 0, w, h);
 
     const { x: tx, y: ty, k } = transformRef.current;
@@ -115,14 +138,21 @@ export default function GraphView({ onPageClick, onClose }: Props) {
 
     const nodes = nodesRef.current;
     const edges = edgesRef.current;
+    const hovered = hoveredRef.current;
+    // Hovering a node highlights it and its neighbours; the rest fades.
+    const focus = hovered ? neighboursRef.current.get(hovered) ?? new Set<SimNode>() : null;
+    const inFocus = (n: SimNode) => !focus || n === hovered || focus.has(n);
 
     // Draw edges
-    ctx.strokeStyle = EDGE_COLOR;
-    ctx.lineWidth = 1 / k;
+    ctx.strokeStyle = C.edge;
     for (const edge of edges) {
       const s = edge.source as SimNode;
       const t = edge.target as SimNode;
       if (s.x == null || s.y == null || t.x == null || t.y == null) continue;
+      const hot = !!hovered && (s === hovered || t === hovered);
+      ctx.globalAlpha = focus && !hot ? 0.25 : 1;
+      ctx.strokeStyle = hot ? C.nodeHover : C.edge;
+      ctx.lineWidth = (hot ? 2 : 1) / k;
       ctx.beginPath();
       ctx.moveTo(s.x, s.y);
       ctx.lineTo(t.x, t.y);
@@ -130,45 +160,71 @@ export default function GraphView({ onPageClick, onClose }: Props) {
     }
 
     // Draw nodes
-    const hovered = hoveredRef.current;
     for (const node of nodes) {
       if (node.x == null || node.y == null) continue;
       ctx.beginPath();
       ctx.arc(node.x, node.y, node.radius, 0, Math.PI * 2);
-      ctx.fillStyle = node === hovered ? NODE_HOVER_COLOR : NODE_COLOR;
-      ctx.globalAlpha = 0.85;
+      ctx.fillStyle = node === hovered ? C.nodeHover : C.node;
+      ctx.globalAlpha = inFocus(node) ? 0.85 : 0.3;
       ctx.fill();
-      ctx.globalAlpha = 1;
     }
-
-    // Draw labels (only when zoomed in enough or for hovered node)
-    ctx.fillStyle = LABEL_COLOR;
-    ctx.textAlign = "center";
-    ctx.textBaseline = "top";
-    const fontSize = labelFontSize(k);
-    ctx.font = `${fontSize}px ${LABEL_FONT}`;
-    // Visible sim-space rectangle: a label that would poke out past the canvas
-    // edge is nudged back in instead of being cut off.
-    const viewLeft = (-w / 2 - tx) / k + 4 / k;
-    const viewRight = (w / 2 - tx) / k - 4 / k;
-
-    for (const node of nodes) {
-      if (node.x == null || node.y == null) continue;
-      const showLabel = k >= LABEL_MIN_ZOOM || node === hovered;
-      if (!showLabel) continue;
-      const label = nodeLabel(node);
-      const half = ctx.measureText(label).width / 2;
-      let lx = node.x;
-      const nodeOnScreen = node.x + node.radius > viewLeft && node.x - node.radius < viewRight;
-      if (nodeOnScreen && half * 2 < viewRight - viewLeft) {
-        lx = Math.min(Math.max(lx, viewLeft + half), viewRight - half);
-      }
-      ctx.fillStyle = node === hovered ? NODE_HOVER_COLOR : LABEL_COLOR;
-      ctx.fillText(label, lx, node.y + node.radius + LABEL_GAP);
-    }
-
+    ctx.globalAlpha = 1;
     ctx.restore();
+
+    // Labels, in screen space. Priority: the hovered node, its neighbours, then
+    // the most linked nodes. A label is drawn only where it overlaps no label
+    // already placed, so zooming out thins them out instead of piling them up.
+    const fontPx = labelFontSize(k) * k;
+    ctx.font = `${fontPx}px ${LABEL_FONT}`;
+    ctx.textAlign = "left";
+    ctx.textBaseline = "top";
+    const lineH = Math.ceil(fontPx * 1.25);
+    const placed: PlacedLabel[] = [];
+    const CELL = 64;
+    const grid = new Map<string, PlacedLabel[]>();
+    const cells = (r: PlacedLabel) => {
+      const out: string[] = [];
+      for (let gx = Math.floor((r.x - LABEL_PAD) / CELL); gx <= Math.floor((r.x + r.w + LABEL_PAD) / CELL); gx++)
+        for (let gy = Math.floor((r.y - LABEL_PAD) / CELL); gy <= Math.floor((r.y + r.h + LABEL_PAD) / CELL); gy++) out.push(gx + ":" + gy);
+      return out;
+    };
+    const collides = (r: PlacedLabel) => cells(r).some((c) => (grid.get(c) ?? []).some((o) =>
+      r.x < o.x + o.w + LABEL_PAD && o.x < r.x + r.w + LABEL_PAD && r.y < o.y + o.h + LABEL_PAD && o.y < r.y + r.h + LABEL_PAD));
+    const ordered: SimNode[] = [];
+    const seen = new Set<SimNode>();
+    const push = (n: SimNode) => { if (!seen.has(n)) { seen.add(n); ordered.push(n); } };
+    if (hovered) { push(hovered); for (const n of [...(focus ?? [])].sort((a, b) => b.degree - a.degree)) push(n); }
+    for (const n of byDegreeRef.current) push(n);
+    for (const node of ordered) {
+      if (node.x == null || node.y == null) continue;
+      const sx = tx + w / 2 + node.x * k;
+      const sy = ty + h / 2 + node.y * k;
+      const rr = node.radius * k;
+      if (sx + rr < 0 || sx - rr > w || sy + rr < 0 || sy - rr > h) continue; // off screen
+      const label = nodeLabel(node);
+      const lw = ctx.measureText(label).width;
+      // Nudge a label that would poke out past the canvas edge back in.
+      const lx = Math.min(Math.max(sx - lw / 2, 4), Math.max(4, w - 4 - lw));
+      const rect: PlacedLabel = { id: node.id, x: lx, y: sy + rr + LABEL_GAP, w: lw, h: lineH };
+      const forced = node === hovered;
+      if (!forced && collides(rect)) continue;
+      placed.push(rect);
+      for (const c of cells(rect)) { const l = grid.get(c); if (l) l.push(rect); else grid.set(c, [rect]); }
+      const hot = node === hovered || (focus?.has(node) ?? false);
+      // A halo in the background colour keeps labels readable over edges.
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = C.bg;
+      ctx.globalAlpha = inFocus(node) ? 1 : 0.45;
+      ctx.strokeText(label, rect.x, rect.y);
+      ctx.fillStyle = hot ? C.labelHover : C.label;
+      ctx.fillText(label, rect.x, rect.y);
+    }
+    ctx.globalAlpha = 1;
+    labelsRef.current = placed;
   }, []);
+
+  // Follow the app theme (light theme → light canvas).
+  useEffect(() => onThemeChange(() => { colorsRef.current = readColors(); draw(); }), [draw]);
 
   // Bounding box (sim units) of every node plus its label at zoom k.
   const graphBounds = useCallback((k: number) => {
@@ -327,6 +383,7 @@ export default function GraphView({ onPageClick, onClose }: Props) {
         block_count: n.block_count,
         link_count: n.link_count,
         radius: nodeRadius(n.block_count),
+        degree: 0,
         x: (Math.random() - 0.5) * 400,
         y: (Math.random() - 0.5) * 400,
       }));
@@ -340,6 +397,17 @@ export default function GraphView({ onPageClick, onClose }: Props) {
         target: nodeMap.get(e.target)!,
         weight: e.weight,
       }));
+
+    const neighbours = new Map<SimNode, Set<SimNode>>(nodes.map((n) => [n, new Set<SimNode>()]));
+    for (const e of edges) {
+      const s = e.source as SimNode, t = e.target as SimNode;
+      if (s === t) continue;
+      neighbours.get(s)!.add(t);
+      neighbours.get(t)!.add(s);
+    }
+    for (const n of nodes) n.degree = neighbours.get(n)!.size;
+    neighboursRef.current = neighbours;
+    byDegreeRef.current = [...nodes].sort((a, b) => b.degree - a.degree || b.block_count - a.block_count);
 
     nodesRef.current = nodes;
     edgesRef.current = edges;
@@ -384,43 +452,71 @@ export default function GraphView({ onPageClick, onClose }: Props) {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    let isPanning = false;
-    let panStart = { x: 0, y: 0 };
+    // One press = a click (opens the page) or, once it moves more than
+    // DRAG_THRESHOLD_PX, a drag (moves the node, or pans the view) — never both.
+    let press: { x: number; y: number; node: SimNode | null; moved: boolean; panX: number; panY: number } | null = null;
 
-    const onMouseDown = (e: MouseEvent) => {
-      const node = hitTest(e.clientX, e.clientY);
-      if (node) {
-        dragRef.current = { node, active: true };
-        node.fx = node.x;
-        node.fy = node.y;
-        simRef.current?.alphaTarget(0.3).restart();
-      } else {
-        isPanning = true;
-        panStart = { x: e.clientX - transformRef.current.x, y: e.clientY - transformRef.current.y };
+    const toSim = (e: MouseEvent) => {
+      const { x: tx, y: ty, k } = transformRef.current;
+      const rect = canvas.getBoundingClientRect();
+      return { x: (e.clientX - rect.left - tx - canvas.clientWidth / 2) / k, y: (e.clientY - rect.top - ty - canvas.clientHeight / 2) / k };
+    };
+
+    const onPressMove = (e: MouseEvent) => {
+      if (!press) return;
+      if (!press.moved) {
+        if (Math.hypot(e.clientX - press.x, e.clientY - press.y) < DRAG_THRESHOLD_PX) return;
+        press.moved = true;
+        if (press.node) {
+          dragRef.current = { node: press.node, active: true };
+          press.node.fx = press.node.x;
+          press.node.fy = press.node.y;
+          simRef.current?.alphaTarget(0.3).restart();
+        }
+      }
+      if (press.node) {
+        const p = toSim(e);
+        press.node.fx = p.x;
+        press.node.fy = p.y;
+        return;
+      }
+      transformRef.current.x = press.panX + (e.clientX - press.x);
+      transformRef.current.y = press.panY + (e.clientY - press.y);
+      userMovedRef.current = true;
+      draw();
+      publishStats();
+    };
+
+    const onPressUp = () => {
+      window.removeEventListener("mousemove", onPressMove);
+      window.removeEventListener("mouseup", onPressUp);
+      const p = press;
+      press = null;
+      if (!p) return;
+      if (p.node && p.moved) {
+        p.node.fx = null;
+        p.node.fy = null;
+        simRef.current?.alphaTarget(0);
+        dragRef.current = { node: null, active: false };
+      } else if (p.node && !p.moved) {
+        onPageClick(p.node.id);
       }
     };
 
+    const onMouseDown = (e: MouseEvent) => {
+      if (e.button !== 0) return;
+      e.preventDefault(); // no text selection while dragging
+      press = {
+        x: e.clientX, y: e.clientY, node: hitTest(e.clientX, e.clientY), moved: false,
+        panX: transformRef.current.x, panY: transformRef.current.y,
+      };
+      window.addEventListener("mousemove", onPressMove);
+      window.addEventListener("mouseup", onPressUp);
+    };
+
+    // Hover detection (not while a press is in progress).
     const onMouseMove = (e: MouseEvent) => {
-      if (dragRef.current.active && dragRef.current.node) {
-        const { x: tx, y: ty, k } = transformRef.current;
-        const w = canvas.clientWidth;
-        const h = canvas.clientHeight;
-        const rect = canvas.getBoundingClientRect();
-        dragRef.current.node.fx = (e.clientX - rect.left - tx - w / 2) / k;
-        dragRef.current.node.fy = (e.clientY - rect.top - ty - h / 2) / k;
-        return;
-      }
-
-      if (isPanning) {
-        transformRef.current.x = e.clientX - panStart.x;
-        transformRef.current.y = e.clientY - panStart.y;
-        userMovedRef.current = true;
-        draw();
-        publishStats();
-        return;
-      }
-
-      // Hover detection
+      if (press) return;
       const node = hitTest(e.clientX, e.clientY);
       if (node !== hoveredRef.current) {
         hoveredRef.current = node;
@@ -428,38 +524,25 @@ export default function GraphView({ onPageClick, onClose }: Props) {
         draw();
       }
     };
-
-    const onMouseUp = (e: MouseEvent) => {
-      if (dragRef.current.active && dragRef.current.node) {
-        // If the mouse barely moved, treat it as a click
-        dragRef.current.node.fx = null;
-        dragRef.current.node.fy = null;
-        simRef.current?.alphaTarget(0);
-        dragRef.current = { node: null, active: false };
-        return;
-      }
-      isPanning = false;
-    };
-
-    const onClick = (e: MouseEvent) => {
-      const node = hitTest(e.clientX, e.clientY);
-      if (node) {
-        onPageClick(node.id);
-      }
+    const onMouseLeave = () => {
+      if (press || !hoveredRef.current) return;
+      hoveredRef.current = null;
+      draw();
     };
 
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
       const rect = canvas.getBoundingClientRect();
-      const mx = e.clientX - rect.left;
-      const my = e.clientY - rect.top;
       const t = transformRef.current;
+      // Screen = t + size/2 + sim * k. Keep the sim point under the cursor fixed:
+      // t' = c - (c - t) * k'/k, with c the cursor relative to the canvas centre.
+      const cx = e.clientX - rect.left - canvas.clientWidth / 2;
+      const cy = e.clientY - rect.top - canvas.clientHeight / 2;
       const zoom = e.deltaY < 0 ? 1.1 : 1 / 1.1;
       const newK = Math.max(0.1, Math.min(5, t.k * zoom));
       const ratio = newK / t.k;
-      // Zoom toward cursor
-      t.x = mx - (mx - t.x) * ratio - canvas.clientWidth / 2 * (ratio - 1);
-      t.y = my - (my - t.y) * ratio - canvas.clientHeight / 2 * (ratio - 1);
+      t.x = cx - (cx - t.x) * ratio;
+      t.y = cy - (cy - t.y) * ratio;
       t.k = newK;
       userMovedRef.current = true;
       draw();
@@ -468,16 +551,31 @@ export default function GraphView({ onPageClick, onClose }: Props) {
 
     canvas.addEventListener("mousedown", onMouseDown);
     canvas.addEventListener("mousemove", onMouseMove);
-    canvas.addEventListener("mouseup", onMouseUp);
-    canvas.addEventListener("click", onClick);
+    canvas.addEventListener("mouseleave", onMouseLeave);
     canvas.addEventListener("wheel", onWheel, { passive: false });
+
+    // For tests and tooling: where each node and label is on screen (client px).
+    (canvas as unknown as { __minotesGraph?: unknown }).__minotesGraph = {
+      nodes: () => {
+        const rect = canvas.getBoundingClientRect();
+        const { x: tx, y: ty, k } = transformRef.current;
+        return nodesRef.current.filter((n) => n.x != null && n.y != null).map((n) => ({
+          id: n.id, title: n.title, degree: n.degree, r: n.radius * k,
+          x: rect.left + tx + canvas.clientWidth / 2 + n.x! * k,
+          y: rect.top + ty + canvas.clientHeight / 2 + n.y! * k,
+        }));
+      },
+      labels: () => labelsRef.current.map((l) => ({ ...l })),
+      colors: () => ({ ...colorsRef.current }),
+    };
 
     return () => {
       canvas.removeEventListener("mousedown", onMouseDown);
       canvas.removeEventListener("mousemove", onMouseMove);
-      canvas.removeEventListener("mouseup", onMouseUp);
-      canvas.removeEventListener("click", onClick);
+      canvas.removeEventListener("mouseleave", onMouseLeave);
       canvas.removeEventListener("wheel", onWheel);
+      window.removeEventListener("mousemove", onPressMove);
+      window.removeEventListener("mouseup", onPressUp);
     };
   }, [hitTest, draw, publishStats, onPageClick, data]);
 

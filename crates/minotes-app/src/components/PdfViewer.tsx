@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import * as pdfjs from "pdfjs-dist";
 import * as api from "../lib/api";
+import { addRecentPdf, pdfDisplayName } from "../lib/pdfFiles";
 
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
   "pdfjs-dist/build/pdf.worker.mjs",
@@ -38,6 +39,9 @@ export default function PdfViewer({ filePath, onClose, onBlockLink }: Props) {
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const overlayRef = useRef<HTMLCanvasElement>(null);
+  // pdf.js text layer: transparent, positioned text over the page, so text can
+  // be selected (and highlighted) like in any PDF reader.
+  const textLayerRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
   // Load PDF — destroy the previous document (and its worker resources) on
@@ -60,6 +64,7 @@ export default function PdfViewer({ filePath, onClose, onBlockLink }: Props) {
         setNumPages(doc.numPages);
         setPageNum(1);
         setPageInput("1");
+        void addRecentPdf(filePath);
       } catch (err: any) {
         if (cancelled) return;
         console.error("Failed to load PDF:", err);
@@ -96,6 +101,7 @@ export default function PdfViewer({ filePath, onClose, onBlockLink }: Props) {
     if (!pdfDoc || !canvasRef.current || !overlayRef.current) return;
     let cancelled = false;
     let renderTask: ReturnType<pdfjs.PDFPageProxy["render"]> | null = null;
+    let textLayer: pdfjs.TextLayer | null = null;
 
     const renderPage = async () => {
       const page = await pdfDoc.getPage(pageNum);
@@ -112,8 +118,20 @@ export default function PdfViewer({ filePath, onClose, onBlockLink }: Props) {
       // Resizing clears the overlay; repaint highlights right away.
       drawHighlightsRef.current();
 
+      // The text layer sizes itself from --scale-factor (pdf.js CSS contract).
+      const textDiv = textLayerRef.current;
+      if (textDiv) {
+        textDiv.replaceChildren();
+        textDiv.style.setProperty("--scale-factor", String(scale));
+        textDiv.style.setProperty("--total-scale-factor", String(scale));
+        textLayer = new pdfjs.TextLayer({ textContentSource: page.streamTextContent(), container: textDiv, viewport });
+      }
+
       renderTask = page.render({ canvas, viewport });
       await renderTask.promise;
+      if (cancelled) return;
+      await textLayer?.render();
+      if (textDiv && !cancelled) textDiv.dataset.ready = "1";
     };
 
     renderPage().catch((err) => {
@@ -124,6 +142,8 @@ export default function PdfViewer({ filePath, onClose, onBlockLink }: Props) {
     return () => {
       cancelled = true;
       renderTask?.cancel();
+      textLayer?.cancel();
+      if (textLayerRef.current) delete textLayerRef.current.dataset.ready;
     };
   }, [pdfDoc, pageNum, scale]);
 
@@ -166,7 +186,7 @@ export default function PdfViewer({ filePath, onClose, onBlockLink }: Props) {
     const width = rect.width / scale;
     const height = rect.height / scale;
 
-    if (width < 5 || height < 2) return;
+    if (width < 2 || height < 2) return;
 
     const text = selection.toString().trim();
     selection.removeAllRanges();
@@ -191,9 +211,11 @@ export default function PdfViewer({ filePath, onClose, onBlockLink }: Props) {
 
   // Handle click on overlay to select existing highlight
   const handleOverlayClick = useCallback(
-    (e: React.MouseEvent<HTMLCanvasElement>) => {
+    (e: React.MouseEvent<HTMLElement>) => {
       const overlay = overlayRef.current;
       if (!overlay) return;
+      // A click that ended a text selection is not a click on a highlight.
+      if (window.getSelection()?.isCollapsed === false) return;
       const rect = overlay.getBoundingClientRect();
       const cx = (e.clientX - rect.left) / scale;
       const cy = (e.clientY - rect.top) / scale;
@@ -217,7 +239,7 @@ export default function PdfViewer({ filePath, onClose, onBlockLink }: Props) {
 
   // Context menu on right-click
   const handleContextMenu = useCallback(
-    (e: React.MouseEvent<HTMLCanvasElement>) => {
+    (e: React.MouseEvent<HTMLElement>) => {
       e.preventDefault();
       const overlay = overlayRef.current;
       if (!overlay) return;
@@ -311,14 +333,17 @@ export default function PdfViewer({ filePath, onClose, onBlockLink }: Props) {
     return () => window.removeEventListener("keydown", handler);
   }, [pageNum, goToPage, onClose, contextMenu, editingHighlight]);
 
-  const pageHighlights = highlights.filter((h) => h.page_num === pageNum);
+  const ready = !!pdfDoc && !loadError;
+  const fileName = pdfDisplayName(filePath);
 
   return (
     <div className="pdf-viewer">
       {/* Toolbar */}
       <div className="pdf-toolbar">
+        <span className="pdf-file-name" title={filePath} data-testid="pdf-file-name">{fileName}</span>
+        {/* Controls only work on an open document: disabled while loading or on the error card. */}
         <div className="pdf-toolbar-group">
-          <button onClick={() => goToPage(pageNum - 1)} disabled={pageNum <= 1}>
+          <button onClick={() => goToPage(pageNum - 1)} disabled={!ready || pageNum <= 1} aria-label="Previous page">
             Prev
           </button>
           <input
@@ -327,6 +352,8 @@ export default function PdfViewer({ filePath, onClose, onBlockLink }: Props) {
             value={pageInput}
             onChange={(e) => setPageInput(e.target.value)}
             onKeyDown={handlePageInputKeyDown}
+            disabled={!ready}
+            aria-label="Page number"
             onBlur={() => {
               const n = parseInt(pageInput, 10);
               if (!isNaN(n)) goToPage(n);
@@ -334,14 +361,14 @@ export default function PdfViewer({ filePath, onClose, onBlockLink }: Props) {
             }}
           />
           <span className="pdf-page-count">/ {numPages}</span>
-          <button onClick={() => goToPage(pageNum + 1)} disabled={pageNum >= numPages}>
+          <button onClick={() => goToPage(pageNum + 1)} disabled={!ready || pageNum >= numPages} aria-label="Next page">
             Next
           </button>
         </div>
         <div className="pdf-toolbar-group">
-          <button onClick={() => setScale((s) => Math.max(s - 0.2, 0.4))}>-</button>
+          <button onClick={() => setScale((s) => Math.max(s - 0.2, 0.4))} disabled={!ready} aria-label="Zoom out">-</button>
           <span className="pdf-zoom-label">{Math.round(scale * 100)}%</span>
-          <button onClick={() => setScale((s) => Math.min(s + 0.2, 4))}>+</button>
+          <button onClick={() => setScale((s) => Math.min(s + 0.2, 4))} disabled={!ready} aria-label="Zoom in">+</button>
         </div>
         <div className="pdf-toolbar-group">
           {COLORS.map((c) => (
@@ -350,7 +377,8 @@ export default function PdfViewer({ filePath, onClose, onBlockLink }: Props) {
               className={`pdf-color-btn ${selectedColor === c ? "active" : ""}`}
               style={{ backgroundColor: COLOR_MAP[c]?.replace(/[\d.]+\)$/, "0.8)") }}
               onClick={() => setSelectedColor(c)}
-              title={c}
+              disabled={!ready}
+              title={`Highlight colour: ${c}`}
             />
           ))}
         </div>
@@ -371,9 +399,10 @@ export default function PdfViewer({ filePath, onClose, onBlockLink }: Props) {
           )}
           <div className="pdf-canvas-wrapper" onMouseUp={handleMouseUp} style={loadError ? { display: "none" } : undefined}>
             <canvas ref={canvasRef} className="pdf-canvas" />
-            <canvas
-              ref={overlayRef}
-              className="pdf-overlay"
+            <canvas ref={overlayRef} className="pdf-overlay" />
+            <div
+              ref={textLayerRef}
+              className="textLayer pdf-text-layer"
               onClick={handleOverlayClick}
               onContextMenu={handleContextMenu}
             />

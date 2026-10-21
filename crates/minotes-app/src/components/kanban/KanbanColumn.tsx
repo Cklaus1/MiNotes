@@ -6,6 +6,7 @@ import type { Block } from "../../lib/api";
 import * as api from "../../lib/api";
 import KanbanCard from "./KanbanCard";
 import { splitHeading } from "./kanbanModel";
+import { useEscapeToClose } from "../../lib/escapeStack";
 
 interface Props {
   columnId: string;
@@ -26,6 +27,7 @@ interface Props {
   onToggleCollapse: (colId: string) => void;
   onFocusCard: (id: string) => void;
   onOpenSidePanel: (blockId: string) => void;
+  onOpenPage: (title: string) => void;
   onDeleteCard: (block: Block) => void;
   onDeleteColumn: (column: Block, cardCount: number) => void;
   onRefresh: () => void;
@@ -34,7 +36,7 @@ interface Props {
 function KanbanColumn({
   columnId, column, title, cards, allColumns, onMoveCard, subBlockCounts, pageId,
   focusedCardId, searchQuery, isCollapsed, columnColor, columnColors,
-  onSetColumnColor, onToggleCollapse, onFocusCard, onOpenSidePanel,
+  onSetColumnColor, onToggleCollapse, onFocusCard, onOpenSidePanel, onOpenPage,
   onDeleteCard, onDeleteColumn, onRefresh,
 }: Props) {
   const colRef = useRef<HTMLDivElement>(null);
@@ -59,19 +61,6 @@ function KanbanColumn({
   useEffect(() => {
     const el = bodyRef.current;
     if (!el) return;
-    return dropTargetForElements({
-      element: el,
-      getData: () => ({ columnId }),
-      canDrop: ({ source }) => !!source.data.cardId,
-      onDragEnter: () => setIsDragOver(true),
-      onDragLeave: () => setIsDragOver(false),
-      onDrop: () => setIsDragOver(false),
-    });
-  }, [columnId]);
-
-  useEffect(() => {
-    const el = bodyRef.current;
-    if (!el) return;
     return autoScrollForElements({ element: el });
   }, []);
 
@@ -85,19 +74,30 @@ function KanbanColumn({
     });
   }, [columnId, isUnsorted]);
 
+  // The WHOLE column (header, cards, empty area, footer — collapsed too) is one
+  // drop target: a card lands at the end of it (or next to the card under the
+  // pointer, which is its own target); another column lands left or right of it.
   useEffect(() => {
     const el = colRef.current;
-    if (!el || isUnsorted) return;
+    if (!el) return;
     return dropTargetForElements({
       element: el,
-      getData: ({ input, element }) =>
-        attachClosestEdge({ columnDropId: columnId }, { input, element, allowedEdges: ["left", "right"] }),
-      canDrop: ({ source }) => !!source.data.columnDragId && source.data.columnDragId !== columnId,
-      onDrag: ({ self }) => setClosestEdge(extractClosestEdge(self.data)),
-      onDragLeave: () => setClosestEdge(null),
-      onDrop: () => setClosestEdge(null),
+      getData: ({ input, element, source }) =>
+        source.data.columnDragId
+          ? attachClosestEdge({ columnDropId: columnId }, { input, element, allowedEdges: ["left", "right"] })
+          : { columnId },
+      canDrop: ({ source }) =>
+        !!source.data.cardId ||
+        (!isUnsorted && !!source.data.columnDragId && source.data.columnDragId !== columnId),
+      onDragEnter: ({ source }) => { if (source.data.cardId) setIsDragOver(true); },
+      onDrag: ({ self, source }) => { if (source.data.columnDragId) setClosestEdge(extractClosestEdge(self.data)); },
+      onDragLeave: () => { setIsDragOver(false); setClosestEdge(null); },
+      onDrop: () => { setIsDragOver(false); setClosestEdge(null); },
     });
   }, [columnId, isUnsorted]);
+
+  // Escape closes only the colour picker (topmost), never the board under it.
+  useEscapeToClose(showColorPicker, () => setShowColorPicker(false));
 
   // Edit the title text only; the heading marker ("## ") that makes the block a
   // column is kept and re-applied on save.
@@ -135,7 +135,7 @@ function KanbanColumn({
   return (
     <>
       {closestEdge === "left" && <div className="kanban-column-drop-indicator" />}
-      <div ref={colRef} className={`kanban-column${isCollapsed ? " collapsed" : ""}${isUnsorted ? " kanban-column-unsorted" : ""}`} data-column-id={columnId} role="group" aria-label={`Column: ${title}`}>
+      <div ref={colRef} className={`kanban-column${isCollapsed ? " collapsed" : ""}${isUnsorted ? " kanban-column-unsorted" : ""}${isDragOver ? " drag-over" : ""}`} data-column-id={columnId} role="group" aria-label={`Column: ${title}`}>
         {/* Color accent bar */}
         {columnColor && <div className="kanban-color-bar" style={{ background: columnColor }} />}
 
@@ -149,7 +149,7 @@ function KanbanColumn({
               onBlur={finishEditTitle}
               onKeyDown={(e) => {
                 if (e.key === "Enter") finishEditTitle();
-                if (e.key === "Escape") setEditingTitle(false);
+                if (e.key === "Escape") { e.preventDefault(); setEditingTitle(false); }
                 e.stopPropagation();
               }}
               aria-label="Column title"
@@ -165,7 +165,15 @@ function KanbanColumn({
           )}
           <div className="kanban-column-actions">
             <span className="kanban-column-count">{cards.length}</span>
-            <button className="kanban-col-btn" onClick={() => setShowColorPicker(!showColorPicker)} title="Column color">●</button>
+            <button
+              className="kanban-col-btn kanban-color-btn"
+              onClick={() => setShowColorPicker(!showColorPicker)}
+              // No native tooltip while the picker is open: it covered the swatches.
+              title={showColorPicker ? undefined : "Column colour"}
+              aria-label="Column colour"
+              aria-expanded={showColorPicker}
+              style={columnColor ? { color: columnColor } : undefined}
+            >●</button>
             <button className="kanban-col-btn" onClick={() => onToggleCollapse(columnId)} title={isCollapsed ? "Expand" : "Collapse"}>
               {isCollapsed ? "+" : "-"}
             </button>
@@ -178,10 +186,12 @@ function KanbanColumn({
           {showColorPicker && (
             <>
               <div className="kanban-ctx-backdrop" onClick={() => setShowColorPicker(false)} />
-              <div className="kanban-color-picker">
+              <div className="kanban-color-picker" role="menu" aria-label="Column colour">
                 {columnColors.map((c) => (
                   <button
                     key={c}
+                    aria-label={`Colour ${c}`}
+                    data-color={c}
                     className={`kanban-color-swatch${columnColor === c ? " active" : ""}`}
                     style={{ background: c }}
                     onClick={() => { onSetColumnColor(columnId, columnColor === c ? null : c); setShowColorPicker(false); }}
@@ -198,7 +208,7 @@ function KanbanColumn({
         </div>
 
         {!isCollapsed && (
-          <div ref={bodyRef} className={`kanban-column-body${isDragOver ? " drag-over" : ""}`}>
+          <div ref={bodyRef} className="kanban-column-body">
             {filteredCards.length === 0 && isDragOver && (
               <div className="kanban-drop-placeholder">Drop here</div>
             )}
@@ -219,6 +229,7 @@ function KanbanColumn({
                 isFocused={focusedCardId === card.id}
                 onFocus={onFocusCard}
                 onOpenSidePanel={onOpenSidePanel}
+                onOpenPage={onOpenPage}
                 onDelete={onDeleteCard}
                 onRefresh={onRefresh}
               />
@@ -234,7 +245,7 @@ function KanbanColumn({
                   onBlur={submitNewCard}
                   onKeyDown={(e) => {
                     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submitNewCard(); }
-                    if (e.key === "Escape") { setAddingCard(false); setNewCardText(""); }
+                    if (e.key === "Escape") { e.preventDefault(); setAddingCard(false); setNewCardText(""); }
                     e.stopPropagation();
                   }}
                   aria-label="New card text"

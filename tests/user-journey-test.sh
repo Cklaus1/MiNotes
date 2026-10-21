@@ -3606,6 +3606,239 @@ press "Backspace"; sleep 1
 D=$(ev "(document.querySelector('[data-testid=confirm-dialog]')?.innerText||'none')" | tr -d '"')
 T=$(ev "[...document.querySelectorAll('.minotes-toast-undo')].map(t=>t.innerText).join('|')" | tr -d '"')
 [[ "$D" == "none" && "$T" == *"1 block deleted"* ]] && pass "No dialog; toast \"1 block deleted · Undo\"" || fail "Partial delete" "dialog=$D toast=$T"
+journey "68. My visual views work: previews, exports, kanban, graph, mind map, PDF, whiteboard"
+# UX review 2026-10 Wave 2 (visual views). Each step names the bug it guards.
+# ═══════════════════════════════════════════════
+A68="const api=await import('/src/lib/api.ts');"
+api "closePanel()" >/dev/null; press "Escape"; sleep 0.3
+P68="Visual68 $(date +%s)"
+ev "(async()=>{$A68 await api.createPage('$P68');return 1})()" >/dev/null
+
+step "A link preview says when it can't load, and shows the site's domain"
+ev "(async()=>{$A68 const t=await api.getPageTree('$P68');await api.createBlock(t.page.id,'{{link-preview:https://nothing.invalid/page}}');await api.createBlock(t.page.id,'{{link-preview:https://www.example.org/wiki/Narwhal}}');return 1})()" >/dev/null
+api "navigateTo('$P68')" >/dev/null; sleep 2
+for _ in $(seq 1 20); do R=$(ev "[...document.querySelectorAll('.link-preview-card')].map(c=>c.dataset.previewState+':'+c.querySelector('.link-preview-domain')?.textContent+':'+(c.querySelector('.link-preview-status')?.textContent||c.querySelector('.link-preview-title')?.textContent||'')).join('|')" | tr -d '"'); [[ "$R" == failed:* && "$R" != *loading* ]] && break; sleep 0.5; done
+[[ "$R" == "failed:nothing.invalid:Preview unavailable · open link|"* ]] && pass "Unreachable site: 'Preview unavailable · open link' + domain" || fail "Link preview failure state" "$R"
+if [[ "$BACKEND" != "desktop" ]]; then
+  [[ "$R" == *"|loaded:example.org:"* ]] && pass "Loaded preview shows title and domain ($R)" || fail "Link preview loaded state" "$R"
+fi
+ss "68-link-previews"
+
+step "Exports go through the save dialog and say where the file went (C-15)"
+# Capture instead of saving: desktop — the save_export_file IPC call (it opens a
+# native dialog) answered with a fake path; browser — the <a download> click.
+# The old save_png_to_downloads (silent write into Downloads) must never be called.
+X68="(()=>{window.__x68={saves:[]};const dec=b=>new TextDecoder().decode(new Uint8Array(b).slice(0,20000));if(window.__TAURI_INTERNALS__){const f=window.fetch;window.fetch=function(u,opt){const s=String(u);if(s.endsWith('/save_export_file')){const b=JSON.parse(opt.body);window.__x68.saves.push({name:b.filename,text:dec(b.data),size:b.data.length});return Promise.resolve(new Response(JSON.stringify('/captured/'+b.filename),{status:200,headers:{'Tauri-Response':'ok','Content-Type':'application/json'}}))}if(s.endsWith('/save_png_to_downloads'))window.__x68.saves.push({name:'FORBIDDEN'});return f.apply(this,arguments)};window.__x68.wrapped=window.fetch!==f}else{const c=HTMLAnchorElement.prototype.click;HTMLAnchorElement.prototype.click=function(){if(!this.download)return c.apply(this,arguments);const e={name:this.download,pending:true};window.__x68.saves.push(e);fetch(this.href).then(r=>r.arrayBuffer()).then(b=>{e.text=dec(b);e.size=b.byteLength;e.pending=false})};window.__x68.wrapped=true}return 1})()"
+ev "$X68" >/dev/null
+SAVES68="(window.__x68?.saves||[]).map(x=>[x.name,x.size,(x.text||'').includes('<h1>'),(x.text||'').includes('<polyline')&&(x.text||'').includes('Hello68')].join(',')).join(' ; ')"
+TOASTS68="[...document.querySelectorAll('.minotes-toast')].map(t=>t.textContent).join(' | ')"
+WR=$(ev "window.__x68?.wrapped===true" | tr -d '"')
+if [[ "$WR" == "true" ]]; then
+  ev "document.querySelector('.prop-toggle-btn')?.click()" >/dev/null; sleep 0.8
+  # One click is enough (the review saw the first click do nothing).
+  ev "document.querySelector('.page-export-btn')?.click()" >/dev/null; sleep 2
+  R=$(ev "$SAVES68" | tr -d '"'); T=$(ev "$TOASTS68" | tr -d '"')
+  [[ "$R" == *"$P68.html,"*",true,"* ]] && pass "Page ↗ Export: one click saves '$P68.html' through the save path" || fail "Page export not captured" "$R"
+  [[ "$T" == *"Page saved to /captured/$P68.html"* || "$T" == *"Page downloaded as $P68.html"* ]] && pass "A toast says where the page went" || fail "No export toast" "$T"
+  ev "document.querySelector('.prop-toggle-btn')?.click()" >/dev/null; sleep 0.3
+  WB68=$(ev "(async()=>{$A68 const {generateWhiteboardId}=await import('/src/lib/whiteboardUtils.ts');const id=generateWhiteboardId();await api.saveWhiteboard(id,JSON.stringify({notes:[],lines:[{id:'l1',points:[{x:10,y:10},{x:120,y:90},{x:220,y:30}],color:'#89b4fa',width:2}],boxes:[{id:'b1',x:60,y:120,width:140,height:80,color:'#a6e3a1'}],texts:[{id:'t1',x:300,y:60,text:'Hello68',color:'#cdd6f4',size:'M',callout:true}],arrows:[],images:[],camera:{x:40,y:40,zoom:1},nextNoteId:1}));const t=await api.getPageTree('$P68');await api.createBlock(t.page.id,'{{whiteboard:'+id+'}}');return id})()" | tr -d '"')
+  api "navigateTo('$P68')" >/dev/null; sleep 2
+  ev "document.querySelector('.whiteboard-indicator')?.click()" >/dev/null; sleep 2
+  WBX68="(w)=>{const m=[...document.querySelectorAll('.whiteboard-toolbar button')].find(b=>b.textContent.startsWith('Export'));m&&m.click();setTimeout(()=>{const b=[...document.querySelectorAll('.whiteboard-toolbar .mindmap-dropdown button')].find(x=>x.textContent.startsWith(w));b&&b.click()},300);return !!m}"
+  ev "($WBX68)('SVG')" >/dev/null; sleep 2
+  ev "($WBX68)('PNG')" >/dev/null; sleep 2.5
+  R=$(ev "$SAVES68" | tr -d '"'); T=$(ev "$TOASTS68" | tr -d '"')
+  [[ "$R" == *"whiteboard-$WB68.svg,"*",true"* ]] && pass "Whiteboard SVG export: the whole board as vectors" || fail "Whiteboard SVG export" "$R"
+  [[ "$R" == *"whiteboard-$WB68.png,"* && "$R" != *FORBIDDEN* ]] && pass "Whiteboard PNG export goes through the save path (never straight to Downloads)" || fail "Whiteboard PNG export" "$R"
+  [[ "$T" == *"Whiteboard PNG "*"whiteboard-$WB68.png"* ]] && pass "A toast names the saved whiteboard file" || fail "No whiteboard export toast" "$T"
+  ss "68-whiteboard-export"
+  press "Escape"; sleep 0.5; press "Escape"; sleep 0.5
+else
+  fail "Could not intercept exports — skipped to protect Downloads" "$WR"
+fi
+
+step "Kanban: the colour picker can really be clicked, and the colour stays with the board (C-16)"
+K68="Board68 $(date +%s)"
+KCOLS68=$(ev "(async()=>{$A68 const p=await api.createPage('$K68');const a=await api.createBlock(p.id,'## Todo68');const b=await api.createBlock(p.id,'## Done68');await api.createBlock(p.id,'Card68 see [[Getting Started]]',a.id);await api.createBlock(p.id,'Other68',a.id);return a.id+','+b.id})()" | tr -d '"')
+KA68=${KCOLS68%,*}; KB68=${KCOLS68#*,}
+api "navigateTo('$K68')" >/dev/null; sleep 1.5
+OPENKB68="(()=>{const b=[...document.querySelectorAll('.stats-mode-btn')].find(b=>b.textContent.includes('Kanban'));b&&b.click();return !!b})()"
+ev "$OPENKB68" >/dev/null; sleep 2
+ev "document.querySelector('[data-column-id=\"$KA68\"] .kanban-color-btn')?.click()" >/dev/null; sleep 0.5
+# A real click lands on whatever is on top at that point — not .click() on the swatch.
+R=$(ev "(()=>{const s=document.querySelector('[data-column-id=\"$KA68\"] .kanban-color-swatch[data-color=\"#a6e3a1\"]');if(!s)return 'no swatch';const r=s.getBoundingClientRect();const top=document.elementFromPoint(r.left+r.width/2,r.top+r.height/2);if(top!==s)return 'covered by '+(top?.className||top?.tagName);top.click();return 'clicked'})()" | tr -d '"')
+sleep 1
+C=$(ev "document.querySelector('[data-column-id=\"$KA68\"] .kanban-color-bar')?.style.background||'none'" | tr -d '"')
+[[ "$R" == "clicked" && ( "$C" == *"166, 227, 161"* || "$C" == *"a6e3a1"* ) ]] && pass "The swatch is on top and the click applies the colour ($C)" || fail "Colour picker click" "$R / $C"
+KP68=$(ev "(async()=>{$A68 return (await api.getProperties('$KA68')).filter(p=>p.key==='kanban-color').map(p=>p.value).join()})()" | tr -d '"')
+[[ "$KP68" == "#a6e3a1" ]] && pass "Saved with the board: kanban-color:: #a6e3a1 on the column block (syncs)" || fail "Colour not persisted on the block" "$KP68"
+press "Escape"; sleep 0.5
+ev "document.querySelector('.canvas-back-btn')?.click()" >/dev/null; sleep 1
+# Not from this device's localStorage: forget any kanban colours kept there.
+ev "(()=>{Object.keys(localStorage).filter(k=>k.startsWith('kanban-colors-')).forEach(k=>localStorage.removeItem(k));return 1})()" >/dev/null
+ev "$OPENKB68" >/dev/null; sleep 2
+C=$(ev "document.querySelector('[data-column-id=\"$KA68\"] .kanban-color-bar')?.style.background||'none'" | tr -d '"')
+[[ "$C" == *"166, 227, 161"* || "$C" == *"a6e3a1"* ]] && pass "Reopened board shows the colour again" || fail "Colour lost on reopen" "$C"
+
+step "Kanban: Escape closes only the topmost popover, not the board"
+ev "document.querySelector('[data-column-id=\"$KB68\"] .kanban-color-btn')?.click()" >/dev/null; sleep 0.4
+press "Escape"; sleep 0.6
+R=$(ev "!!document.querySelector('.kanban-color-picker')+'|'+!!document.querySelector('.kanban-container')" | tr -d '"')
+[[ "$R" == "false|true" ]] && pass "Esc closed the colour picker; the board stays open" || fail "Esc in kanban" "$R"
+ss "68-kanban"
+
+step "Kanban: a card dropped anywhere on a column (here: its header) moves there"
+# Native HTML5 drag events, as the browser sends them during a mouse drag.
+R=$(ev "(async()=>{const card=[...document.querySelectorAll('.kanban-card')].find(c=>c.textContent.includes('Other68'));const head=document.querySelector('[data-column-id=\"$KB68\"] .kanban-column-header');if(!card||!head)return 'missing';const dt=new DataTransfer();const at=(el)=>{const r=el.getBoundingClientRect();return {clientX:r.left+r.width/2,clientY:r.top+r.height/2}};const fire=(el,type)=>el.dispatchEvent(new DragEvent(type,{bubbles:true,cancelable:true,dataTransfer:dt,...at(el)}));fire(card,'dragstart');await new Promise(r=>setTimeout(r,50));fire(head,'dragenter');fire(head,'dragover');await new Promise(r=>setTimeout(r,80));const hl=head.closest('.kanban-column').classList.contains('drag-over');const cs=getComputedStyle(document.querySelector('.kanban-card-text'));const sel=cs.userSelect||cs.webkitUserSelect;fire(head,'drop');fire(card,'dragend');await new Promise(r=>setTimeout(r,1500));$A68 const t=await api.getPageTree('$K68');const b=t.blocks.find(b=>b.content==='Other68');return hl+'|'+sel+'|'+(b&&b.parent_id==='$KB68')})()" | tr -d '"')
+[[ "$R" == "true|none|true" ]] && pass "Column highlighted, no text selection while dragging, card moved to Done68" || fail "Whole-column drop" "$R"
+
+step "Kanban: a [[wiki link]] chip on a card opens that page"
+sleep 1
+ev "[...document.querySelectorAll('.kanban-wiki-link')].find(b=>b.textContent==='Getting Started')?.click()" >/dev/null; sleep 2
+R=$(ev "!!document.querySelector('.kanban-container')+'|'+(window.__MINOTES__.getCurrentPage()||'')" | tr -d '"')
+[[ "$R" == "false|"*"Getting Started"* ]] && pass "Chip opened Getting Started (board closed)" || fail "Wiki chip" "$R"
+
+step "Graph: wheel zoom keeps the node under the cursor (C-19)"
+ev "(async()=>{$A68 const hub=await api.createPage('Hub68');for(let i=0;i<30;i++){const p=await api.createPage('Spoke68 page number '+i);await api.createBlock(p.id,'about [[Hub68]] and [[Spoke68 page number '+((i+1)%30)+']]')}return 1})()" >/dev/null
+api "navigateTo('$P68')" >/dev/null; sleep 1
+ev "[...document.querySelectorAll('.stats-mode-btn')].find(b=>b.textContent.includes('Graph'))?.click()" >/dev/null
+for _ in $(seq 1 20); do N=$(ev "document.querySelector('.graph-view canvas')?.dataset.nodes||0" | tr -d '"'); [[ "$N" -ge 30 ]] 2>/dev/null && break; sleep 0.5; done
+G68="document.querySelector('.graph-view canvas').__minotesGraph"
+WHEEL68="(id,dy,n)=>{const c=document.querySelector('.graph-view canvas');const g=c.__minotesGraph;const a=g.nodes().find(x=>x.id===id);for(let i=0;i<n;i++)c.dispatchEvent(new WheelEvent('wheel',{deltaY:dy,clientX:a.x,clientY:a.y,bubbles:true,cancelable:true}));const b=g.nodes().find(x=>x.id===id);return Math.round(Math.hypot(b.x-a.x,b.y-a.y))+':'+c.dataset.zoom}"
+# An off-centre node: the old formula drifted most there.
+NODE68=$(ev "(()=>{const c=document.querySelector('.graph-view canvas');const r=c.getBoundingClientRect();const ns=$G68.nodes().filter(n=>n.x>r.left+20&&n.x<r.right-20&&n.y>r.top+20&&n.y<r.bottom-20);ns.sort((a,b)=>Math.hypot(b.x-(r.left+r.width/2),b.y-(r.top+r.height/2))-Math.hypot(a.x-(r.left+r.width/2),a.y-(r.top+r.height/2)));return ns[0]?.id||''})()" | tr -d '"')
+R1=$(ev "($WHEEL68)('$NODE68',-100,5)" | tr -d '"'); R2=$(ev "($WHEEL68)('$NODE68',100,8)" | tr -d '"')
+[[ -n "$NODE68" && "${R1%%:*}" -le 10 && "${R2%%:*}" -le 10 ]] 2>/dev/null && pass "Node stays under the cursor: in ×5 moved ${R1%%:*} px, out ×8 moved ${R2%%:*} px" || fail "Zoom drifts off the cursor" "node=$NODE68 in=$R1 out=$R2"
+
+step "Graph: dragging a node moves it and does not open the page; a click opens it"
+MOUSE68="(id,dx)=>{const c=document.querySelector('.graph-view canvas');const n=c.__minotesGraph.nodes().find(x=>x.id===id);const o={bubbles:true,cancelable:true,button:0};c.dispatchEvent(new MouseEvent('mousedown',{...o,clientX:n.x,clientY:n.y}));for(let i=1;i<=5;i++)window.dispatchEvent(new MouseEvent('mousemove',{...o,clientX:n.x+dx*i/5,clientY:n.y}));window.dispatchEvent(new MouseEvent('mouseup',{...o,clientX:n.x+dx,clientY:n.y}));c.dispatchEvent(new MouseEvent('click',{...o,clientX:n.x+dx,clientY:n.y}));return n.title}"
+T68=$(ev "($MOUSE68)('$NODE68',60)" | tr -d '"'); sleep 1
+R=$(ev "!!document.querySelector('.graph-view')+'|'+window.__MINOTES__.getCurrentPage()" | tr -d '"')
+[[ "$R" == "true|"* && "$R" != *"$T68"* ]] && pass "Dragged '$T68' 60 px: the graph stays open" || fail "Drag opened the page" "$R (node $T68)"
+T68=$(ev "($MOUSE68)('$NODE68',2)" | tr -d '"'); sleep 1.5
+R=$(ev "!!document.querySelector('.graph-view')+'|'+window.__MINOTES__.getCurrentPage()" | tr -d '"')
+[[ "$R" == "false|"*"$T68"* ]] && pass "A click (2 px wobble) opens '$T68'" || fail "Click didn't open the page" "$R (node $T68)"
+
+step "Graph: labels never pile up, and the canvas follows the light theme"
+ev "[...document.querySelectorAll('.stats-mode-btn')].find(b=>b.textContent.includes('Graph'))?.click()" >/dev/null
+for _ in $(seq 1 20); do N=$(ev "document.querySelector('.graph-view canvas')?.dataset.nodes||0" | tr -d '"'); [[ "$N" -ge 30 ]] 2>/dev/null && break; sleep 0.5; done
+OVL68="(()=>{const L=$G68.labels();let o=0;for(let i=0;i<L.length;i++)for(let j=i+1;j<L.length;j++){const a=L[i],b=L[j];if(a.x<b.x+b.w&&b.x<a.x+a.w&&a.y<b.y+b.h&&b.y<a.y+a.h)o++}return L.length+':'+o+':'+$G68.nodes().length})()"
+ZOOMOUT68="(()=>{const c=document.querySelector('.graph-view canvas');const r=c.getBoundingClientRect();for(let i=0;i<6;i++)c.dispatchEvent(new WheelEvent('wheel',{deltaY:100,clientX:r.left+r.width/2,clientY:r.top+r.height/2,bubbles:true,cancelable:true}));return c.dataset.zoom})()"
+R1=$(ev "$OVL68" | tr -d '"'); ev "$ZOOMOUT68" >/dev/null; sleep 0.3; R2=$(ev "$OVL68" | tr -d '"')
+IFS=: read -r L1 O1 N1 <<< "$R1"; IFS=: read -r L2 O2 N2 <<< "$R2"
+[[ "$O1" == "0" && "$O2" == "0" && "$L1" -ge 1 && "$L2" -ge 1 && "$L2" -lt "$N2" ]] 2>/dev/null && pass "No overlapping labels (fit: $L1 of $N1 labelled; zoomed out: $L2 of $N2)" || fail "Labels overlap" "fit=$R1 out=$R2"
+TH68=$(ev "localStorage.getItem('minotes-theme')||'dark'" | tr -d '"')
+ev "(async()=>{const t=await import('/src/lib/theme.ts');t.setTheme('light');return 1})()" >/dev/null; sleep 0.5
+R=$(ev "(()=>{const c=document.querySelector('.graph-view canvas');const p=c.getContext('2d').getImageData(3,3,1,1).data;return $G68.colors().bg+'|'+p[0]+','+p[1]+','+p[2]})()" | tr -d '"')
+ss "68-graph-light"
+ev "(async()=>{const t=await import('/src/lib/theme.ts');t.setTheme('$TH68');return 1})()" >/dev/null; sleep 0.3
+[[ "$R" == "#eff1f5|239,241,245" ]] && pass "Light theme: the graph canvas is light ($R)" || fail "Graph canvas ignores the theme" "$R"
+press "Escape"; sleep 0.5
+
+step "Mind map: the radial layout has no overlapping nodes (C-18)"
+M68="Launch68 $(date +%s)"
+ev "(async()=>{$A68 const p=await api.createPage('$M68');await api.createBlock(p.id,'# $M68');const ph=await api.createBlock(p.id,'## Phase68 planning');for(const t of ['Collect customer quotes for the launch','Prepare FAQ','Write the press release draft']){const b=await api.createBlock(p.id,t,ph.id);await api.createBlock(p.id,t.split(' ')[0]+' detail one',b.id);await api.createBlock(p.id,t.split(' ')[0]+' detail two',b.id)}const m=await api.createBlock(p.id,'Marketing68 see [[Getting Started]]');for(let i=0;i<6;i++)await api.createBlock(p.id,'Channel '+i+' with a fairly long label to wrap',m.id);const q=await api.createBlock(p.id,'TODO QA68 sign-off');await api.createBlock(p.id,'Smoke test',q.id);await api.createBlock(p.id,'Single68');return 1})()" >/dev/null
+api "navigateTo('$M68')" >/dev/null; sleep 1.5
+ev "document.activeElement?.blur()" >/dev/null; press "Control+m"; sleep 3
+for _ in $(seq 1 10); do N=$(ev "document.querySelectorAll('.mm-node').length" | tr -d '"'); [[ "$N" -ge 20 ]] 2>/dev/null && break; sleep 1; done
+ev "(()=>{const b=[...document.querySelectorAll('.mindmap-toolbar .btn-sm')].find(b=>b.textContent.includes('Layout'));b&&b.click();setTimeout(()=>{const r=[...document.querySelectorAll('.mindmap-dropdown button')].find(x=>x.textContent.includes('Radial'));r&&r.click()},300);return 1})()" >/dev/null; sleep 2.5
+OVLMM68="(()=>{const R=[...document.querySelectorAll('.react-flow__node')].map(n=>n.getBoundingClientRect());let o=0;for(let i=0;i<R.length;i++)for(let j=i+1;j<R.length;j++){const a=R[i],b=R[j];if(a.left<b.right-1&&b.left<a.right-1&&a.top<b.bottom-1&&b.top<a.bottom-1)o++}const v=document.querySelector('.mindmap-overlay').getBoundingClientRect();const out=R.filter(r=>r.left<v.left-1||r.right>v.right+1||r.top<v.top-1||r.bottom>v.bottom+1).length;return R.length+':'+o+':'+out})()"
+R=$(ev "$OVLMM68" | tr -d '"'); IFS=: read -r NN OO OUT <<< "$R"
+[[ "$NN" -ge 20 && "$OO" == "0" ]] 2>/dev/null && pass "Radial: $NN nodes, no two node boxes overlap" || fail "Radial layout overlaps" "nodes:overlaps:outside=$R"
+ss "68-mindmap-radial"
+
+step "Mind map: it refits when its area is resized"
+ev "(()=>{document.querySelector('.mindmap-overlay').style.width='55%';return 1})()" >/dev/null; sleep 1.2
+R=$(ev "$OVLMM68" | tr -d '"'); IFS=: read -r NN OO OUT <<< "$R"
+ev "(()=>{document.querySelector('.mindmap-overlay').style.width='';return 1})()" >/dev/null; sleep 0.8
+[[ "$OUT" == "0" ]] && pass "After shrinking, every node is still inside the map ($R)" || fail "No refit on resize" "nodes:overlaps:outside=$R"
+
+step "Mind map: Markdown export keeps [[links]] and headings, and the title once"
+ev "(()=>{const m=[...document.querySelectorAll('.mindmap-toolbar .btn-sm')].find(b=>b.textContent.includes('Export'));m&&m.click();setTimeout(()=>{const b=[...document.querySelectorAll('.mindmap-dropdown button')].find(x=>x.textContent.includes('Markdown'));b&&b.click()},300);return 1})()" >/dev/null; sleep 2
+R=$(ev "(()=>{const s=(window.__x68?.saves||[]).filter(x=>/\\.md\$/.test(x.name)).pop();if(!s)return 'none';const t=s.text||'';return [t.includes('[[Getting Started]]'),t.includes('- ## Phase68 planning'),t.split('\\n').filter(l=>l.includes('$M68')).length,t.includes('- TODO QA68 sign-off'),/\\n    - Collect detail one/.test(t)].join(',')})()" | tr -d '"')
+[[ "$R" == "true,true,1,true,true" ]] && pass "Outline: links, headings, TODO and nesting kept; title once" || fail "Markdown export" "$R"
+press "Escape"; sleep 0.5; press "Escape"; sleep 0.5
+
+step "PDF: text can be selected and a selection becomes a highlight (C-14)"
+# The same one-page fixture as desktop.sh fixture-pdf ("Desktop check" in Helvetica).
+if [[ "$BACKEND" == "desktop" ]]; then
+  PDF68=$("$DC" fixture-pdf | tail -1)
+else
+  PDF68=$(ev "(()=>{const objs=['<< /Type /Catalog /Pages 2 0 R >>','<< /Type /Pages /Kids [3 0 R] /Count 1 >>','<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>','<< /Length 77 >>\nstream\n0 0 1 rg 20 20 80 80 re f\nBT /F1 24 Tf 120 100 Td (Desktop check) Tj ET\nendstream','<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>'];let s='%PDF-1.4\n';const offs=[];objs.forEach((o,i)=>{offs.push(s.length);s+=(i+1)+' 0 obj\n'+o+'\nendobj\n'});const x=s.length;s+='xref\n0 '+(objs.length+1)+'\n0000000000 65535 f \n'+offs.map(o=>String(o).padStart(10,'0')+' 00000 n \n').join('');s+='trailer\n<< /Size '+(objs.length+1)+' /Root 1 0 R >>\nstartxref\n'+x+'\n%%EOF\n';return URL.createObjectURL(new Blob([s],{type:'application/pdf'}))})()" | tr -d '"')
+fi
+api "openPdf('$PDF68')" >/dev/null
+for _ in $(seq 1 20); do R=$(ev "document.querySelector('.pdf-text-layer')?.dataset.ready||''" | tr -d '"'); [[ "$R" == "1" ]] && break; sleep 0.5; done
+R=$(ev "(()=>{const s=[...document.querySelectorAll('.pdf-text-layer span')].find(x=>x.textContent.includes('Desktop check'));if(!s)return 'no text span';const r=s.getBoundingClientRect(),c=document.querySelector('.pdf-canvas').getBoundingClientRect();const top=document.elementFromPoint(r.left+r.width/2,r.top+r.height/2);return [(getComputedStyle(s).userSelect||getComputedStyle(s).webkitUserSelect)!=='none',top===s,r.width>40,r.left>c.left,r.right<c.right].join(',')})()" | tr -d '"')
+[[ "$R" == "true,true,true,true,true" ]] && pass "Selectable text over the page: the span is on top, inside the page" || fail "No PDF text layer" "$R"
+NAME68=$(ev "document.querySelector('[data-testid=pdf-file-name]')?.textContent||''" | tr -d '"')
+if [[ "$BACKEND" == "desktop" ]]; then [[ "$NAME68" == "desktop-check.pdf" ]] && pass "The toolbar shows the file name" || fail "No file name" "$NAME68"; fi
+R=$(ev "(async()=>{const s=[...document.querySelectorAll('.pdf-text-layer span')].find(x=>x.textContent.includes('Desktop check'));const rg=document.createRange();rg.selectNodeContents(s);const sel=getSelection();sel.removeAllRanges();sel.addRange(rg);const b=s.getBoundingClientRect();s.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,clientX:b.right,clientY:b.bottom}));await new Promise(r=>setTimeout(r,1500));$A68 const h=(await api.getHighlights('$PDF68'))[0];const c=document.querySelector('.pdf-canvas').getBoundingClientRect();const k=parseFloat(document.querySelector('.pdf-zoom-label').textContent)/100;const onText=!!h&&Math.abs(c.top+h.y*k-b.top)<6&&Math.abs(c.left+h.x*k-b.left)<6;return document.querySelectorAll('.pdf-highlight-item').length+'|'+(document.querySelector('.pdf-highlight-item .pdf-highlight-text')?.textContent||'')+'|'+onText})()" | tr -d '"')
+[[ "$R" == "1|Desktop check|true" ]] && pass "Selecting 'Desktop check' created a highlight on the text (sidebar: 1)" || fail "Highlight not created" "$R"
+ss "68-pdf-highlight"
+ev "document.querySelector('.pdf-close-btn')?.click()" >/dev/null; sleep 0.5
+
+step "PDF: a missing file shows the error card with the controls disabled"
+api "openPdf('/no/such/missing68.pdf')" >/dev/null; sleep 2
+R=$(ev "!!document.querySelector('.pdf-load-error')+'|'+[...document.querySelectorAll('.pdf-toolbar button:not(.pdf-close-btn), .pdf-page-input')].every(b=>b.disabled)+'|'+(document.querySelector('[data-testid=pdf-file-name]')?.textContent||'')" | tr -d '"')
+[[ "$R" == "true|true|missing68.pdf" ]] && pass "Error card; page/zoom/colour controls disabled; file name shown" || fail "PDF error state" "$R"
+ev "document.querySelector('.pdf-close-btn')?.click()" >/dev/null; sleep 0.5
+
+step "PDF: Ctrl+P offers the recent PDFs (no prompt())"
+ev "(async()=>{$A68 const r=JSON.parse((await api.getUiState('recent-pdfs'))||'[]');if(!r.length)await api.setUiState('recent-pdfs',JSON.stringify(['/home/someone/Papers/recent68.pdf']));return 1})()" >/dev/null
+ev "document.activeElement?.blur()" >/dev/null; press "Control+p"; sleep 1
+R=$(ev "(()=>{const d=document.querySelector('[data-testid=open-pdf-dialog]');return d?(!!d.querySelector('.pdf-open-choose')+'|'+d.querySelectorAll('.pdf-open-recent-item').length):'no dialog'})()" | tr -d '"')
+[[ "$R" == "true|"[1-9]* ]] && pass "Ctrl+P: 'Choose a PDF file…' + recent PDFs ($R)" || fail "Ctrl+P dialog" "$R"
+ss "68-pdf-open-dialog"
+press "Escape"; sleep 0.5
+R=$(ev "!!document.querySelector('[data-testid=open-pdf-dialog]')" | tr -d '"')
+[[ "$R" == "false" ]] && pass "Esc closes it" || fail "Ctrl+P dialog stays" "$R"
+
+step "Whiteboard: follows the theme, has zoom % and undo buttons, and takes the keyboard"
+api "closePanel()" >/dev/null; sleep 0.3
+api "navigateTo('$P68')" >/dev/null; sleep 2
+ev "document.querySelector('.whiteboard-indicator')?.click()" >/dev/null; sleep 2
+WBPX68="(()=>{const c=document.querySelector('.whiteboard-canvas');const p=c.getContext('2d').getImageData(2,c.height-3,1,1).data;return document.querySelector('.whiteboard').dataset.canvasTheme+'|'+p[0]+','+p[1]+','+p[2]})()"
+R=$(ev "$WBPX68" | tr -d '"')
+FOC68=$(ev "(()=>{const a=document.activeElement;return (a?.closest('.canvas-layer')?'overlay':'outside')+':'+!!a?.closest('.ProseMirror')})()" | tr -d '"')
+SC=$(ev "getComputedStyle(document.querySelector('.content')||document.body).overflowY" | tr -d '"')
+[[ "$R" == "dark|30,30,46" ]] && pass "Dark theme: dark canvas ($R)" || fail "Whiteboard ignores the dark theme" "$R"
+[[ "$FOC68" == "overlay:false" ]] && pass "Keyboard focus is on the board, not the editor underneath" || fail "Focus left under the overlay" "$FOC68"
+[[ "$SC" == "hidden" ]] && pass "The page underneath doesn't scroll (no scrollbar under the overlay)" || fail "Page scrollbar under overlay" "$SC"
+TH68=$(ev "localStorage.getItem('minotes-theme')||'dark'" | tr -d '"')
+ev "(async()=>{const t=await import('/src/lib/theme.ts');t.setTheme('light');return 1})()" >/dev/null; sleep 0.6
+R=$(ev "$WBPX68" | tr -d '"')
+ev "[...document.querySelectorAll('.whiteboard-toolbar button')].find(b=>b.textContent.trim()==='Draw')?.click()" >/dev/null; sleep 0.3
+SW=$(ev "getComputedStyle(document.querySelector('.whiteboard-toolbar .whiteboard-color-swatch.active')).backgroundColor" | tr -d '"')
+ss "68-whiteboard-light"
+ev "(async()=>{const t=await import('/src/lib/theme.ts');t.setTheme('$TH68');return 1})()" >/dev/null; sleep 0.3
+press "Escape"; sleep 0.3
+[[ "$R" == "light|239,241,245" && "$SW" == "rgb(76, 79, 105)" ]] && pass "Light theme: light canvas, default ink drawn dark ($SW)" || fail "Whiteboard light theme" "$R ink=$SW"
+Z=$(ev "(async()=>{const t=()=>new Promise(r=>setTimeout(r,150));const z=()=>document.querySelector('[data-testid=whiteboard-zoom]').textContent;const a=z();[...document.querySelectorAll('.whiteboard-toolbar button')].find(b=>b.getAttribute('aria-label')==='Zoom in').click();await t();const b=z();document.querySelector('[data-testid=whiteboard-zoom]').click();await t();return a+'>'+b+'>'+z()})()" | tr -d '"')
+Z2=$(ev "document.querySelector('[data-testid=whiteboard-zoom]').textContent" | tr -d '"')
+[[ "$Z" == "100%>120%>"* && "$Z2" == "100%" ]] && pass "Zoom % with − / + buttons; clicking it resets to 100% ($Z)" || fail "Whiteboard zoom controls" "$Z / $Z2"
+U=$(ev "(async()=>{const u=()=>[...document.querySelectorAll('.whiteboard-toolbar button')].find(b=>b.getAttribute('aria-label')==='Undo');const before=u().disabled;[...document.querySelectorAll('.whiteboard-toolbar button')].find(b=>b.textContent.trim()==='Clear').click();await new Promise(r=>setTimeout(r,300));const mid=u().disabled;u().click();await new Promise(r=>setTimeout(r,1800));$A68 const d=JSON.parse(await api.getWhiteboard('$WB68'));return before+'|'+mid+'|'+d.lines.length+'|'+d.boxes.length})()" | tr -d '"')
+[[ "$U" == "true|false|1|1" ]] && pass "Undo button: disabled with no history, then undoes Clear (board restored)" || fail "Whiteboard undo button" "$U"
+press "Escape"; sleep 0.8
+
+step "Whiteboard: the Draw tab offers this page's board or a new one — never a stale board from another page"
+ev "[...document.querySelectorAll('.stats-mode-btn')].find(b=>b.textContent.includes('Graph'))?.click()" >/dev/null; sleep 1.5
+ev "[...document.querySelectorAll('.canvas-mode-btn')].find(b=>b.textContent.includes('Draw'))?.click()" >/dev/null; sleep 1
+R=$(ev "(()=>{const c=document.querySelector('[data-testid=draw-chooser]');if(!c)return 'no chooser';const b=c.querySelector('[data-board-id]');return (b?b.dataset.boardId+':'+b.textContent:'none')+'|'+!!c.querySelector('[data-testid=draw-new-board]')})()" | tr -d '"')
+[[ "$R" == "$WB68:Open this page's board|true" ]] && pass "Draw tab: 'Open this page's board' + 'New board on this page'" || fail "Draw tab chooser" "$R"
+ev "document.querySelector('[data-testid=draw-chooser] [data-board-id]')?.click()" >/dev/null; sleep 1.5
+R=$(ev "(document.querySelector('.whiteboard-canvas')?'board':'none')+'|'+(document.querySelector('[data-testid=canvas-page-context]')?.textContent||'')" | tr -d '"')
+[[ "$R" == "board|Board on “$P68”" ]] && pass "Opens it, and the bar says whose board it is" || fail "Open page board" "$R"
+press "Escape"; sleep 0.8
+api "navigateTo('Hub68')" >/dev/null; sleep 1.5
+ev "[...document.querySelectorAll('.stats-mode-btn')].find(b=>b.textContent.includes('Graph'))?.click()" >/dev/null; sleep 1.5
+ev "[...document.querySelectorAll('.canvas-mode-btn')].find(b=>b.textContent.includes('Draw'))?.click()" >/dev/null; sleep 1
+R=$(ev "(()=>{const c=document.querySelector('[data-testid=draw-chooser]');return c?(c.querySelectorAll('[data-board-id]').length+'|'+c.textContent.includes('no board yet')):'board '+window.__MINOTES__.getOpenWhiteboardId()})()" | tr -d '"')
+[[ "$R" == "0|true" ]] && pass "On another page the Draw tab doesn't reopen the last board" || fail "Stale board on another page" "$R"
+ev "document.querySelector('.canvas-back-btn')?.click()" >/dev/null; sleep 0.8
+ev "document.activeElement?.blur()" >/dev/null; press "Control+w"; sleep 1.5
+R=$(ev "document.querySelector('[data-testid=canvas-page-context]')?.textContent||''" | tr -d '"')
+[[ "$R" == "New board · added to “Hub68” when you draw" ]] && pass "Ctrl+W says where the new board goes ($R)" || fail "Ctrl+W context" "$R"
+press "Escape"; sleep 0.8
 
 # ═══════════════════════════════════════════════
 close_app

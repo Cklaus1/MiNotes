@@ -143,12 +143,12 @@ Each must hold in the shipped app:
 - SSRF: serve a page with a distinctive `<title>` on `127.0.0.1:<port>`, call
   `invoke("fetch_og_metadata", {url})` for `127.0.0.1`, `localhost`, `[::1]`,
   `0.0.0.0` — the title must NOT come back and the server log must show no request.
-  (The command returns empty metadata on any failure, so an empty result alone
-  proves nothing.)
-- **Never call `save_png_to_downloads`** — on WSL it writes into the real Windows
-  Downloads folder regardless of the scratch HOME. `save_export_file` (mind map
-  exports) opens a native save dialog that blocks the IPC call — intercept it in
-  `fetch` as journey 58 does instead of letting it run.
+  (The command returns an error on any failure, so check the server log too.)
+- Every export (page HTML, whiteboard PNG/SVG, mind map) goes through
+  `save_export_file`, which opens a native save dialog that blocks the IPC call —
+  intercept it in `fetch` as journeys 58 and 66 do instead of letting it run.
+  (`save_png_to_downloads`, which wrote into the real Windows Downloads folder on
+  WSL, was removed in 2026-10.)
 - `down` kills the app's whole process group (tauri-driver, WebKitWebDriver,
   dbus-daemon included). If a run was killed before `down`, check `ps` for stray
   `tauri-driver`/`WebKitWebDriver` before the next run: a leftover app on the same

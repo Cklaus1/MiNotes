@@ -221,7 +221,9 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
   };
 
   // Feature 8: Link Preview state
-  const [ogMeta, setOgMeta] = useState<OgMetadata | null>(null);
+  // "loading" until the backend answers; "failed" when the fetch failed or the page
+  // has nothing to show (the card then says so instead of repeating the URL).
+  const [ogMeta, setOgMeta] = useState<OgMetadata | "loading" | "failed" | null>(null);
   const linkPreviewMatch = block.content.match(/^\{\{link-preview:(https?:\/\/[^}]+)\}\}$/);
   const linkPreviewUrl = linkPreviewMatch ? linkPreviewMatch[1] : null;
 
@@ -508,7 +510,12 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
   // Feature 8: Fetch OG metadata for link preview blocks
   useEffect(() => {
     if (!linkPreviewUrl) { setOgMeta(null); return; }
-    api.fetchOgMetadata(linkPreviewUrl).then(setOgMeta).catch(() => setOgMeta(null));
+    let cancelled = false;
+    setOgMeta("loading");
+    api.fetchOgMetadata(linkPreviewUrl)
+      .then((m) => { if (!cancelled) setOgMeta(m.title || m.description ? m : "failed"); })
+      .catch(() => { if (!cancelled) setOgMeta("failed"); });
+    return () => { cancelled = true; };
   }, [linkPreviewUrl]);
 
   // Feature 9: Fetch transcluded block content
@@ -745,28 +752,43 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
             </div>
           );
         }
-        // Feature 8: Link Preview Card
+        // Feature 8: Link Preview Card — loading / loaded / unavailable states.
         if (linkPreviewUrl) {
+          const meta = typeof ogMeta === "object" ? ogMeta : null;
+          const state = meta ? "loaded" : ogMeta === "failed" ? "failed" : "loading";
+          let domain = linkPreviewUrl;
+          try { domain = new URL(linkPreviewUrl).hostname.replace(/^www\./, ""); } catch { /* keep the URL */ }
           return (
             <a
-              className="link-preview-card"
+              className={`link-preview-card link-preview-${state}`}
+              data-preview-state={state}
               href={linkPreviewUrl}
               target="_blank"
               rel="noopener noreferrer"
+              title={linkPreviewUrl}
             >
               {/* Remote images are never loaded by the webview: a placeholder that
                   lib/remoteImages fills through the backend once allowed. */}
-              {isRemoteSrc(ogMeta?.image) && (
-                <span className="remote-img link-preview-image" data-remote-src={ogMeta!.image} data-alt="" />
+              {meta && isRemoteSrc(meta.image) && (
+                <span className="remote-img link-preview-image" data-remote-src={meta.image} data-alt="" />
               )}
               <div className="link-preview-body">
-                <div className="link-preview-title">
-                  {ogMeta?.title || linkPreviewUrl}
-                </div>
-                {ogMeta?.description && (
-                  <div className="link-preview-description">{ogMeta.description}</div>
+                {state === "loading" ? (
+                  <>
+                    <div className="link-preview-skeleton" aria-hidden="true" />
+                    <div className="link-preview-status">Loading preview…</div>
+                  </>
+                ) : state === "failed" ? (
+                  <div className="link-preview-status">Preview unavailable · open link</div>
+                ) : (
+                  <>
+                    <div className="link-preview-title">{meta!.title || domain}</div>
+                    {meta!.description && (
+                      <div className="link-preview-description">{meta!.description}</div>
+                    )}
+                  </>
                 )}
-                <div className="link-preview-url">{linkPreviewUrl}</div>
+                <div className="link-preview-url"><span className="link-preview-domain">{domain}</span></div>
               </div>
             </a>
           );
