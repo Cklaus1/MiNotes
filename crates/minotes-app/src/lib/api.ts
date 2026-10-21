@@ -923,12 +923,19 @@ export interface GitSyncResult {
   offline?: boolean;
   /** Nothing ran: the folder's sync needs the user's confirmation first. */
   needs_confirmation?: boolean;
+  error_kind?: SyncErrorKind | null;
+  /** The repo has no remote: the cycle only committed locally. */
+  no_remote?: boolean;
 }
 
 export interface HeldDeletions {
+  /** Pages, not counting journal days. */
   pages: number;
+  /** Journal days. */
+  journals?: number;
   folders: number;
   titles: string[];
+  /** Pages in the notebook: not journal days, nothing trashed or archived. */
   total_pages: number;
 }
 

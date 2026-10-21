@@ -172,21 +172,29 @@ export default function NotebookBanner({ heldDeletions, onResolveHeld, onOpenPag
       </div>,
     );
   }
-  if (heldDeletions && heldDeletions.pages + heldDeletions.folders > 0) {
+  const heldJournals = heldDeletions?.journals ?? 0;
+  if (heldDeletions && heldDeletions.pages + heldJournals + heldDeletions.folders > 0) {
     const n = heldDeletions.pages;
+    // Counted like the sidebar's page count: pages only (journal days and
+    // projects apart; nothing trashed or archived).
+    const parts = [
+      n > 0 ? `${n} of your ${heldDeletions.total_pages} page${heldDeletions.total_pages === 1 ? "" : "s"}` : "",
+      heldJournals > 0 ? `${heldJournals} journal day${heldJournals === 1 ? "" : "s"}` : "",
+      heldDeletions.folders > 0 ? `${heldDeletions.folders} project${heldDeletions.folders === 1 ? "" : "s"}` : "",
+    ].filter(Boolean);
+    const what = parts.length > 1 ? `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}` : parts[0];
     banners.push(
       <div key="held" className="nb-banner warn held" role="alert" data-testid="held-deletions-banner">
         <div className="nb-banner-text">
           <span>
-            <strong>Another device deleted {n} page{n === 1 ? "" : "s"}</strong>
-            {heldDeletions.folders > 0 ? ` and ${heldDeletions.folders} folder${heldDeletions.folders === 1 ? "" : "s"}` : ""}
-            {" "}(of {heldDeletions.total_pages}). That is a lot at once, so sync did not remove them here.
+            <strong>Another device deleted {what}.</strong>
+            {" "}That is a lot at once, so sync did not remove them here.
             Until you decide, they stay here and are not sent back.
           </span>
           {review && (
             <ul className="nb-held-list">
               {heldDeletions.titles.map(t => <li key={t}>{t}</li>)}
-              {n + heldDeletions.folders > heldDeletions.titles.length && <li>…</li>}
+              {n + heldJournals + heldDeletions.folders > heldDeletions.titles.length && <li>…</li>}
             </ul>
           )}
         </div>

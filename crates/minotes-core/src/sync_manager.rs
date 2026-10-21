@@ -211,11 +211,15 @@ pub(crate) struct HeldState {
 /// Deletions held back by the mass-delete guard, as shown to the user.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct HeldDeletions {
+    /// Held pages, not counting journal days.
     pub pages: usize,
+    /// Held journal days.
+    pub journals: usize,
     pub folders: usize,
     /// Up to 20 page titles (then folder names), for the notice.
     pub titles: Vec<String>,
-    /// Pages in the notebook (excluding trash), for "34 of 50".
+    /// Pages in the notebook for "34 of 50": not journal days, not in the
+    /// Trash or the Archive (as the sidebar and All Pages count them).
     pub total_pages: usize,
 }
 
@@ -284,11 +288,13 @@ fn refresh_held(db: &Database, dir: &Path) -> Result<()> {
 fn held_summary(db: &Database, dir: &Path) -> Result<Option<HeldDeletions>> {
     let Some(h) = read_state(dir).held else { return Ok(None) };
     let mut titles = Vec::new();
+    let mut journals = 0usize;
     for id in &h.page_ids {
-        if titles.len() >= 20 {
-            break;
+        let Some(p) = db.get_page(id)? else { continue };
+        if p.is_journal {
+            journals += 1;
         }
-        if let Some(p) = db.get_page(id)? {
+        if titles.len() < 20 {
             titles.push(p.title);
         }
     }
@@ -300,12 +306,22 @@ fn held_summary(db: &Database, dir: &Path) -> Result<Option<HeldDeletions>> {
             titles.push(format!("{}/", f.name));
         }
     }
+    // Counted like the sidebar and All Pages count: pages, not journal days
+    // (those are counted apart), nothing trashed or archived (UX review: the
+    // banner said "25 pages (of 36)" next to a sidebar showing 35).
     let total_pages: usize = db.conn.query_row(
-        "SELECT COUNT(*) FROM pages WHERE id NOT IN (SELECT page_id FROM trash)",
+        "SELECT COUNT(*) FROM pages WHERE is_journal = 0
+           AND id NOT IN (SELECT page_id FROM trash) AND id NOT IN (SELECT page_id FROM archive)",
         [],
         |r| r.get::<_, i64>(0),
     )? as usize;
-    Ok(Some(HeldDeletions { pages: h.page_ids.len(), folders: h.folder_ids.len(), titles, total_pages }))
+    Ok(Some(HeldDeletions {
+        pages: h.page_ids.len() - journals,
+        journals,
+        folders: h.folder_ids.len(),
+        titles,
+        total_pages,
+    }))
 }
 
 /// The user's answer to held deletions. `move_to_trash`: apply them (to trash,
@@ -1781,6 +1797,12 @@ mod tests {
         cycle(&a, &db_a);
         cycle(&b, &db_b);
         assert_eq!(db_b.list_pages(None).unwrap().len(), 30);
+        // B also has today's journal and an archived page: neither is one of
+        // "the pages" the notice counts (the sidebar doesn't count them either).
+        let today = db_b.get_or_create_journal(chrono::Local::now().date_naive(), None, "user").unwrap();
+        db_b.create_block(&today.id, "today on B", None, None, "user").unwrap();
+        let old = db_b.create_page("Archived on B", None, false, None, "user").unwrap();
+        db_b.archive_page(&old.id).unwrap();
 
         // A deletes 25 of 30 pages.
         for id in &ids[..25] {
@@ -1790,10 +1812,11 @@ mod tests {
         let r = cycle(&b, &db_b);
         let held = r.held_deletions.clone().expect("guard trip is reported");
         assert_eq!(held.pages, 25);
-        assert_eq!(held.total_pages, 30);
+        assert_eq!(held.total_pages, 30, "pages only: no journal days, nothing archived");
+        assert_eq!(held.journals, 0);
         assert!(held.titles.contains(&"Note 00".to_string()));
         assert!(r.import_errors.is_empty(), "a held deletion is not an import error");
-        assert_eq!(db_b.list_pages(None).unwrap().len(), 30, "nothing trashed without the user");
+        assert_eq!(db_b.list_pages(None).unwrap().len(), 31, "nothing trashed without the user (30 + the journal)");
 
         // Further cycles keep holding: the files are NOT written back (that would
         // undo A's deletion everywhere), and the notice persists.
@@ -1819,7 +1842,7 @@ mod tests {
         assert!(!db_b.is_trashed(&ids[24]).unwrap());
         let r = cycle(&b, &db_b);
         assert!(r.held_deletions.is_none());
-        assert_eq!(db_b.list_pages(None).unwrap().len(), 6);
+        assert_eq!(db_b.list_pages(None).unwrap().len(), 7, "5 notes + Note 24 + the journal");
     }
 
     #[test]
