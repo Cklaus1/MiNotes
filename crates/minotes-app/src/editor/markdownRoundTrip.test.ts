@@ -68,12 +68,32 @@ describe("markdown → doc → markdown is identical", () => {
     ["bold inside highlight", "==there **hi**==", ["mark:highlight", "mark:bold"]],
     ["all marks together", "**b** *i* `c` ~~s~~ ==h==", ["mark:bold", "mark:italic", "mark:code", "mark:strike", "mark:highlight"]],
     ["link", "see [the site](https://example.com) now", ["mark:link"]],
+    ["attachment link", "[report.pdf](attachment:" + "a".repeat(64) + "/report.pdf)", ["mark:link"]],
     ["wiki link", "go to [[Project Alpha]] now", ["wikiLink"]],
+    ["wiki link with id", "[[Project Alpha|1234abcd]]", ["wikiLink"]],
+    ["cross-notebook link", "see [[Work::Roadmap]]", ["wikiLink"]],
     ["tag", "x #urgent done", ["tag"]],
     ["tag at start", "#urgent fix it", ["tag"]],
     ["nested tag", "filed under #area/home", ["tag"]],
+    ["block ref", `as said in ((${UUID}))`, ["blockRef"]],
     ["heading 1", "# Title", ["heading"]],
+    ["heading 2", "## Section", ["heading"]],
+    ["heading 3", "### Sub", ["heading"]],
+    ["heading 4", "#### Deep", ["heading"]],
+    ["code block with language", "```python\nprint('hi')\n```", ["codeBlock"]],
+    ["code block without language", "```\nplain\n```", ["codeBlock"]],
     ["quote", "> wise words", ["blockquote"]],
+    ["table", "| a | b |\n| --- | --- |\n| 1 | 2 |", ["table", "tableRow", "tableHeader", "tableCell"]],
+    ["task list", "- [ ] open\n- [x] done", ["taskList", "taskItem"]],
+    ["TODO marker", "TODO write tests", []],
+    ["DONE marker", "DONE ship it", []],
+    ["todo macro", "{{todo:pending}} call Bob", []],
+    ["divider", "---", ["horizontalRule"]],
+    ["attachment image", "![screenshot.png](attachment:" + "b".repeat(64) + "/screenshot.png)", ["image"]],
+    ["bullet list", "- one\n- two", ["bulletList", "listItem"]],
+    ["ordered list", "1. one\n2. two", ["orderedList", "listItem"]],
+    ["multi-line block", "line one\nline two", ["hardBreak"]],
+    ["snake_case word", "call do_the_thing now", []],
     ["hex colour is not a tag", "colour #f0f0f0 here", []],
     ["anchor in a word is not a tag", "page.html#section and a#b", []],
   ];
@@ -83,6 +103,22 @@ describe("markdown → doc → markdown is identical", () => {
       const k = kinds();
       for (const want of expectKinds) expect(k, `${name}: doc has ${want}`).toContain(want);
       if (name.endsWith("is not a tag")) expect(k).not.toContain("tag");
+    });
+  }
+
+  // Two marks that START at the same character are written in schema order
+  // (prosemirror-markdown), so `==**hi** there==` comes back as `**==hi==** ==there==`
+  // — the same formatting, different text (and a space between them loses the
+  // outer mark: expelEnclosingWhitespace). Same for `*__b__ c*` (bold/italic).
+  // Logged in docs/UX-review-2026-10.md; here we hold it to "same doc, stable".
+  for (const markdown of ["==**hi** there==", "**==hi== there**", "*__b__ c*"]) {
+    test(`overlapping marks keep their formatting: ${markdown}`, () => {
+      load(markdown);
+      const before = charMarks();
+      const once = md();
+      load(once);
+      expect(charMarks()).toEqual(before);
+      expect(roundTrip(once)).toBe(once);
     });
   }
 

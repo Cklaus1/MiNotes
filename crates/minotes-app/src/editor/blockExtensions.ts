@@ -93,6 +93,18 @@ export function createBlockExtensions(cb: BlockExtensionCallbacks) {
     AlignedTableCell,
     AlignedTableHeader,
     TaskList.extend({
+      // Tight like bullet lists (tiptap-markdown only gives those a `tight`
+      // attribute), so `- [ ] a\n- [ ] b` doesn't come back with a blank line.
+      addAttributes() {
+        return {
+          ...this.parent?.(),
+          tight: {
+            default: true,
+            parseHTML: (el: HTMLElement) => el.getAttribute("data-tight") === "true" || !el.querySelector("p"),
+            renderHTML: (attrs: { tight?: boolean }) => (attrs.tight ? { "data-tight": "true" } : {}),
+          },
+        };
+      },
       parseHTML() {
         return [
           { tag: 'ul[data-type="taskList"]', priority: 51 },

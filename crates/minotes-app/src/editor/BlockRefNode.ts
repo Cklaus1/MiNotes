@@ -101,6 +101,14 @@ export const BlockRefNode = Node.create<BlockRefOptions>({
         },
         parse: {
           setup(markdownit: any) {
+            // markdown-it's `text` rule swallows everything up to its next
+            // terminator character, and `(` isn't one: the block_ref rule below
+            // never saw the `((` of "see ((uuid))", so block refs came back as
+            // raw text after every reload (C-12). Stop plain text at `(` too.
+            if (!markdownit.__minotesParenText) {
+              markdownit.__minotesParenText = true;
+              markdownit.inline.ruler.at("text", textUntilParen);
+            }
             // Add block_ref inline rule
             markdownit.inline.ruler.after(
               "wiki_link",
@@ -157,3 +165,14 @@ export const BlockRefNode = Node.create<BlockRefOptions>({
     };
   },
 });
+
+/** markdown-it's `text` rule with `(` added to its terminator characters. */
+const TERMINATORS = new Set("\n!#$%&*+-:<=>@[\\]^_`{}~(".split("").map((c) => c.charCodeAt(0)));
+function textUntilParen(state: any, silent: boolean): boolean {
+  let pos: number = state.pos;
+  while (pos < state.posMax && !TERMINATORS.has(state.src.charCodeAt(pos))) pos++;
+  if (pos === state.pos) return false;
+  if (!silent) state.pending += state.src.slice(state.pos, pos);
+  state.pos = pos;
+  return true;
+}
