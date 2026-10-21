@@ -57,6 +57,8 @@ import ImportMount from "./components/ImportMount";
 import { openImport } from "./lib/importPicks";
 import { askNewPage } from "./lib/newPage";
 import Icon from "./components/Icon";
+import { isDrawerWidth, isSidebarToggleKey, loadSidebarCollapsed, saveSidebarCollapsed, useDrawerWidth } from "./lib/sidebarLayout";
+import { useLayer } from "./lib/layers";
 // ── End import ──
 // ── End AI platform ──
 
@@ -96,6 +98,18 @@ export default function App() {
   const [lastError, setLastError] = useState<string | null>(null);
   const [rightSidebarPanels, setRightSidebarPanels] = useState<Array<{id: string, title: string}>>([]);
   const [rightSidebarVisible, setRightSidebarVisible] = useState(true);
+  // Left sidebar: hidden by the user (remembered on this device), or a drawer
+  // in a narrow window (lib/sidebarLayout.ts). Ctrl+Shift+\ toggles it.
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(loadSidebarCollapsed);
+  const drawerWidth = useDrawerWidth();
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  useEffect(() => { if (!drawerWidth) setDrawerOpen(false); }, [drawerWidth]);
+  const sidebarHidden = drawerWidth ? !drawerOpen : sidebarCollapsed;
+  const toggleSidebar = useCallback(() => {
+    if (isDrawerWidth()) setDrawerOpen(v => !v);
+    else setSidebarCollapsed(v => { saveSidebarCollapsed(!v); return !v; });
+  }, []);
+  useLayer(drawerWidth && drawerOpen, "panel", () => setDrawerOpen(false));
   const [folderSettingsId, setFolderSettingsId] = useState<string | null>(null);
   // The Tasks view (sidebar TODO badge): shown in place of the page.
   const [showTasks, setShowTasks] = useState(false);
@@ -932,6 +946,12 @@ export default function App() {
         e.preventDefault();
         setOpenPanel(prev => prev === "settings" ? null : "settings");
       }
+      // Ctrl+Shift+\ — show/hide the left sidebar (a drawer in a narrow window)
+      if (isSidebarToggleKey(e)) {
+        e.preventDefault();
+        toggleSidebar();
+        return;
+      }
       // Ctrl+\ — toggle right sidebar
       if (key === "\\" && plain) {
         e.preventDefault();
@@ -1035,11 +1055,13 @@ export default function App() {
   }, []);
 
   return (
-    <div className="app workspace">
+    <div className={`app workspace${sidebarHidden ? " sidebar-hidden" : ""}${drawerWidth ? " sidebar-drawer-mode" : ""}`}>
+      <div className="sidebar-shell" data-testid="sidebar-shell">
       <Sidebar
+        onToggleSidebar={toggleSidebar}
         activePage={activePage?.page ?? null}
         stats={stats}
-        onPageClick={openPage}
+        onPageClick={(id) => { if (drawerWidth) setDrawerOpen(false); return openPage(id); }}
         onCreatePage={createPage}
         onDeletePage={deletePage}
         onJournalClick={(date?: string) => openJournal(date)}
@@ -1064,6 +1086,13 @@ export default function App() {
         activeMode={canvasMode === "graph" ? "graph" : canvasMode === "mindmap" ? "mindmap" : canvasMode === "draw" ? "whiteboard" : canvasMode === "kanban" ? "kanban" : canvasMode === "pages" ? "pages" : null}
         refreshKey={refreshKey}
       />
+      </div>
+      {drawerWidth && drawerOpen && <div className="sidebar-drawer-backdrop" onMouseDown={() => setDrawerOpen(false)} data-testid="sidebar-backdrop" />}
+      {sidebarHidden && (
+        <button className="sidebar-reveal-btn" onClick={toggleSidebar} title="Show sidebar (Ctrl+Shift+\)" aria-label="Show sidebar" data-testid="sidebar-reveal">
+          <Icon name="sidebar" size={18} />
+        </button>
+      )}
       <div className="main workspace-split mod-root" style={{ position: "relative", display: "flex", flexDirection: "row" }}>
         <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }}>
           <NotebookBanner

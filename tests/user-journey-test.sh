@@ -4734,6 +4734,53 @@ R=$(ev "(async()=>{const n=await import('/src/lib/notebooks.ts');let res='never 
 [[ "$R" == "true" ]] && pass "Held while busy" || fail "Key guard during a switch" "$R"
 
 # ═══════════════════════════════════════════════
+journey "90. The sidebar collapses, is remembered, and is a drawer in a narrow window (UX Wave 3)"
+# ═══════════════════════════════════════════════
+api "closePanel()" >/dev/null; press "Escape"; sleep 0.3
+sbvis90() { ev "(()=>{const s=document.querySelector('.sidebar');return !!s&&s.getClientRects().length>0})()" | tr -d '"'; }
+api "navigateTo('Project Alpha')" >/dev/null; sleep 1
+
+step "The header button hides the sidebar; a button brings it back"
+ev "document.querySelector('[data-testid=sidebar-collapse]')?.click()" >/dev/null; sleep 0.4
+R="$(sbvis90)|$(ev "!!document.querySelector('[data-testid=sidebar-reveal]')" | tr -d '"')|$(ev "localStorage.getItem('minotes-sidebar-collapsed')" | tr -d '"')"
+[[ "$R" == "false|true|1" ]] && pass "Hidden, reveal button shown, remembered ($R)" || fail "Collapse the sidebar" "$R"
+ss "90-sidebar-collapsed"
+
+step "Ctrl+Shift+\\ shows it again"
+ev "document.activeElement?.blur?.()" >/dev/null
+ev "document.dispatchEvent(new KeyboardEvent('keydown',{key:'|',code:'Backslash',ctrlKey:true,shiftKey:true,bubbles:true,cancelable:true}))" >/dev/null; sleep 0.4
+R="$(sbvis90)|$(ev "localStorage.getItem('minotes-sidebar-collapsed')" | tr -d '"')"
+[[ "$R" == "true|0" ]] && pass "Shown again by the shortcut ($R)" || fail "Sidebar shortcut" "$R"
+
+step "With the sidebar hidden, Ctrl+N still asks in the app (its own dialog)"
+ev "document.querySelector('[data-testid=sidebar-collapse]')?.click()" >/dev/null; sleep 0.3
+ev "(()=>{window.__prompted90=0;window.prompt=function(){window.__prompted90++;return null};document.activeElement?.blur?.();return 1})()" >/dev/null
+press "Control+n"; sleep 0.6
+R="$(ev "window.__prompted90" | tr -d '"')|$(ev "!!document.querySelector('[data-testid=prompt-dialog] [data-testid=prompt-input]')" | tr -d '"')"
+[[ "$R" == "0|true" ]] && pass "In-app title dialog ($R)" || fail "Ctrl+N with the sidebar hidden" "$R"
+press "Escape"; sleep 0.3
+ev "document.querySelector('[data-testid=sidebar-reveal]')?.click()" >/dev/null; sleep 0.3
+
+if [[ "$BACKEND" != "desktop" ]]; then
+  step "Below 900 px the sidebar is a drawer: closed, opened over the page, closed by a page click or Esc"
+  $AB set viewport 860 760 >/dev/null 2>&1; sleep 0.8
+  R1="$(sbvis90)"
+  ev "document.querySelector('[data-testid=sidebar-reveal]')?.click()" >/dev/null; sleep 0.4
+  R2="$(sbvis90)|$(ev "getComputedStyle(document.querySelector('.sidebar')).position" | tr -d '"')|$(ev "!!document.querySelector('[data-testid=sidebar-backdrop]')" | tr -d '"')"
+  ss "90-sidebar-drawer"
+  press "Escape"; sleep 0.4
+  R3="$(sbvis90)"
+  ev "document.querySelector('[data-testid=sidebar-reveal]')?.click()" >/dev/null; sleep 0.4
+  ev "(()=>{const e=[...document.querySelectorAll('.sidebar .page-item')].find(e=>e.textContent.includes('Getting Started'));if(!e)return 0;const r=e.getBoundingClientRect();const o={bubbles:true,button:0,clientX:r.left+20,clientY:r.top+r.height/2};e.dispatchEvent(new MouseEvent('mousedown',o));e.dispatchEvent(new MouseEvent('mouseup',o));return 1})()" >/dev/null; sleep 0.8
+  R4="$(sbvis90)|$(api "getCurrentPage()" | tr -d '"')"
+  [[ "$R1" == "false" && "$R2" == "true|fixed|true" && "$R3" == "false" && "$R4" == "false|Getting Started" ]] \
+    && pass "Drawer: $R1 → $R2 → Esc $R3 → page click $R4" || fail "Narrow-window drawer" "$R1 → $R2 → $R3 → $R4"
+  $AB set viewport 1280 800 >/dev/null 2>&1; sleep 0.5
+  R="$(sbvis90)"
+  [[ "$R" == "true" ]] && pass "Wide again: docked" || fail "Sidebar after widening" "$R"
+fi
+
+# ═══════════════════════════════════════════════
 close_app
 
 # ═══════════════════════════════════════════════

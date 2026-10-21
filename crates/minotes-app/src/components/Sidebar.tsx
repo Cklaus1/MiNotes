@@ -81,6 +81,8 @@ interface Props {
   activePage: Page | null;
   stats: GraphStats | null;
   onPageClick: (id: string) => void;
+  /** Hide the sidebar (Ctrl+Shift+\); the button sits in the header. */
+  onToggleSidebar?: () => void;
   /** Resolves true when the page was created (false/rejects keeps the field open). */
   onCreatePage: (title: string) => Promise<boolean> | void;
   /** Move a page to Trash (App leaves it first if it is open, and offers Undo). */
@@ -108,7 +110,7 @@ interface Props {
 export default function Sidebar({
   activePage, stats, onPageClick, onCreatePage, onDeletePage,
   onJournalClick, onSearchClick, onGraphClick, onMindmapClick, onWhiteboardClick, onKanbanClick, onPagesClick, onSettingsClick, onFolderSettings, onTodoBadgeClick, tasksOpen, selectedJournalDate, activeMode, refreshKey,
-  onReviewClick,
+  onReviewClick, onToggleSidebar,
 }: Props) {
   const [newTitle, setNewTitle] = useState("");
   const [showCreate, setShowCreate] = useState(false);
@@ -350,6 +352,11 @@ export default function Sidebar({
       <div className="sidebar-header">
         <h1>MiNotes</h1>
         <NotebookSwitcher />
+        {onToggleSidebar && (
+          <button className="sidebar-gear-btn" onClick={onToggleSidebar} title="Hide sidebar (Ctrl+Shift+\)" aria-label="Hide sidebar" data-testid="sidebar-collapse">
+            <Icon name="sidebar" />
+          </button>
+        )}
         <button className="sidebar-gear-btn" onClick={onSettingsClick} title="Settings (Ctrl+,)" aria-label="Settings"><Icon name="settings" /></button>
       </div>
       <div className="sidebar-actions-bar">
