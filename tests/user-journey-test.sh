@@ -3571,8 +3571,8 @@ R=$(ev "(()=>{const s=document.querySelector('[data-column-id=\"$KA66\"] .kanban
 sleep 1
 C=$(ev "document.querySelector('[data-column-id=\"$KA66\"] .kanban-color-bar')?.style.background||'none'" | tr -d '"')
 [[ "$R" == "clicked" && ( "$C" == *"166, 227, 161"* || "$C" == *"a6e3a1"* ) ]] && pass "The swatch is on top and the click applies the colour ($C)" || fail "Colour picker click" "$R / $C"
-P=$(ev "(async()=>{$A66 return (await api.getProperties('$KA66')).filter(p=>p.key==='kanban-color').map(p=>p.value).join()})()" | tr -d '"')
-[[ "$P" == "#a6e3a1" ]] && pass "Saved with the board: kanban-color:: #a6e3a1 on the column block (syncs)" || fail "Colour not persisted on the block" "$P"
+KP66=$(ev "(async()=>{$A66 return (await api.getProperties('$KA66')).filter(p=>p.key==='kanban-color').map(p=>p.value).join()})()" | tr -d '"')
+[[ "$KP66" == "#a6e3a1" ]] && pass "Saved with the board: kanban-color:: #a6e3a1 on the column block (syncs)" || fail "Colour not persisted on the block" "$KP66"
 press "Escape"; sleep 0.5
 ev "document.querySelector('.canvas-back-btn')?.click()" >/dev/null; sleep 1
 # Not from this device's localStorage: forget any kanban colours kept there.
@@ -3700,10 +3700,10 @@ api "navigateTo('$P66')" >/dev/null; sleep 2
 ev "document.querySelector('.whiteboard-indicator')?.click()" >/dev/null; sleep 2
 WBPX66="(()=>{const c=document.querySelector('.whiteboard-canvas');const p=c.getContext('2d').getImageData(2,c.height-3,1,1).data;return document.querySelector('.whiteboard').dataset.canvasTheme+'|'+p[0]+','+p[1]+','+p[2]})()"
 R=$(ev "$WBPX66" | tr -d '"')
-F=$(ev "(()=>{const a=document.activeElement;return (a?.closest('.canvas-layer')?'overlay':'outside')+':'+!!a?.closest('.ProseMirror')})()" | tr -d '"')
+FOC66=$(ev "(()=>{const a=document.activeElement;return (a?.closest('.canvas-layer')?'overlay':'outside')+':'+!!a?.closest('.ProseMirror')})()" | tr -d '"')
 SC=$(ev "getComputedStyle(document.querySelector('.content')||document.body).overflowY" | tr -d '"')
 [[ "$R" == "dark|30,30,46" ]] && pass "Dark theme: dark canvas ($R)" || fail "Whiteboard ignores the dark theme" "$R"
-[[ "$F" == "overlay:false" ]] && pass "Keyboard focus is on the board, not the editor underneath" || fail "Focus left under the overlay" "$F"
+[[ "$FOC66" == "overlay:false" ]] && pass "Keyboard focus is on the board, not the editor underneath" || fail "Focus left under the overlay" "$FOC66"
 [[ "$SC" == "hidden" ]] && pass "The page underneath doesn't scroll (no scrollbar under the overlay)" || fail "Page scrollbar under overlay" "$SC"
 TH66=$(ev "localStorage.getItem('minotes-theme')||'dark'" | tr -d '"')
 ev "(async()=>{const t=await import('/src/lib/theme.ts');t.setTheme('light');return 1})()" >/dev/null; sleep 0.6
