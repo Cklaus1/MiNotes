@@ -91,7 +91,9 @@ interface Props {
   onPagesClick: () => void;
   onSettingsClick: () => void;
   onFolderSettings: (folderId: string) => void;
+  /** Opens the Tasks view. */
   onTodoBadgeClick: () => void;
+  tasksOpen?: boolean;
   /** Opens flashcard review (shown once any flashcard exists). */
   onReviewClick?: () => void;
   activeMode: "graph" | "mindmap" | "whiteboard" | "kanban" | "pages" | null;
@@ -101,7 +103,7 @@ interface Props {
 
 export default function Sidebar({
   activePage, stats, onPageClick, onCreatePage, onDeletePage,
-  onJournalClick, onSearchClick, onGraphClick, onMindmapClick, onWhiteboardClick, onKanbanClick, onPagesClick, onSettingsClick, onFolderSettings, onTodoBadgeClick, activeMode, refreshKey,
+  onJournalClick, onSearchClick, onGraphClick, onMindmapClick, onWhiteboardClick, onKanbanClick, onPagesClick, onSettingsClick, onFolderSettings, onTodoBadgeClick, tasksOpen, activeMode, refreshKey,
   syncState, onReviewClick,
 }: Props) {
   const [newTitle, setNewTitle] = useState("");
@@ -459,9 +461,14 @@ export default function Sidebar({
         {/* TODO badge */}
         {todoExtraction && pendingTodos > 0 && (
           <div
-            className="sidebar-todo-badge"
+            className={`sidebar-todo-badge${tasksOpen ? " active" : ""}`}
+            role="button"
+            tabIndex={0}
+            aria-pressed={!!tasksOpen}
             onClick={onTodoBadgeClick}
-            title={`${pendingTodos} pending TODOs`}
+            onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onTodoBadgeClick(); } }}
+            title={`Tasks — ${pendingTodos} open`}
+            data-testid="todo-badge"
           >
             <span className="sidebar-todo-count">{pendingTodos}</span> TODOs
           </div>

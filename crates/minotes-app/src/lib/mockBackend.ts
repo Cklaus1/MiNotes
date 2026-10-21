@@ -14,7 +14,7 @@
  */
 
 import { localDateKey } from "./dates";
-import { countPendingTodos, parseTodoLine } from "./todoExtractor";
+import { countPendingTodos, parseTaskLine, parseTodoLine } from "./todoExtractor";
 import type {
   Page, Block, PageTree, Link, GraphStats, Property,
   FolderTreeRoot, QueryResult, GraphData, RestoreBlock, Card, BlockWithPage,
@@ -1635,6 +1635,39 @@ const handlers: Record<string, (args: any) => any> = {
   ),
   list_pending_todos: () => pendingTodos().map(({ page_title, text }) => ({ page_title, text })),
   list_pending_todos_with_page_ids: () => pendingTodos(),
+  // core list_tasks: visible pages newest first, tasks in outline order.
+  list_tasks: () => {
+    const out: unknown[] = [];
+    const visible = Array.from(pages.values())
+      .filter(p => !pageHidden(p.id))
+      .sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+    for (const p of visible) {
+      for (const b of getPageBlocks(p.id)) {
+        b.content.split("\n").forEach((text, line) => {
+          const t = parseTaskLine(text);
+          if (t) out.push({
+            block_id: b.id, page_id: p.id, page_title: p.title, is_journal: !!p.is_journal,
+            journal_date: p.journal_date ?? null, line, state: t.state, kind: t.kind, text: t.text,
+          });
+        });
+      }
+    }
+    return out;
+  },
+  // core trash_generated_todo_pages: only the exact shape the old badge wrote.
+  cleanup_generated_todo_pages: () => {
+    const GEN = /^\{\{todo:pending\}\} \[\[[^\n]*\|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\]\] [^\n]*$/i;
+    const removed: Array<[string, string]> = [];
+    for (const p of Array.from(pages.values())) {
+      if (p.title !== "All TODOs" || p.is_journal || trash.has(p.id)) continue;
+      const bs = getPageBlocks(p.id);
+      if (bs.every(b => !b.content.trim() || (!b.parent_id && GEN.test(b.content)))) {
+        trash.set(p.id, { at: ts() });
+        removed.push([p.id, p.title]);
+      }
+    }
+    return removed;
+  },
 
   // ── Whiteboards (mirrors minotes-core repo/whiteboards.rs) ──
   get_ui_state: ({ key }: { key: string }) => mockUiState.get(`${currentNotebook}:${key}`) ?? null,

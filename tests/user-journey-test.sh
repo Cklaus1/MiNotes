@@ -3683,6 +3683,60 @@ R=$(ev "(()=>{const s=[...document.querySelectorAll('.command-palette-item')].ma
 press "Escape"; sleep 0.3; api "closePanel()" >/dev/null
 
 
+
+# ═══════════════════════════════════════════════
+journey "69. The TODO badge opens a live Tasks view — no generated page (UX review C-8)"
+# It used to write a real "All TODOs" page of raw {{todo:pending}} markup.
+# ═══════════════════════════════════════════════
+A69="const api=await import('/src/lib/api.ts');"
+wait69() { for _ in $(seq 1 20); do [[ "$(ev "$1" | tr -d '"')" == "true" ]] && return 0; sleep 0.3; done; return 1; }
+row69() { echo "[...document.querySelectorAll('[data-testid=task-row]')].find(e=>e.textContent.includes('$1'))"; }
+content69() { ev "(async()=>{$A69 const t=await api.getPageTree('Tasks69');return t.blocks.map(b=>b.content).join(' ¦ ')})()" | tr -d '"'; }
+api "closePanel()" >/dev/null; press "Escape"; sleep 0.3
+ev "(async()=>{$A69 const p=await api.createPage('Tasks69');for(const c of ['TODO buy milk69','DOING write report69','DONE file taxes69','- [ ] call bob69'])await api.createBlock(p.id,c);window.dispatchEvent(new Event('minotes-sidebar-refresh'));return 1})()" >/dev/null; sleep 1.5
+PAGES69=$(ev "(async()=>{$A69 return (await api.listPages(1000)).length})()" | tr -d '"')
+
+step "Clicking the TODO badge opens the Tasks view, grouped by page"
+ev "document.querySelector('[data-testid=todo-badge]')?.click()" >/dev/null
+wait69 "!!document.querySelector('[data-testid=tasks-view]')" && pass "Tasks view opened" || fail "No Tasks view" "$(ev "document.querySelector('.main')?.innerText?.slice(0,120)")"
+sleep 1
+R=$(ev "(()=>{const g=[...document.querySelectorAll('[data-testid=tasks-group]')].find(e=>e.textContent.includes('Tasks69'));if(!g)return 'no group';return [...g.querySelectorAll('[data-testid=task-row]')].map(r=>r.dataset.state).join(',')})()" | tr -d '"')
+[[ "$R" == *"todo"* && "$R" == *"doing"* ]] && pass "Group Tasks69 lists its open tasks ($R)" || fail "Tasks69 group" "$R"
+R=$(ev "document.querySelector('[data-testid=tasks-view]')?.innerText||''" | tr -d '"')
+[[ "$R" != *"{{todo"* && "$R" != *"[["* ]] && pass "No raw markup in the view" || fail "Raw markup shown" "${R:0:120}"
+ss "69-tasks-view"
+R=$(ev "(async()=>{$A69 const l=await api.listPages(1000);return l.length+'|'+l.some(p=>p.title==='All TODOs')})()" | tr -d '"')
+[[ "$R" == "$PAGES69|false" ]] && pass "No page was created ($R)" || fail "Opening tasks created a page" "$R (before: $PAGES69)"
+
+step "Ticking a task writes the real block"
+ev "($(row69 'buy milk69'))?.querySelector('[data-testid=task-toggle]')?.click()" >/dev/null; sleep 1
+R=$(content69)
+[[ "$R" == *"DONE buy milk69"* ]] && pass "TODO → DONE in Tasks69 ($R)" || fail "Toggle didn't write the block" "$R"
+ev "($(row69 'call bob69'))?.querySelector('[data-testid=task-toggle]')?.click()" >/dev/null; sleep 1
+R=$(content69)
+[[ "$R" == *"- [x] call bob69"* ]] && pass "A checkbox task is ticked in place" || fail "Checkbox toggle" "$R"
+
+step "Filters: DONE shows the finished ones only"
+ev "document.querySelector('[data-testid=tasks-filter-done]')?.click()" >/dev/null; sleep 0.8
+R=$(ev "[...document.querySelectorAll('[data-testid=task-row]')].filter(r=>r.textContent.includes('69')).map(r=>r.textContent.replace(/\\s+/g,' ').trim()).join('|')" | tr -d '"')
+[[ "$R" == *"buy milk69"* && "$R" == *"file taxes69"* && "$R" != *"write report69"* ]] && pass "DONE filter ($R)" || fail "DONE filter" "$R"
+ev "document.querySelector('[data-testid=tasks-filter-doing]')?.click()" >/dev/null; sleep 0.8
+R=$(ev "[...document.querySelectorAll('[data-testid=task-row]')].filter(r=>r.textContent.includes('69')).map(r=>r.dataset.state).join(',')" | tr -d '"')
+[[ "$R" == "doing" ]] && pass "DOING filter" || fail "DOING filter" "$R"
+
+step "Clicking a task opens its page"
+ev "($(row69 'write report69'))?.querySelector('[data-testid=task-open]')?.click()" >/dev/null; sleep 1.5
+R=$(api "getCurrentPage()" | tr -d '"')
+V=$(ev "!!document.querySelector('[data-testid=tasks-view]')" | tr -d '"')
+[[ "$R" == "Tasks69" && "$V" == "false" ]] && pass "Jumped to Tasks69, Tasks view closed" || fail "Jump to task" "$R view=$V"
+
+step "Old generated \"All TODOs\" pages are moved to the Trash, a hand-written one is kept"
+R=$(ev "(async()=>{$A69 const t=await api.getPageTree('Tasks69');const p=await api.createPage('All TODOs');await api.createBlock(p.id,'{{todo:pending}} [[Tasks69|'+t.page.id+']] write report69');await api.createBlock(p.id,'{{todo:pending}} [[Tasks69|'+t.page.id+']] call bob69');const r=await api.cleanupGeneratedTodoPages();const tr=await api.listTrash();return r.length+'|'+tr.some(x=>x.id===p.id)})()" | tr -d '"')
+[[ "$R" == "1|true" ]] && pass "Generated page trashed ($R)" || fail "Cleanup of generated page" "$R"
+R=$(ev "(async()=>{$A69 const p=await api.createPage('All TODOs');await api.createBlock(p.id,'my own list');const r=await api.cleanupGeneratedTodoPages();const tr=await api.listTrash();return r.length+'|'+tr.some(x=>x.id===p.id)})()" | tr -d '"')
+[[ "$R" == "0|false" ]] && pass "A page someone wrote is left alone" || fail "Cleanup touched a hand-written page" "$R"
+api "closePanel()" >/dev/null
+
 # ═══════════════════════════════════════════════
 close_app
 

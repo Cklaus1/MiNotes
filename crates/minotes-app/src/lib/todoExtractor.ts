@@ -125,6 +125,33 @@ export function extractTodos(
   return allTodos;
 }
 
+export type TaskState = "todo" | "doing" | "done";
+export type TaskKind = "marker" | "checkbox" | "keyword";
+export interface TaskLine {
+  state: TaskState;
+  kind: TaskKind;
+  text: string;
+}
+
+/**
+ * One line as a task for the Tasks view — pending or done — or null. Mirrors
+ * `parse_task_line` in crates/minotes-core/src/repo/ai_suggestions.rs; its
+ * pending lines are exactly parseTodoLine's pending ones (the badge count).
+ */
+export function parseTaskLine(line: string): TaskLine | null {
+  const trimmed = line.replace(/^﻿/, "").trimStart();
+  for (const [kw, state] of [["TODO ", "todo"], ["DOING ", "doing"], ["DONE ", "done"]] as const) {
+    if (trimmed.startsWith(kw)) {
+      const text = trimmed.slice(kw.length).trim();
+      return text ? { state, kind: "marker", text } : null;
+    }
+  }
+  const t = parseTodoLine(line);
+  if (!t) return null;
+  if (t.kind === "checkbox") return { state: t.done ? "done" : "todo", kind: "checkbox", text: t.text };
+  return { state: "todo", kind: "keyword", text: t.text };
+}
+
 /**
  * Extract TODOs from a single string of content.
  */

@@ -17,6 +17,8 @@ import ObsidianPluginBrowser from "./components/ObsidianPluginBrowser";
 import CssSnippetManager from "./components/CssSnippetManager";
 import SettingsPanel from "./components/SettingsPanel";
 import FolderSettingsPanel from "./components/FolderSettingsPanel";
+import TasksView from "./components/TasksView";
+import { cleanupGeneratedTodoPagesOnce } from "./lib/tasks";
 import * as api from "./lib/api";
 import { localDateKey, shiftDateKey } from "./lib/dates";
 import { isTauri } from "./lib/api";
@@ -71,6 +73,8 @@ export default function App() {
   const [rightSidebarPanels, setRightSidebarPanels] = useState<Array<{id: string, title: string}>>([]);
   const [rightSidebarVisible, setRightSidebarVisible] = useState(true);
   const [folderSettingsId, setFolderSettingsId] = useState<string | null>(null);
+  // The Tasks view (sidebar TODO badge): shown in place of the page.
+  const [showTasks, setShowTasks] = useState(false);
 
   // Git Sync state
   const [syncStatus, setSyncStatus] = useState<api.GitSyncStatus | null>(null);
@@ -94,6 +98,17 @@ export default function App() {
       console.error("Failed to refresh:", e);
     }
   }, []);
+
+  // Once per notebook: the old TODO badge's generated "All TODOs" pages go to the
+  // Trash (the Tasks view replaces them). Says so, so nothing vanishes silently.
+  const runTodoPageCleanup = useCallback(() => {
+    cleanupGeneratedTodoPagesOnce().then(titles => {
+      if (titles.length === 0) return;
+      showToast("Moved the old generated “All TODOs” page to the Trash — the TODO badge now opens the Tasks view", 8000);
+      refresh();
+      window.dispatchEvent(new Event("minotes-sidebar-refresh"));
+    });
+  }, [refresh]);
 
   // Mobile: the OS may kill a backgrounded app at any time, and the editor saves
   // a block on blur. Blur it when the app goes to the background so the normal
@@ -157,6 +172,7 @@ export default function App() {
       }
       console.log("[openPage] got tree:", tree.page.title, "blocks:", tree.blocks.length);
       if (stale()) return; // superseded by a later navigation
+      if (!isRefresh) setShowTasks(false);
       setActivePage(tree);
       setRefreshKey(k => k + 1);
       addRecentPage(tree.page.id, tree.page.title);
@@ -248,6 +264,7 @@ export default function App() {
 
   const openJournal = useCallback(async (date?: string) => {
     const token = ++navTokenRef.current;
+    setShowTasks(false);
     try {
       const d = date ?? localDateKey();
       const isToday = !date || d === localDateKey();
@@ -609,6 +626,7 @@ export default function App() {
       setPdfViewerPath(null);
       setRightSidebarPanels([]);
       setFolderSettingsId(null);
+      setShowTasks(false);
       setLastError(null);
       setPendingJournalDate(null);
       setActivePage(null);
@@ -621,6 +639,7 @@ export default function App() {
       refresh();
       window.dispatchEvent(new Event("minotes-sidebar-refresh"));
       openJournal().catch(() => {});
+      runTodoPageCleanup();
       api.gitSyncStatus().then(status => {
         setSyncStatus(status);
         if (status.enabled) setTimeout(() => window.dispatchEvent(new Event("minotes-trigger-sync")), 0);
@@ -628,7 +647,7 @@ export default function App() {
     };
     window.addEventListener(NOTEBOOK_SWITCHED, onSwitch);
     return () => window.removeEventListener(NOTEBOOK_SWITCHED, onSwitch);
-  }, [refresh, openJournal]);
+  }, [refresh, openJournal, runTodoPageCleanup]);
 
   // A cross-notebook search result or [[Notebook::Page]] link: switch notebooks
   // (the usual flow: views reset, undo cleared) and open the page there. The
@@ -740,7 +759,7 @@ export default function App() {
       isPanelOpen: (name: string) => {
         const map: Record<string, boolean> = {
           search: openPanel === "search", query: openPanel === "query", graph: canvasMode === "graph",
-          review: openPanel === "review", settings: openPanel === "settings",
+          review: openPanel === "review", settings: openPanel === "settings", tasks: showTasks,
         };
         return map[name] ?? false;
       },
@@ -754,7 +773,7 @@ export default function App() {
       setNextExportDest: (path: string | null) => { setNextExportDest(path); return true; },
       getNotebookKey: () => notebookKey,
     } as any);
-  }, [activePage, openPanel, canvasMode, whiteboardId, notebookKey]);
+  }, [activePage, openPanel, canvasMode, whiteboardId, notebookKey, showTasks]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -913,6 +932,7 @@ export default function App() {
         }
       }
 
+      runTodoPageCleanup();
       try {
         await openJournal();
       } catch (e) {
@@ -943,29 +963,12 @@ export default function App() {
         onSettingsClick={() => setOpenPanel(prev => prev === "settings" ? null : "settings")}
         onFolderSettings={(id) => setFolderSettingsId(prev => prev === id ? null : id)}
         onReviewClick={() => setOpenPanel("review")}
-        onTodoBadgeClick={async () => {
+        onTodoBadgeClick={() => {
           if (getSettings().ai?.todoExtraction === false) return; // Settings → AI → TODO extraction off
-          try {
-            const allPages = await api.listPages();
-            let todoPage = allPages.find(p => p.title === "All TODOs");
-            if (!todoPage) {
-              todoPage = await api.createPage("All TODOs");
-            }
-            const todos = await api.listPendingTodosWithIds();
-            const tree = await api.getPageTree(todoPage.id);
-            const existingTodoIds = tree.blocks.filter(b => b.content.startsWith("{{todo:")).map(b => b.id);
-            for (const id of existingTodoIds) {
-              await api.deleteBlock(id);
-            }
-            for (const todo of todos) {
-              const blockContent = `{{todo:pending}} [[${todo.page_title}|${todo.page_id}]] ${todo.text}`;
-              await api.createBlock(todoPage.id, blockContent);
-            }
-            openPage(todoPage.id);
-          } catch {
-            // ignore
-          }
+          setCanvasMode(null);
+          setShowTasks(true);
         }}
+        tasksOpen={showTasks}
         activeMode={canvasMode === "graph" ? "graph" : canvasMode === "mindmap" ? "mindmap" : canvasMode === "draw" ? "whiteboard" : canvasMode === "kanban" ? "kanban" : canvasMode === "pages" ? "pages" : null}
         refreshKey={refreshKey}
         syncState={syncStatus?.enabled ? syncState : undefined}
@@ -1023,7 +1026,18 @@ export default function App() {
               } : undefined}
             />
           )}
-          {activePage ? (
+          {showTasks ? (
+            <TasksView
+              onOpenTask={(t) => {
+                setPendingReveal(t.block_id);
+                openPage(t.page_id).catch(() => {});
+              }}
+              onClose={() => {
+                setShowTasks(false);
+                if (activePage) openPage(activePage.page.id).catch(() => {}); // tasks may have changed it
+              }}
+            />
+          ) : activePage ? (
             <PageView
               pageTree={activePage}
               onUpdateBlock={updateBlock}

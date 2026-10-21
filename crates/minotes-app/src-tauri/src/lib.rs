@@ -1449,6 +1449,25 @@ fn get_pending_todo_count(db: tauri::State<AppState>) -> Result<usize, String> {
     conn.count_pending_todos().map_err(|e| e.to_string())
 }
 
+/// Every task line (TODO / DOING / DONE, checkboxes) for the Tasks view.
+#[tauri::command]
+fn list_tasks(state: State<'_, AppState>) -> Result<Vec<minotes_core::repo::ai_suggestions::TaskItem>, String> {
+    let db = state.db_guard()?;
+    db.list_tasks().map_err(|e| e.to_string())
+}
+
+/// Move the "All TODOs" pages the old TODO badge generated to the Trash
+/// (only that exact generated shape). Returns `[id, title]` of each one.
+#[tauri::command]
+fn cleanup_generated_todo_pages(state: State<'_, AppState>) -> Result<Vec<(String, String)>, String> {
+    let db = state.db_guard()?;
+    let removed = db.trash_generated_todo_pages().map_err(|e| e.to_string())?;
+    for (id, title) in &removed {
+        eprintln!("[minotes] moved the generated \"{title}\" page ({id}) to the Trash");
+    }
+    Ok(removed)
+}
+
 /// List all pending TODOs across all pages with source page titles.
 #[tauri::command]
 fn list_pending_todos(db: tauri::State<AppState>) -> Result<Vec<serde_json::Value>, String> {
@@ -1745,6 +1764,8 @@ pub fn run() {
             get_pending_todo_count,
             list_pending_todos,
             list_pending_todos_with_page_ids,
+            list_tasks,
+            cleanup_generated_todo_pages,
             get_whiteboard,
             get_ui_state,
             set_ui_state,

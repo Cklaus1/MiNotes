@@ -273,6 +273,12 @@ body {
   background: var(--bg-surface);
 }
 
+.sidebar-todo-badge.active {
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
 .sidebar-todo-count {
   /* --text-primary on --bg-surface: 8.5:1 dark, 5.1:1 light (the old accent pill
      used undefined vars and measured 1.46:1). */
