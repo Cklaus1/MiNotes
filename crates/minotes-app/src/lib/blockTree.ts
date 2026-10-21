@@ -34,6 +34,15 @@ export function outlineOrder(list: Block[]): Block[] {
 
 export type DropWhere = "above" | "below" | "child";
 
+/**
+ * "below" a block whose children are showing is, on screen, between it and its
+ * first child: the dropped block becomes that first child (as in Logseq).
+ */
+export function effectiveDrop(list: Block[], targetId: string, where: DropWhere, collapsed: ReadonlySet<string>): DropWhere {
+  if (where !== "below" || collapsed.has(targetId)) return where;
+  return list.some(b => b.parent_id === targetId) ? "child" : where;
+}
+
 /** True when `id` is `ancestorId` or lies below it. */
 export function isInSubtree(list: Block[], id: string, ancestorId: string): boolean {
   const byId = new Map(list.map(b => [b.id, b]));

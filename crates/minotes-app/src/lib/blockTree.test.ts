@@ -5,7 +5,7 @@
  */
 import { describe, expect, test } from "vitest";
 import type { Block } from "./api";
-import { applyDrop, dropPlacement, outlineOrder } from "./blockTree";
+import { applyDrop, dropPlacement, effectiveDrop, outlineOrder } from "./blockTree";
 
 const blk = (id: string, position: number, parent_id?: string): Block => ({
   id, page_id: "p", parent_id, position, content: id, format: "markdown", collapsed: false,
@@ -52,6 +52,13 @@ describe("applyDrop", () => {
 
   test("into a leaf as a child", () => {
     expect(show(applyDrop(page(), "C", "b1", "child")!)).toBe("A@0 a1@1 a2@1 B@0 b1@1 C@2");
+  });
+
+  test("below an expanded parent means its first child; below a folded one, after its subtree", () => {
+    expect(effectiveDrop(page(), "B", "below", new Set())).toBe("child");
+    expect(effectiveDrop(page(), "B", "below", new Set(["B"]))).toBe("below");
+    expect(effectiveDrop(page(), "C", "below", new Set())).toBe("below");
+    expect(effectiveDrop(page(), "B", "above", new Set())).toBe("above");
   });
 
   test("never into its own subtree, never onto itself", () => {

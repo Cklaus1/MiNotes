@@ -1312,7 +1312,10 @@ rdrag16() {
   for i in 1 2 3 4 5 6 7 8 9 10; do
     DISPLAY="$X16" xdotool mousemove $(( a[0] + (b[0]-a[0])*i/10 )) $(( a[1] + (b[1]-a[1])*i/10 )) sleep 0.06
   done
-  DISPLAY="$X16" xdotool sleep 0.3 mouseup 1
+  # GTK only drops when the last drag motion was answered (accepted): keep the
+  # pointer moving over the target for a moment, then release.
+  for i in 1 2 3 4 5; do DISPLAY="$X16" xdotool mousemove_relative -- 1 0 sleep 0.1 mousemove_relative -- -1 0 sleep 0.1; done
+  DISPLAY="$X16" xdotool sleep 0.5 mouseup 1
 }
 device w2 || true
 ev "(async()=>{$A16 const p=await api.createPage('Fold16');const a=await api.createBlock(p.id,'parent16');const c=await api.createBlock(p.id,'child16',a.id);await api.createBlock(p.id,'grandchild16',c.id);await api.createBlock(p.id,'other16');return 1})()" >/dev/null
@@ -1325,7 +1328,7 @@ DISPLAY="$X16" xdotool mousemove $P16 sleep 0.4
 XY=$(xy16 "$(blk16 parent16)?.querySelector(':scope > .block-collapse')" "r.width/2" "r.height/2")
 "$DC" click $XY >/dev/null; sleep 1
 is "Children hidden, not zoomed" "$(shown16)|$(ev "String(!!document.querySelector('.breadcrumb-bar'))")" "parent16@0|other16@0|false"
-is "…and it looks folded (+2 hidden)" "$(ev "(()=>{const b=$(blk16 parent16);return b.classList.contains('is-collapsed')+' '+getComputedStyle(b).getPropertyValue('--collapsed-label').trim()})()")" 'true +2'
+is "…and it looks folded (+2 hidden)" "$(ev "(()=>{const b=$(blk16 parent16);return b.classList.contains('is-collapsed')+' '+getComputedStyle(b).getPropertyValue('--collapsed-label').replace(/[^+0-9]/g,'')})()")" 'true +2'
 "$DC" shot "d16-collapsed" >/dev/null
 "$DC" click $XY >/dev/null; sleep 1
 is "A second click unfolds it" "$(shown16)" "parent16@0|child16@1|grandchild16@2|other16@0"
@@ -1343,10 +1346,10 @@ api "navigateTo('Drag16')" >/dev/null; waitfor "window.__MINOTES__.getCurrentPag
 ev "document.activeElement?.blur()" >/dev/null; sleep 0.5
 DISPLAY="$X16" xdotool mousemove $(xy16 "$(blk16 A16)" "40" "12") sleep 0.4
 FROM=$(xy16 "$(blk16 A16)?.querySelector(':scope > .block-drag-handle')" "r.width/2" "r.height/2")
-TO=$(xy16 "$(blk16 'b1 16')" "20" "r.height-4")
+TO=$(xy16 "$(blk16 C16)" "20" "r.height-4")
 rdrag16 "$FROM" "$TO"; sleep 1
 S16=$(shown16)
-is "A16 (with a1, a2) now follows B16's subtree, rendered in order" "$S16" "B16@0|b1 16@1|A16@0|a1 16@1|a2 16@1|C16@0"
+is "A16 (with a1, a2) now follows C16, rendered in order" "$S16" "B16@0|b1 16@1|C16@0|A16@0|a1 16@1|a2 16@1"
 sleep 1; is "…and that is what was stored" "$(stored16 Drag16)" "$S16"
 "$DC" shot "d16-after-drag" >/dev/null
 

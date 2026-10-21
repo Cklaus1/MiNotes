@@ -225,16 +225,20 @@ interface Props {
   onDragReorder?: (draggedBlockId: string, targetBlockId: string, position: DropPosition) => void;
 }
 
+/** The block being dragged by its handle (set on dragstart, cleared on drop/dragend). */
+const draggingBlock: { id: string | null } = { id: null };
+
 /** Where a dragged block lands relative to the block under the pointer. */
 export type DropPosition = "above" | "below" | "child";
 
 /** Pointer this far right of the block's left edge (bullet + text start) drops as a child. */
 const CHILD_DROP_OFFSET = 56;
 
-function dropPositionAt(el: HTMLElement, clientX: number, clientY: number): DropPosition {
+/** `childrenShown`: below this block on screen is its first child, so "below" nests. */
+function dropPositionAt(el: HTMLElement, clientX: number, clientY: number, childrenShown = false): DropPosition {
   const rect = el.getBoundingClientRect();
   if (clientY < rect.top + rect.height / 2) return "above";
-  return clientX > rect.left + CHILD_DROP_OFFSET ? "child" : "below";
+  return childrenShown || clientX > rect.left + CHILD_DROP_OFFSET ? "child" : "below";
 }
 
 /** A drag image showing the block's text (WebKitGTK otherwise shows a blank square). */
@@ -682,11 +686,13 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
         }
       }}
       onDragOver={(e) => {
-        if (!onDragReorder || !e.dataTransfer.types.includes("text/block-id")) return;
+        // Only block drags (not files / text). WebKitGTK doesn't list custom
+        // types like text/block-id in dataTransfer.types: use our own marker.
+        if (!onDragReorder || !draggingBlock.id) return;
         e.preventDefault();
         e.stopPropagation();
         e.dataTransfer.dropEffect = "move";
-        const pos = dropPositionAt(e.currentTarget, e.clientX, e.clientY);
+        const pos = dropPositionAt(e.currentTarget, e.clientX, e.clientY, hasChildren && !collapsed);
         if (pos !== dropPosition) setDropPosition(pos);
       }}
       onDragLeave={(e) => {
@@ -697,9 +703,10 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
       onDrop={(e) => {
         e.preventDefault();
         e.stopPropagation();
-        const draggedId = e.dataTransfer.getData("text/block-id");
+        const draggedId = e.dataTransfer.getData("text/block-id") || draggingBlock.id;
+        draggingBlock.id = null;
         // From the drop point itself: the dragover state may not have rendered yet.
-        const pos = e.clientX || e.clientY ? dropPositionAt(e.currentTarget, e.clientX, e.clientY) : dropPosition;
+        const pos = e.clientX || e.clientY ? dropPositionAt(e.currentTarget, e.clientX, e.clientY, hasChildren && !collapsed) : dropPosition;
         if (draggedId && draggedId !== block.id && pos && onDragReorder) {
           onDragReorder(draggedId, block.id, pos);
         }
@@ -713,6 +720,7 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
           draggable
           onDragStart={(e) => {
             e.dataTransfer.setData("text/block-id", block.id);
+            draggingBlock.id = block.id;
             e.dataTransfer.effectAllowed = "move";
             const el = e.currentTarget.closest(".block") as HTMLElement | null;
             setBlockDragImage(e, el);
@@ -720,6 +728,8 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
           }}
           onDragEnd={(e) => {
             (e.currentTarget.closest(".block") as HTMLElement)?.classList.remove("dragging");
+            // After a drop elsewhere (or a cancelled drag) no block is being dragged.
+            setTimeout(() => { draggingBlock.id = null; }, 0);
           }}
           title="Drag to reorder"
         >

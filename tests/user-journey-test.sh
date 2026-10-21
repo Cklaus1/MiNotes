@@ -3684,9 +3684,9 @@ stored69() { ev "(async()=>{$A69 const t=await api.getPageTree('Drag69 page');co
 drag69() { ev "(async()=>{const tick=()=>new Promise(r=>setTimeout(r,60));const blk=t=>[...document.querySelectorAll('.block-list > .block')].find(b=>b.querySelector('.block-content')?.innerText.trim()===t);const src=blk('$1'),dst=blk('$2');if(!src||!dst)return 'missing';window.__dragImage69='';const orig=DataTransfer.prototype.setDragImage;DataTransfer.prototype.setDragImage=function(el,x,y){window.__dragImage69=el?.textContent||'';try{orig.call(this,el,x,y)}catch{}};const dt=new DataTransfer();const h=src.querySelector(':scope > .block-drag-handle');const r=dst.getBoundingClientRect();const x=('$3'==='child')?r.left+90:r.left+30;const y=('$3'==='above')?r.top+3:r.bottom-3;h.dispatchEvent(new DragEvent('dragstart',{bubbles:true,cancelable:true,dataTransfer:dt}));dst.dispatchEvent(new DragEvent('dragenter',{bubbles:true,cancelable:true,dataTransfer:dt,clientX:x,clientY:y}));dst.dispatchEvent(new DragEvent('dragover',{bubbles:true,cancelable:true,dataTransfer:dt,clientX:x,clientY:y}));await tick();const cls=dst.className;dst.dispatchEvent(new DragEvent('drop',{bubbles:true,cancelable:true,dataTransfer:dt,clientX:x,clientY:y}));h.dispatchEvent(new DragEvent('dragend',{bubbles:true,dataTransfer:dt}));DataTransfer.prototype.setDragImage=orig;return cls})()" | tr -d '"'; }
 
 step "Dragging a parent below a sibling moves its whole subtree, and the outline renders in order at once"
-R=$(drag69 A69 B69 below); sleep 0.4
+R=$(drag69 A69 C69 below); sleep 0.4
 S=$(shown69)
-[[ "$S" == "B69@0|b1 69@1|A69@0|a1 69@1|a2 69@1|C69@0" ]] && pass "Rendered outline right after the drop" || fail "Scrambled outline after drop" "$S"
+[[ "$S" == "B69@0|b1 69@1|C69@0|A69@0|a1 69@1|a2 69@1" ]] && pass "Rendered outline right after the drop" || fail "Scrambled outline after drop" "$S"
 sleep 1; T=$(stored69)
 [[ "$T" == "$S" ]] && pass "Rendered outline = stored outline" || fail "Rendered ≠ stored" "shown=$S stored=$T"
 ss "69-after-drop"
@@ -3714,6 +3714,11 @@ step "A block can't be dropped into its own subtree"
 R=$(drag69 B69 "b1 69" child); sleep 0.6
 S=$(shown69)
 [[ "$S" == "a2 69@0|B69@0|C69@1|b1 69@1|A69@0|a1 69@1" ]] && pass "Nothing changed" || fail "Dropped into own subtree" "$S"
+
+step "Dropping just below a parent whose children are showing makes it the first child (where the line is)"
+R=$(drag69 "a2 69" A69 below); sleep 0.4
+S=$(shown69)
+[[ "$R" == *"drop-child"* && "$S" == "B69@0|C69@1|b1 69@1|A69@0|a2 69@1|a1 69@1" ]] && pass "a2 is A69's first child" || fail "Drop below an expanded parent" "indicator=$R shown=$S"
 
 # ═══════════════════════════════════════════════
 journey "70. Enter then Backspace puts my block back exactly as it was"

@@ -7,7 +7,7 @@ import { getSettings } from "../lib/settings";
 import { localDateKey } from "../lib/dates";
 import BlockItem from "./BlockItem";
 import type { BlockItemHandle, DropPosition, FocusPosition } from "./BlockItem";
-import { applyDrop, dropPlacement, outlineOrder } from "../lib/blockTree";
+import { applyDrop, dropPlacement, effectiveDrop, outlineOrder } from "../lib/blockTree";
 import { mergeMarkdown } from "../editor/mergeBlocks";
 import type { PastedBlock } from "../editor/pasteMarkdown";
 import { noteBlockContent, refreshShownBlockRefs } from "../lib/blockRefs";
@@ -994,8 +994,9 @@ export default function PageView({
   // Drag-to-reorder blocks (C-13). The dragged block keeps its subtree, and the
   // list is rebuilt in outline order: positions are per parent, so the old plain
   // position sort rendered the outline scrambled until a reload.
-  const handleDragReorder = async (draggedBlockId: string, targetBlockId: string, where: DropPosition) => {
+  const handleDragReorder = async (draggedBlockId: string, targetBlockId: string, dropped: DropPosition) => {
     const current = localBlocksRef.current;
+    const where = effectiveDrop(current, targetBlockId, dropped, collapsedBlocksRef.current);
     const target = current.find(b => b.id === targetBlockId);
     if (!target || !current.some(b => b.id === draggedBlockId)) return;
     const next = applyDrop(current, draggedBlockId, targetBlockId, where);
