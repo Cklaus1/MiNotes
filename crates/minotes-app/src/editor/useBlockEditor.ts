@@ -10,6 +10,7 @@ import { attachmentHash, encodeName, isImage, openAttachment, storeFile } from "
 import { showToast } from "../lib/toast";
 import { errorMessage } from "../lib/errors";
 import { blobImageToFile, hasBlobImage, pastedFiles, withoutBlobImages } from "./pastedFiles";
+import { fenceToCodeBlock, parsePastedMarkdown, type PastedBlock } from "./pasteMarkdown";
 // ── End import ──
 
 
@@ -39,6 +40,9 @@ interface UseBlockEditorOptions {
   onArrowDown?: () => void;
   onToggleTodo?: () => void;
   onPasteMultiline?: (lines: string[]) => void;
+  /** Pasted markdown with structure (C-6): the block tree to create. `intoEmpty`:
+   *  this block is empty, so the first pasted block replaces it. */
+  onPasteBlocks?: (blocks: PastedBlock[], intoEmpty: boolean) => void;
   onIndent?: () => void;
   onOutdent?: () => void;
   /** Escape (no menu open): leave editing. */
@@ -63,6 +67,7 @@ export function useBlockEditor({
   onArrowDown,
   onToggleTodo,
   onPasteMultiline,
+  onPasteBlocks,
   onIndent,
   onOutdent,
   onEscape,
@@ -87,6 +92,7 @@ export function useBlockEditor({
   const onArrowDownRef = useRef(onArrowDown);
   const onToggleTodoRef = useRef(onToggleTodo);
   const onPasteMultilineRef = useRef(onPasteMultiline);
+  const onPasteBlocksRef = useRef(onPasteBlocks);
   const onIndentRef = useRef(onIndent);
   const onOutdentRef = useRef(onOutdent);
   const onEscapeRef = useRef(onEscape);
@@ -114,6 +120,7 @@ export function useBlockEditor({
   onArrowDownRef.current = onArrowDown;
   onToggleTodoRef.current = onToggleTodo;
   onPasteMultilineRef.current = onPasteMultiline;
+  onPasteBlocksRef.current = onPasteBlocks;
   onIndentRef.current = onIndent;
   onOutdentRef.current = onOutdent;
   onEscapeRef.current = onEscape;
@@ -344,6 +351,13 @@ export function useBlockEditor({
             return false; // Let TipTap handle Enter natively (new list item, etc.)
           }
 
+          // A line that is just ```lang: make it a code block (C-6), don't split.
+          const ed = editorInstanceRef.current;
+          if (ed && fenceToCodeBlock(ed)) {
+            event.preventDefault();
+            return true;
+          }
+
           event.preventDefault();
           splitAtCursor(view);
           return true;
@@ -514,6 +528,18 @@ export function useBlockEditor({
         const lines = text.split('\n').filter(l => l.trim());
         if (lines.length <= 1) {
           return false; // Single line, let default handle
+        }
+
+        // Markdown with structure (headings, nested lists, indented lines, fences):
+        // the matching block tree (C-6) instead of one flat, escaped block per line.
+        const outline = onPasteBlocksRef.current ? parsePastedMarkdown(text) : null;
+        if (outline && outline.length > 0) {
+          event.preventDefault();
+          let atoms = false;
+          view.state.doc.descendants((n: any) => { if (n.isAtom || (n.isLeaf && !n.isText && n.type.name !== "hardBreak")) atoms = true; return !atoms; });
+          const intoEmpty = view.state.doc.textContent.trim() === "" && !atoms;
+          onPasteBlocksRef.current!(outline, intoEmpty);
+          return true;
         }
 
         // Check if it looks like a code block

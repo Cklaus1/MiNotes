@@ -3916,6 +3916,47 @@ api "pressKeyInBlock(3, 'Escape', {focus:false})" >/dev/null
 [[ "$R" == *"Source text 75"*"Other75 page"* ]] && pass "Picker: $R" || fail "Picker without page names" "$R"
 
 # ═══════════════════════════════════════════════
+journey "76. Pasted markdown keeps its structure, and a typed code fence makes a code block (UX review C-6)"
+# Pasted markdown came out with escaped headings, flattened nesting and
+# indented lines turned into code; ```python + Enter saved escaped backticks.
+# (Browser mode pastes a synthetic DataTransfer; desktop D16 uses the real X clipboard.)
+# ═══════════════════════════════════════════════
+A76="const api=await import('/src/lib/api.ts');"
+ev "(async()=>{$A76 for(const t of ['Paste76 page','Plain76 page','Fence76 page']){const p=await api.createPage(t);await api.createBlock(p.id,'')}return 1})()" >/dev/null
+# paste76 <block index> <text (JS string literal)>
+paste76() { ev "(()=>{const el=document.querySelectorAll('.block-list > .block')[$1]?.querySelector('.ProseMirror');if(!el)return 'no editor';el.focus();const dt=new DataTransfer();dt.setData('text/plain',$2);el.dispatchEvent(new ClipboardEvent('paste',{clipboardData:dt,bubbles:true,cancelable:true}));return 'ok'})()" | tr -d '"'; }
+tree76() { ev "(async()=>{$A76 const t=await api.getPageTree('$1');const d=new Map();for(const b of t.blocks)d.set(b.id,b.parent_id?d.get(b.parent_id)+1:0);return t.blocks.map(b=>'  '.repeat(d.get(b.id))+b.content.replace(/\\n/g,'⏎')).join('|')})()" | tr -d '"'; }
+shown76() { ev "window.__MINOTES__.getBlockTree().map(b=>'  '.repeat(b.depth)+b.content.replace(/\\n/g,'⏎')).join('|')" | tr -d '"'; }
+MD76='"# Plan\n- one\n  - one.a\n    - one.a.i\n* two\n1. three\n   1. three.1\nNotes\n    indented child\n```python\ndef f():\n    return 1\n```"'
+WANT76="# Plan|one|  one.a|    one.a.i|two|three|  three.1|Notes|  indented child|\`\`\`python⏎def f():⏎    return 1⏎\`\`\`"
+
+step "Markdown pasted into an empty block becomes headings, nested blocks and a code block"
+api "navigateTo('Paste76 page')" >/dev/null; sleep 1.5
+R=$(paste76 0 "$MD76"); sleep 2.5
+T=$(tree76 'Paste76 page'); S=$(shown76)
+[[ "$T" == "$WANT76" ]] && pass "Stored as an outline: $T" || fail "Pasted markdown structure" "got $T"
+[[ "$S" == "$WANT76" ]] && pass "Shown the same way" || fail "Shown after paste" "$S"
+R=$(ev "(()=>{const bs=[...document.querySelectorAll('.block-list > .block')];return [!!bs[0]?.querySelector('h1'),!!bs.find(b=>b.querySelector('pre code'))].join('|')})()" | tr -d '"')
+[[ "$R" == "true|true" ]] && pass "The heading is a heading, the fence a code block" || fail "Heading / code rendering" "$R"
+ss "76-paste-structure"
+
+step "Plain multi-line text still becomes one block per line"
+api "navigateTo('Plain76 page')" >/dev/null; sleep 1.5
+paste76 0 '"alpha line\nbeta line\ngamma line"' >/dev/null; sleep 2
+T=$(tree76 'Plain76 page')
+[[ "$T" == "alpha line|beta line|gamma line" ]] && pass "Three blocks: $T" || fail "Plain paste" "$T"
+
+step "Typing \`\`\`python then Enter makes a Python code block"
+api "navigateTo('Fence76 page')" >/dev/null; sleep 1.5
+api "focusBlock(0)" >/dev/null; sleep 0.3
+ev "(async()=>{for(const ch of '\`\`\`python'){document.execCommand('insertText',false,ch);await new Promise(r=>setTimeout(r,20))}return 1})()" >/dev/null; sleep 0.3
+api "pressKeyInBlock(0, 'Enter', {focus:false})" >/dev/null; sleep 0.4
+ev "(()=>{document.execCommand('insertText',false,'print(1)');return 1})()" >/dev/null; sleep 0.3
+ev "document.activeElement?.blur()" >/dev/null; sleep 1.5
+T=$(tree76 'Fence76 page')
+[[ "$T" == "\`\`\`python⏎print(1)⏎\`\`\`" ]] && pass "Stored as a python fence, one block" || fail "Typed fence" "$T"
+
+# ═══════════════════════════════════════════════
 close_app
 
 # ═══════════════════════════════════════════════

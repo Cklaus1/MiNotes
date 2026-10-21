@@ -6,6 +6,7 @@ import { Selection, TextSelection } from "@tiptap/pm/state";
 import type { Block, Property, OgMetadata } from "../lib/api";
 import * as api from "../lib/api";
 import { useBlockEditor } from "../editor";
+import type { PastedBlock } from "../editor/pasteMarkdown";
 import { getSettingsCached } from "../lib/cachedSettings";
 import { loadBlockProperties } from "../lib/blockProperties";
 import { claimEditor, forgetEditor, requestEditorSweep, type EditorOwner } from "../lib/editorActivation";
@@ -204,6 +205,7 @@ interface Props {
   onArrowUp?: (blockId: string) => void;
   onArrowDown?: (blockId: string) => void;
   onPasteMultiline?: (blockId: string, lines: string[]) => void;
+  onPasteBlocks?: (blockId: string, blocks: PastedBlock[], intoEmpty: boolean) => void;
   onIndent?: (blockId: string) => void;
   onOutdent?: (blockId: string) => void;
   onEscape?: (blockId: string) => void;
@@ -249,7 +251,7 @@ function setBlockDragImage(e: React.DragEvent, blockEl: HTMLElement | null) {
 
 const BlockItem = forwardRef<BlockItemHandle, Props>(({
   block, depth = 0, hasChildren = false, isLastSibling = false, isOnActivePath = false, onFocusBlock, onBlurBlock, dataBlockId, selected = false, onUpdate, onDelete, onPageLinkClick,
-  onBlockRefClick, onEnter, canEnter, onBackspaceAtStart, onArrowUp, onArrowDown, onPasteMultiline,
+  onBlockRefClick, onEnter, canEnter, onBackspaceAtStart, onArrowUp, onArrowDown, onPasteMultiline, onPasteBlocks,
   onIndent, onOutdent, onEscape, onDuplicate, onToggleCollapse, onSetCollapsed, onSetAllCollapsed, collapsed = false, hiddenCount = 0,
   onZoomIn, onShiftClick, onOpenWhiteboard, onDragReorder,
 }, ref) => {
@@ -378,6 +380,7 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
     onArrowDown: onArrowDown ? () => onArrowDown(block.id) : undefined,
     onToggleTodo: () => handleToggleTodo(),
     onPasteMultiline: onPasteMultiline ? (lines) => onPasteMultiline(block.id, lines) : undefined,
+    onPasteBlocks: onPasteBlocks ? (blocks, intoEmpty) => onPasteBlocks(block.id, blocks, intoEmpty) : undefined,
     onIndent: onIndent ? () => onIndent(block.id) : undefined,
     onOutdent: onOutdent ? () => onOutdent(block.id) : undefined,
     onEscape: onEscape ? () => onEscape(block.id) : undefined,

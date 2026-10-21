@@ -9,6 +9,7 @@ import BlockItem from "./BlockItem";
 import type { BlockItemHandle, DropPosition, FocusPosition } from "./BlockItem";
 import { applyDrop, dropPlacement, outlineOrder } from "../lib/blockTree";
 import { mergeMarkdown } from "../editor/mergeBlocks";
+import type { PastedBlock } from "../editor/pasteMarkdown";
 import { noteBlockContent, refreshShownBlockRefs } from "../lib/blockRefs";
 import { caretAfterMarkdown } from "../editor/staticRender";
 import BacklinksPanel from "./BacklinksPanel";
@@ -800,6 +801,46 @@ export default function PageView({
       }
       return last;
     });
+    onRefreshPage();
+    if (lastId) setFocusBlockId(lastId);
+  };
+
+  // C-6: pasted markdown with structure becomes a block tree after the block it
+  // was pasted into. Into an empty block, the first pasted block takes its place
+  // (content + children). Created in order through the op queue, then refreshed.
+  const handlePasteBlocks = async (blockId: string, items: PastedBlock[], intoEmpty: boolean) => {
+    const current = localBlocksRef.current;
+    const block = current.find(b => b.id === blockId);
+    if (!block || items.length === 0) return;
+    const parentId = block.parent_id ?? undefined;
+    const [first, ...rest] = intoEmpty ? items : [null, ...items];
+    if (first) handleBlockUpdate(blockId, first.content);
+    const siblings = intoEmpty ? rest : items;
+    const positions = positionsAfter(current, block, siblings.length);
+    const createTree = async (nodes: PastedBlock[], parent: string): Promise<void> => {
+      for (const n of nodes) {
+        const created = await api.createBlock(page.id, n.content, parent);
+        if (n.children.length) await createTree(n.children, created.id);
+      }
+    };
+    let lastId: string | null = null;
+    try {
+      lastId = await enqueue(async () => {
+        const realParent = parentId ? rid(parentId) : undefined;
+        if (first?.children.length) await createTree(first.children, rid(blockId));
+        let last: string | null = first ? rid(blockId) : null;
+        for (let i = 0; i < siblings.length; i++) {
+          let created = await api.createBlock(page.id, siblings[i]!.content, realParent);
+          if (positions) created = await api.reorderBlock(created.id, realParent, positions[i]);
+          if (siblings[i]!.children.length) await createTree(siblings[i]!.children, created.id);
+          last = created.id;
+        }
+        return last;
+      });
+    } catch (e) {
+      console.error("structured paste failed:", e);
+      showToast(`Paste incomplete: ${errorMessage(e)}`);
+    }
     onRefreshPage();
     if (lastId) setFocusBlockId(lastId);
   };
@@ -1725,6 +1766,7 @@ export default function PageView({
       onArrowUp={handleArrowUp}
       onArrowDown={handleArrowDown}
       onPasteMultiline={handlePasteMultiline}
+      onPasteBlocks={handlePasteBlocks}
       onIndent={handleIndent}
       onOutdent={handleOutdent}
       onEscape={handleEscape}
