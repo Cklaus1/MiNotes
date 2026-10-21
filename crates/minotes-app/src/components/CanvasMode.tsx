@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import type { Block } from "../lib/api";
 import GraphView from "./GraphView";
 import MindMapView from "./mindmap/MindMapView";
@@ -6,6 +6,7 @@ import KanbanView from "./kanban/KanbanView";
 import Whiteboard from "./Whiteboard";
 import AllPagesView from "./AllPagesView";
 import { useEscapeToClose } from "../lib/escapeStack";
+import { WHITEBOARD_REGEX } from "../lib/whiteboardUtils";
 
 export type CanvasModeType = "graph" | "mindmap" | "draw" | "kanban" | "pages";
 
@@ -17,6 +18,12 @@ interface Props {
   journalDate?: string;
   blocks: Block[];
   whiteboardId: string | null;
+  /** The open board is new: it is added to the page once something is drawn. */
+  whiteboardIsNew?: boolean;
+  /** Open one of this page's boards (Draw tab with no board open). */
+  onOpenWhiteboard?: (whiteboardId: string) => void;
+  /** Start a new board on this page. */
+  onNewWhiteboard?: () => void;
   onClose: () => void;
   onPageClick: (id: string) => void;
   onRefreshPage: () => void;
@@ -26,8 +33,22 @@ interface Props {
 
 export default function CanvasMode({
   initialMode, pageId, pageTitle, isJournal, journalDate, blocks, whiteboardId,
+  whiteboardIsNew, onOpenWhiteboard, onNewWhiteboard,
   onClose, onPageClick, onRefreshPage, onWhiteboardClose, onRenameTitle,
 }: Props) {
+  // The canvas takes the keyboard: typing must not reach the page editor that
+  // is hidden underneath (children such as the whiteboard focus themselves).
+  const layerRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const layer = layerRef.current;
+    if (layer && !layer.contains(document.activeElement)) layer.focus({ preventScroll: true });
+  }, []);
+
+  // This page's boards, for the Draw tab when no board is open.
+  const pageBoards = useMemo(
+    () => blocks.map((b) => b.content.trim().match(WHITEBOARD_REGEX)?.[1]).filter((id): id is string => !!id),
+    [blocks],
+  );
   const [mode, setMode] = useState<CanvasModeType>(initialMode);
   // App changes initialMode while the canvas is already open (Ctrl+G from Draw,
   // Ctrl+M from Graph…). Follow it; the in-canvas tabs still switch locally.
@@ -66,7 +87,30 @@ export default function CanvasMode({
           />
         );
       case "draw":
-        if (!whiteboardId) return <div className="canvas-empty">No whiteboard open</div>;
+        if (!whiteboardId) {
+          // No dead end: open this page's board(s) or start a new one here.
+          if (!pageId) return <div className="canvas-empty">Open a page to draw on it — its boards live on the page.</div>;
+          return (
+            <div className="canvas-empty canvas-draw-chooser" data-testid="draw-chooser">
+              <div className="canvas-draw-chooser-title">Whiteboards on “{pageTitle}”</div>
+              {pageBoards.length > 0 ? (
+                <div className="canvas-draw-chooser-list">
+                  {pageBoards.map((id, i) => (
+                    <button key={id} className="btn" data-board-id={id} onClick={() => onOpenWhiteboard?.(id)}>
+                      {pageBoards.length === 1 ? "Open this page's board" : `Open board ${i + 1}`}
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <div className="canvas-draw-chooser-hint">This page has no board yet.</div>
+              )}
+              <button className="btn btn-primary" onClick={() => onNewWhiteboard?.()} data-testid="draw-new-board">
+                New board on this page
+              </button>
+              <div className="canvas-draw-chooser-hint">A new board is added to the end of “{pageTitle}” once you draw on it (Ctrl+W).</div>
+            </div>
+          );
+        }
         return (
           <Whiteboard
             whiteboardId={whiteboardId}
@@ -95,7 +139,7 @@ export default function CanvasMode({
   };
 
   return (
-    <div className="canvas-layer">
+    <div className="canvas-layer" ref={layerRef} tabIndex={-1}>
       <div className="canvas-topbar">
         <button className="canvas-back-btn" onClick={onClose} title="Back to notes">
           ← Notes
@@ -135,8 +179,12 @@ export default function CanvasMode({
         </div>
 
         {pageId && (
-          <span className="canvas-page-context">
-            {pageTitle}
+          <span className="canvas-page-context" data-testid="canvas-page-context">
+            {mode === "draw" && whiteboardId
+              ? whiteboardIsNew
+                ? <>New board · added to “{pageTitle}” when you draw</>
+                : <>Board on “{pageTitle}”</>
+              : pageTitle}
           </span>
         )}
       </div>

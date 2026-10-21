@@ -197,6 +197,9 @@ export default function App() {
     setWhiteboardId(wbId);
     setCanvasMode("draw");
   }, []);
+  // A board belongs to the page it was opened from: once the canvas closes, the
+  // Draw tab must not silently reopen it over another page.
+  useEffect(() => { if (!canvasMode) setWhiteboardId(null); }, [canvasMode]);
   useEffect(() => {
     const onSaved = (e: Event) => {
       const wbId = (e as CustomEvent).detail as string;
@@ -850,6 +853,8 @@ export default function App() {
           setWhiteboardId(null);
         } else if (activePage) {
           openNewWhiteboard(activePage.page.id);
+        } else {
+          showToast("Open a page first — a new board is added to the page you draw it on");
         }
       }
       // Cmd/Ctrl+M — mind map view
@@ -1034,6 +1039,9 @@ export default function App() {
               })() : undefined}
               blocks={activePage?.blocks ?? []}
               whiteboardId={whiteboardId}
+              whiteboardIsNew={!!whiteboardId && pendingBoardsRef.current.has(whiteboardId)}
+              onOpenWhiteboard={(wbId) => setWhiteboardId(wbId)}
+              onNewWhiteboard={() => { if (activePage) openNewWhiteboard(activePage.page.id); }}
               onClose={() => { setCanvasMode(null); }}
               onPageClick={(id) => { openPage(id); setCanvasMode(null); }}
               onRefreshPage={() => { if (activePage) openPage(activePage.page.id); }}

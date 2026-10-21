@@ -6419,3 +6419,22 @@ img.img-broken {
 .remote-images-bar-btn:hover:not(:disabled) { text-decoration: underline; }
 .remote-images-bar-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 3px; }
 .remote-images-bar-btn:disabled { opacity: 0.6; cursor: default; }
+
+/* ── Overlays take the keyboard (focus target, no ring) ── */
+.canvas-layer:focus, .whiteboard:focus { outline: none; }
+
+/* The page underneath an overlay doesn't scroll or show its scrollbar. */
+body:has(.canvas-layer) .content,
+body:has(.canvas-layer) .sidebar-section,
+body:has(.pdf-viewer) .content { overflow: hidden; }
+
+/* Whiteboard: zoom and history controls */
+.whiteboard-zoom-pct { min-width: 52px; font-variant-numeric: tabular-nums; }
+.whiteboard-toolbar-sep { width: 1px; align-self: stretch; margin: 2px 4px; background: var(--border); }
+.whiteboard-toolbar .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* Draw tab with no board open */
+.canvas-draw-chooser { flex-direction: column; gap: 12px; text-align: center; padding: 24px; }
+.canvas-draw-chooser-title { font-size: 16px; font-weight: 600; color: var(--text-primary); }
+.canvas-draw-chooser-list { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+.canvas-draw-chooser-hint { font-size: 12px; color: var(--text-muted); max-width: 420px; }

@@ -3694,6 +3694,53 @@ press "Escape"; sleep 0.5
 R=$(ev "!!document.querySelector('[data-testid=open-pdf-dialog]')" | tr -d '"')
 [[ "$R" == "false" ]] && pass "Esc closes it" || fail "Ctrl+P dialog stays" "$R"
 
+step "Whiteboard: follows the theme, has zoom % and undo buttons, and takes the keyboard"
+api "closePanel()" >/dev/null; sleep 0.3
+api "navigateTo('$P66')" >/dev/null; sleep 2
+ev "document.querySelector('.whiteboard-indicator')?.click()" >/dev/null; sleep 2
+WBPX66="(()=>{const c=document.querySelector('.whiteboard-canvas');const p=c.getContext('2d').getImageData(2,c.height-3,1,1).data;return document.querySelector('.whiteboard').dataset.canvasTheme+'|'+p[0]+','+p[1]+','+p[2]})()"
+R=$(ev "$WBPX66" | tr -d '"')
+F=$(ev "(()=>{const a=document.activeElement;return (a?.closest('.canvas-layer')?'overlay':'outside')+':'+!!a?.closest('.ProseMirror')})()" | tr -d '"')
+SC=$(ev "getComputedStyle(document.querySelector('.content')||document.body).overflowY" | tr -d '"')
+[[ "$R" == "dark|30,30,46" ]] && pass "Dark theme: dark canvas ($R)" || fail "Whiteboard ignores the dark theme" "$R"
+[[ "$F" == "overlay:false" ]] && pass "Keyboard focus is on the board, not the editor underneath" || fail "Focus left under the overlay" "$F"
+[[ "$SC" == "hidden" ]] && pass "The page underneath doesn't scroll (no scrollbar under the overlay)" || fail "Page scrollbar under overlay" "$SC"
+TH66=$(ev "localStorage.getItem('minotes-theme')||'dark'" | tr -d '"')
+ev "(async()=>{const t=await import('/src/lib/theme.ts');t.setTheme('light');return 1})()" >/dev/null; sleep 0.6
+R=$(ev "$WBPX66" | tr -d '"')
+ev "[...document.querySelectorAll('.whiteboard-toolbar button')].find(b=>b.textContent.trim()==='Draw')?.click()" >/dev/null; sleep 0.3
+SW=$(ev "getComputedStyle(document.querySelector('.whiteboard-toolbar .whiteboard-color-swatch.active')).backgroundColor" | tr -d '"')
+ss "66-whiteboard-light"
+ev "(async()=>{const t=await import('/src/lib/theme.ts');t.setTheme('$TH66');return 1})()" >/dev/null; sleep 0.3
+press "Escape"; sleep 0.3
+[[ "$R" == "light|239,241,245" && "$SW" == "rgb(76, 79, 105)" ]] && pass "Light theme: light canvas, default ink drawn dark ($SW)" || fail "Whiteboard light theme" "$R ink=$SW"
+Z=$(ev "(async()=>{const t=()=>new Promise(r=>setTimeout(r,150));const z=()=>document.querySelector('[data-testid=whiteboard-zoom]').textContent;const a=z();[...document.querySelectorAll('.whiteboard-toolbar button')].find(b=>b.getAttribute('aria-label')==='Zoom in').click();await t();const b=z();document.querySelector('[data-testid=whiteboard-zoom]').click();await t();return a+'>'+b+'>'+z()})()" | tr -d '"')
+Z2=$(ev "document.querySelector('[data-testid=whiteboard-zoom]').textContent" | tr -d '"')
+[[ "$Z" == "100%>120%>"* && "$Z2" == "100%" ]] && pass "Zoom % with − / + buttons; clicking it resets to 100% ($Z)" || fail "Whiteboard zoom controls" "$Z / $Z2"
+U=$(ev "(async()=>{const u=()=>[...document.querySelectorAll('.whiteboard-toolbar button')].find(b=>b.getAttribute('aria-label')==='Undo');const before=u().disabled;[...document.querySelectorAll('.whiteboard-toolbar button')].find(b=>b.textContent.trim()==='Clear').click();await new Promise(r=>setTimeout(r,300));const mid=u().disabled;u().click();await new Promise(r=>setTimeout(r,1800));$A66 const d=JSON.parse(await api.getWhiteboard('$WB66'));return before+'|'+mid+'|'+d.lines.length+'|'+d.boxes.length})()" | tr -d '"')
+[[ "$U" == "true|false|1|1" ]] && pass "Undo button: disabled with no history, then undoes Clear (board restored)" || fail "Whiteboard undo button" "$U"
+press "Escape"; sleep 0.8
+
+step "Whiteboard: the Draw tab offers this page's board or a new one — never a stale board from another page"
+ev "[...document.querySelectorAll('.stats-mode-btn')].find(b=>b.textContent.includes('Graph'))?.click()" >/dev/null; sleep 1.5
+ev "[...document.querySelectorAll('.canvas-mode-btn')].find(b=>b.textContent.includes('Draw'))?.click()" >/dev/null; sleep 1
+R=$(ev "(()=>{const c=document.querySelector('[data-testid=draw-chooser]');if(!c)return 'no chooser';const b=c.querySelector('[data-board-id]');return (b?b.dataset.boardId+':'+b.textContent:'none')+'|'+!!c.querySelector('[data-testid=draw-new-board]')})()" | tr -d '"')
+[[ "$R" == "$WB66:Open this page's board|true" ]] && pass "Draw tab: 'Open this page's board' + 'New board on this page'" || fail "Draw tab chooser" "$R"
+ev "document.querySelector('[data-testid=draw-chooser] [data-board-id]')?.click()" >/dev/null; sleep 1.5
+R=$(ev "(document.querySelector('.whiteboard-canvas')?'board':'none')+'|'+(document.querySelector('[data-testid=canvas-page-context]')?.textContent||'')" | tr -d '"')
+[[ "$R" == "board|Board on “$P66”" ]] && pass "Opens it, and the bar says whose board it is" || fail "Open page board" "$R"
+press "Escape"; sleep 0.8
+api "navigateTo('Hub66')" >/dev/null; sleep 1.5
+ev "[...document.querySelectorAll('.stats-mode-btn')].find(b=>b.textContent.includes('Graph'))?.click()" >/dev/null; sleep 1.5
+ev "[...document.querySelectorAll('.canvas-mode-btn')].find(b=>b.textContent.includes('Draw'))?.click()" >/dev/null; sleep 1
+R=$(ev "(()=>{const c=document.querySelector('[data-testid=draw-chooser]');return c?(c.querySelectorAll('[data-board-id]').length+'|'+c.textContent.includes('no board yet')):'board '+window.__MINOTES__.getOpenWhiteboardId()})()" | tr -d '"')
+[[ "$R" == "0|true" ]] && pass "On another page the Draw tab doesn't reopen the last board" || fail "Stale board on another page" "$R"
+ev "document.querySelector('.canvas-back-btn')?.click()" >/dev/null; sleep 0.8
+ev "document.activeElement?.blur()" >/dev/null; press "Control+w"; sleep 1.5
+R=$(ev "document.querySelector('[data-testid=canvas-page-context]')?.textContent||''" | tr -d '"')
+[[ "$R" == "New board · added to “Hub66” when you draw" ]] && pass "Ctrl+W says where the new board goes ($R)" || fail "Ctrl+W context" "$R"
+press "Escape"; sleep 0.8
+
 # ═══════════════════════════════════════════════
 close_app
 
