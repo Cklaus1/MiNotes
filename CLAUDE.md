@@ -83,7 +83,7 @@ cargo run -p minotes-cli -- notebook list                     # notebook create|
 
 - Tests use `agent-browser` (headless Chrome via CDP) — must be installed separately
 - Test API exposed on `window.__MINOTES__` for automation
-- 65 user journeys, ~473 assertions in `tests/user-journey-test.sh` (browser + mock by default; `JOURNEY_BACKEND=desktop` runs them on the real app); journey 65 = encrypted notebooks. Desktop journeys D1–D13 (~252 assertions) in `tests/desktop-journey-test.sh`; D7 covers outside edits of the markdown copy, D8 cross-notebook search and links, D9 notebook zip export/import, D13 encrypted notebooks + the leak scan, D14 two-device encrypted sync. A journey must define the shell helpers it uses (they may run on their own).
+- 67 user journeys, ~490 assertions in `tests/user-journey-test.sh` (browser + mock by default; `JOURNEY_BACKEND=desktop` runs them on the real app); journey 65 = encrypted notebooks, 66–67 = confirmations before permanent deletes / a whole-page delete. Desktop journeys D1–D13 (~252 assertions) in `tests/desktop-journey-test.sh`; D7 covers outside edits of the markdown copy, D8 cross-notebook search and links, D9 notebook zip export/import, D13 encrypted notebooks + the leak scan, D14 two-device encrypted sync, D15 real input (an image pasted through the X clipboard, typed `#tag` / `==highlight==`, the app's confirm dialog). A journey must define the shell helpers it uses (they may run on their own).
 - `get_page_blocks`/`getPageTree` return blocks in **outline order** (depth-first, siblings by position). Positions are per-parent — never sort a page's blocks by position alone.
 - ProseMirror doesn't respond to CDP keyboard events — use `window.__MINOTES__` API instead
 - Browser-mode tests use the mock backend and don't enforce the CSP. For anything Tauri-only use the `desktop-check` skill (Xvfb + xdotool + screenshots against a throwaway HOME).
@@ -100,6 +100,8 @@ cargo run -p minotes-cli -- notebook list                     # notebook create|
 ## Important gotchas
 
 - **Never export non-components from .tsx files** — breaks Vite React Fast Refresh, blanks the app
+- **Never `window.confirm` / `alert`** — in the desktop app the dialog plugin makes `confirm` return a Promise (always truthy). Use `await confirmDialog({...})` (`lib/confirm.ts`, rendered by `ConfirmHost`); `npm test` fails on a `confirm(`/`alert(` in `src`
+- **Every editor mark/node needs a markdown serializer AND parser** — add a case to `src/editor/markdownRoundTrip.test.ts` (tiptap-markdown writes `[name]` for a node without one)
 - **`PageTree` has no `#[serde(flatten)]`** — frontend expects `tree.page.title` not `tree.title`
 - **`move_block` requires non-null parent** — use `reorder_block` for root-level blocks
 - **TipTap blur→save→sync cycle** — slash commands that use TipTap API lose formatting during save. Headings use markdown text approach instead.

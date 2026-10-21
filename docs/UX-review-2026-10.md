@@ -142,18 +142,18 @@ Ranked by harm. **D** = data loss or corruption, **S** = safety/security, **B** 
 
 | # | Kind | Bug | Where | Effort |
 |---|---|---|---|---|
-| C-1 | S/D | **Every `window.confirm` auto-accepts in the desktop app.** The dialog plugin replaces `confirm` with a Promise (rejecting: `dialog.confirm not allowed`, only `dialog:allow-open` is granted); a Promise is truthy, so all seven call sites proceed. Effects: the "this export is unencrypted" warning for **encrypted notebooks is skipped** (`lib/encryption.ts:93`), the recovery-key screen closes without its "have you saved it?" check, snippet/plugin/kanban-column deletes don't ask | 7 call sites | S |
-| C-2 | D | **Real image paste is saved as a `blob:` URL** and is gone after restart. WebKitGTK fills `clipboardData.items`, not `.files`. Tests pass because they paste a synthetic `DataTransfer` | `useBlockEditor.ts:375` | S/M |
-| C-3 | D | **Typing `#tag` + space corrupts the block** (`#urgent ` → `[tag]t`); TagNode has no markdown serializer | `editor/TagNode.ts` | S |
-| C-4 | D | **Highlights are dropped on save** (no `==…==` serializer) | `blockExtensions.ts` | S |
-| C-5 | D | **Empty trash and per-item delete are permanent with no confirmation**; the ✕ button is clipped out of view | `Sidebar.tsx` ~672 | S |
+| C-1 | S/D | **Fixed** (`7d345d4`: app-wide confirm dialog, `lib/confirm.ts`) — **Every `window.confirm` auto-accepts in the desktop app.** The dialog plugin replaces `confirm` with a Promise (rejecting: `dialog.confirm not allowed`, only `dialog:allow-open` is granted); a Promise is truthy, so all seven call sites proceed. Effects: the "this export is unencrypted" warning for **encrypted notebooks is skipped** (`lib/encryption.ts:93`), the recovery-key screen closes without its "have you saved it?" check, snippet/plugin/kanban-column deletes don't ask | 7 call sites | S |
+| C-2 | D | **Fixed** (`922a083`: reads `clipboardData.items`; `blob:` images never stored) — **Real image paste is saved as a `blob:` URL** and is gone after restart. WebKitGTK fills `clipboardData.items`, not `.files`. Tests pass because they paste a synthetic `DataTransfer` | `useBlockEditor.ts:375` | S/M |
+| C-3 | D | **Fixed** (`ce5747b`: serializer + parser + input rule) — **Typing `#tag` + space corrupts the block** (`#urgent ` → `[tag]t`); TagNode has no markdown serializer | `editor/TagNode.ts` | S |
+| C-4 | D | **Fixed** (`20734b7`: `==text==` both ways) — **Highlights are dropped on save** (no `==…==` serializer) | `blockExtensions.ts` | S |
+| C-5 | D | **Fixed** (`f2673b4`: confirm with counts; title ellipsis keeps ✕ visible) — **Empty trash and per-item delete are permanent with no confirmation**; the ✕ button is clipped out of view | `Sidebar.tsx` ~672 | S |
 | C-6 | D | **Pasted markdown is mangled** (escaped headings, flattened nesting, indented lines → code); typed ```` ```lang ```` + Enter saves escaped text | paste / input rules | M |
-| C-7 | D | **Ctrl+A → Backspace outside the editor deletes the whole page** with no confirmation or toast (Ctrl+Z restores it, nothing says so) | multi-select | S |
+| C-7 | D | **Fixed** (`01ddbfa`: "N blocks deleted · Undo" toast; confirm before deleting every block) — **Ctrl+A → Backspace outside the editor deletes the whole page** with no confirmation or toast (Ctrl+Z restores it, nothing says so) | multi-select | S |
 | C-8 | D | **The TODO badge writes a real "All TODOs" page** of raw markup that pollutes the page list, every page's backlinks and search | `App.tsx` ~950 | M |
 | C-9 | D | **Git sync: joining from a fresh device duplicates the onboarding page**, and copies multiply ("Getting Started (2) (2)") | sync import | M |
 | C-10 | B | **Subfolders can never be expanded** — pages in nested projects are unreachable from the sidebar | `Sidebar.tsx` ~1283 | S |
 | C-11 | B | **Collapse can't be done with the mouse** — the toggle is covered by the drag handle and zoom trigger | block controls CSS | S |
-| C-12 | B | **Block references render as raw `((uuid))` after any reload** | markdown → node parse | S/M |
+| C-12 | B | **Partly fixed** (`9e370f7`: `((uuid))` now parses into a block-ref chip; the chip shows the uuid, not the referenced text, and the transclusion box still repeats it) — **Block references render as raw `((uuid))` after any reload** | markdown → node parse | S/M |
 | C-13 | B | **After a drag, the outline renders scrambled** until reload (data is correct; positions sorted without outline order) | `PageView` `localBlocks` | S |
 | C-14 | B | **PDF highlights can't be created** — no pdf.js text layer | `PdfViewer.tsx` | M |
 | C-15 | B | **Page "Export as HTML" saves silently into the app's working directory** (found later as `Project Alpha.html` in the repo root) with no dialog or message; whiteboard export writes to Downloads with no dialog | `exportPage.ts`, `Whiteboard.tsx` | S |
@@ -166,6 +166,18 @@ Also worth fixing soon: link previews and remote images send no User-Agent
 (Wikipedia/Wikimedia answer 403); Kanban Esc closes the whole board; the
 whiteboard overlay lets typing reach the hidden page underneath; Manage
 notebooks re-sorts rows after a rename; split→merge isn't reversible.
+
+**Wave 1 notes (2026-10-21).** The markdown round-trip suite
+(`src/editor/markdownRoundTrip.test.ts`, `npm test`) also found and fixed: task
+lists came back loose (a blank line between `- [ ]` items). Logged, not fixed:
+two marks that start at the same character are written in schema order
+(`==**hi** there==` → `**==hi==** ==there==`, `*__b__ c*` likewise; same
+formatting, the space between loses the outer mark) — a prosemirror-markdown
+limitation. Native `prompt()` remains for Ctrl+N, Ctrl+P (PDF path), the
+notebook-folder and `.zip` path fallbacks and the Evernote import path (Wave 3);
+none of them relies on a `confirm` result. Journeys added: browser 66–67 and
+65 (recovery key), desktop D15 (real X-clipboard paste, real typing, the app's
+confirm dialog).
 
 ## 4. Patterns behind the scores
 
