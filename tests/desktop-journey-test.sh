@@ -125,6 +125,7 @@ api "focusBlock(1)" >/dev/null; sleep 0.5; "$DC" key Home; "$DC" key BackSpace; 
 ev "document.activeElement?.blur()" >/dev/null; sleep 1.5
 MERGED=$(blocks_of 'Split')
 [[ "$MERGED" == *"**bold**"* && "$MERGED" == *"[[Getting Started]]"* && "$MERGED" != *"¦"* ]] && pass "Merge keeps bold and the link in one block" || fail "Merge lost content" "$MERGED"
+is "Split → merge gives back the original line (no line break, space kept)" "$MERGED" "alpha **bold** [[Getting Started]] omega"
 
 step "Ctrl+Enter cycles a TODO on what I just typed"
 ev "(async()=>{const api=await import('/src/lib/api.ts');const p=await api.createPage('Todo Keys');await api.createBlock(p.id,'');return 'ok'})()" >/dev/null

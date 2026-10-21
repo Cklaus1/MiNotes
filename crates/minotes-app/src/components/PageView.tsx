@@ -8,6 +8,8 @@ import { localDateKey } from "../lib/dates";
 import BlockItem from "./BlockItem";
 import type { BlockItemHandle, DropPosition, FocusPosition } from "./BlockItem";
 import { applyDrop, dropPlacement, outlineOrder } from "../lib/blockTree";
+import { mergeMarkdown } from "../editor/mergeBlocks";
+import { caretAfterMarkdown } from "../editor/staticRender";
 import BacklinksPanel from "./BacklinksPanel";
 import UnlinkedRefsPanel from "./UnlinkedRefsPanel";
 import LinkPreview from "./LinkPreview";
@@ -573,7 +575,7 @@ export default function PageView({
   // lands in it at any typing speed; the backend create runs in the op queue and
   // its real id replaces the temporary one when it returns.
   const canEnter = useCallback(() => true, []);
-  const handleEnter = (blockId: string, contentAfterCursor: string, savedContent?: string) => {
+  const handleEnter = (blockId: string, contentAfterCursor: string, savedContent?: string, boundarySpace?: boolean) => {
     if (savedContent !== undefined) markEdited(blockId, savedContent);
     const current = localBlocksRef.current;
     const idx = current.findIndex(b => b.id === blockId);
@@ -595,6 +597,8 @@ export default function PageView({
     }
 
     const tempId = newTempId();
+    // Backspace at the start of the new block undoes this split exactly.
+    lastSplitRef.current = { first: blockId, second: tempId, space: !!boundarySpace };
     const now = new Date().toISOString();
     const temp: Block = {
       id: tempId, page_id: page.id, parent_id: parentId, position, content: contentAfterCursor,
@@ -653,6 +657,9 @@ export default function PageView({
     });
   };
 
+  /** The last Enter split (blocks may still carry temp ids): its merge restores a trimmed space. */
+  const lastSplitRef = useRef<{ first: string; second: string; space: boolean } | null>(null);
+
   /** The backend created `tempId` as `realId`: swap ids everywhere, keep local state. */
   const resolveTempId = (tempId: string, realId: string) => {
     idMapRef.current.set(tempId, realId);
@@ -685,7 +692,12 @@ export default function PageView({
     // Capture now: block objects can be shared with the backend layer (the mock
     // returns its stored objects) and get mutated by the updateBlock below.
     const prevOldContent = prevBlock.content;
-    const mergedContent = prevOldContent + (content ? "\n" + content : "");
+    // One line, like before the split (no "\n"); the caret goes to the join.
+    const split = lastSplitRef.current;
+    const undoesSplit = !!split && rid(split.first) === rid(prevBlock.id) && rid(split.second) === rid(blockId);
+    const mergedContent = mergeMarkdown(prevOldContent, content, { space: undoesSplit && split!.space });
+    lastSplitRef.current = null;
+    const joinCaret = caretAfterMarkdown(prevOldContent);
     // deleteBlock cascades, so the merged block's children must be re-homed onto
     // the absorbing block first or they'd be deleted with it. Keep their visual
     // order: if prevBlock is the merged block's parent, slot them where the merged
@@ -731,7 +743,7 @@ export default function PageView({
         return m ? { ...b, parent_id: m.toParentId, position: m.toPosition } : b;
       })
       .filter(b => b.id !== blockId)));
-    setFocusBlockId(prevBlock.id);
+    focusBlockAt(prevBlock.id, joinCaret);
     await enqueue(async () => {
       try {
         // The editor text (`content`) may be newer than the last saved block content.
@@ -1235,6 +1247,11 @@ export default function PageView({
         id: b.id, position: b.position,
       })),
       // Index of the visible block whose editor has focus (-1: none).
+      // Caret (editor doc position) in block N while it has focus, else null.
+      getCaretInBlock: (blockIndex: number) => {
+        const block = filteredVisibleBlocks[blockIndex];
+        return block ? blockRefs.current.get(block.id)?.getCaret() ?? null : null;
+      },
       getFocusedBlockIndex: () => {
         const id = (document.activeElement as HTMLElement | null)?.closest?.('.ProseMirror')
           ?.closest('[data-block-id]')?.getAttribute('data-block-id');

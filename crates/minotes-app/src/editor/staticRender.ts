@@ -13,7 +13,7 @@
  * dropped) before it is used. Remote images are placeholders: lib/remoteImages.ts.
  */
 import { Editor, createDocument } from "@tiptap/core";
-import { EditorState } from "@tiptap/pm/state";
+import { EditorState, Selection } from "@tiptap/pm/state";
 import { createBlockExtensions } from "./blockExtensions";
 import { isRemoteSrc } from "../lib/remoteImages";
 
@@ -116,6 +116,22 @@ function renderTemplate(markdown: string): DocumentFragment {
 /** A fresh DOM copy of what the block editor renders for `markdown`. */
 export function renderBlockStatic(markdown: string): DocumentFragment {
   return renderTemplate(markdown).cloneNode(true) as DocumentFragment;
+}
+
+/**
+ * The editor position right after the content of `markdown` (Selection.atEnd of
+ * its doc). Used to put the caret at the join after a merge: the merged block
+ * starts with exactly this content.
+ */
+export function caretAfterMarkdown(markdown: string): number {
+  const r = getRenderer();
+  try {
+    const html = (r.storage as any).markdown.parser.parse(markdown);
+    const doc = createDocument(html, r.schema, r.options.parseOptions);
+    return Selection.atEnd(doc).from;
+  } catch {
+    return markdown.length + 1;
+  }
 }
 
 /** Class list of the editor's root element (`tiptap ProseMirror block-editor-prosemirror`). */

@@ -2197,7 +2197,7 @@ step "Backspace at start merges with links, tags and bold intact"
 sleep 0.5
 ev "window.__MINOTES__.mergeWithPrevious(3)" > /dev/null; sleep 1
 R=$(api "getBlockContent(2)")
-[[ "$R" == '"prev block\n[[A Page]] #tag **b**"' ]] && pass "Merge keeps [[link]] #tag **bold**" || fail "Merge lost content" "$R"
+[[ "$R" == '"prev block[[A Page]] #tag **b**"' ]] && pass "Merge keeps [[link]] #tag **bold**, on one line" || fail "Merge lost content" "$R"
 
 step "A second Enter while the first is still being saved splits too, in order"
 IDX=$(ev "window.__MINOTES__.getBlocks().findIndex(b=>b.content==='alpha beta gamma')" | tr -d '"')
@@ -3714,6 +3714,45 @@ step "A block can't be dropped into its own subtree"
 R=$(drag69 B69 "b1 69" child); sleep 0.6
 S=$(shown69)
 [[ "$S" == "a2 69@0|B69@0|C69@1|b1 69@1|A69@0|a1 69@1" ]] && pass "Nothing changed" || fail "Dropped into own subtree" "$S"
+
+# ═══════════════════════════════════════════════
+journey "70. Enter then Backspace puts my block back exactly as it was"
+# Backspace at the start of a block merged with a "\n" and put the caret at
+# the end, so split→merge wasn't reversible (UX review: split / merge).
+# ═══════════════════════════════════════════════
+A70="const api=await import('/src/lib/api.ts');"
+ev "(async()=>{$A70 const p=await api.createPage('Merge70 page');await api.createBlock(p.id,'first70');await api.createBlock(p.id,'Second block');await api.createBlock(p.id,'Hello World');await api.createBlock(p.id,'**bold** and [[Merge70 page]] text');return 1})()" >/dev/null
+api "navigateTo('Merge70 page')" >/dev/null; sleep 2
+idx70() { ev "window.__MINOTES__.getBlocks().findIndex(b=>b.content===\`$1\`)" | tr -d '"'; }
+# split70 <content> <offset> -> merged content | caret | focused index | block count before/after
+split70() {
+  local i; i=$(idx70 "$1"); local n0; n0=$(api "getBlockCount()" | tr -d '"')
+  api "splitBlockAt($i, $2)" >/dev/null; sleep 0.8
+  local mid; mid=$(api "getBlockContent($((i+1)))" | tr -d '"')
+  api "mergeWithPrevious($((i+1)))" >/dev/null; sleep 0.8
+  echo "$(api "getBlockContent($i)" | tr -d '"')#$(api "getCaretInBlock($i)" | tr -d '"')#$(api "getFocusedBlockIndex()" | tr -d '"')#$i#$n0/$(api "getBlockCount()" | tr -d '"')#$mid"
+}
+
+step "Split in the middle of a word, then Backspace: same text, caret at the join"
+R=$(split70 "Second block" 5)
+IFS='#' read -r C70 K70 F70 I70 N70 M70 <<< "$R"
+[[ "$M70" == "d block" ]] && pass "Enter split it (\"Secon\" / \"d block\")" || fail "Split" "$R"
+[[ "$C70" == "Second block" ]] && pass "Merged back to \"Second block\" (no line break)" || fail "Merge text" "$C70"
+[[ "$K70" == "6" && "$F70" == "$I70" ]] && pass "Caret at the join (after \"Secon\")" || fail "Caret after merge" "caret=$K70 focused=$F70 want block $I70 pos 6"
+[[ "${N70%/*}" == "${N70#*/}" ]] && pass "Same number of blocks as before ($N70)" || fail "Block count" "$N70"
+
+step "Split at a space, then Backspace: the space comes back"
+R=$(split70 "Hello World" 6)
+IFS='#' read -r C70 K70 F70 I70 N70 M70 <<< "$R"
+[[ "$C70" == "Hello World" ]] && pass "\"Hello World\" again" || fail "Merge at a space" "$C70 (split: $M70)"
+
+step "Formatting and links survive the round trip"
+R=$(split70 "**bold** and [[Merge70 page]] text" 9)
+IFS='#' read -r C70 K70 F70 I70 N70 M70 <<< "$R"
+[[ "$C70" == "**bold** and [[Merge70 page]] text" ]] && pass "Formatting intact" || fail "Formatted merge" "$C70 (split: $M70)"
+sleep 1
+R=$(ev "(async()=>{$A70 const t=await api.getPageTree('Merge70 page');return t.blocks.map(b=>b.content).join('|')})()" | tr -d '"')
+[[ "$R" == "first70|Second block|Hello World|**bold** and [[Merge70 page]] text" ]] && pass "Stored as before" || fail "Stored after split/merge" "$R"
 
 # ═══════════════════════════════════════════════
 close_app

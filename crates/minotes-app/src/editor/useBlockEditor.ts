@@ -29,7 +29,8 @@ interface UseBlockEditorOptions {
   onSave: (markdown: string) => void;
   onPageLinkClick: (title: string, shiftKey?: boolean) => void;
   onBlockRefClick?: (blockId: string) => void;
-  onEnter?: (contentAfterCursor: string, savedContent?: string) => void;
+  /** `boundarySpace`: the cut was at a space (trimmed from both halves). */
+  onEnter?: (contentAfterCursor: string, savedContent?: string, boundarySpace?: boolean) => void;
   /** Checked BEFORE the editor mutates anything on Enter. Returning false makes the
    *  Enter a no-op (e.g. a previous split is still being persisted). */
   canEnter?: () => boolean;
@@ -227,6 +228,10 @@ export function useBlockEditor({
 
     const afterMarkdown = from < docEnd ? withoutBlobImages(serializeDoc(state.doc.cut(from)).trim()) : "";
     const savedContent = serializeDoc(state.doc.cut(0, from)).trim();
+    // Whitespace at the cut is trimmed from both halves (stored markdown can't
+    // keep it): tell the merge, so Backspace can put it back (split→merge).
+    const around = state.doc.textBetween(Math.max(0, from - 1), Math.min(state.doc.content.size, from + 1), "\n", "\0");
+    const boundarySpace = / /.test(around);
 
     // Delete text after cursor from the editor (our own edit; saved right below).
     if (from < docEnd) {
@@ -235,7 +240,7 @@ export function useBlockEditor({
 
     commitSave(savedContent);
     // Pass both saved content and after-cursor so PageView can update local state
-    onEnterRef.current(afterMarkdown, savedContent);
+    onEnterRef.current(afterMarkdown, savedContent, boundarySpace && !!afterMarkdown && !!savedContent);
     return true;
   };
 
