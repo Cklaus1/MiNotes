@@ -19,7 +19,7 @@ import { blocksToFlow, extractLabel, type LayoutDirection, type MindMapNodeData 
 import { loadCollapsed, saveCollapsed } from "./collapseStore";
 import { buildMindMapSvg, svgToPng } from "./exportImage";
 import MindMapNode from "./MindMapNode";
-import { confirmPlaintextExport } from "../../lib/encryption";
+import { saveExport } from "../../lib/exportFile";
 
 const nodeTypes = { mindmapNode: MindMapNode };
 
@@ -82,28 +82,6 @@ function autoCollapsed(blocks: Block[]): Set<string> {
     return d;
   };
   return new Set(blocks.filter((b) => hasKids.has(b.id) && depthOf(b.id) >= AUTO_COLLAPSE_DEPTH).map((b) => b.id));
-}
-
-/** Save a file: browser download, or (desktop) PNG to Downloads / text to the clipboard. */
-async function deliverExport(filename: string, data: Blob, kind: string): Promise<void> {
-  // An encrypted notebook: the export is written unencrypted — ask once.
-  if (!(await confirmPlaintextExport())) return;
-  if (api.isTauri) {
-    // The desktop webview has no download manager: ask where to save.
-    const bytes = Array.from(new Uint8Array(await data.arrayBuffer()));
-    const path = await api.saveExportFile(filename, bytes);
-    if (path) showToast(`${kind} exported → ${path}`);
-    return;
-  }
-  const url = URL.createObjectURL(data);
-  const link = document.createElement("a");
-  link.download = filename;
-  link.href = url;
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-  showToast(`Exported ${filename}`);
 }
 
 const exportName = (title: string, ext: string) =>
@@ -666,7 +644,7 @@ function MindMapInner({ pageId, pageTitle, isJournal, journalDate, blocks, onClo
     if (!out) return;
     try {
       const png = await svgToPng(out.svg, out.width, out.height);
-      await deliverExport(exportName(pageTitle, "png"), png, "PNG");
+      await saveExport(exportName(pageTitle, "png"), png, "Mind map PNG");
     } catch (e) {
       showToast(`Export failed: ${e}`);
     }
@@ -676,7 +654,7 @@ function MindMapInner({ pageId, pageTitle, isJournal, journalDate, blocks, onClo
     const out = renderSvg();
     if (!out) return;
     try {
-      await deliverExport(exportName(pageTitle, "svg"), new Blob([out.svg], { type: "image/svg+xml" }), "SVG");
+      await saveExport(exportName(pageTitle, "svg"), new Blob([out.svg], { type: "image/svg+xml" }), "Mind map SVG");
     } catch (e) {
       showToast(`Export failed: ${e}`);
     }
@@ -685,7 +663,7 @@ function MindMapInner({ pageId, pageTitle, isJournal, journalDate, blocks, onClo
   const handleExportMd = useCallback(async () => {
     const outline = `# ${pageTitle}\n\n${blocksToOutline(blocks, null, 0)}`;
     try {
-      await deliverExport(exportName(pageTitle, "md"), new Blob([outline], { type: "text/markdown" }), "Markdown outline");
+      await saveExport(exportName(pageTitle, "md"), new Blob([outline], { type: "text/markdown" }), "Markdown outline");
     } catch (e) {
       showToast(`Export failed: ${e}`);
     }

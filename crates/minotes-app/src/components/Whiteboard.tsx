@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback, type CSSProperties } from "react";
-import { isTauri, savePngToDownloads } from "../lib/api";
-import { confirmPlaintextExport } from "../lib/encryption";
+import { isTauri } from "../lib/api";
+import { saveExport } from "../lib/exportFile";
+import { boardToSvg } from "../lib/whiteboardSvg";
 import { loadWhiteboard, persistWhiteboard } from "../lib/whiteboardUtils";
 import { showToast } from "../lib/toast";
 import { registerFlush } from "../lib/pendingEdits";
@@ -1473,43 +1474,23 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
     onClose(hasContent);
   }, [flushSave, onClose]);
 
+  // Exports go through the save dialog (desktop) with a toast naming the file
+  // (lib/exportFile); an encrypted notebook is asked first.
   const exportPng = useCallback(async () => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    // An encrypted notebook: the image is written unencrypted — ask once.
-    if (!(await confirmPlaintextExport())) return;
-    const filename = `whiteboard-${whiteboardId}.png`;
+    const blob = await new Promise<Blob | null>((res) => canvas.toBlob(res, "image/png"));
+    if (!blob) { showToast("Whiteboard PNG export failed: the canvas could not be read", 8000); return; }
+    await saveExport(`whiteboard-${whiteboardId}.png`, blob, "Whiteboard PNG", "image/png");
+  }, [whiteboardId]);
 
-    if (isTauri) {
-      // Tauri mode: save directly to Downloads folder (WSL-aware)
-      canvas.toBlob(async (blob) => {
-        if (!blob) return;
-        const arrayBuf = await blob.arrayBuffer();
-        const data = Array.from(new Uint8Array(arrayBuf));
-        try {
-          const path = await savePngToDownloads(filename, data);
-          setSaveStatus(`Exported → ${path}`);
-        } catch (e) {
-          setSaveStatus(`Export failed: ${e}`);
-        }
-        setTimeout(() => setSaveStatus(null), 4000);
-      }, "image/png");
-    } else {
-      // Browser mode: trigger download (goes to browser's Downloads folder)
-      canvas.toBlob((blob) => {
-        if (!blob) return;
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement("a");
-        link.download = filename;
-        link.href = url;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        URL.revokeObjectURL(url);
-        setSaveStatus(`Exported → Downloads/${filename}`);
-        setTimeout(() => setSaveStatus(null), 3000);
-      }, "image/png");
-    }
+  const exportSvg = useCallback(async () => {
+    const svg = boardToSvg(
+      { notes: notesRef.current, lines: linesRef.current, images: imagesRef.current, texts: textsRef.current, arrows: arrowsRef.current, boxes: boxesRef.current },
+      { background: canvasBgRef.current === "dark" ? "#1e1e2e" : "#eff1f5", ink: (c) => c, callout: getCalloutStyle },
+    );
+    if (!svg) { showToast("The whiteboard is empty — nothing to export"); return; }
+    await saveExport(`whiteboard-${whiteboardId}.svg`, new Blob([svg], { type: "image/svg+xml" }), "Whiteboard SVG", "image/svg+xml");
   }, [whiteboardId]);
 
   const clearCanvas = useCallback(() => {
@@ -1921,7 +1902,8 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
           <button className="btn btn-sm" onClick={() => { setShowExportMenu(v => !v); setShowCanvasSettings(false); }}>Export ▾</button>
           {showExportMenu && (
             <div className="mindmap-dropdown" onClick={() => setShowExportMenu(false)}>
-              <button onClick={exportPng}>PNG Image</button>
+              <button onClick={exportPng}>PNG image (visible area)</button>
+              <button onClick={exportSvg}>SVG (whole board)</button>
             </div>
           )}
           <button className="btn btn-sm" onClick={clearCanvas} title="Clear">Clear</button>

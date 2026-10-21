@@ -1009,36 +1009,6 @@ fn clip_content(
     Ok(page)
 }
 
-#[tauri::command]
-fn save_png_to_downloads(filename: String, data: Vec<u8>) -> Result<String, String> {
-    // Detect WSL and use Windows Downloads folder
-    let downloads = if std::path::Path::new("/proc/version").exists() {
-        let version = std::fs::read_to_string("/proc/version").unwrap_or_default();
-        if version.to_lowercase().contains("microsoft") {
-            // WSL — find Windows user's Downloads folder
-            if let Ok(entries) = std::fs::read_dir("/mnt/c/Users") {
-                for entry in entries.flatten() {
-                    let name = entry.file_name().to_string_lossy().to_string();
-                    if name != "Public" && name != "Default" && name != "Default User" && name != "All Users" && name != "desktop.ini" {
-                        let dl = entry.path().join("Downloads");
-                        if dl.exists() {
-                            return write_png(dl, &filename, &data);
-                        }
-                    }
-                }
-            }
-            // Fallback to Linux home Downloads
-            find_linux_downloads()
-        } else {
-            find_linux_downloads()
-        }
-    } else {
-        find_linux_downloads()
-    };
-
-    write_png(downloads, &filename, &data)
-}
-
 /// Save an export (SVG, Markdown, …) where the user chooses: a native "Save as"
 /// dialog, then the bytes are written to exactly that path. Nothing is written
 /// without the user picking the file, so the webview can't choose a location
@@ -1064,21 +1034,6 @@ fn save_export_file(app: tauri::AppHandle, filename: String, data: Vec<u8>) -> R
     let path = chosen.into_path().map_err(|e| e.to_string())?;
     std::fs::write(&path, &data).map_err(|e| format!("Could not save {}: {e}", path.display()))?;
     Ok(Some(path.to_string_lossy().to_string()))
-}
-
-fn find_linux_downloads() -> PathBuf {
-    let home = dirs_next().unwrap_or_else(|| PathBuf::from("."));
-    let dl = home.join("Downloads");
-    if dl.exists() { dl } else { home }
-}
-
-fn write_png(dir: PathBuf, filename: &str, data: &[u8]) -> Result<String, String> {
-    // SECURITY: filename is frontend-supplied; reduce to a plain `*.png` basename so an
-    // absolute path or `../` cannot escape the Downloads dir.
-    let filename = security::safe_png_filename(filename)?;
-    let path = dir.join(filename);
-    std::fs::write(&path, data).map_err(|e| e.to_string())?;
-    Ok(path.to_string_lossy().to_string())
 }
 
 /// Clipboard bridge: reads image via wl-paste (works with WSLg shared clipboard)
@@ -1693,7 +1648,6 @@ pub fn run() {
             delete_css_snippet,
             get_enabled_css_snippets,
             update_css_snippet,
-            save_png_to_downloads,
             save_export_file,
             reorder_block,
             paste_image_wsl,

@@ -803,10 +803,6 @@ export const getEnabledCssSnippets = () =>
 export const updateCssSnippet = (name: string, css: string) =>
   invoke<CssSnippet>("update_css_snippet", { name, css });
 
-// File export — saves PNG to Downloads (WSL-aware in Tauri mode)
-export const savePngToDownloads = (filename: string, data: number[]) =>
-  invoke<string>("save_png_to_downloads", { filename, data });
-
 /** Desktop only: asks where to save via the OS save dialog. Null if cancelled. */
 export const saveExportFile = (filename: string, data: number[]) =>
   invoke<string | null>("save_export_file", { filename, data });

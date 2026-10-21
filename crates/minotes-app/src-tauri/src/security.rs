@@ -7,40 +7,6 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::path::{Component, Path, PathBuf};
 
-// ── Filenames ──
-
-/// Reduce a frontend-supplied export filename to a safe basename ending in `.png`.
-/// Rejects anything that is not a plain single path component: empty names, `.`/`..`,
-/// path separators, NUL, control characters, and absolute/drive-prefixed paths.
-pub fn safe_png_filename(name: &str) -> Result<String, String> {
-    let name = name.trim();
-    if name.is_empty()
-        || name == "."
-        || name == ".."
-        || name.contains('/')
-        || name.contains('\\')
-        || name.contains(':')
-        || name.chars().any(|c| c.is_control())
-    {
-        return Err(format!("Invalid filename: {name:?}"));
-    }
-    // Must be exactly one normal component (defense in depth against platform quirks).
-    let mut comps = Path::new(name).components();
-    match (comps.next(), comps.next()) {
-        (Some(Component::Normal(_)), None) => {}
-        _ => return Err(format!("Invalid filename: {name:?}")),
-    }
-    let stem = if name.to_ascii_lowercase().ends_with(".png") {
-        &name[..name.len() - 4]
-    } else {
-        name
-    };
-    if stem.is_empty() || stem.chars().all(|c| c == '.') {
-        return Err(format!("Invalid filename: {name:?}"));
-    }
-    Ok(format!("{stem}.png"))
-}
-
 // ── Notebook keys ──
 
 /// Same rule `minotes_core::repo::legacy_notebooks::create` enforces: non-empty, no
@@ -371,21 +337,6 @@ mod tests {
     }
 
     use super::*;
-
-    #[test]
-    fn png_filename_accepts_plain_names() {
-        assert_eq!(safe_png_filename("whiteboard-abc.png").unwrap(), "whiteboard-abc.png");
-        assert_eq!(safe_png_filename("export").unwrap(), "export.png");
-        assert_eq!(safe_png_filename("Shot.PNG").unwrap(), "Shot.png");
-    }
-
-    #[test]
-    fn png_filename_rejects_traversal() {
-        for bad in ["", ".", "..", "../x.png", "/etc/passwd", "a/b.png", "..\\x.png",
-                    "C:\\x.png", "x\0.png", "x\n.png", ".png", "...png"] {
-            assert!(safe_png_filename(bad).is_err(), "should reject {bad:?}");
-        }
-    }
 
     #[test]
     fn notebook_key_validation() {

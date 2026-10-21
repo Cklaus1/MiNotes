@@ -3525,6 +3525,39 @@ if [[ "$BACKEND" != "desktop" ]]; then
 fi
 ss "66-link-previews"
 
+step "Exports go through the save dialog and say where the file went (C-15)"
+# Capture instead of saving: desktop — the save_export_file IPC call (it opens a
+# native dialog) answered with a fake path; browser — the <a download> click.
+# The old save_png_to_downloads (silent write into Downloads) must never be called.
+X66="(()=>{window.__x66={saves:[]};const dec=b=>new TextDecoder().decode(new Uint8Array(b).slice(0,20000));if(window.__TAURI_INTERNALS__){const f=window.fetch;window.fetch=function(u,opt){const s=String(u);if(s.endsWith('/save_export_file')){const b=JSON.parse(opt.body);window.__x66.saves.push({name:b.filename,text:dec(b.data),size:b.data.length});return Promise.resolve(new Response(JSON.stringify('/captured/'+b.filename),{status:200,headers:{'Tauri-Response':'ok','Content-Type':'application/json'}}))}if(s.endsWith('/save_png_to_downloads'))window.__x66.saves.push({name:'FORBIDDEN'});return f.apply(this,arguments)};window.__x66.wrapped=window.fetch!==f}else{const c=HTMLAnchorElement.prototype.click;HTMLAnchorElement.prototype.click=function(){if(!this.download)return c.apply(this,arguments);const e={name:this.download,pending:true};window.__x66.saves.push(e);fetch(this.href).then(r=>r.arrayBuffer()).then(b=>{e.text=dec(b);e.size=b.byteLength;e.pending=false})};window.__x66.wrapped=true}return 1})()"
+ev "$X66" >/dev/null
+SAVES66="(window.__x66?.saves||[]).map(x=>[x.name,x.size,(x.text||'').includes('<h1>'),(x.text||'').includes('<polyline')&&(x.text||'').includes('Hello66')].join(',')).join(' ; ')"
+TOASTS66="[...document.querySelectorAll('.minotes-toast')].map(t=>t.textContent).join(' | ')"
+WR=$(ev "window.__x66?.wrapped===true" | tr -d '"')
+if [[ "$WR" == "true" ]]; then
+  ev "document.querySelector('.prop-toggle-btn')?.click()" >/dev/null; sleep 0.8
+  # One click is enough (the review saw the first click do nothing).
+  ev "document.querySelector('.page-export-btn')?.click()" >/dev/null; sleep 2
+  R=$(ev "$SAVES66" | tr -d '"'); T=$(ev "$TOASTS66" | tr -d '"')
+  [[ "$R" == *"$P66.html,"*",true,"* ]] && pass "Page ↗ Export: one click saves '$P66.html' through the save path" || fail "Page export not captured" "$R"
+  [[ "$T" == *"Page saved to /captured/$P66.html"* || "$T" == *"Page downloaded as $P66.html"* ]] && pass "A toast says where the page went" || fail "No export toast" "$T"
+  ev "document.querySelector('.prop-toggle-btn')?.click()" >/dev/null; sleep 0.3
+  WB66=$(ev "(async()=>{$A66 const {generateWhiteboardId}=await import('/src/lib/whiteboardUtils.ts');const id=generateWhiteboardId();await api.saveWhiteboard(id,JSON.stringify({notes:[],lines:[{id:'l1',points:[{x:10,y:10},{x:120,y:90},{x:220,y:30}],color:'#89b4fa',width:2}],boxes:[{id:'b1',x:60,y:120,width:140,height:80,color:'#a6e3a1'}],texts:[{id:'t1',x:300,y:60,text:'Hello66',color:'#cdd6f4',size:'M',callout:true}],arrows:[],images:[],camera:{x:40,y:40,zoom:1},nextNoteId:1}));const t=await api.getPageTree('$P66');await api.createBlock(t.page.id,'{{whiteboard:'+id+'}}');return id})()" | tr -d '"')
+  api "navigateTo('$P66')" >/dev/null; sleep 2
+  ev "document.querySelector('.whiteboard-indicator')?.click()" >/dev/null; sleep 2
+  WBX66="(w)=>{const m=[...document.querySelectorAll('.whiteboard-toolbar button')].find(b=>b.textContent.startsWith('Export'));m&&m.click();setTimeout(()=>{const b=[...document.querySelectorAll('.whiteboard-toolbar .mindmap-dropdown button')].find(x=>x.textContent.startsWith(w));b&&b.click()},300);return !!m}"
+  ev "($WBX66)('SVG')" >/dev/null; sleep 2
+  ev "($WBX66)('PNG')" >/dev/null; sleep 2.5
+  R=$(ev "$SAVES66" | tr -d '"'); T=$(ev "$TOASTS66" | tr -d '"')
+  [[ "$R" == *"whiteboard-$WB66.svg,"*",true"* ]] && pass "Whiteboard SVG export: the whole board as vectors" || fail "Whiteboard SVG export" "$R"
+  [[ "$R" == *"whiteboard-$WB66.png,"* && "$R" != *FORBIDDEN* ]] && pass "Whiteboard PNG export goes through the save path (never straight to Downloads)" || fail "Whiteboard PNG export" "$R"
+  [[ "$T" == *"Whiteboard PNG "*"whiteboard-$WB66.png"* ]] && pass "A toast names the saved whiteboard file" || fail "No whiteboard export toast" "$T"
+  ss "66-whiteboard-export"
+  press "Escape"; sleep 0.5; press "Escape"; sleep 0.5
+else
+  fail "Could not intercept exports — skipped to protect Downloads" "$WR"
+fi
+
 # ═══════════════════════════════════════════════
 close_app
 
