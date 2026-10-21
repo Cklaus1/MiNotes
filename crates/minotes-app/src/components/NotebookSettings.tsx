@@ -141,11 +141,13 @@ export default function NotebookSettings() {
         <div className="nb-hint nb-mirror-error" title={mirror.error}>The markdown copy is behind: {mirror.error}</div>
       )}
       <div className="settings-row nb-mirror-actions">
-        {caps.reveal_folder && <button className="btn btn-sm" onClick={openFolder} disabled={!api.isTauri} data-testid="mirror-open-folder">
+        {caps.reveal_folder && <button className="btn btn-sm" onClick={openFolder} disabled={!api.isTauri} data-testid="mirror-open-folder"
+          title={api.isTauri ? undefined : "Only in the desktop app"}>
           Open folder
         </button>}
         {(caps.mirror_always || mirror?.enabled) && (
-          <button className="btn btn-sm" onClick={rebuild} disabled={busy || !!mirror?.read_only} data-testid="mirror-rebuild">
+          <button className="btn btn-sm" onClick={rebuild} disabled={busy || !!mirror?.read_only} data-testid="mirror-rebuild"
+            title={mirror?.read_only ? "This notebook is open read-only" : undefined}>
             {busy ? "Rebuilding…" : "Rebuild markdown copy"}
           </button>
         )}

@@ -188,7 +188,7 @@ export function NewNotebookDialog({ existingNames, onClose }: { existingNames: s
         )}
         <button className="btn btn-sm" onClick={onClose}>Cancel</button>
         <button
-          className="btn btn-sm btn-primary btn-gated"
+          className="btn btn-sm btn-primary"
           onClick={create}
           disabled={!!blocked || busy}
           aria-describedby={blocked ? "new-notebook-create-reason" : undefined}
@@ -240,7 +240,7 @@ function DeleteConfirm({ nb, onCancel, onDeleted }: { nb: api.NotebookInfo; onCa
         )}
         <button className="btn btn-sm" onClick={onCancel}>Cancel</button>
         <button
-          className="btn btn-sm btn-danger btn-gated"
+          className="btn btn-sm btn-danger"
           disabled={typed !== nb.name}
           aria-describedby={typed !== nb.name ? "delete-notebook-reason" : undefined}
           onClick={del}
@@ -405,7 +405,7 @@ export function ManageNotebooksDialog({ notebooks, session, onClose, onMove, onL
                           <button className="btn btn-sm" onClick={onMove} data-testid="move-notebook-open">Move to a folder…</button>
                         )}
                         <button
-                          className="btn btn-sm nb-delete-btn btn-gated"
+                          className="btn btn-sm nb-delete-btn"
                           disabled={current}
                           title={current ? "This notebook is open — switch to another notebook first" : `Delete ${nb.name}`}
                           onClick={() => { setError(null); setDeleting(nb); }}
@@ -510,6 +510,7 @@ export function MoveNotebookDialog({ session, onClose }: { session: api.Notebook
       {cloud && <CloudWarning service={cloud} />}
       {error && <div className="nb-field-error" role="alert">{error}</div>}
       <div className="nb-modal-actions">
+        {!busy && !location && <span className="disabled-reason">Choose a folder first.</span>}
         <button className="btn btn-sm" onClick={onClose} disabled={busy}>Cancel</button>
         <button className="btn btn-sm btn-primary" onClick={move} disabled={busy || !location} data-testid="move-notebook-go">
           {busy ? "Moving…" : "Move notebook"}

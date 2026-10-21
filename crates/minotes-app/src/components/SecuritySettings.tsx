@@ -202,7 +202,8 @@ export default function SecuritySettings() {
       ) : (
         <div className="settings-row">
           <span className="settings-row-label">Encryption</span>
-          <button className="btn btn-sm" onClick={() => setDialog("encrypt")} disabled={session.read_only} data-testid="security-encrypt">
+          <button className="btn btn-sm" onClick={() => setDialog("encrypt")} disabled={session.read_only} data-testid="security-encrypt"
+            title={session.read_only ? "This notebook is open read-only" : undefined}>
             Encrypt this notebook…
           </button>
         </div>

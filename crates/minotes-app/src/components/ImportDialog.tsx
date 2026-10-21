@@ -426,6 +426,11 @@ export default function ImportDialog({ initialKind, onClose, onOpenPage, onRefre
               </details>
 
               <div className="nb-modal-actions">
+                {(c.pages === 0 || (dest === "new_notebook" && !nbName.trim())) && (
+                  <span className="disabled-reason" data-testid="import-start-reason" aria-live="polite">
+                    {c.pages === 0 ? "Nothing to import in this folder." : "Name the new notebook to import."}
+                  </span>
+                )}
                 <button className="btn" onClick={() => { setStep("source"); setPreview(null); }}>Back</button>
                 <button className="btn btn-primary" onClick={runImport} data-testid="import-start" disabled={c.pages === 0 || (dest === "new_notebook" && !nbName.trim())}>
                   Import {c.pages} pages

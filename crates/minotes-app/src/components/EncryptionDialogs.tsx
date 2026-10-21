@@ -142,7 +142,7 @@ export function RecoveryKeyPanel({ notebook, recoveryKey, onDone, doneLabel = "C
           </span>
         )}
         <button
-          className="btn btn-sm btn-primary btn-gated"
+          className="btn btn-sm btn-primary"
           disabled={!saved}
           aria-describedby={saved ? undefined : "recovery-done-reason"}
           onClick={onDone}
@@ -430,6 +430,11 @@ export function JoinNotebookDialog({ onClose }: { onClose: () => void }) {
         </label>
         {error && <div className="nb-field-error" role="alert" data-testid="join-error">{error}</div>}
         <div className="nb-modal-actions">
+          {!busy && (!remote.trim() || !name.trim() || !secret) && (
+            <span className="disabled-reason" aria-live="polite">
+              {!remote.trim() ? "Enter the sync remote." : !name.trim() ? "Name the notebook." : "Enter the passphrase or recovery key."}
+            </span>
+          )}
           <button type="button" className="btn btn-sm" onClick={onClose} disabled={busy}>Cancel</button>
           <button type="submit" className="btn btn-sm btn-primary" disabled={busy || !remote.trim() || !name.trim() || !secret} data-testid="join-go">
             {busy ? "Joining…" : "Join notebook"}
