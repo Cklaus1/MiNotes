@@ -815,6 +815,28 @@ body {
   font-size: 11px;
 }
 
+/* Honest disabled state (reusable; the app-wide pass is UX Wave 3): a gated
+   button looks unavailable, keeps its colours on hover, and sits next to a
+   .disabled-reason that says what is missing. */
+.btn-gated:disabled,
+.btn-gated:disabled:hover {
+  opacity: 0.45;
+  cursor: not-allowed;
+  filter: saturate(0.5);
+}
+.btn-gated.btn-primary:disabled:hover {
+  background: var(--accent);
+}
+.btn-gated:not(.btn-primary):disabled:hover {
+  background: var(--bg-surface);
+}
+.disabled-reason {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-right: auto;
+  align-self: center;
+}
+
 /* Search */
 .search-input {
   width: 100%;

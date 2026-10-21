@@ -61,6 +61,8 @@ export function NewNotebookDialog({ existingNames, onClose }: { existingNames: s
   const caps = useCapabilities();
   const problem = nameProblem(name, existingNames);
   const passProblem = encrypt ? passphraseProblem(pass, passConfirm) : null;
+  /** Why Create is unavailable, shown next to it (null: it can be pressed). */
+  const blocked = !name.trim() ? "Give the notebook a name." : problem ? "Fix the name above." : passProblem;
 
   useEffect(() => {
     let cancelled = false;
@@ -179,11 +181,17 @@ export function NewNotebookDialog({ existingNames, onClose }: { existingNames: s
       )}
       {error && <div className="nb-field-error" role="alert">{error}</div>}
       <div className="nb-modal-actions">
+        {blocked && (
+          <span className="disabled-reason" id="new-notebook-create-reason" data-testid="new-notebook-create-reason" aria-live="polite">
+            {blocked}
+          </span>
+        )}
         <button className="btn btn-sm" onClick={onClose}>Cancel</button>
         <button
-          className="btn btn-sm btn-primary"
+          className="btn btn-sm btn-primary btn-gated"
           onClick={create}
-          disabled={!name.trim() || !!problem || !!passProblem || busy}
+          disabled={!!blocked || busy}
+          aria-describedby={blocked ? "new-notebook-create-reason" : undefined}
           data-testid="new-notebook-create"
         >
           {busy ? "Creating…" : "Create notebook"}
@@ -227,8 +235,17 @@ function DeleteConfirm({ nb, onCancel, onDeleted }: { nb: api.NotebookInfo; onCa
       </label>
       {error && <div className="nb-field-error" role="alert">{error}</div>}
       <div className="nb-modal-actions">
+        {typed !== nb.name && (
+          <span className="disabled-reason" id="delete-notebook-reason">Type the name exactly to enable Delete.</span>
+        )}
         <button className="btn btn-sm" onClick={onCancel}>Cancel</button>
-        <button className="btn btn-sm btn-danger" disabled={typed !== nb.name} onClick={del} data-testid="delete-notebook-go">
+        <button
+          className="btn btn-sm btn-danger btn-gated"
+          disabled={typed !== nb.name}
+          aria-describedby={typed !== nb.name ? "delete-notebook-reason" : undefined}
+          onClick={del}
+          data-testid="delete-notebook-go"
+        >
           Delete notebook
         </button>
       </div>
@@ -388,7 +405,7 @@ export function ManageNotebooksDialog({ notebooks, session, onClose, onMove, onL
                           <button className="btn btn-sm" onClick={onMove} data-testid="move-notebook-open">Move to a folder…</button>
                         )}
                         <button
-                          className="btn btn-sm nb-delete-btn"
+                          className="btn btn-sm nb-delete-btn btn-gated"
                           disabled={current}
                           title={current ? "This notebook is open — switch to another notebook first" : `Delete ${nb.name}`}
                           onClick={() => { setError(null); setDeleting(nb); }}

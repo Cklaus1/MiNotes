@@ -3442,6 +3442,8 @@ for _ in $(seq 1 30); do sleep 0.5; RK65=$(ev "document.querySelector('[data-tes
 [[ "$RK65" =~ ^[A-Z2-7]{7}(-[A-Z2-7]{7}){7}$ ]] && pass "The recovery key is shown once: 8 groups of 7 ($RK65)" || fail "Recovery key" "$RK65"
 R=$(ev "document.querySelector('[data-testid=recovery-done]')?.disabled" | tr -d '"')
 [[ "$R" == "true" ]] && pass "Can't continue before ticking 'I have saved my recovery key'" || fail "Saved checkbox" "$R"
+R=$(ev "(()=>{const b=document.querySelector('[data-testid=recovery-done]');const cs=getComputedStyle(b);return (parseFloat(cs.opacity)<0.8)+'|'+cs.cursor+'|'+(document.querySelector('[data-testid=recovery-done-reason]')?.textContent||'')})()" | tr -d '"')
+[[ "$R" == "true|not-allowed|"*"I have saved my recovery key"* ]] && pass "…and it looks disabled and says why ($R)" || fail "Recovery button looks enabled / no reason" "$R"
 ss "65-recovery-key"
 # The key is shown once: a stray Escape or click outside must not lose it (C-1).
 ev "(()=>{document.activeElement?.blur?.();window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));const b=document.querySelector('.nb-modal-backdrop');b?.dispatchEvent(new MouseEvent('mousedown',{bubbles:true}));return 1})()" >/dev/null; sleep 0.4
@@ -3823,6 +3825,18 @@ R=$(ev "(async()=>{$A71 return (await api.getNotebookSession()).key})()" | tr -d
 [[ "$R" == "$ZED71" ]] && pass "Open switches to that notebook" || fail "Open from Manage" "$R"
 ev "(async()=>{const n=await import('/src/lib/notebooks.ts');await n.switchNotebook('$HOME71');return 1})()" >/dev/null; sleep 1.5
 press "Escape"; sleep 0.3
+
+step "A disabled Create button looks disabled and says why"
+ev "window.dispatchEvent(new CustomEvent('minotes-open-notebook-dialog',{detail:'new'}))" >/dev/null; sleep 0.6
+setv71 "[data-testid=new-notebook-name]" "Weak71 $S71"
+ev "document.querySelector('[data-testid=new-notebook-encrypt]')?.click()" >/dev/null; sleep 0.2
+setv71 "[data-testid=new-notebook-passphrase]" "abc"
+setv71 "[data-testid=new-notebook-passphrase-confirm]" "abc"; sleep 0.3
+R=$(ev "(()=>{const b=document.querySelector('[data-testid=new-notebook-create]');const cs=getComputedStyle(b);const why=document.querySelector('[data-testid=new-notebook-create-reason]')?.textContent||'';return b.disabled+'|'+(parseFloat(cs.opacity)<0.8)+'|'+cs.cursor+'|'+why})()" | tr -d '"')
+[[ "$R" == "true|true|not-allowed|"*"easy to guess"* ]] && pass "Looks disabled, reason inline ($R)" || fail "Disabled Create" "$R"
+ss "71-disabled-create"
+press "Escape"; sleep 0.3
+
 
 # ═══════════════════════════════════════════════
 close_app

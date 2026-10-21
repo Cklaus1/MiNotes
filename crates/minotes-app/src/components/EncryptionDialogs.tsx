@@ -136,7 +136,18 @@ export function RecoveryKeyPanel({ notebook, recoveryKey, onDone, doneLabel = "C
         I have saved my recovery key
       </label>
       <div className="nb-modal-actions">
-        <button className="btn btn-sm btn-primary" disabled={!saved} onClick={onDone} data-testid="recovery-done">
+        {!saved && (
+          <span className="disabled-reason" id="recovery-done-reason" data-testid="recovery-done-reason">
+            Tick “I have saved my recovery key” first.
+          </span>
+        )}
+        <button
+          className="btn btn-sm btn-primary btn-gated"
+          disabled={!saved}
+          aria-describedby={saved ? undefined : "recovery-done-reason"}
+          onClick={onDone}
+          data-testid="recovery-done"
+        >
           {doneLabel}
         </button>
       </div>
