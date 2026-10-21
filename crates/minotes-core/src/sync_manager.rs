@@ -498,6 +498,12 @@ impl GitSyncResult {
 
     /// Fill `error_kind` (and `offline`) from `error`.
     pub(crate) fn classified(mut self) -> Self {
+        // "Git error: Remote not found — …" → the message the user needs.
+        if let Some(e) = self.error.as_mut() {
+            if let Some(rest) = e.strip_prefix("Git error: ") {
+                *e = rest.to_string();
+            }
+        }
         self.error_kind = self.error.as_deref().map(|e| sync_error_kind(e).to_string());
         self.offline = self.error_kind.as_deref() == Some(SYNC_ERR_OFFLINE);
         self
@@ -652,6 +658,7 @@ fn record_outcome(key: &str, reached_remote: bool, error: Option<&str>) -> Resul
     let mut config = read_config(key);
     match error {
         Some(e) => {
+            let e = e.strip_prefix("Git error: ").unwrap_or(e);
             config.last_error = Some(e.to_string());
             config.last_error_kind = Some(sync_error_kind(e).to_string());
         }

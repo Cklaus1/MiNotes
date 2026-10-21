@@ -279,6 +279,8 @@ export default function SettingsPanel({ open, onClose, onOpenSync, onOpenCssSnip
               <label className="settings-toggle">
                 <input
                   type="checkbox"
+                  aria-label="Enable sync"
+                  data-testid="sync-enable"
                   checked={syncStatus?.enabled ?? false}
                   disabled={syncLoading}
                   onChange={async (e) => {

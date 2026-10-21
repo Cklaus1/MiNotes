@@ -116,11 +116,13 @@ export default function SearchPanel({
   const filteredCommands = useMemo(() => {
     if (!isCommandMode) return [];
     if (!commandQuery) return commands;
+    // Labels that start with the query first (">settings" runs Settings, not AI Settings).
+    const starts = (c: Command) => (c.label.toLowerCase().startsWith(commandQuery) ? 0 : 1);
     return commands.filter(c => {
       const words = commandQuery.split(/\s+/);
       const label = c.label.toLowerCase();
       return words.every(w => label.includes(w));
-    });
+    }).sort((a, b) => starts(a) - starts(b));
   }, [isCommandMode, commandQuery, commands]);
 
   useEffect(() => {
