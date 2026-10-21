@@ -3822,6 +3822,30 @@ IFS='|' read -r ST72 W72 X72 <<< "$R"
 ss "72-slash"
 
 # ═══════════════════════════════════════════════
+journey "73. Suggestions never push the page I'm reading"
+# The "AI suggested links" bar appeared above the blocks ~250 ms after a page
+# opened (and on most pages), shifting everything down.
+# ═══════════════════════════════════════════════
+A73="const api=await import('/src/lib/api.ts');"
+ev "(async()=>{$A73 await api.createPage('Kestrel73 Engine');const p=await api.createPage('Shift73 page');await api.createBlock(p.id,'We tuned the Kestrel73 Engine today #perf73');await api.createBlock(p.id,'second73');return 1})()" >/dev/null
+api "navigateTo('Getting Started')" >/dev/null; sleep 1.5
+
+step "The blocks don't move down after the page opens (block list top; blocks have a 4px fade-in)"
+R=$(ev "(async()=>{window.__MINOTES__.navigateTo('Shift73 page');const top=()=>{const b=[...document.querySelectorAll('.block-list > .block')].find(x=>x.textContent.includes('Kestrel73'));return b?Math.round(b.parentElement.getBoundingClientRect().top):null};let t0=null;for(let i=0;i<40&&t0===null;i++){await new Promise(r=>setTimeout(r,25));t0=top()}await new Promise(r=>setTimeout(r,1500));return t0+'|'+top()})()" | tr -d '"')
+[[ -n "${R%%|*}" && "${R%%|*}" == "${R##*|}" ]] && pass "First block stayed at y=${R%%|*}" || fail "Content shifted after opening" "$R"
+
+step "The suggestions are still offered, below the blocks"
+R=$(ev "(()=>{const chip=[...document.querySelectorAll('.ai-link-chip')].find(c=>c.textContent.includes('Kestrel73'));const tag=[...document.querySelectorAll('.ai-tag-chip')].find(c=>c.textContent.includes('perf73'));const last=[...document.querySelectorAll('.block-list > .block')].pop();if(!chip||!tag||!last)return 'missing chip='+!!chip+' tag='+!!tag;const below=e=>e.getBoundingClientRect().top>=last.getBoundingClientRect().bottom;return below(chip)+'|'+below(tag)})()" | tr -d '"')
+[[ "$R" == "true|true" ]] && pass "Link and tag suggestions sit below the last block" || fail "Suggestions placement" "$R"
+ss "73-suggestions"
+
+step "With link suggestions turned off in Settings, there are none"
+ev "(async()=>{const s=await import('/src/lib/settings.ts');const cur=s.getSettings().ai;s.updateSettings({ai:{...cur,linkSuggestions:false}});window.dispatchEvent(new CustomEvent('minotes-settings-changed',{detail:s.getSettings()}));return 1})()" >/dev/null; sleep 1
+N=$(ev "document.querySelectorAll('.ai-link-chip').length" | tr -d '"')
+ev "(async()=>{const s=await import('/src/lib/settings.ts');const cur=s.getSettings().ai;s.updateSettings({ai:{...cur,linkSuggestions:true}});window.dispatchEvent(new CustomEvent('minotes-settings-changed',{detail:s.getSettings()}));return 1})()" >/dev/null
+[[ "$N" == "0" ]] && pass "No link suggestions when the setting is off" || fail "Setting off still suggests" "$N chips"
+
+# ═══════════════════════════════════════════════
 close_app
 
 # ═══════════════════════════════════════════════

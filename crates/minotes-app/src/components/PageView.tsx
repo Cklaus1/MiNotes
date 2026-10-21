@@ -1984,77 +1984,77 @@ export default function PageView({
         </div>
       )}
 
-      {/* AI: Suggested Tags */}
-      {suggestedTags.length > 0 && (
-        <div className="ai-panel">
-          <div className="ai-panel-header">
-            <h4>AI Suggested Tags</h4>
-            <button className="ai-close" onClick={() => setSuggestedTags([])} title="Dismiss">x</button>
-          </div>
-          <div className="ai-tag-list">
-            {suggestedTags
-              .filter((t) => !dismissedTags.has(t))
-              .map((tag) => (
-                <span key={tag} className="ai-tag-chip">
-                  #{tag}
-                  <span className="ai-tag-accept" onClick={() => {
-                    // Add as page property
-                    const existing = pageProps.find((p) => p.key === "tags");
-                    const currentTags = existing?.value ? existing.value.split(",").map((s) => s.trim()).filter(Boolean) : [];
-                    const newTags = [...new Set([...currentTags, tag])].join(",");
-                    const before = pageProps;
-                    api.setProperty(page.id, "page", "tags", newTags).catch((e) => {
-                      setPageProps(before);
-                      showToast(`Tag not added: ${propError(e)}`);
-                    });
-                    setPageProps((prev) => {
-                      const filtered = prev.filter((p) => p.key !== "tags");
-                      return [...filtered, { id: "", entity_type: "page", key: "tags", value: newTags, entity_id: page.id, value_type: "string", created_at: "", updated_at: "" }];
-                    });
-                    setDismissedTags((prev) => new Set([...prev, tag]));
-                  }}>+</span>
-                  <span className="ai-tag-dismiss" onClick={() => setDismissedTags((prev) => new Set([...prev, tag]))}>x</span>
-                </span>
-              ))}
-          </div>
-        </div>
-      )}
-
-      {/* AI: Suggested Links */}
-      {suggestedLinks.length > 0 && (
-        <div className="ai-panel">
-          <div className="ai-panel-header">
-            <h4>AI Suggested Links</h4>
-            <button className="ai-close" onClick={() => setSuggestedLinks([])} title="Dismiss">x</button>
-          </div>
-          <div className="ai-link-list">
-            {suggestedLinks.map((s) => (
-              <span key={s.pageId} className="ai-link-chip" title={`Suggested because it ${s.reason}`}>
-                [[{s.title}]]
-                <span className="ai-link-insert" title="Insert link" onClick={async () => {
-                  // Bug #28: "+" should INSERT the wiki-link into this page, not
-                  // navigate away. Append a block containing the link, then dismiss.
-                  try {
-                    await api.createBlock(page.id, `[[${s.title}]]`);
-                    onRefreshPage();
-                  } catch {
-                    showToast("Failed to insert link");
-                  }
-                  setDismissedLinks((prev) => new Set([...prev, s.title]));
-                }}>+</span>
-                <span className="ai-link-dismiss" onClick={() => setDismissedLinks((prev) => new Set([...prev, s.title]))}>x</span>
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
-
       <div className="content view-content markdown-source-view">
         <div className={`block-list ${getSettingsCached().fullTreeMode ? 'tree-mode' : ''}`}>
           {blockListItems}
 
           {!zoomedBlockId && (
             <>
+              {/* AI: Suggested Tags — below the blocks, so they never push the page down */}
+              {suggestedTags.length > 0 && (
+                <div className="ai-panel">
+                  <div className="ai-panel-header">
+                    <h4>AI Suggested Tags</h4>
+                    <button className="ai-close" onClick={() => setSuggestedTags([])} title="Dismiss">x</button>
+                  </div>
+                  <div className="ai-tag-list">
+                    {suggestedTags
+                      .filter((t) => !dismissedTags.has(t))
+                      .map((tag) => (
+                        <span key={tag} className="ai-tag-chip">
+                          #{tag}
+                          <span className="ai-tag-accept" onClick={() => {
+                            // Add as page property
+                            const existing = pageProps.find((p) => p.key === "tags");
+                            const currentTags = existing?.value ? existing.value.split(",").map((s) => s.trim()).filter(Boolean) : [];
+                            const newTags = [...new Set([...currentTags, tag])].join(",");
+                            const before = pageProps;
+                            api.setProperty(page.id, "page", "tags", newTags).catch((e) => {
+                              setPageProps(before);
+                              showToast(`Tag not added: ${propError(e)}`);
+                            });
+                            setPageProps((prev) => {
+                              const filtered = prev.filter((p) => p.key !== "tags");
+                              return [...filtered, { id: "", entity_type: "page", key: "tags", value: newTags, entity_id: page.id, value_type: "string", created_at: "", updated_at: "" }];
+                            });
+                            setDismissedTags((prev) => new Set([...prev, tag]));
+                          }}>+</span>
+                          <span className="ai-tag-dismiss" onClick={() => setDismissedTags((prev) => new Set([...prev, tag]))}>x</span>
+                        </span>
+                      ))}
+                  </div>
+                </div>
+              )}
+
+              {/* AI: Suggested Links */}
+              {suggestedLinks.length > 0 && (
+                <div className="ai-panel">
+                  <div className="ai-panel-header">
+                    <h4>AI Suggested Links</h4>
+                    <button className="ai-close" onClick={() => setSuggestedLinks([])} title="Dismiss">x</button>
+                  </div>
+                  <div className="ai-link-list">
+                    {suggestedLinks.map((s) => (
+                      <span key={s.pageId} className="ai-link-chip" title={`Suggested because it ${s.reason}`}>
+                        [[{s.title}]]
+                        <span className="ai-link-insert" title="Insert link" onClick={async () => {
+                          // Bug #28: "+" should INSERT the wiki-link into this page, not
+                          // navigate away. Append a block containing the link, then dismiss.
+                          try {
+                            await api.createBlock(page.id, `[[${s.title}]]`);
+                            onRefreshPage();
+                          } catch {
+                            showToast("Failed to insert link");
+                          }
+                          setDismissedLinks((prev) => new Set([...prev, s.title]));
+                        }}>+</span>
+                        <span className="ai-link-dismiss" onClick={() => setDismissedLinks((prev) => new Set([...prev, s.title]))}>x</span>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               <BacklinksPanel pageId={page.id} onPageClick={onPageLinkClick} />
               <UnlinkedRefsPanel pageId={page.id} pageTitle={page.title} onPageClick={onPageLinkClick} />
             </>

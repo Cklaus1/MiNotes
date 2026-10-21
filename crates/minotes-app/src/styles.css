@@ -6062,6 +6062,19 @@ img.img-broken {
   background: var(--bg-secondary);
 }
 
+/* Page suggestions sit below the blocks (they used to appear above them a
+   moment after the page opened and push it down). */
+.block-list > .ai-panel {
+  margin: 20px 0 0 16px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+}
+.block-list > .ai-panel + .ai-panel {
+  margin-top: 8px;
+}
+
 .ai-panel-header {
   display: flex;
   align-items: center;
