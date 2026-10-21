@@ -1061,6 +1061,50 @@ body {
   color: var(--accent);
 }
 
+/* Rich backlink rows: page name over the referencing block, rendered like a block. */
+.backlinks .backlink-item {
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+.backlinks .backlink-item:hover {
+  color: inherit;
+  background: rgba(137, 180, 250, 0.08);
+}
+.backlink-page {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  margin-bottom: 2px;
+}
+.backlink-content {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-primary);
+  pointer-events: none; /* the row is the link */
+}
+/* No badge element in a row: the keyword itself is drawn as the badge. */
+.backlink-content .ProseMirror .todo-kw {
+  display: inline-block;
+  padding: 0 5px;
+  margin-right: 2px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 16px;
+  vertical-align: 1px;
+  color: #1e1e2e;
+  background: #f9e2af;
+}
+.backlink-content .ProseMirror .todo-kw-doing { background: #89b4fa; }
+.backlink-content .ProseMirror .todo-kw-done { background: #a6e3a1; }
+.backlink-content > :first-child { margin-top: 0; }
+.backlink-content > :last-child { margin-bottom: 0; }
+.backlink-content h1, .backlink-content h2, .backlink-content h3, .backlink-content h4 {
+  font-size: 14px;
+  margin: 0;
+}
+
 /* Folders */
 .folder-item {
   padding: 6px 16px;

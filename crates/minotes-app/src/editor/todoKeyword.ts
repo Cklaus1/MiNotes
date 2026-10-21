@@ -24,7 +24,7 @@ export const TodoKeyword = Extension.create({
             const m = KEYWORD.exec(first.textContent);
             if (!m) return null;
             // The keyword is the first characters of the first textblock (pos 1).
-            const decos = [Decoration.inline(1, 1 + m[1].length, { class: "todo-kw" })];
+            const decos = [Decoration.inline(1, 1 + m[1].length, { class: `todo-kw todo-kw-${m[1].toLowerCase()}` })];
             if (m[1] === "DONE") {
               // The task text is struck through — not the keyword under the badge
               // or the gap after it.

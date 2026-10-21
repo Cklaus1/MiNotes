@@ -3846,6 +3846,37 @@ ev "(async()=>{const s=await import('/src/lib/settings.ts');const cur=s.getSetti
 [[ "$N" == "0" ]] && pass "No link suggestions when the setting is off" || fail "Setting off still suggests" "$N chips"
 
 # ═══════════════════════════════════════════════
+journey "74. Backlinks read like my notes and take me to the exact block"
+# Rows showed raw markdown ([[…]], **…**, {{todo:…}}), a click only opened the
+# page, and the panel went stale after a rename.
+# ═══════════════════════════════════════════════
+A74="const api=await import('/src/lib/api.ts');"
+ev "(async()=>{$A74 await api.createPage('Target74');const p=await api.createPage('Source74');for(let i=0;i<25;i++)await api.createBlock(p.id,'filler74 '+i);await api.createBlock(p.id,'TODO call about [[Target74]] with **bold74**');return 1})()" >/dev/null
+api "navigateTo('Target74')" >/dev/null; sleep 2
+row74() { ev "(()=>{const r=[...document.querySelectorAll('.backlink-item')].find(e=>e.textContent.includes('$1'));return r?r.innerText.replace(/\\s+/g,' ').trim():'none'})()" | tr -d '"'; }
+
+step "A backlink row is rich text: no [[ ]], ** or raw markers"
+R=$(row74 bold74)
+B=$(ev "!![...document.querySelectorAll('.backlink-item')].find(e=>e.textContent.includes('bold74'))?.querySelector('strong, .wiki-link')" | tr -d '"')
+[[ "$R" != "none" && "$R" != *"[["* && "$R" != *"**"* && "$R" != *"{{"* && "$B" == "true" ]] && pass "Row reads: $R" || fail "Raw markdown in backlinks" "$R (rich=$B)"
+ss "74-backlinks"
+
+step "Clicking the row opens the page AT that block and highlights it"
+ev "[...document.querySelectorAll('.backlink-item')].find(e=>e.textContent.includes('bold74'))?.click()" >/dev/null
+R=""; for _ in $(seq 1 20); do sleep 0.15; R=$(ev "(()=>{const b=document.querySelector('.block-ref-highlight');return (window.__MINOTES__.getCurrentPage?.()||'')+'|'+(b?b.textContent.includes('bold74'):false)})()" | tr -d '"'); [[ "$R" == *"|true" ]] && break; done
+[[ "$R" == "Source74|true" ]] && pass "Opened Source74 with the referencing block highlighted" || fail "Backlink click" "$R"
+sleep 0.6
+V=$(ev "(()=>{const b=[...document.querySelectorAll('.block-list > .block')].find(x=>x.textContent.includes('bold74'));if(!b)return 'none';const r=b.getBoundingClientRect();return r.top>=0&&r.bottom<=innerHeight})()" | tr -d '"')
+[[ "$V" == "true" ]] && pass "…and scrolled into view" || fail "Referencing block not in view" "$V"
+
+step "After renaming the page, the backlinks show the new name"
+api "navigateTo('Target74')" >/dev/null; sleep 1.5
+ev "document.querySelector('.main-header h2')?.click()" >/dev/null; sleep 0.4
+ev "(()=>{const i=document.querySelector('.page-title-input');const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;set.call(i,'Target74 renamed');i.dispatchEvent(new Event('input',{bubbles:true}));i.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));return 1})()" >/dev/null; sleep 2
+R=$(row74 bold74)
+[[ "$R" == *"Target74 renamed"* ]] && pass "Backlink row updated: $R" || fail "Backlinks stale after rename" "$R"
+
+# ═══════════════════════════════════════════════
 close_app
 
 # ═══════════════════════════════════════════════

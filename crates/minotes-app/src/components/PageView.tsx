@@ -2055,7 +2055,7 @@ export default function PageView({
                 </div>
               )}
 
-              <BacklinksPanel pageId={page.id} onPageClick={onPageLinkClick} />
+              <BacklinksPanel pageId={page.id} refreshKey={page.title} onPageClick={onPageLinkClick} onBlockClick={handleBlockRefClick} />
               <UnlinkedRefsPanel pageId={page.id} pageTitle={page.title} onPageClick={onPageLinkClick} />
             </>
           )}
