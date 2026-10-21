@@ -260,6 +260,20 @@ body {
 .sidebar-reveal-btn:hover { color: var(--text-primary); background: var(--bg-surface); }
 @media (max-width: 768px) { .sidebar-reveal-btn { display: none; } }
 
+/* Links written in notes ([text](url), attachments): readable in both themes. */
+.block-content a:not(.wiki-link):not(.xnb-link):not(.btn),
+.block-static a:not(.wiki-link):not(.xnb-link):not(.btn),
+.backlink-content a:not(.wiki-link) {
+  color: var(--accent);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  text-underline-offset: 2px;
+}
+.block-content a:not(.wiki-link):not(.xnb-link):not(.btn):hover,
+.block-static a:not(.wiki-link):not(.xnb-link):not(.btn):hover {
+  text-decoration-color: var(--accent);
+}
+
 /* Layout */
 .app {
   display: flex;
@@ -1539,12 +1553,12 @@ body {
 }
 
 .sidebar-context-menu-item.danger {
-  color: #f38ba8;
+  color: var(--danger);
 }
 
 .sidebar-context-menu-item.danger:hover {
-  background: #f38ba8;
-  color: #1e1e2e;
+  background: var(--danger);
+  color: var(--bg-primary);
 }
 
 /* Group spacer — subtle gap between journal/page groups in pinned */
@@ -2184,11 +2198,11 @@ body {
 
 .ai-link-dismiss:hover {
   opacity: 1;
-  color: #f38ba8;
+  color: var(--danger);
 }
 
 .ai-link-insert {
-  color: #a6e3a1;
+  color: var(--success);
 }
 
 /* ── Query Panel ── */
@@ -3764,6 +3778,8 @@ body.theme-light { /* matches our light theme */ }
   --text-accent-hover: var(--accent-hover);
   --interactive-accent: var(--accent);
   --interactive-accent-hover: var(--accent-hover);
+  --text-error: var(--danger);
+  --text-success: var(--success);
 }
 
 [data-theme="light"] {
@@ -3776,6 +3792,8 @@ body.theme-light { /* matches our light theme */ }
   --text-accent-hover: var(--accent-hover);
   --interactive-accent: var(--accent);
   --interactive-accent-hover: var(--accent-hover);
+  --text-error: var(--danger);
+  --text-success: var(--success);
 }
 
 /* ── Settings Panel ── */
@@ -3879,7 +3897,7 @@ body.theme-light { /* matches our light theme */ }
 
 .settings-close-btn:hover {
   background: rgba(243, 139, 168, 0.15);
-  color: #f38ba8;
+  color: var(--danger);
 }
 
 .settings-section {
@@ -5047,7 +5065,7 @@ body.theme-light { /* matches our light theme */ }
 }
 
 .kanban-column:hover {
-  border-color: rgba(69, 71, 90, 0.8);
+  border-color: var(--text-muted);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
 }
 
@@ -5082,7 +5100,9 @@ body.theme-light { /* matches our light theme */ }
   font-size: 14px;
   color: var(--text-primary);
   border-bottom: 1px solid var(--border);
-  background: rgba(30, 30, 46, 0.4);
+  /* A band a step away from the column in either theme (was a fixed dark
+     tint: a muddy grey bar on the light theme). */
+  background: var(--bg-primary);
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -5172,9 +5192,9 @@ body.theme-light { /* matches our light theme */ }
   opacity: 0.4;
 }
 
-.kanban-card[data-todo="TODO"] { border-left: 3px solid #89b4fa; }
-.kanban-card[data-todo="DOING"] { border-left: 3px solid #f9e2af; }
-.kanban-card[data-todo="DONE"] { border-left: 3px solid #a6e3a1; }
+.kanban-card[data-todo="TODO"] { border-left: 3px solid var(--accent); }
+.kanban-card[data-todo="DOING"] { border-left: 3px solid var(--warning); }
+.kanban-card[data-todo="DONE"] { border-left: 3px solid var(--success); }
 .kanban-card[data-todo="DONE"] .kanban-card-text {
   text-decoration: line-through;
   color: var(--text-muted);
@@ -5645,7 +5665,7 @@ body.theme-light { /* matches our light theme */ }
   bottom: 32px;
   left: 50%;
   transform: translateX(-50%);
-  background: #313244;
+  background: var(--bg-surface);
   border: 1px solid var(--accent);
   border-radius: 10px;
   box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
