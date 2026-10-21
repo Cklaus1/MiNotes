@@ -14,6 +14,7 @@ import { clearPrefetchedProperties } from "./blockProperties";
 import { undoStack } from "./undoStack";
 import { errorMessage } from "./errors";
 import { confirmDialog } from "./confirm";
+import { withBusy } from "./busy";
 
 /** The open notebook was locked or unlocked (detail: the new NotebookSession, if known). */
 export const LOCK_CHANGED = "minotes-lock-changed";
@@ -40,22 +41,28 @@ function announce(session?: api.NotebookSession | null) {
 /** "Lock now" / auto-lock. Unsaved edits are written first (if that fails the
  *  notebook is locked anyway — the failed edit is reported, not kept in memory). */
 export async function lockNow(): Promise<void> {
-  try {
-    await flushPendingEdits();
-  } catch (e) {
-    console.warn("Locking: some edits could not be saved:", errorMessage(e));
-  }
-  const s = await api.lockNotebook();
-  resetNotebookCaches();
-  announce(s);
+  await withBusy("Locking the notebook…", async () => {
+    try {
+      await flushPendingEdits();
+    } catch (e) {
+      console.warn("Locking: some edits could not be saved:", errorMessage(e));
+    }
+    const s = await api.lockNotebook();
+    resetNotebookCaches();
+    announce(s);
+    return s;
+  }, { done: (s) => `Locked “${s.name}”`, failed: null });
 }
 
 /** Unlock the open notebook. Throws the backend's error (WRONG_PASSPHRASE …). */
 export async function unlock(secret: string, opts: { recovery?: boolean; remember?: boolean } = {}): Promise<api.NotebookSession> {
-  const s = await api.unlockNotebook(secret, !!opts.recovery, !!opts.remember);
-  resetNotebookCaches();
-  announce(s);
-  return s;
+  // A wrong passphrase is said on the unlock screen itself (failed: null).
+  return withBusy("Unlocking…", async () => {
+    const s = await api.unlockNotebook(secret, !!opts.recovery, !!opts.remember);
+    resetNotebookCaches();
+    announce(s);
+    return s;
+  }, { done: (s) => `Unlocked “${s.name}”`, failed: null });
 }
 
 /** Tell the gate the lock state may have changed (after recover / encrypt / switch). */

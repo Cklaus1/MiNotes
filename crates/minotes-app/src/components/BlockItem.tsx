@@ -354,6 +354,9 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
     // Save barrier (notebook switch): commit unsaved typing now. Only when dirty,
     // so a merely focused block is never rewritten with normalized markdown.
     flush: () => {
+      // Typing ProseMirror hasn't read yet (DOM changes still queued in its
+      // observer, e.g. mid-composition) is part of the edit: read it first.
+      try { (getEd()?.view as unknown as { domObserver?: { forceFlush?: () => void } })?.domObserver?.forceFlush?.(); } catch { /* destroyed */ }
       const ed = bridgeRef.current?.api;
       if (ed?.isDirty()) ed.saveNow();
     },

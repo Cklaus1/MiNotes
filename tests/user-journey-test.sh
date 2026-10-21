@@ -4711,6 +4711,29 @@ R=$(ev "(async()=>{const m=await import('/src/lib/pageNames.ts');$A89 const p=(a
 [[ "$R" == *"already exists"* ]] && pass "Clash found: $R" || fail "Rename clash check in a big notebook" "$R"
 
 # ═══════════════════════════════════════════════
+journey "87. Opening another notebook shows progress at once and says when it's done (UX Wave 3)"
+# Switches took 5–10 s with no feedback on big notebooks.
+# ═══════════════════════════════════════════════
+A87="const api=await import('/src/lib/api.ts');"
+api "closePanel()" >/dev/null; press "Escape"; sleep 0.3
+S87=$(date +%s)
+HOME87=$(ev "(async()=>{$A87 return (await api.getNotebookSession()).key})()" | tr -d '"')
+OTHER87=$(ev "(async()=>{$A87 const n=await api.createNotebook('Progress87 $S87');return n.key})()" | tr -d '"')
+
+step "Within 100 ms of the switch a busy pill names the notebook, and input is held"
+R=$(ev "(async()=>{const n=await import('/src/lib/notebooks.ts');const t0=performance.now();let seen=null,label='',shield=false;const obs=new MutationObserver(()=>{const b=document.querySelector('[data-testid=busy]');if(b&&seen===null){seen=performance.now()-t0;shield=getComputedStyle(b).pointerEvents!=='none'}if(b)label=document.querySelector('[data-testid=busy-label]')?.textContent||label});obs.observe(document.body,{childList:true,subtree:true,characterData:true});const p=n.switchNotebook('$OTHER87');await p;obs.disconnect();return (seen!==null&&seen<100)+'|'+label+'|'+shield+'|'+!!document.querySelector('[data-testid=busy]')})()" | tr -d '"')
+[[ "$R" == "true|Opening “Progress87 $S87”…|true|false" ]] && pass "Busy pill at once, named, gone when done ($R)" || fail "Switch progress" "$R"
+
+step "A toast says which notebook opened"
+R=$(ev "[...document.querySelectorAll('.minotes-toast')].map(t=>t.textContent).join(' ¦ ')" | tr -d '"')
+[[ "$R" == *"Opened “Progress87 $S87”"* ]] && pass "Toast: Opened “Progress87 …”" || fail "Completion toast" "$R"
+ss "87-switch-done"
+
+step "Keys pressed during the switch don't reach the editor"
+R=$(ev "(async()=>{const n=await import('/src/lib/notebooks.ts');let res='never guarded';const obs=new MutationObserver(()=>{if(res!=='never guarded'||!document.querySelector('.busy-shield.guarded'))return;const ev=new KeyboardEvent('keydown',{key:'x',bubbles:true,cancelable:true});document.dispatchEvent(ev);res=String(ev.defaultPrevented)});obs.observe(document.body,{subtree:true,attributes:true,childList:true});await n.switchNotebook('$HOME87');obs.disconnect();return res})()" | tr -d '"')
+[[ "$R" == "true" ]] && pass "Held while busy" || fail "Key guard during a switch" "$R"
+
+# ═══════════════════════════════════════════════
 close_app
 
 # ═══════════════════════════════════════════════

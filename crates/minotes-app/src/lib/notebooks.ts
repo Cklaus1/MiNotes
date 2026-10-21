@@ -14,6 +14,7 @@ import { clearPrefetchedProperties } from "./blockProperties";
 import { setOpenNotebook } from "./webviewState";
 import { LOCK_CHANGED, askPassphrase } from "./encryption";
 import { promptDialog } from "./confirm";
+import { setBusyLabel, withBusy } from "./busy";
 
 /** Fired after the open notebook changed (detail: { key }). App resets its views. */
 export const NOTEBOOK_SWITCHED = "minotes-notebook-switched";
@@ -56,13 +57,34 @@ let switching = false;
  * Then: undo history belongs to a notebook, so it is cleared; recent pages and
  * sidebar state are swapped; per-notebook caches are dropped; App closes views
  * and lands on the new notebook's journal for today (NOTEBOOK_SWITCHED).
+ *
+ * Progress (lib/busy.ts): keys already on their way reach the editor first
+ * (settleInput), then the busy state shows and input stops until the new
+ * notebook is open — nothing typed can land in a view that is going away —
+ * and a toast says which notebook opened.
  */
 export async function switchNotebook(key: string): Promise<void> {
   if (switching) return;
   switching = true;
   try {
-    const from = await api.getCurrentNotebook();
-    if (from === key) return;
+    await withBusy("Opening the notebook…", async () => {
+      const from = await api.getCurrentNotebook();
+      if (from === key) return null;
+      const name = (await api.listNotebooks().catch(() => [])).find(n => n.key === key)?.name;
+      if (name) setBusyLabel(`Opening “${name}”…`);
+      return switchTo(from, key);
+    }, {
+      done: (s) => !s ? null : s.locked ? `“${s.name}” is locked — enter its passphrase to open it` : `Opened “${s.name}”`,
+      failed: (e) => `Couldn't open that notebook: ${errorMessage(e)}`,
+    });
+  } finally {
+    switching = false;
+  }
+}
+
+async function switchTo(from: string, key: string): Promise<api.NotebookSession | null> {
+  {
+    // The save barrier.
     try {
       await flushPendingEdits();
     } catch (e) {
@@ -80,8 +102,7 @@ export async function switchNotebook(key: string): Promise<void> {
     window.dispatchEvent(new CustomEvent(LOCK_CHANGED, { detail: session }));
     window.dispatchEvent(new CustomEvent(NOTEBOOK_SWITCHED, { detail: { key, from } }));
     window.dispatchEvent(new Event(NOTEBOOKS_CHANGED));
-  } finally {
-    switching = false;
+    return session;
   }
 }
 
@@ -204,7 +225,8 @@ export async function exportNotebook(nb?: { key: string; name: string }): Promis
   const dest = nextExportDest;
   nextExportDest = undefined;
   try {
-    const r = await api.exportNotebookZip(nb?.key ?? null, dest ?? null);
+    const r = await withBusy(nb ? `Exporting “${nb.name}”…` : "Exporting the notebook…",
+      () => api.exportNotebookZip(nb?.key ?? null, dest ?? null), { failed: null });
     if (r) showToast(`Exported “${r.name}”: ${count(r.pages, "page")}, ${count(r.attachments, "file")}, ${formatSize(r.bytes)}`);
     return r ?? null;
   } catch (e) {
@@ -231,7 +253,7 @@ export async function importNotebookFromZip(): Promise<api.ZipImport | null> {
   try {
     let r: api.ZipImport;
     try {
-      r = await api.importNotebookZip(source);
+      r = await withBusy("Importing the notebook…", () => api.importNotebookZip(source!), { failed: null });
     } catch (e) {
       // An encrypted notebook's archive: ask for its passphrase (in-app prompt).
       if (!api.isLockedError(e)) throw e;
@@ -239,7 +261,7 @@ export async function importNotebookFromZip(): Promise<api.ZipImport | null> {
       for (;;) {
         if (!secret) return null;
         try {
-          r = await api.importNotebookZip(source, secret);
+          r = await withBusy("Importing the notebook…", () => api.importNotebookZip(source!, secret!), { failed: null });
           break;
         } catch (e2) {
           if (!api.isWrongPassphrase(e2)) throw e2;
