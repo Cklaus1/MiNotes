@@ -11,6 +11,10 @@
   --success: #a6e3a1;
   --warning: #f9e2af;
   --danger: #f38ba8;
+  /* Native widgets (scrollbars, date fields, a select's option list where the
+     platform honours it) follow the theme. */
+  color-scheme: dark;
+  --check-mark: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2.5 6.2l2.3 2.3 4.7-5' fill='none' stroke='%231e1e2e' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
 }
 /* --text-muted is for secondary information, not decoration: 5.8:1 on
    bg-primary, 4.4:1 on bg-surface (dark); 6.1:1 / 4.4:1 (light). */
@@ -33,6 +37,8 @@
   --success: #256b17;
   --warning: #8a5300;
   --danger: #b80d32;
+  color-scheme: light;
+  --check-mark: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2.5 6.2l2.3 2.3 4.7-5' fill='none' stroke='%23eff1f5' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
 }
 
 :root {
@@ -56,6 +62,94 @@ body {
 #root {
   height: 100vh;
   display: flex;
+}
+
+/* ── Shared controls (UX Wave 3) ──────────────────────────────────────────
+   One look for every select, checkbox, radio and disabled button, in both
+   themes. WebKitGTK draws native controls as white GTK widgets with pale text
+   in the dark theme, so these are drawn by us (appearance: none) — the
+   elements stay native, so keyboard use and accessibility are unchanged.
+   `:where()` keeps specificity at zero: a component's own rule always wins. */
+:where(select) {
+  -webkit-appearance: none;
+  appearance: none;
+  background-color: var(--bg-surface);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 28px 4px 8px;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.4;
+  min-height: 28px;
+  max-width: 100%;
+  cursor: pointer;
+  text-overflow: ellipsis;
+  /* The arrow: two gradient triangles in a theme colour (no image needed). */
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--text-secondary) 50%),
+    linear-gradient(135deg, var(--text-secondary) 50%, transparent 50%);
+  background-position: calc(100% - 15px) 55%, calc(100% - 10px) 55%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
+:where(select):hover { border-color: var(--text-muted); }
+:where(select) option,
+:where(select) optgroup {
+  background-color: var(--bg-secondary);
+  color: var(--text-primary);
+}
+
+:where(input[type="checkbox"], input[type="radio"]) {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  min-width: 16px;
+  margin: 0;
+  border: 1.5px solid var(--text-secondary);
+  background: var(--bg-primary) no-repeat center / 12px 12px;
+  display: inline-block;
+  vertical-align: middle;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+:where(input[type="checkbox"]) { border-radius: 3px; }
+:where(input[type="radio"]) { border-radius: 50%; }
+:where(input[type="checkbox"]):checked {
+  background-color: var(--accent);
+  border-color: var(--accent);
+  background-image: var(--check-mark);
+}
+:where(input[type="radio"]):checked {
+  border-color: var(--accent);
+  background-image: radial-gradient(circle, var(--accent) 0 3.5px, transparent 4px);
+}
+:where(input[type="checkbox"], input[type="radio"]):hover:not(:disabled) { border-color: var(--accent); }
+
+:where(select, input, textarea, button):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Disabled looks disabled — everywhere. A button that can't be used yet says
+   why in a .disabled-reason next to it (or a tooltip) when there is a reason. */
+:where(select, input, textarea, button):disabled {
+  cursor: not-allowed;
+}
+:where(select, input[type="checkbox"], input[type="radio"], button):disabled,
+.btn:disabled,
+.btn:disabled:hover {
+  opacity: 0.45;
+  filter: saturate(0.5);
+}
+.btn:disabled:hover { background: var(--bg-surface); }
+.btn-primary:disabled:hover { background: var(--accent); }
+.disabled-reason {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-right: auto;
+  align-self: center;
 }
 
 /* Layout */
@@ -905,28 +999,6 @@ body {
 .btn-sm {
   padding: 2px 6px;
   font-size: 11px;
-}
-
-/* Honest disabled state (reusable; the app-wide pass is UX Wave 3): a gated
-   button looks unavailable, keeps its colours on hover, and sits next to a
-   .disabled-reason that says what is missing. */
-.btn-gated:disabled,
-.btn-gated:disabled:hover {
-  opacity: 0.45;
-  cursor: not-allowed;
-  filter: saturate(0.5);
-}
-.btn-gated.btn-primary:disabled:hover {
-  background: var(--accent);
-}
-.btn-gated:not(.btn-primary):disabled:hover {
-  background: var(--bg-surface);
-}
-.disabled-reason {
-  font-size: 12px;
-  color: var(--text-secondary);
-  margin-right: auto;
-  align-self: center;
 }
 
 /* Search */
@@ -2156,7 +2228,6 @@ body {
   width: 14px;
   height: 14px;
   margin: 0;
-  accent-color: var(--accent);
   cursor: pointer;
 }
 
@@ -3743,7 +3814,10 @@ body.theme-light { /* matches our light theme */ }
 }
 
 .settings-advanced-toggle {
-  font-size: 10px;
+  background: none;
+  border: none;
+  font-family: inherit;
+  font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.08em;
   font-weight: 600;
@@ -3772,7 +3846,9 @@ body.theme-light { /* matches our light theme */ }
   margin-top: 2px;
 }
 
-.settings-toggle input { opacity: 0; width: 0; height: 0; }
+.settings-toggle input { opacity: 0; width: 0; height: 0; min-width: 0; position: absolute; }
+.settings-toggle input:focus-visible + .settings-toggle-slider { outline: 2px solid var(--accent); outline-offset: 2px; }
+.settings-toggle input:disabled + .settings-toggle-slider { opacity: 0.45; cursor: not-allowed; }
 
 .settings-toggle-slider {
   position: absolute;
@@ -3824,13 +3900,7 @@ body.theme-light { /* matches our light theme */ }
 }
 
 .settings-select {
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  color: var(--text-primary);
-  padding: 4px 8px;
   font-size: 13px;
-  outline: none;
 }
 
 /* ── Editor Mode Toggle ── */
@@ -6550,42 +6620,6 @@ img.img-broken {
   align-items: center;
   gap: 6px;
   cursor: pointer;
-}
-/* A checkbox whose unchecked state is visible in both themes (the native one
-   drew nothing readable in the dark theme). */
-.command-palette-scope input[type="checkbox"] {
-  appearance: none;
-  -webkit-appearance: none;
-  width: 14px;
-  height: 14px;
-  margin: 0;
-  border: 1.5px solid var(--text-secondary);
-  border-radius: 3px;
-  background: var(--bg-primary);
-  display: inline-grid;
-  place-content: center;
-  cursor: pointer;
-  flex-shrink: 0;
-}
-.command-palette-scope input[type="checkbox"]::after {
-  content: "";
-  width: 7px;
-  height: 4px;
-  border-left: 2px solid var(--bg-primary);
-  border-bottom: 2px solid var(--bg-primary);
-  transform: translateY(-1px) rotate(-45deg);
-  visibility: hidden;
-}
-.command-palette-scope input[type="checkbox"]:checked {
-  background: var(--accent);
-  border-color: var(--accent);
-}
-.command-palette-scope input[type="checkbox"]:checked::after {
-  visibility: visible;
-}
-.command-palette-scope input[type="checkbox"]:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
 }
 /* Block results: plain text, then the page they are on. */
 .command-palette-block {
