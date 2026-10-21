@@ -232,6 +232,7 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [dropPosition, setDropPosition] = useState<DropPosition | null>(null);
   const isCard = useIsFlashcard(block.id);
+  const isDone = block.content.startsWith("DONE ") || block.content === "{{todo:done}}";
   // Set when the context menu was opened on a table cell (shows table items).
   const [menuInTable, setMenuInTable] = useState(false);
 
@@ -649,7 +650,7 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
   return (
     <div
       ref={rootRef}
-      className={`block${selected ? " selected" : ""}${isCard ? " is-flashcard" : ""}${collapsed && hasChildren ? " is-collapsed" : ""}${dropPosition ? ` drop-${dropPosition}` : ""}`}
+      className={`block${selected ? " selected" : ""}${isCard ? " is-flashcard" : ""}${isDone ? " todo-done" : ""}${collapsed && hasChildren ? " is-collapsed" : ""}${dropPosition ? ` drop-${dropPosition}` : ""}`}
       data-depth={depth > 0 ? String(depth) : undefined}
       style={depth > 0 || (collapsed && hasChildren) ? ({
         ...(depth > 0 ? { "--depth": depth } : {}),

@@ -3755,6 +3755,30 @@ R=$(ev "(async()=>{$A70 const t=await api.getPageTree('Merge70 page');return t.b
 [[ "$R" == "first70|Second block|Hello World|**bold** and [[Merge70 page]] text" ]] && pass "Stored as before" || fail "Stored after split/merge" "$R"
 
 # ═══════════════════════════════════════════════
+journey "71. Done tasks look done, and badges don't crowd the text"
+# DONE wasn't struck through or dimmed; the badge touched the following text.
+# ═══════════════════════════════════════════════
+A71="const api=await import('/src/lib/api.ts');"
+ev "(async()=>{$A71 const p=await api.createPage('Done71 page');await api.createBlock(p.id,'TODO write71');await api.createBlock(p.id,'DOING draft71');await api.createBlock(p.id,'DONE ship71');return 1})()" >/dev/null
+api "navigateTo('Done71 page')" >/dev/null; sleep 2
+ev "document.activeElement?.blur()" >/dev/null; sleep 0.5
+# look71 <text> -> struck|opacity-or-color-dimmed|gap px between badge and the text
+look71() { ev "(()=>{const b=[...document.querySelectorAll('.block-list > .block')].find(x=>x.querySelector('.block-content')?.textContent.includes('$1'));if(!b)return 'missing';const pm=b.querySelector('.block-content .ProseMirror');const cs=getComputedStyle(pm);const dim=cs.color!==getComputedStyle(document.querySelector('.block-list > .block:not(.todo-done) .ProseMirror')).color;let struck=false;const dec=e=>{for(;e&&e!==b;e=e.parentElement){if((getComputedStyle(e).textDecorationLine||'').includes('line-through'))return true}return false};const badge=b.querySelector(':scope > .todo-badge');const w=document.createTreeWalker(pm,NodeFilter.SHOW_TEXT);let n,gap='none';while((n=w.nextNode())){const i=n.data.indexOf('$1');if(i>=0){struck=dec(n.parentElement);const r=document.createRange();r.setStart(n,i);r.setEnd(n,i+1);gap=Math.round(r.getBoundingClientRect().left-badge.getBoundingClientRect().right);break}}return struck+'|'+dim+'|'+gap})()" | tr -d '"'; }
+
+step "A DONE block is struck through and dimmed; TODO and DOING aren't"
+R=$(look71 ship71); IFS='|' read -r S71 D71 G71 <<< "$R"
+[[ "$S71" == "true" && "$D71" == "true" ]] && pass "DONE: struck through and dimmed" || fail "DONE styling" "$R"
+R=$(look71 write71); IFS='|' read -r S71b D71b G71b <<< "$R"
+[[ "$S71b" == "false" ]] && pass "TODO: not struck through" || fail "TODO struck through" "$R"
+ss "71-todo-done"
+
+step "There is breathing room between each badge and the text after it"
+for w in write71 draft71 ship71; do
+  R=$(look71 $w); G=${R##*|}
+  [[ "$G" =~ ^[0-9]+$ && "$G" -ge 6 ]] && pass "$w: ${G}px after the badge" || fail "Badge crowds the text ($w)" "$R"
+done
+
+# ═══════════════════════════════════════════════
 close_app
 
 # ═══════════════════════════════════════════════

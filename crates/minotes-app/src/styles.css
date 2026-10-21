@@ -685,6 +685,23 @@ body {
   color: #1e1e2e;
 }
 
+/* Room between a badge and the text after it (editor/todoKeyword.ts wraps the
+   keyword the badge covers). */
+.block-content .ProseMirror .todo-kw {
+  padding-right: 6px;
+}
+
+/* A finished task reads as finished: dimmed, its text (not the keyword under
+   the badge) struck through. */
+.block.todo-done > .block-content .ProseMirror {
+  color: var(--text-secondary);
+  opacity: 0.7;
+}
+.block-content .ProseMirror .todo-done-text {
+  text-decoration: line-through;
+  text-decoration-color: var(--text-secondary);
+}
+
 /* Placeholder handled by TipTap Placeholder extension (showOnlyCurrent: true) */
 
 /* ── Block gutter (C-11) ──
@@ -818,7 +835,7 @@ body {
   font-style: normal;
   line-height: 16px;
   vertical-align: 1px;
-  color: var(--text-muted);
+  color: var(--text-secondary);
   background: var(--bg-surface);
   pointer-events: none;
   user-select: none;
@@ -6413,5 +6430,6 @@ img.img-broken {
   float: right;
   margin-left: 16px;
   font-size: 11px;
-  color: var(--text-muted);
+  color: var(--text-secondary);
+  opacity: 0.7;
 }
