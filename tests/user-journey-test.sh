@@ -351,7 +351,8 @@ journey "11. I want to see my knowledge graph"
 step "Graph view opens"
 # The shortcut is ignored while the editor has focus.
 ev "document.activeElement?.blur()" > /dev/null 2>&1; sleep 0.3
-press "Control+g"; sleep 2
+# Ctrl+G toggles: journey 10 may have left the graph open — only open it if it isn't.
+[[ "$(ev "!!document.querySelector('.graph-view')" | tr -d '"')" == "true" ]] || { press "Control+g"; sleep 2; }
 S=$(snap)
 echo "$S" | grep -qi "graph\|canvas" && pass "Graph renders" || fail "No graph" "Graph didn't load"
 G_OPEN=$(ev "!!document.querySelector('.graph-view canvas')" | tr -d '"')
@@ -4395,10 +4396,10 @@ R=$(content80)
 
 step "Filters: DONE shows the finished ones only"
 ev "document.querySelector('[data-testid=tasks-filter-done]')?.click()" >/dev/null; sleep 0.8
-R=$(ev "[...document.querySelectorAll('[data-testid=task-row]')].filter(r=>r.textContent.includes('69')).map(r=>r.textContent.replace(/\\s+/g,' ').trim()).join('|')" | tr -d '"')
+R=$(ev "[...document.querySelectorAll('[data-testid=task-row]')].filter(r=>r.textContent.includes('80')).map(r=>r.textContent.replace(/\\s+/g,' ').trim()).join('|')" | tr -d '"')
 [[ "$R" == *"buy milk80"* && "$R" == *"file taxes80"* && "$R" != *"write report80"* ]] && pass "DONE filter ($R)" || fail "DONE filter" "$R"
 ev "document.querySelector('[data-testid=tasks-filter-doing]')?.click()" >/dev/null; sleep 0.8
-R=$(ev "[...document.querySelectorAll('[data-testid=task-row]')].filter(r=>r.textContent.includes('69')).map(r=>r.dataset.state).join(',')" | tr -d '"')
+R=$(ev "[...document.querySelectorAll('[data-testid=task-row]')].filter(r=>r.textContent.includes('80')).map(r=>r.dataset.state).join(',')" | tr -d '"')
 [[ "$R" == "doing" ]] && pass "DOING filter" || fail "DOING filter" "$R"
 
 step "Clicking a task opens its page"
