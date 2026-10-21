@@ -109,7 +109,9 @@ launch_once() { # $1 = webdriver 0|1; returns non-zero if the app isn't usable
     TD="$(command -v tauri-driver || echo "$HOME/.cargo/bin/tauri-driver")"
     { [ -x "$TD" ] && command -v WebKitWebDriver >/dev/null; } || {
       echo "webdriver mode needs: apt-get install webkit2gtk-driver && cargo install tauri-driver --locked" >&2; exit 2; }
-    HOME="$APP_HOME" setsid nohup "${DBUS_PREFIX[@]}" "$TD" --port "$WD_PORT" --native-port "$((WD_PORT + 1))" >"$STATE/app.log" 2>&1 </dev/null &
+    # Working directory = the scratch HOME: nothing the app writes relative to its
+    # cwd (a webview download, say) can land in the repo.
+    (cd "$APP_HOME" && HOME="$APP_HOME" exec setsid nohup "${DBUS_PREFIX[@]}" "$TD" --port "$WD_PORT" --native-port "$((WD_PORT + 1))") >"$STATE/app.log" 2>&1 </dev/null &
     echo $! >"$STATE/app.pid"
     # Wait for the new driver to listen rather than sleeping a fixed time.
     for _ in $(seq 1 60); do listening "$WD_PORT" && break; alive app || break; sleep 0.25; done
@@ -117,7 +119,7 @@ launch_once() { # $1 = webdriver 0|1; returns non-zero if the app isn't usable
     sleep 0.5
     wd new "$BIN" || { echo "webdriver session could not start" >&2; return 1; }
   else
-    HOME="$APP_HOME" setsid nohup "${DBUS_PREFIX[@]}" "$BIN" >"$STATE/app.log" 2>&1 </dev/null &
+    (cd "$APP_HOME" && HOME="$APP_HOME" exec setsid nohup "${DBUS_PREFIX[@]}" "$BIN") >"$STATE/app.log" 2>&1 </dev/null &
     echo $! >"$STATE/app.pid"
   fi
   local start=$SECONDS
