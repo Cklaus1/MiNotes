@@ -345,9 +345,11 @@ export default function SettingsPanel({ open, onClose, onOpenSync, onOpenCssSnip
           <div className="settings-section">
             <div className="settings-section-title">History</div>
             <div className="settings-row">
-              <span className="settings-row-label">Sync status &amp; page versions</span>
+              <span className="settings-row-label" title="Snapshots of a page saved on this device, to restore an earlier version. Not git sync.">
+                Saved versions of pages
+              </span>
               <button className="btn btn-sm" onClick={() => { onClose(); onOpenSync(); }}>
-                Sync &amp; version history…
+                Page versions…
               </button>
             </div>
           </div>

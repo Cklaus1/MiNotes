@@ -348,7 +348,7 @@ impl Database {
 
         let synced_pages: i64 = self
             .conn
-            .query_row("SELECT COUNT(*) FROM sync_state", [], |row| row.get(0))?;
+            .query_row("SELECT COUNT(*) FROM sync_state WHERE page_id IN (SELECT id FROM pages)", [], |row| row.get(0))?;
 
         // Pages updated after their last sync (or never synced)
         let pending_changes: i64 = self.conn.query_row(
