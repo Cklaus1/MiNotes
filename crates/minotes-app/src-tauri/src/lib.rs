@@ -1471,6 +1471,16 @@ fn get_ui_state(state: State<'_, AppState>, key: String) -> Result<Option<String
     db.get_ui_state(&key).map_err(|e| e.to_string())
 }
 
+/// The onboarding page this device just created ("Getting Started"): if it is
+/// still untouched when a sync brings another device's page of that title,
+/// that page replaces it (UX review C-9).
+#[tauri::command]
+fn mark_onboarding_seed(state: State<'_, AppState>, page_id: String) -> Result<(), String> {
+    let id = uuid::Uuid::parse_str(&page_id).map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
+    db.mark_onboarding_seed(&id).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn set_ui_state(state: State<'_, AppState>, key: String, value: String) -> Result<(), String> {
     if state.session.lock().map_err(|e| e.to_string())?.held_by.is_some() {
@@ -1733,6 +1743,7 @@ pub fn run() {
             get_whiteboard,
             get_ui_state,
             set_ui_state,
+            mark_onboarding_seed,
             save_whiteboard,
             gc_whiteboards,
             restore_blocks,

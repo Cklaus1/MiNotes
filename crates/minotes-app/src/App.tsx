@@ -904,6 +904,8 @@ export default function App() {
           for (const text of TUTORIAL_BLOCKS) {
             await api.createBlock(page.id, text);
           }
+          // Untouched, it gives way to another device's copy when sync joins (C-9).
+          await api.markOnboardingSeed(page.id).catch(() => {});
           markOnboardingComplete();
           await openPage(page.id);
           return;

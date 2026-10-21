@@ -1018,6 +1018,8 @@ export const saveWhiteboard = (id: string, data: string) =>
 /** UI state kept in the notebook's database (encrypted notebooks: recent pages). */
 export const getUiState = (key: string) => invoke<string | null>("get_ui_state", { key }).then(v => v ?? null);
 export const setUiState = (key: string, value: string) => invoke<void>("set_ui_state", { key, value });
+/** Record the onboarding page this device just seeded (sync replaces it while untouched — C-9). */
+export const markOnboardingSeed = (pageId: string) => invoke<void>("mark_onboarding_seed", { pageId });
 
 // ── PDF viewer ──
 /**

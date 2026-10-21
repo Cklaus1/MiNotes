@@ -22,6 +22,7 @@ pub mod trash;
 pub mod ai_suggestions;
 pub mod whiteboards;
 pub mod ui_state;
+pub mod onboarding;
 // ── Import / attachments ──
 pub mod attachments;
 // ── End import ──

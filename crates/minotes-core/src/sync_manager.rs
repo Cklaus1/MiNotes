@@ -1376,6 +1376,133 @@ mod tests {
         }
     }
 
+    /// Every page title in the database (trash and archive included), sorted.
+    fn all_titles(db: &Database) -> Vec<String> {
+        let mut st = db.conn.prepare("SELECT title FROM pages ORDER BY title").unwrap();
+        let v: Vec<String> = st.query_map([], |r| r.get::<_, String>(0)).unwrap().map(|r| r.unwrap()).collect();
+        v
+    }
+
+    /// What the app does on a fresh install: a "Getting Started" page with the
+    /// tutorial blocks, recorded as this device's seed, and today's journal
+    /// (opened, so it holds one empty block).
+    fn fresh_install(db: &Database, day: chrono::NaiveDate) -> crate::models::Page {
+        let p = db.create_page("Getting Started", None, false, None, "user").unwrap();
+        for t in ["Welcome to MiNotes! This is a block.", "Press **Enter** to create a new block.", "Type **[[** to link to another page."] {
+            db.create_block(&p.id, t, None, None, "user").unwrap();
+        }
+        db.mark_onboarding_seed(&p.id).unwrap();
+        let j = db.get_or_create_journal(day, None, "user").unwrap();
+        db.create_block(&j.id, "", None, None, "user").unwrap();
+        p
+    }
+
+    // C-9: a fresh device joining sync kept its own onboarding page next to the
+    // remote's: "Getting Started", "Getting Started (2)", later "(2) (2)", and a
+    // "Journal/… (2)" in the Trash. Its untouched seed and its empty journal of
+    // the day give way to the remote's pages instead.
+    fn fresh_device_joins(a_edits_its_copy: bool) {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_remote, a, b) = setup_remote_and_devices(tmp.path());
+        let ta = MirrorTarget::new(&a, Some(tmp.path().join("a-state.json")));
+        let tb = MirrorTarget::new(&b, Some(tmp.path().join("b-state.json")));
+        let day = chrono::Local::now().date_naive();
+        let db_a = Database::open_in_memory().unwrap();
+        let db_b = Database::open_in_memory().unwrap();
+        let ga = fresh_install(&db_a, day);
+        if a_edits_its_copy {
+            db_a.create_block(&ga.id, "my own note on A", None, None, "user").unwrap();
+        }
+        let ja = db_a.find_journal(day).unwrap().unwrap();
+        db_a.create_block(&ja.id, "written on A", None, None, "user").unwrap();
+        enable_in_dir(&ta, &|| Ok::<&Database, Error>(&db_a)).unwrap();
+
+        let gb = fresh_install(&db_b, day);
+        enable_in_dir(&tb, &|| Ok::<&Database, Error>(&db_b)).unwrap();
+        for _ in 0..3 {
+            sync_cycle(&ta, || Ok(&db_a)).unwrap();
+            sync_cycle(&tb, || Ok(&db_b)).unwrap();
+        }
+        let journal = db_a.find_journal(day).unwrap().unwrap().title;
+        for (name, db) in [("A", &db_a), ("B", &db_b)] {
+            let mut want = vec!["Getting Started".to_string(), journal.clone()];
+            want.sort();
+            assert_eq!(all_titles(db), want, "device {name}: one onboarding page, one journal, nothing in the Trash");
+            let g = db.get_page_by_title("Getting Started").unwrap().unwrap();
+            assert_eq!(g.id, ga.id, "device {name} keeps the page the remote had");
+            assert_eq!(in_order(db, &g.id).contains(&"my own note on A".to_string()), a_edits_its_copy);
+            assert!(db.get_page(&gb.id).unwrap().is_none(), "B's untouched seed is gone everywhere");
+            let j = db.find_journal(day).unwrap().unwrap();
+            assert!(in_order(db, &j.id).contains(&"written on A".to_string()));
+        }
+        assert!(!a.join("Getting Started (2).md").exists() && !b.join("Getting Started (2).md").exists());
+    }
+
+    #[test]
+    fn test_fresh_device_join_keeps_one_getting_started() {
+        if git_cmd::git_available() {
+            fresh_device_joins(false);
+        }
+    }
+
+    #[test]
+    fn test_fresh_device_join_keeps_the_edited_getting_started() {
+        if git_cmd::git_available() {
+            fresh_device_joins(true);
+        }
+    }
+
+    // A page this device's user touched is never dropped: two devices' own
+    // same-titled pages both stay — numbered once, the same on both devices, and
+    // stable over repeated syncs (no "(2) (2)" chains).
+    #[test]
+    fn test_same_title_pages_from_two_devices_get_one_number_and_converge() {
+        if !git_cmd::git_available() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let (_remote, a, b) = setup_remote_and_devices(tmp.path());
+        let ta = MirrorTarget::new(&a, Some(tmp.path().join("a-state.json")));
+        let tb = MirrorTarget::new(&b, Some(tmp.path().join("b-state.json")));
+        let day = chrono::Local::now().date_naive();
+        let db_a = Database::open_in_memory().unwrap();
+        let db_b = Database::open_in_memory().unwrap();
+        // Each device's onboarding page was edited: both are real pages now.
+        let ga = fresh_install(&db_a, day);
+        db_a.create_block(&ga.id, "A's note", None, None, "user").unwrap();
+        let ia = db_a.create_page("Ideas", None, false, None, "user").unwrap();
+        db_a.create_block(&ia.id, "idea from A", None, None, "user").unwrap();
+        enable_in_dir(&ta, &|| Ok::<&Database, Error>(&db_a)).unwrap();
+        let gb = fresh_install(&db_b, day);
+        db_b.create_block(&gb.id, "B's note", None, None, "user").unwrap();
+        let ib = db_b.create_page("Ideas", None, false, None, "user").unwrap();
+        db_b.create_block(&ib.id, "idea from B", None, None, "user").unwrap();
+        enable_in_dir(&tb, &|| Ok::<&Database, Error>(&db_b)).unwrap();
+        for _ in 0..4 {
+            sync_cycle(&ta, || Ok(&db_a)).unwrap();
+            sync_cycle(&tb, || Ok(&db_b)).unwrap();
+        }
+        let a_titles = all_titles(&db_a);
+        assert!(a_titles.iter().all(|t| !t.contains(") (")), "no chains: {a_titles:?}");
+        assert_eq!(a_titles, all_titles(&db_b), "both devices agree");
+        for db in [&db_a, &db_b] {
+            assert_eq!(in_order(db, &ia.id), vec!["idea from A"]);
+            assert_eq!(in_order(db, &ib.id), vec!["idea from B"]);
+            let mut pair = vec![db.get_page(&ia.id).unwrap().unwrap().title, db.get_page(&ib.id).unwrap().unwrap().title];
+            pair.sort();
+            assert_eq!(pair, vec!["Ideas".to_string(), "Ideas (2)".to_string()]);
+            let gs: Vec<String> = all_titles(db).into_iter().filter(|t| t.starts_with("Getting Started")).collect();
+            assert_eq!(gs, vec!["Getting Started".to_string(), "Getting Started (2)".to_string()]);
+        }
+        // Stable: more syncs change nothing.
+        let before = all_titles(&db_a);
+        sync_cycle(&ta, || Ok(&db_a)).unwrap();
+        sync_cycle(&tb, || Ok(&db_b)).unwrap();
+        sync_cycle(&ta, || Ok(&db_a)).unwrap();
+        assert_eq!(all_titles(&db_a), before);
+        assert_eq!(all_titles(&db_b), before);
+    }
+
     // #2: an edit made while the git network phase runs is not reverted — neither
     // when the pull brings nothing (no import at all) nor when it brings changes
     // to other pages (the edited page is protected).

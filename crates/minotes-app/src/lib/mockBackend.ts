@@ -1628,6 +1628,7 @@ const handlers: Record<string, (args: any) => any> = {
   // ── Whiteboards (mirrors minotes-core repo/whiteboards.rs) ──
   get_ui_state: ({ key }: { key: string }) => mockUiState.get(`${currentNotebook}:${key}`) ?? null,
   set_ui_state: ({ key, value }: { key: string; value: string }) => { mockUiState.set(`${currentNotebook}:${key}`, value); },
+  mark_onboarding_seed: () => {},
   get_whiteboard: ({ id }: { id: string }) => mockWhiteboards.get(id) ?? null,
   save_whiteboard: ({ id, data }: { id: string; data: string }) => {
     if (!/^[A-Za-z0-9_-]{1,200}$/.test(id)) fail(`Invalid input: invalid whiteboard id: ${JSON.stringify(id)}`);

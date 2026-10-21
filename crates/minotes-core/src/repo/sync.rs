@@ -802,7 +802,11 @@ impl Database {
         Ok(out)
     }
 
+    /// A free title for a page that collides with `title`: "<base> (n)", n ≥ 2.
+    /// Idempotent: a title that already ends in " (n)" is renumbered, never
+    /// suffixed again — "X (2)" taken → "X (3)", not "X (2) (2)" (C-9).
     pub(crate) fn unique_page_title(&self, title: &str) -> Result<String> {
+        let title = strip_number_suffix(title);
         for n in 2..1000 {
             let candidate = format!("{title} ({n})");
             if self.get_page_by_title(&candidate)?.is_none() {
@@ -938,6 +942,17 @@ impl Database {
                 }
             }
             let mut title = title;
+            if let Some(local) = self.get_page_by_title(&title)?.filter(|p| p.title == title) {
+                // This device's onboarding page, never touched: the other device's
+                // page of that title replaces it instead of arriving as "(2)" (C-9).
+                // Safe either way round: only a pulled page can replace it, so the
+                // remote always keeps one.
+                if self.is_untouched_onboarding_seed(&local)? {
+                    eprintln!("[minotes-sync] {}: replaces this device's untouched '{title}'", file.rel.display());
+                    self.delete_page(&local.id, actor)?;
+                    self.forget_onboarding_seed()?;
+                }
+            }
             if self.get_page_by_title(&title)?.is_some() {
                 // Unknown id but the title is taken by a different local page (e.g.
                 // both devices auto-created today's journal): import separately.
@@ -1029,6 +1044,19 @@ impl Database {
             self.reconcile_page_blocks(&local.id, &combined, actor, result, None)?;
             seen_page_ids.insert(local.id);
             result.pages_updated.push(local.title.clone());
+        } else if local_blocks.iter().all(|b| b.content.trim().is_empty()) && self.get_properties(&local.id)?.is_empty() {
+            // Nothing written in the local journal yet (the app opens today's
+            // journal with one empty block): it simply gives way — no
+            // "<title> (2)" left behind in the Trash.
+            self.delete_page(&local.id, actor)?;
+            let page = self.create_page_with_id(incoming_id, title, None, true, Some(date), actor)?;
+            seen_page_ids.insert(page.id);
+            if let Some(fid) = folder_id {
+                self.move_page_to_folder(&page.id, Some(&fid), actor)?;
+            }
+            self.apply_fm_properties(&page.id, &file.fm.props, actor, result, &file.rel.display().to_string())?;
+            self.reconcile_page_blocks(&page.id, &append_folded_blocks(incoming_blocks.to_vec(), &[]), actor, result, None)?;
+            result.pages_created.push(title.to_string());
         } else {
             let combined = append_folded_blocks(incoming_blocks.to_vec(), &local_blocks);
             // Free the day's title, then create the kept page and move the blocks.
@@ -1902,6 +1930,18 @@ pub(crate) fn parse_frontmatter(content: &str) -> Frontmatter {
 
 /// Parse the `id: UUID` field from a page's YAML frontmatter, if present (Bug #3).
 /// Used by sync/import to reconcile pages by stable identity rather than by title.
+/// "Title (3)" → "Title"; anything else unchanged.
+pub(crate) fn strip_number_suffix(title: &str) -> &str {
+    if let Some(open) = title.strip_suffix(')').and_then(|t| t.rfind(" (").map(|i| (t, i))) {
+        let (t, i) = open;
+        let digits = &t[i + 2..];
+        if !digits.is_empty() && digits.len() <= 4 && digits.bytes().all(|b| b.is_ascii_digit()) && i > 0 {
+            return &title[..i];
+        }
+    }
+    title
+}
+
 pub(crate) fn parse_frontmatter_id(content: &str) -> Option<Uuid> {
     parse_frontmatter(content).id
 }
@@ -2383,6 +2423,21 @@ mod tests {
         fs::write(&f, crlf).unwrap();
         let r = db.sync_dir(dir.path(), "u", false, false).unwrap();
         assert_eq!((r.pages_updated.len(), r.blocks_updated), (0, 0), "{r:?}");
+    }
+
+    // C-9: numbering a colliding title never nests: "X (2)" → "X (3)".
+    #[test]
+    fn test_unique_title_is_idempotent() {
+        assert_eq!(strip_number_suffix("Getting Started (2)"), "Getting Started");
+        assert_eq!(strip_number_suffix("Getting Started"), "Getting Started");
+        assert_eq!(strip_number_suffix("Top (ten)"), "Top (ten)");
+        assert_eq!(strip_number_suffix("(2)"), "(2)");
+        let db = Database::open_in_memory().unwrap();
+        db.create_page("Notes", None, false, None, "user").unwrap();
+        assert_eq!(db.unique_page_title("Notes").unwrap(), "Notes (2)");
+        db.create_page("Notes (2)", None, false, None, "user").unwrap();
+        assert_eq!(db.unique_page_title("Notes").unwrap(), "Notes (3)");
+        assert_eq!(db.unique_page_title("Notes (2)").unwrap(), "Notes (3)");
     }
 
     // #3: conflict copy is rewritten as a separate page.
