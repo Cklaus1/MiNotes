@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as api from "../lib/api";
 import { errorMessage } from "../lib/errors";
-import { confirmDialog } from "../lib/confirm";
+import { confirmDialog, promptDialog } from "../lib/confirm";
 import { formatSize, pickFolder, prettyPath, switchNotebook } from "../lib/notebooks";
 import { showToast } from "../lib/toast";
 import { takeNextImportPick } from "../lib/importPicks";
@@ -190,7 +190,8 @@ export default function ImportDialog({ initialKind, onClose, onOpenPage, onRefre
         const r = await api.pickEnexFilesNative("Choose Evernote .enex files");
         picked = Array.isArray(r) ? r : r ? [r] : [];
       } else {
-        const r = window.prompt("Path of the .enex file(s), separated by ;", "");
+        // Browser mode (no native picker): the app's own field.
+        const r = await promptDialog({ title: "Choose Evernote .enex files", label: "Path of the .enex file(s), separated by ;", confirmLabel: "Choose" });
         picked = (r ?? "").split(";").map(s => s.trim()).filter(Boolean);
       }
     } else {

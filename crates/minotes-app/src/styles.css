@@ -1530,6 +1530,16 @@ body {
   overflow-wrap: anywhere;
 }
 
+.confirm-dialog-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin: 4px 0 16px;
+}
+.confirm-dialog-field .search-input { width: 100%; font-size: 13px; }
+
 .confirm-dialog-actions {
   display: flex;
   justify-content: flex-end;

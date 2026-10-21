@@ -55,6 +55,7 @@ import AiMount from "./components/AiMount";
 // ── Import ──
 import ImportMount from "./components/ImportMount";
 import { openImport } from "./lib/importPicks";
+import { askNewPage } from "./lib/newPage";
 // ── End import ──
 // ── End AI platform ──
 
@@ -882,8 +883,7 @@ export default function App() {
       // Cmd/Ctrl+N — new page
       if (key === "n" && plain && appChord) {
         e.preventDefault();
-        const title = prompt("Page title:");
-        if (title?.trim()) createPage(title.trim());
+        askNewPage().then(title => { if (title) createPage(title); });
       }
       // Cmd/Ctrl+W — new whiteboard / toggle draw mode
       if (key === "w" && plain && appChord) {
@@ -1211,8 +1211,7 @@ export default function App() {
         onCreatePage={createPage}
         onNewPage={() => {
           setOpenPanel(null);
-          const title = prompt("Page title:");
-          if (title?.trim()) createPage(title.trim());
+          askNewPage().then(title => { if (title) createPage(title); });
         }}
         onJournal={() => { openJournal(); setOpenPanel(null); }}
         onGraph={() => { setCanvasMode(prev => prev === "graph" ? null : "graph"); setOpenPanel(null); }}

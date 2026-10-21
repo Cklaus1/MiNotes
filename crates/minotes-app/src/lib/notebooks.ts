@@ -13,6 +13,7 @@ import { clearWhiteboardCache } from "./whiteboardUtils";
 import { clearPrefetchedProperties } from "./blockProperties";
 import { setOpenNotebook } from "./webviewState";
 import { LOCK_CHANGED, askPassphrase } from "./encryption";
+import { promptDialog } from "./confirm";
 
 /** Fired after the open notebook changed (detail: { key }). App resets its views. */
 export const NOTEBOOK_SWITCHED = "minotes-notebook-switched";
@@ -112,8 +113,8 @@ export async function pickFolder(title: string, defaultPath?: string): Promise<s
     const r = await api.pickFolderNative(title, defaultPath);
     return typeof r === "string" ? r : null;
   }
-  const r = window.prompt(`${title} (folder path)`, defaultPath ?? "");
-  return r?.trim() ? r.trim() : null;
+  // Browser mode (no native picker): the app's own field.
+  return promptDialog({ title, label: "Folder path", defaultValue: defaultPath ?? "", confirmLabel: "Choose" });
 }
 
 /** "3 KB", "1.2 MB". */
@@ -223,8 +224,8 @@ export async function importNotebookFromZip(): Promise<api.ZipImport | null> {
     const r = await api.pickZipNative("Import a MiNotes notebook (.zip)");
     source = typeof r === "string" ? r : null;
   } else {
-    const r = window.prompt("Notebook .zip to import (path)");
-    source = r?.trim() ? r.trim() : null;
+    // Browser mode (no native picker): the app's own field.
+    source = await promptDialog({ title: "Import a MiNotes notebook", label: "Path of the notebook .zip", confirmLabel: "Import" });
   }
   if (!source) return null;
   try {

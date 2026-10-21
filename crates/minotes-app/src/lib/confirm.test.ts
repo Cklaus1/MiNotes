@@ -9,7 +9,7 @@ vi.mock("./api", () => ({
   getNotebookSession: async () => ({ key: "vault", name: "Vault", encrypted: true }),
 }));
 
-import { answerConfirm, confirmDialog, isConfirmOpen, subscribeConfirm, type PendingConfirm } from "./confirm";
+import { answerConfirm, confirmDialog, isConfirmOpen, promptDialog, subscribeConfirm, type PendingConfirm } from "./confirm";
 import { confirmPlaintextExport } from "./encryption";
 
 let unsubscribe: (() => void) | null = null;
@@ -92,5 +92,29 @@ describe("encrypted notebook: plaintext export warning", () => {
     expect(await confirmPlaintextExport()).toBe(true);
     expect(await confirmPlaintextExport()).toBe(true);
     expect(shown).toHaveLength(1);
+  });
+});
+
+describe("promptDialog (Wave 3: no native prompt())", () => {
+  test("Enter in its field answers the trimmed text; Escape answers null", async () => {
+    host();
+    const input = document.createElement("input");
+    input.setAttribute("data-confirm-input", "");
+    const dlg = document.createElement("div");
+    dlg.setAttribute("data-confirm-dialog", "");
+    dlg.appendChild(input);
+    document.body.appendChild(dlg);
+    try {
+      const p = promptDialog({ label: "Page title" });
+      input.value = "  Plans  ";
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+      await expect(p).resolves.toBe("Plans");
+      const q = promptDialog({ label: "Page title" });
+      key("Escape");
+      await expect(q).resolves.toBeNull();
+      expect(isConfirmOpen()).toBe(false);
+    } finally {
+      dlg.remove();
+    }
   });
 });

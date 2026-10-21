@@ -14,6 +14,7 @@ import { errorMessage } from "../lib/errors";
 import { pageTitleConflict } from "../lib/pageNames";
 import { confirmDialog, plural } from "../lib/confirm";
 import SyncChip from "./SyncChip";
+import { NEW_PAGE_FIELD_EVENT } from "../lib/newPage";
 function formatJournalDate(dateStr: string): string {
   try {
     const [y, m, d] = dateStr.split("-").map(Number);
@@ -134,6 +135,20 @@ export default function Sidebar({
     };
     window.addEventListener("minotes-settings-changed", handler);
     return () => window.removeEventListener("minotes-settings-changed", handler);
+  }, []);
+
+  // Ctrl+N / the palette's "New page": open this "+ New" field (lib/newPage.ts).
+  const sidebarRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const onNewPage = (e: Event) => {
+      const el = sidebarRef.current;
+      if (!el || el.getClientRects().length === 0 || getComputedStyle(el).visibility === "hidden") return;
+      e.preventDefault();
+      setShowCreate(true);
+      requestAnimationFrame(() => el.querySelector<HTMLInputElement>("[data-testid=new-page-field]")?.focus());
+    };
+    window.addEventListener(NEW_PAGE_FIELD_EVENT, onNewPage);
+    return () => window.removeEventListener(NEW_PAGE_FIELD_EVENT, onNewPage);
   }, []);
 
   // Open projects at any depth (no limit), persisted per notebook.
@@ -329,7 +344,7 @@ export default function Sidebar({
   const overflowProjects = allProjects.slice(5);
 
   return (
-    <div className="sidebar workspace-ribbon">
+    <div className="sidebar workspace-ribbon" ref={sidebarRef}>
       {/* -- Sticky top: Search + New -- */}
       <div className="sidebar-header">
         <h1>MiNotes</h1>
@@ -364,6 +379,7 @@ export default function Sidebar({
             }}
             onBlur={handleCreate}
             aria-label="New page title"
+            data-testid="new-page-field"
             autoFocus
           />
         </div>

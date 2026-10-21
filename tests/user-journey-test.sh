@@ -4654,6 +4654,35 @@ R="$(ev "!!document.querySelector('.nb-menu')" | tr -d '"')|$(tip88)"
 unhover88 ".nb-switcher-btn"; press "Escape"; sleep 0.3
 
 # ═══════════════════════════════════════════════
+journey "86. Ctrl+N asks for the title in the app — no native prompt (UX Wave 3)"
+# ═══════════════════════════════════════════════
+api "closePanel()" >/dev/null; press "Escape"; sleep 0.3
+api "navigateTo('Project Alpha')" >/dev/null; sleep 1.5
+# Any native prompt() is recorded instead of blocking the run.
+ev "(()=>{window.__prompted86=0;window.prompt=function(){window.__prompted86++;return null};document.activeElement?.blur?.();return 1})()" >/dev/null
+S86=$(date +%s)
+
+step "Ctrl+N opens the sidebar's New page field, focused"
+press "Control+n"; sleep 0.6
+R=$(ev "(()=>{const f=document.querySelector('[data-testid=new-page-field]');return (window.__prompted86||0)+'|'+!!f+'|'+(document.activeElement===f)})()" | tr -d '"')
+[[ "$R" == "0|true|true" ]] && pass "In-app field, focused, no native prompt ($R)" || fail "Ctrl+N field" "$R"
+
+step "Typing a title and Enter creates the page"
+ev "(()=>{const i=document.querySelector('[data-testid=new-page-field]');const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;set.call(i,'Ctrl N page $S86');i.dispatchEvent(new Event('input',{bubbles:true}));return 1})()" >/dev/null; sleep 0.2
+press "Enter"; sleep 1.5
+R=$(ev "(async()=>{const api=await import('/src/lib/api.ts');const ps=await api.listPages(100000);return ps.some(p=>p.title==='Ctrl N page $S86')})()" | tr -d '"')
+[[ "$R" == "true" ]] && pass "Page created from the field" || fail "Create from the Ctrl+N field" "$R"
+ss "86-ctrl-n-field"
+
+step "The palette's New Page command uses the same field"
+api "openSearch()" >/dev/null; sleep 0.5
+ev "(()=>{const i=document.querySelector('.command-palette-input');const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;set.call(i,'>new page');i.dispatchEvent(new Event('input',{bubbles:true}));return 1})()" >/dev/null; sleep 0.4
+press "Enter"; sleep 0.6
+R=$(ev "(()=>{const f=document.querySelector('[data-testid=new-page-field]');return (window.__prompted86||0)+'|'+!!f+'|'+!!document.querySelector('.command-palette')})()" | tr -d '"')
+[[ "$R" == "0|true|false" ]] && pass "Palette → in-app field ($R)" || fail "Palette New Page" "$R"
+press "Escape"; sleep 0.3
+
+# ═══════════════════════════════════════════════
 close_app
 
 # ═══════════════════════════════════════════════

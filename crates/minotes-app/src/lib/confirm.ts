@@ -29,11 +29,27 @@ export interface ConfirmOptions {
 
 export interface PendingConfirm extends ConfirmOptions {
   id: number;
+  /** A text field: the dialog is a prompt (promptDialog) and answers its value. */
+  input?: { label: string; value: string; placeholder?: string };
+}
+
+/** promptDialog: the app's own text prompt (never `window.prompt`). */
+export interface PromptOptions {
+  title?: string;
+  /** Optional explanation above the field. */
+  message?: string;
+  /** The field's label (also its accessible name). */
+  label: string;
+  defaultValue?: string;
+  placeholder?: string;
+  /** Label of the confirming button (default "OK"). */
+  confirmLabel?: string;
+  cancelLabel?: string;
 }
 
 type Listener = (current: PendingConfirm | null) => void;
 
-const queue: { req: PendingConfirm; resolve: (ok: boolean) => void }[] = [];
+const queue: { req: PendingConfirm; resolve: (answer: boolean | string | null) => void }[] = [];
 const listeners = new Set<Listener>();
 let nextId = 1;
 
@@ -51,9 +67,37 @@ export function confirmDialog(opts: ConfirmOptions | string): Promise<boolean> {
     return Promise.resolve(false);
   }
   return new Promise<boolean>((resolve) => {
-    queue.push({ req: { ...o, id: nextId++ }, resolve });
+    queue.push({ req: { ...o, id: nextId++ }, resolve: (a) => resolve(a === true) });
     if (queue.length === 1) notify();
   });
+}
+
+/**
+ * Ask for a line of text in the app's own dialog; resolves to the trimmed text,
+ * or null when cancelled (Escape, a click outside, Cancel) or left empty.
+ */
+export function promptDialog(opts: PromptOptions): Promise<string | null> {
+  if (listeners.size === 0) {
+    console.error("promptDialog: no <ConfirmHost/> mounted; answering Cancel", opts.label);
+    return Promise.resolve(null);
+  }
+  return new Promise<string | null>((resolve) => {
+    const req: PendingConfirm = {
+      title: opts.title, message: opts.message ?? "", confirmLabel: opts.confirmLabel, cancelLabel: opts.cancelLabel,
+      input: { label: opts.label, value: opts.defaultValue ?? "", placeholder: opts.placeholder }, id: nextId++,
+    };
+    queue.push({ req, resolve: (a) => resolve(typeof a === "string" && a.trim() ? a.trim() : null) });
+    if (queue.length === 1) notify();
+  });
+}
+
+/** Answer the prompt that is showing with its text (null = cancelled). */
+export function answerPrompt(id: number, value: string | null): void {
+  const head = queue[0];
+  if (!head || head.req.id !== id) return;
+  queue.shift();
+  head.resolve(value);
+  notify();
 }
 
 /** Answer the dialog that is showing (the host's buttons call this). */
@@ -61,8 +105,13 @@ export function answerConfirm(id: number, ok: boolean): void {
   const head = queue[0];
   if (!head || head.req.id !== id) return;
   queue.shift();
-  head.resolve(ok);
+  head.resolve(head.req.input ? (ok ? currentInputValue() : null) : ok);
   notify();
+}
+
+function currentInputValue(): string {
+  const el = document.querySelector<HTMLInputElement>("[data-confirm-dialog] input[data-confirm-input]");
+  return el?.value ?? "";
 }
 
 /** "1 page" / "3 pages": counts in confirmation messages. */
@@ -96,12 +145,19 @@ if (typeof window !== "undefined") {
       answerConfirm(head.req.id, false);
       return;
     }
+    if (e.key === "Enter" && head.req.input && (e.target as HTMLElement | null)?.matches?.("input[data-confirm-input]")) {
+      // Enter in a prompt's field answers it (an empty field does nothing).
+      e.preventDefault();
+      const v = currentInputValue();
+      if (v.trim()) answerConfirm(head.req.id, true);
+      return;
+    }
     if (e.key === "Tab") {
-      // Keep focus on the dialog's buttons.
-      const buttons = [...document.querySelectorAll<HTMLButtonElement>("[data-confirm-dialog] button")];
+      // Keep focus inside the dialog (its field and buttons).
+      const buttons = [...document.querySelectorAll<HTMLElement>("[data-confirm-dialog] input, [data-confirm-dialog] button:not(:disabled)")];
       if (buttons.length === 0) return;
       e.preventDefault();
-      const i = buttons.indexOf(document.activeElement as HTMLButtonElement);
+      const i = buttons.indexOf(document.activeElement as HTMLElement);
       const next = e.shiftKey ? (i <= 0 ? buttons.length - 1 : i - 1) : (i + 1) % buttons.length;
       buttons[next].focus();
     }
