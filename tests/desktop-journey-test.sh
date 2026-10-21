@@ -41,7 +41,7 @@ echo "════════════════════════�
 echo "  MiNotes Desktop Journeys (real app, real backend)"
 echo "═══════════════════════════════════════════════"
 
-rm -rf "$STATE"/{persist,devA,devB,nbook,outside,xnb,zip8,barrier10,trust10,rimg,img10,remote.git,enc13,enc13-tmp,enc13-keychain,enc14a,enc14b,enc14c,enc14-tmp,remote14.git} "$STATE/results.tsv"
+rm -rf "$STATE"/{persist,devA,devB,nbook,outside,xnb,zip8,barrier10,trust10,rimg,img10,remote.git,enc13,enc13-tmp,enc13-keychain,enc14a,enc14b,enc14c,enc14-tmp,remote14.git,w1,w1-files} "$STATE/results.tsv"
 if [[ -z "$DESKTOP_NO_BUILD" ]]; then
   "$DC" up --webdriver --profile persist >/dev/null || { echo "build/launch failed"; exit 1; }
 else
@@ -1205,6 +1205,90 @@ L=$(leaks14); [[ -z "$L" ]] && pass "No plaintext anywhere (HOMEs, TMPDIR, 3 rep
 OBJ=$(objects14 "$R14" | grep -caF "key_check"); [[ "$OBJ" -ge 1 ]] && pass "Control: the scan reads the remote's objects (key file seen)" || fail "Scan control" "$OBJ"
 unset TMPDIR
 fi
+
+# ═══════════════════════════════════════════════
+journey "D15. Real input never loses what I wrote (UX review Wave 1)"
+# What the browser journeys can't see: an image pasted through the REAL X
+# clipboard (WebKitGTK fills clipboardData.items, not .files — C-2), tags and
+# highlights typed with real keys (C-3, C-4), and confirmations in the desktop
+# webview, where window.confirm returns a Promise and so always "accepted" (C-1,
+# C-5). Real clicks and keys throughout; WebDriver only sets up and reads back.
+# ═══════════════════════════════════════════════
+A15="const api=await import('/src/lib/api.ts');"
+X15="localhost:${DESKTOP_CHECK_DISPLAY:-97}"
+# Real mouse click on the centre of an element (the window sits at 0,0).
+rclick15() {
+  local xy; xy=$(ev "(()=>{const e=$1;if(!e)return '';e.scrollIntoView({block:'center'});const r=e.getBoundingClientRect();return Math.round(r.left+r.width/2)+' '+Math.round(r.top+r.height/2)})()")
+  [[ -n "$xy" ]] && "$DC" click $xy >/dev/null
+}
+dialog15() { ev "(document.querySelector('[data-testid=confirm-dialog]')?.innerText||'none')"; }
+device w1 || true
+mkdir -p "$STATE/w1-files"
+python3 - "$STATE/w1-files/paste15.png" <<'PY'
+import sys, zlib, struct
+w, h = 64, 40
+raw = b''.join(b'\x00' + bytes([40, 160, 220]) * w for _ in range(h))
+def ch(t, d): c = struct.pack('>I', len(d)) + t + d; return c + struct.pack('>I', zlib.crc32(t + d) & 0xffffffff)
+open(sys.argv[1], 'wb').write(b'\x89PNG\r\n\x1a\n' + ch(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 2, 0, 0, 0)) + ch(b'IDAT', zlib.compress(raw)) + ch(b'IEND', b''))
+PY
+
+step "I copy an image (X clipboard) and press Ctrl+V in a block"
+ev "(async()=>{$A15 const p=await api.createPage('Paste15');await api.createBlock(p.id,'');return 1})()" >/dev/null
+api "navigateTo('Paste15')" >/dev/null; waitfor "window.__MINOTES__.getCurrentPage()==='Paste15'"; sleep 1
+DISPLAY="$X15" xclip -quiet -selection clipboard -t image/png -i "$STATE/w1-files/paste15.png" >/dev/null 2>&1 &
+XCLIP15=$!
+sleep 0.5
+api "focusBlock(0)" >/dev/null; sleep 0.5
+"$DC" key ctrl+v
+waitfor "(async()=>{$A15 const t=await api.getPageTree('Paste15');return t.blocks.some(b=>b.content.includes('](attachment:'))})()" 15
+kill "$XCLIP15" 2>/dev/null; wait "$XCLIP15" 2>/dev/null
+ev "document.activeElement?.blur()" >/dev/null; sleep 1.5
+PB15=$(blocks_of 'Paste15')
+[[ "$PB15" == *"](attachment:"* && "$PB15" != *"blob:"* ]] && pass "Stored as an attachment, no blob: URL ($PB15)" || fail "Pasted image not stored as an attachment" "$PB15"
+H15=$(echo "$PB15" | grep -o 'attachment:[0-9a-f]\{64\}' | head -1 | cut -d: -f2)
+is "…and the attachment is in the database" "$(db w1 "select mime from attachments where hash='$H15'")" "image/png"
+
+step "I quit and reopen: the image is still there"
+"$DC" restart >/dev/null; waitfor "window.__MINOTES__ && !!window.__MINOTES__.navigateTo" 30
+api "navigateTo('Paste15')" >/dev/null; waitfor "window.__MINOTES__.getCurrentPage()==='Paste15'"; sleep 1
+waitfor "[...document.querySelectorAll('.block img')].some(i=>i.complete&&i.naturalWidth===64)" 15 \
+  && pass "The pasted image renders after a restart (64×40)" || fail "Pasted image after restart" "$(ev "[...document.querySelectorAll('.block img')].map(i=>i.src+':'+i.naturalWidth).join(' ')||'no img'")"
+"$DC" wshot "d15-pasted-after-restart" >/dev/null
+
+step "I type 'x #urgent done' and a ==highlight== with real keys"
+ev "(async()=>{$A15 const p=await api.createPage('Type15');await api.createBlock(p.id,'');await api.createBlock(p.id,'');return 1})()" >/dev/null
+api "navigateTo('Type15')" >/dev/null; waitfor "window.__MINOTES__.getCurrentPage()==='Type15'"; sleep 1
+api "focusBlock(0)" >/dev/null; sleep 0.5; "$DC" type "x #urgent done"; sleep 0.5
+api "focusBlock(1)" >/dev/null; sleep 0.5; "$DC" type "say ==hi== there"; sleep 0.5
+ev "document.activeElement?.blur()" >/dev/null; sleep 1.5
+is "Stored markdown keeps the tag and the highlight" "$(blocks_of 'Type15')" "x #urgent done ¦ say ==hi== there"
+is "…shown as a tag chip and a highlight" "$(ev "String(!!document.querySelector('.tag-pill[data-tag=urgent]') && !!document.querySelector('.block mark'))")" "true"
+
+step "Deleting a CSS snippet shows the app's dialog; Cancel deletes nothing"
+ev "(async()=>{$A15 await api.addCssSnippet('snippet15','.x15{color:red}');return 1})()" >/dev/null
+api "openSettings()" >/dev/null; sleep 1
+rclick15 "[...document.querySelectorAll('.settings-slide-panel button')].find(b=>b.textContent.includes('CSS snippets'))"; sleep 1
+rclick15 "[...document.querySelectorAll('button[title=\"Delete snippet\"]')].find(b=>b.parentElement.textContent.includes('snippet15'))"; sleep 0.8
+D15=$(dialog15)
+[[ "$D15" == *"snippet15"* ]] && pass "The app's own confirm dialog asks" || fail "No confirm dialog for snippet delete" "$D15"
+"$DC" shot "d15-snippet-confirm" >/dev/null
+rclick15 "document.querySelector('[data-testid=confirm-cancel]')"; sleep 0.8
+is "Cancel: the snippet is still there" "$(ev "(async()=>{$A15 return String((await api.listCssSnippets()).some(s=>s.name==='snippet15'))})()")" "true"
+"$DC" key Escape; sleep 0.5
+
+step "Empty trash shows the app's dialog; Cancel and Escape delete nothing"
+ev "(async()=>{$A15 for(const t of ['Trash15 one','Trash15 two']){const p=await api.createPage(t);await api.trashPage(p.id)}window.dispatchEvent(new Event('minotes-sidebar-refresh'));return 1})()" >/dev/null; sleep 1
+N15=$(ev "(async()=>{$A15 return String((await api.listTrash()).length)})()")
+[[ "$(ev "String(!!document.querySelector('[data-testid=empty-trash]'))")" == "true" ]] || rclick15 "[...document.querySelectorAll('.sidebar-system-item')].find(e=>e.textContent.includes('Trash'))"
+sleep 0.8
+rclick15 "document.querySelector('[data-testid=empty-trash]')"; sleep 0.8
+D15=$(dialog15)
+[[ "$D15" == *"Empty the trash"* ]] && pass "The app's own confirm dialog asks ($N15 items)" || fail "No confirm dialog for Empty trash" "$D15"
+rclick15 "document.querySelector('[data-testid=confirm-cancel]')"; sleep 0.8
+is "Cancel: the trash still holds $N15 items" "$(ev "(async()=>{$A15 return String((await api.listTrash()).length)})()")" "$N15"
+rclick15 "document.querySelector('[data-testid=empty-trash]')"; sleep 0.8
+"$DC" key Escape; sleep 0.8
+is "Escape closes the dialog and deletes nothing" "$(dialog15)|$(ev "(async()=>{$A15 return String((await api.listTrash()).length)})()")" "none|$N15"
 
 # ═══════════════════════════════════════════════
 echo ""
