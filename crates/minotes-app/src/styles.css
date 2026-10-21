@@ -394,6 +394,12 @@ body {
   gap: 4px;
 }
 
+/* Prev / Today / Next lead the header, so they sit at the same spot on every
+   day — a long or short date title can't push them around. */
+.main-header > .journal-nav {
+  order: -1;
+}
+
 .content {
   flex: 1;
   padding: 24px;
@@ -5457,6 +5463,17 @@ body.theme-light { /* matches our light theme */ }
   color: var(--text-primary);
 }
 
+/* The day that is open: a filled accent tile (today keeps its bold). */
+.cal-day.selected,
+.cal-day.selected:hover {
+  background: var(--accent);
+  color: var(--bg-primary);
+}
+
+.cal-day.selected .cal-dot {
+  background: var(--bg-primary);
+}
+
 .cal-dot {
   position: absolute;
   bottom: 1px;
@@ -5587,28 +5604,25 @@ body.theme-light { /* matches our light theme */ }
 .pending-journal {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  gap: 12px;
-  padding: 40px;
+  flex: 1;
+  min-height: 0;
 }
 
-.pending-journal-date {
-  font-size: 1.5em;
-  font-weight: 600;
-  color: var(--text-primary);
+/* The header is .main-header (same as a journal page); the date is its h2. */
+.pending-journal-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 40px;
 }
 
 .pending-journal-hint {
   color: var(--text-muted);
   font-size: 14px;
   margin: 0;
-}
-
-.pending-journal-nav {
-  display: flex;
-  gap: 6px;
 }
 
 /* Inline validation message under a text field (rename, new page/project) */

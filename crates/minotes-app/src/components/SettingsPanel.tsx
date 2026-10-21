@@ -26,6 +26,7 @@ const SHORTCUT_GROUPS: Array<{ title: string; items: Array<[string, string]> }> 
     items: [
       ["Ctrl+K", "Search; type > for commands"],
       ["Ctrl+J", "Today's journal"],
+      ["Alt+↑ / Alt+↓", "Previous / next journal day"],
       ["Ctrl+N", "New page"],
       ["Ctrl+1 … Ctrl+7", "Open pinned page 1–7"],
       ["Ctrl+G", "Graph view"],

@@ -94,6 +94,8 @@ interface Props {
   /** Opens the Tasks view. */
   onTodoBadgeClick: () => void;
   tasksOpen?: boolean;
+  /** The journal day that is open (page or not-yet-written day): marked in the calendar. */
+  selectedJournalDate?: string | null;
   /** Opens flashcard review (shown once any flashcard exists). */
   onReviewClick?: () => void;
   activeMode: "graph" | "mindmap" | "whiteboard" | "kanban" | "pages" | null;
@@ -103,7 +105,7 @@ interface Props {
 
 export default function Sidebar({
   activePage, stats, onPageClick, onCreatePage, onDeletePage,
-  onJournalClick, onSearchClick, onGraphClick, onMindmapClick, onWhiteboardClick, onKanbanClick, onPagesClick, onSettingsClick, onFolderSettings, onTodoBadgeClick, tasksOpen, activeMode, refreshKey,
+  onJournalClick, onSearchClick, onGraphClick, onMindmapClick, onWhiteboardClick, onKanbanClick, onPagesClick, onSettingsClick, onFolderSettings, onTodoBadgeClick, tasksOpen, selectedJournalDate, activeMode, refreshKey,
   syncState, onReviewClick,
 }: Props) {
   const [newTitle, setNewTitle] = useState("");
@@ -388,6 +390,7 @@ export default function Sidebar({
         <CalendarWidget
           journalDates={new Set(journals.map(j => j.journal_date).filter(Boolean) as string[])}
           onDateClick={(date) => onJournalClick(date)}
+          selectedDate={selectedJournalDate}
         />
       )}
 

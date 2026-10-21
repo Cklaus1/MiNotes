@@ -1785,9 +1785,9 @@ export default function PageView({
         )}
         {page.is_journal && onJournalNav && (
           <div className="journal-nav">
-            <button className="btn btn-sm" onClick={() => shiftDate(-1)}>← Prev</button>
-            <button className="btn btn-sm" onClick={() => onJournalNav(localDateKey())}>Today</button>
-            <button className="btn btn-sm" onClick={() => shiftDate(1)}>Next →</button>
+            <button className="btn btn-sm" onClick={() => shiftDate(-1)} title="Previous day (Alt+↑)">← Prev</button>
+            <button className="btn btn-sm" onClick={() => onJournalNav(localDateKey())} title="Today (Ctrl+J)">Today</button>
+            <button className="btn btn-sm" onClick={() => shiftDate(1)} title="Next day (Alt+↓)">Next →</button>
           </div>
         )}
         {hasHeadings && (

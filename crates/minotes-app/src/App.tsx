@@ -908,6 +908,25 @@ export default function App() {
     return () => window.removeEventListener("keydown", handler);
   }, [openJournal, createPage, activePage, whiteboardId, canvasMode, openNewWhiteboard, openPage, refresh]);
 
+  // Alt+↑ / Alt+↓: previous / next journal day, while a journal day is shown
+  // (a written one or an empty one). Not in text fields; a key something else
+  // already handled (e.g. an editor binding) is left alone. Alt+←/→ zoom blocks.
+  const journalDateShown = showTasks ? null : (activePage?.page.is_journal ? activePage.page.journal_date ?? null : pendingJournalDate);
+  useEffect(() => {
+    if (!journalDateShown || canvasMode) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || e.defaultPrevented) return;
+      if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT")) return;
+      if (document.querySelector("[role=dialog], .command-palette-overlay")) return;
+      e.preventDefault();
+      openJournal(shiftDateKey(journalDateShown, e.key === "ArrowUp" ? -1 : 1));
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [journalDateShown, canvasMode, openJournal]);
+
   // UX-009: Journal as default landing + UX-017: Onboarding tutorial on first launch
   useEffect(() => {
     const init = async () => {
@@ -969,6 +988,7 @@ export default function App() {
           setShowTasks(true);
         }}
         tasksOpen={showTasks}
+        selectedJournalDate={showTasks ? null : (activePage?.page.is_journal ? activePage.page.journal_date ?? null : pendingJournalDate)}
         activeMode={canvasMode === "graph" ? "graph" : canvasMode === "mindmap" ? "mindmap" : canvasMode === "draw" ? "whiteboard" : canvasMode === "kanban" ? "kanban" : canvasMode === "pages" ? "pages" : null}
         refreshKey={refreshKey}
         syncState={syncStatus?.enabled ? syncState : undefined}
@@ -1053,28 +1073,34 @@ export default function App() {
               }}
             />
           ) : pendingJournalDate ? (
-            <div className="pending-journal">
-              {/* Same Prev / Today / Next as a journal page, so a future (not yet
-                  written) day is never a dead end. */}
-              <div className="journal-nav pending-journal-nav">
-                <button className="btn btn-sm" onClick={() => openJournal(shiftDateKey(pendingJournalDate, -1))}>← Prev</button>
-                <button className="btn btn-sm" onClick={() => openJournal(localDateKey())}>Today</button>
-                <button className="btn btn-sm" onClick={() => openJournal(shiftDateKey(pendingJournalDate, 1))}>Next →</button>
+            <div className="pending-journal" data-date={pendingJournalDate}>
+              {/* The same header as a journal page (title, Prev / Today / Next in
+                  the same place), so stepping through days never moves the
+                  buttons and a not-yet-written day is never a dead end. */}
+              <div className="main-header">
+                <h2 className="pending-journal-date">
+                  {"\u{1F4C5}"} {(() => {
+                    const [y, m, d] = pendingJournalDate.split("-").map(Number);
+                    const dt = new Date(y, m - 1, d);
+                    return isNaN(dt.getTime()) ? pendingJournalDate : dt.toLocaleDateString(undefined, {
+                      weekday: "long", year: "numeric", month: "long", day: "numeric",
+                    });
+                  })()}
+                </h2>
+                <div className="journal-nav">
+                  <button className="btn btn-sm" onClick={() => openJournal(shiftDateKey(pendingJournalDate, -1))} title="Previous day (Alt+↑)">← Prev</button>
+                  <button className="btn btn-sm" onClick={() => openJournal(localDateKey())} title="Today (Ctrl+J)">Today</button>
+                  <button className="btn btn-sm" onClick={() => openJournal(shiftDateKey(pendingJournalDate, 1))} title="Next day (Alt+↓)">Next →</button>
+                </div>
               </div>
-              <div className="pending-journal-date">
-                {(() => {
-                  const [y, m, d] = pendingJournalDate.split("-").map(Number);
-                  return new Date(y, m - 1, d).toLocaleDateString(undefined, {
-                    weekday: "long", month: "long", day: "numeric", year: "numeric",
-                  });
-                })()}
+              <div className="pending-journal-body">
+                <p className="pending-journal-hint">No journal entry yet</p>
+                <button className="btn btn-primary" onClick={materializeJournal}>+ Start writing</button>
+                {/* ── Import: an empty notebook offers to bring notes in ── */}
+                {stats?.pages === 0 && caps.import_from_files && (
+                  <button className="btn btn-sm pending-journal-import" onClick={() => openImport()} data-testid="empty-import">Import notes from Obsidian, Evernote or markdown…</button>
+                )}
               </div>
-              <p className="pending-journal-hint">No journal entry yet</p>
-              <button className="btn btn-primary" onClick={materializeJournal}>+ Start writing</button>
-              {/* ── Import: an empty notebook offers to bring notes in ── */}
-              {stats?.pages === 0 && caps.import_from_files && (
-                <button className="btn btn-sm pending-journal-import" onClick={() => openImport()} data-testid="empty-import">Import notes from Obsidian, Evernote or markdown…</button>
-              )}
             </div>
           ) : (
             <EmptyState onCreatePage={createPage} />

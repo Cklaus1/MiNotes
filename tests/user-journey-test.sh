@@ -3738,6 +3738,45 @@ R=$(ev "(async()=>{$A69 const p=await api.createPage('All TODOs');await api.crea
 api "closePanel()" >/dev/null
 
 # ═══════════════════════════════════════════════
+journey "70. Stepping through journal days — the buttons stay put"
+# On an empty day Prev/Today/Next moved to the middle of the page; the calendar
+# didn't show which day is open; there was no key for the next/previous day.
+# ═══════════════════════════════════════════════
+api "closePanel()" >/dev/null; press "Escape"; sleep 0.3
+navxy70() { ev "(()=>{const b=[...document.querySelectorAll('.journal-nav button')].find(x=>x.textContent.includes('Prev'));if(!b)return 'none';const r=b.getBoundingClientRect();return Math.round(r.left)+','+Math.round(r.top)})()" | tr -d '"'; }
+api "openJournal()" >/dev/null; sleep 1.5
+XY_FULL=$(navxy70)
+api "openJournal('2020-01-15')" >/dev/null; sleep 1.5
+XY_EMPTY=$(navxy70)
+R=$(ev "!!document.querySelector('.pending-journal .main-header .journal-nav')" | tr -d '"')
+[[ "$R" == "true" ]] && pass "Empty day: Prev/Today/Next sit in the header" || fail "Empty day nav not in the header" "$R"
+[[ "$XY_EMPTY" != "none" && "$XY_EMPTY" == "$XY_FULL" ]] && pass "Prev is at the same spot on a full and an empty day ($XY_FULL)" || fail "Prev moved" "full=$XY_FULL empty=$XY_EMPTY"
+ss "70-empty-day"
+
+step "Prev on an empty day goes one day back"
+ev "[...document.querySelectorAll('.journal-nav button')].find(x=>x.textContent.includes('Prev'))?.click()" >/dev/null; sleep 1
+R=$(ev "document.querySelector('.pending-journal')?.dataset.date||''" | tr -d '"')
+[[ "$R" == "2020-01-14" ]] && pass "Now on 2020-01-14" || fail "Prev from empty day" "$R"
+
+step "Alt+↓ / Alt+↑ step to the next / previous day"
+ev "(()=>{document.activeElement?.blur?.();return 1})()" >/dev/null
+press "Alt+ArrowDown"; sleep 1
+R=$(ev "document.querySelector('.pending-journal')?.dataset.date||''" | tr -d '"')
+press "Alt+ArrowDown"; sleep 1
+R2=$(ev "document.querySelector('.pending-journal')?.dataset.date||''" | tr -d '"')
+press "Alt+ArrowUp"; sleep 1
+R3=$(ev "document.querySelector('.pending-journal')?.dataset.date||''" | tr -d '"')
+[[ "$R|$R2|$R3" == "2020-01-15|2020-01-16|2020-01-15" ]] && pass "Alt+↓ ↓ ↑: $R → $R2 → $R3" || fail "Alt+arrows" "$R|$R2|$R3"
+
+step "The calendar marks the day that is open"
+ev "(()=>{const c=document.querySelector('.sidebar-journal-row .sidebar-section-chevron');if(c&&!document.querySelector('.cal-widget'))c.click();return 1})()" >/dev/null; sleep 0.5
+R=$(ev "(()=>{const s=document.querySelector('.cal-day.selected');return s?s.title+'|'+s.getAttribute('aria-current'):'none'})()" | tr -d '"')
+[[ "$R" == "2020-01-15|date" ]] && pass "Calendar shows Jan 2020 with the 15th selected" || fail "Calendar selection" "$R"
+ss "70-calendar-selected"
+ev "(()=>{const c=document.querySelector('.sidebar-journal-row .sidebar-section-chevron');if(document.querySelector('.cal-widget'))c?.click();return 1})()" >/dev/null
+api "openJournal()" >/dev/null; sleep 1
+
+# ═══════════════════════════════════════════════
 close_app
 
 # ═══════════════════════════════════════════════
