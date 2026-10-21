@@ -7,6 +7,7 @@ import { showToast } from "../lib/toast";
 import { takeNextImportPick } from "../lib/importPicks";
 import "./import.css";
 import { useLayer } from "../lib/layers";
+import { useDialogFocus } from "../lib/dialogFocus";
 
 type Step = "source" | "scanning" | "preview" | "importing" | "report" | "undone";
 
@@ -171,6 +172,8 @@ export default function ImportDialog({ initialKind, onClose, onOpenPage, onRefre
   }, [onClose]);
 
   useLayer(true, "dialog", close);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDialogFocus(dialogRef, true);
 
   const destination = useMemo<api.ImportDestination>(
     () => dest === "current" ? { kind: "current" } : { kind: "new_notebook", name: nbName.trim() || null },
@@ -307,7 +310,7 @@ export default function ImportDialog({ initialKind, onClose, onOpenPage, onRefre
   const c = preview?.counts;
   return (
     <div className="nb-modal-backdrop imp-backdrop" onMouseDown={e => { if (e.target === e.currentTarget && step !== "importing") close(); }}>
-      <div className="nb-modal imp-modal" role="dialog" aria-modal="true" aria-label="Import" data-testid="import-dialog" data-step={step}>
+      <div ref={dialogRef} className="nb-modal imp-modal" role="dialog" aria-modal="true" aria-label="Import" data-testid="import-dialog" data-step={step}>
         <div className="nb-modal-header">
           <span className="nb-modal-title">
             {step === "report" ? "Import complete" : step === "undone" ? "Import undone" : preview && step !== "source" ? `Import ${preview.source_label} “${preview.source_name}”` : "Import"}

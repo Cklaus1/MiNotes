@@ -4781,6 +4781,44 @@ if [[ "$BACKEND" != "desktop" ]]; then
 fi
 
 # ═══════════════════════════════════════════════
+journey "91. Dialogs hold the keyboard focus and give it back; Ctrl+/ lists the shortcuts (UX Wave 3)"
+# ═══════════════════════════════════════════════
+api "closePanel()" >/dev/null; press "Escape"; sleep 0.3
+
+step "A dialog takes focus, Tab stays inside, and Esc gives focus back to the button that opened it"
+ev "(()=>{const b=document.querySelector('[data-testid=notebook-switcher]');b.focus();window.dispatchEvent(new CustomEvent('minotes-open-notebook-dialog',{detail:'new'}));return 1})()" >/dev/null; sleep 0.6
+R1=$(ev "(()=>{const d=document.querySelector('[aria-modal=true]');return !!d&&d.contains(document.activeElement)})()" | tr -d '"')
+for _ in 1 2 3 4 5 6 7 8; do press "Tab"; done; sleep 0.2
+R2=$(ev "(()=>{const d=document.querySelector('[aria-modal=true]');return !!d&&d.contains(document.activeElement)})()" | tr -d '"')
+press "Escape"; sleep 0.5
+R3=$(ev "document.activeElement?.getAttribute('data-testid')||document.activeElement?.tagName" | tr -d '"')
+[[ "$R1" == "true" && "$R2" == "true" && "$R3" == "notebook-switcher" ]] && pass "In: $R1, after 8×Tab: $R2, back on: $R3" || fail "Dialog focus" "$R1 / $R2 / $R3"
+
+step "Ctrl+/ opens the shortcut list (it names Ctrl+Shift+\\ for the sidebar); Esc closes it"
+ev "document.activeElement?.blur?.()" >/dev/null
+press "Control+/"; sleep 0.5
+R=$(ev "(()=>{const d=document.querySelector('[data-testid=shortcuts-overlay]');return !!d+'|'+(d?.textContent.includes('Show/hide the left sidebar')??false)})()" | tr -d '"')
+[[ "$R" == "true|true" ]] && pass "Shortcut overlay ($R)" || fail "Ctrl+/ overlay" "$R"
+ss "91-shortcuts-overlay"
+press "Escape"; sleep 0.4
+R=$(ev "!!document.querySelector('[data-testid=shortcuts-overlay]')" | tr -d '"')
+[[ "$R" == "false" ]] && pass "Esc closed it" || fail "Esc on the overlay" "$R"
+
+step "…and from the palette: > Keyboard Shortcuts"
+api "openSearch()" >/dev/null; sleep 0.5
+ev "(()=>{const i=document.querySelector('.command-palette-input');const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;set.call(i,'>keyboard');i.dispatchEvent(new Event('input',{bubbles:true}));return 1})()" >/dev/null; sleep 0.4
+press "Enter"; sleep 0.6
+R=$(ev "!!document.querySelector('[data-testid=shortcuts-overlay]')" | tr -d '"')
+[[ "$R" == "true" ]] && pass "Palette opens the overlay" || fail "Palette → shortcuts" "$R"
+press "Escape"; sleep 0.3
+
+step "Settings has a section index that jumps to a section"
+api "openSettings()" >/dev/null; sleep 0.8
+R=$(ev "(async()=>{const links=[...document.querySelectorAll('[data-testid=settings-index] .settings-index-link')];const s=links.find(b=>b.textContent==='Shortcuts');if(!s)return links.map(b=>b.textContent).join(',');s.click();await new Promise(r=>setTimeout(r,900));const p=document.querySelector('.settings-slide-panel');const t=[...p.querySelectorAll('.settings-section-title')].find(e=>e.textContent.includes('Keyboard'));const pr=p.getBoundingClientRect(),tr=t.getBoundingClientRect();return links.length+'|'+(p.scrollTop>200)+'|'+(tr.top>=pr.top&&tr.top<pr.top+260)})()" | tr -d '"')
+[[ "$R" =~ ^[0-9]+\|true\|true$ ]] && pass "Index jumps to Keyboard Shortcuts ($R)" || fail "Settings section index" "$R"
+api "closePanel()" >/dev/null
+
+# ═══════════════════════════════════════════════
 close_app
 
 # ═══════════════════════════════════════════════

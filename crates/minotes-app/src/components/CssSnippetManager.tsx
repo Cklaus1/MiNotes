@@ -1,9 +1,10 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useEscapeToClose } from "../lib/escapeStack";
 import type { CssSnippet } from "../lib/api";
 import * as api from "../lib/api";
 import { reloadSnippets } from "../lib/cssLoader";
 import { confirmDialog } from "../lib/confirm";
+import { useDialogFocus } from "../lib/dialogFocus";
 
 interface Props {
   open: boolean;
@@ -107,11 +108,14 @@ export default function CssSnippetManager({ open, onClose }: Props) {
     setError("");
   };
 
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDialogFocus(dialogRef, open);
+
   if (!open) return null;
 
   return (
     <div className="command-palette-overlay" onClick={onClose}>
-      <div className="command-palette" onClick={e => e.stopPropagation()} style={{ maxWidth: 700, maxHeight: "80vh" }}>
+      <div ref={dialogRef} className="command-palette" role="dialog" aria-modal="true" aria-label="CSS snippets" onClick={e => e.stopPropagation()} style={{ maxWidth: 700, maxHeight: "80vh" }}>
         <div style={{ padding: "16px 20px", borderBottom: "1px solid var(--border)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <h2 style={{ fontSize: 16, fontWeight: 600 }}>CSS Snippets</h2>
           <button className="btn btn-sm" onClick={onClose}>Close</button>

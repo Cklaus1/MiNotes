@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useRef } from "react";
 import * as api from "../lib/api";
 import { remoteHost } from "../lib/aiEndpoint";
 import { useLayer } from "../lib/layers";
+import { useDialogFocus } from "../lib/dialogFocus";
 
 interface Props {
   open: boolean;
@@ -89,6 +90,9 @@ export default function AiSettings({ open, onClose, onSaved }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draft, folders, recommended]);
 
+  const panelRef = useRef<HTMLDivElement>(null);
+  useDialogFocus(panelRef, open, { trap: false });
+
   if (!open) return null;
 
   // A "local" endpoint that isn't on this computer needs explicit confirmation.
@@ -154,7 +158,7 @@ export default function AiSettings({ open, onClose, onSaved }: Props) {
   return (
     <>
       <div className="settings-backdrop" onClick={onClose} />
-      <div className="settings-slide-panel ai-settings" role="dialog" aria-label="AI settings" data-testid="ai-settings">
+      <div ref={panelRef} className="settings-slide-panel ai-settings" role="dialog" aria-label="AI settings" data-testid="ai-settings">
         <div className="settings-header">
           <span className="settings-title">AI</span>
           <button className="settings-close-btn" onClick={onClose} aria-label="Close">×</button>

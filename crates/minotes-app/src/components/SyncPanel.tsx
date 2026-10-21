@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useEscapeToClose } from "../lib/escapeStack";
 import * as api from "../lib/api";
+import { useDialogFocus } from "../lib/dialogFocus";
 
 interface Props {
   open: boolean;
@@ -88,6 +89,9 @@ export default function SyncPanel({ open, onClose, currentPageId, onPageRestored
     }
   }, [currentPageId, loadVersions, onPageRestored]);
 
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDialogFocus(dialogRef, open);
+
   if (!open) return null;
 
   const formatTime = (ts: string) => {
@@ -111,7 +115,7 @@ export default function SyncPanel({ open, onClose, currentPageId, onPageRestored
 
   return (
     <div className="command-palette-overlay" onClick={onClose}>
-      <div className="sync-panel" role="dialog" aria-label="Page versions" data-testid="page-versions" onClick={(e) => e.stopPropagation()}>
+      <div ref={dialogRef} className="sync-panel" role="dialog" aria-modal="true" aria-label="Page versions" data-testid="page-versions" onClick={(e) => e.stopPropagation()}>
         <div className="sync-panel-header">
           <h3>Page versions</h3>
           <button className="btn btn-sm" onClick={onClose}>Close</button>

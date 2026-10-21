@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import * as api from "../lib/api";
 import { useLayer } from "../lib/layers";
+import { useDialogFocus } from "../lib/dialogFocus";
 
 interface Props {
   open: boolean;
@@ -23,6 +24,9 @@ export default function QueryPanel({ open, onClose, onPageClick }: Props) {
   const [running, setRunning] = useState(false);
   useLayer(open, "dialog", onClose);
 
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDialogFocus(dialogRef, open);
+
   if (!open) return null;
 
   const runQuery = async () => {
@@ -42,7 +46,7 @@ export default function QueryPanel({ open, onClose, onPageClick }: Props) {
 
   return (
     <div className="command-palette-overlay" onClick={onClose}>
-      <div className="query-panel" onClick={e => e.stopPropagation()}>
+      <div ref={dialogRef} className="query-panel" role="dialog" aria-modal="true" aria-label="SQL query" onClick={e => e.stopPropagation()}>
         <div className="query-panel-header">
           <span>SQL Query</span>
           <button className="btn btn-sm" onClick={onClose} title="Close (Esc)" aria-label="Close query panel">×</button>

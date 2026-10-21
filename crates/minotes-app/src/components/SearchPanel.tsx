@@ -8,6 +8,8 @@ import { blockPlainText } from "../lib/plainText";
 import "./tasks.css";
 import { useLayer } from "../lib/layers";
 import Icon from "./Icon";
+import { useDialogFocus } from "../lib/dialogFocus";
+import { OPEN_SHORTCUTS_EVENT } from "../lib/shortcuts";
 
 function formatTitle(title: string, isJournal?: boolean, journalDate?: string): string {
   const dateStr = journalDate ?? (title.startsWith("Journal/") ? title.slice(8) : null);
@@ -121,6 +123,7 @@ export default function SearchPanel({
     ...(onObsidianPlugins ? [{ id: "obsidian-plugins", label: "Obsidian Plugins (dev)", action: () => onObsidianPlugins() }] : []),
     { id: "css-snippets", label: "CSS Snippets", action: () => onCssManager?.() },
     { id: "settings", label: "Settings", shortcut: "Ctrl+,", action: () => onSettings?.() },
+    { id: "shortcuts", label: "Keyboard Shortcuts", shortcut: "Ctrl+/", action: () => { window.dispatchEvent(new Event(OPEN_SHORTCUTS_EVENT)); } },
   ], [onToggleTheme, onNewPage, onJournal, onGraph, onQuery, onReview, onSync, onSyncNow, onAskAi, onAiSettings, onObsidianPlugins, onCssManager, onSettings]);
 
   const filteredCommands = useMemo(() => {
@@ -307,11 +310,14 @@ export default function SearchPanel({
     setSelectedIndex(0);
   }, [isCommandMode, commandQuery]);
 
+  const paletteRef = useRef<HTMLDivElement>(null);
+  useDialogFocus(paletteRef, open);
+
   if (!open) return null;
 
   return (
     <div className="command-palette-overlay" onClick={onClose}>
-      <div className="command-palette" onClick={e => e.stopPropagation()}>
+      <div ref={paletteRef} className="command-palette" role="dialog" aria-modal="true" aria-label="Search" onClick={e => e.stopPropagation()}>
         <input
           ref={inputRef}
           className="command-palette-input"

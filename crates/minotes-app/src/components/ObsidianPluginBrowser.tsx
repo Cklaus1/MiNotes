@@ -1,5 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useEscapeToClose } from "../lib/escapeStack";
+import { useDialogFocus } from "../lib/dialogFocus";
 import { PluginLoader } from '../obsidian-compat/PluginLoader';
 import type { PluginManifest } from '../obsidian-compat/types';
 
@@ -81,12 +82,15 @@ export default function ObsidianPluginBrowser({ open, onClose }: Props) {
     await refreshList();
   };
 
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDialogFocus(dialogRef, open);
+
   if (!open) return null;
 
   // Render as modal overlay matching existing panel pattern
   return (
     <div className="command-palette-overlay" onClick={onClose}>
-      <div className="query-panel" onClick={e => e.stopPropagation()} style={{ maxHeight: '85vh' }}>
+      <div ref={dialogRef} className="query-panel" role="dialog" aria-modal="true" aria-label="Obsidian plugins" onClick={e => e.stopPropagation()} style={{ maxHeight: '85vh' }}>
         <div className="query-panel-header">
           <span>Obsidian Plugin Loader</span>
           <button className="btn btn-sm" onClick={onClose} title="Close (Esc)" aria-label="Close">&times;</button>

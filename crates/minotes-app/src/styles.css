@@ -3801,6 +3801,33 @@ body.theme-light { /* matches our light theme */ }
   z-index: 99;
 }
 
+/* Settings: header and section index stay at the top while it scrolls. */
+.settings-sticky {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+}
+.settings-sticky .settings-header { border-bottom: none; }
+.settings-index {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  padding: 0 24px 10px;
+}
+.settings-index-link {
+  background: var(--bg-surface);
+  border: 1px solid transparent;
+  color: var(--text-secondary);
+  border-radius: 999px;
+  padding: 2px 9px;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.settings-index-link:hover { color: var(--text-primary); border-color: var(--border); }
+.shortcuts-overlay-body { max-height: min(70vh, 640px); overflow-y: auto; padding-right: 4px; }
+
 .settings-slide-panel {
   position: fixed;
   top: 0;

@@ -59,6 +59,7 @@ import { askNewPage } from "./lib/newPage";
 import Icon from "./components/Icon";
 import { isDrawerWidth, isSidebarToggleKey, loadSidebarCollapsed, saveSidebarCollapsed, useDrawerWidth } from "./lib/sidebarLayout";
 import { useLayer } from "./lib/layers";
+import ShortcutsOverlay from "./components/ShortcutsOverlay";
 // ── End import ──
 // ── End AI platform ──
 
@@ -1291,6 +1292,7 @@ export default function App() {
       {/* ── Import ── */}
       <ImportMount onOpenPage={openPage} onRefresh={refresh} />
       {/* ── End import ── */}
+      <ShortcutsOverlay />
       {/* ── AI platform ── */}
       <AiMount key={notebookKey} activePageId={activePage?.page.id ?? null} onOpenPage={openPage} />
       {/* ── End AI platform ── */}

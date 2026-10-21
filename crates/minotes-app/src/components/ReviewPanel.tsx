@@ -1,7 +1,8 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import * as api from "../lib/api";
 import { notifyCardsChanged } from "../lib/cards";
 import { useLayer } from "../lib/layers";
+import { useDialogFocus } from "../lib/dialogFocus";
 
 interface Props {
   open: boolean;
@@ -127,6 +128,9 @@ export default function ReviewPanel({ open, onClose }: Props) {
     return () => window.removeEventListener("keydown", handler);
   }, [open, showAnswer, handleRate, onClose]);
 
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDialogFocus(dialogRef, open);
+
   if (!open) return null;
 
   const progressPct =
@@ -134,7 +138,7 @@ export default function ReviewPanel({ open, onClose }: Props) {
 
   return (
     <div className="review-overlay" onClick={onClose}>
-      <div className="review-panel" onClick={(e) => e.stopPropagation()}>
+      <div ref={dialogRef} className="review-panel" role="dialog" aria-modal="true" aria-label="Flashcard review" onClick={(e) => e.stopPropagation()}>
         <div className="review-header">
           <span className="review-title">Flashcard Review</span>
           <div className="review-header-stats">

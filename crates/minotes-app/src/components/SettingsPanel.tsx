@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import NotebookSettings from "./NotebookSettings";
 import RemoteImageSettings from "./RemoteImageSettings";
 import SecuritySettings from "./SecuritySettings";
@@ -13,6 +13,8 @@ import {
 } from "../lib/syncStatus";
 import "./sync.css";
 import { useLayer } from "../lib/layers";
+import { useDialogFocus } from "../lib/dialogFocus";
+import ShortcutsList from "./ShortcutsList";
 
 interface Props {
   open: boolean;
@@ -23,94 +25,6 @@ interface Props {
   onOpenCssSnippets?: () => void;
 }
 
-// Every shortcut listed here was pressed in the real app and does what it says.
-// Grouped by where it works; keep in sync with App.tsx and the views' handlers.
-const SHORTCUT_GROUPS: Array<{ title: string; items: Array<[string, string]> }> = [
-  {
-    title: "Anywhere (also while editing a block)",
-    items: [
-      ["Ctrl+K", "Search; type > for commands"],
-      ["Ctrl+J", "Today's journal"],
-      ["Alt+↑ / Alt+↓", "Previous / next journal day"],
-      ["Ctrl+N", "New page"],
-      ["Ctrl+1 … Ctrl+7", "Open pinned page 1–7"],
-      ["Ctrl+G", "Graph view"],
-      ["Ctrl+M", "Mind map"],
-      ["Ctrl+Shift+K", "Kanban board"],
-      ["Ctrl+W", "New whiteboard (Draw)"],
-      ["Ctrl+Q", "SQL query panel"],
-      ["Ctrl+R", "Flashcard review"],
-      ["Ctrl+P", "Open a PDF by path"],
-      ["Ctrl+Shift+C", "Copy the page as text"],
-      ["Ctrl+Shift+T", "Toggle light/dark theme"],
-      ["Ctrl+Shift+L", "Lock an encrypted notebook"],
-      ["Ctrl+Shift+A", "Ask AI about your notes"],
-      ["Ctrl+Shift+I", "Import from Obsidian, Evernote or markdown"],
-      ["Ctrl+,", "Settings"],
-      ["Ctrl+\\", "Show/hide the right sidebar"],
-      ["Esc", "Close the open panel, menu or view"],
-    ],
-  },
-  {
-    title: "Page (no block being edited)",
-    items: [
-      ["Ctrl+Z", "Undo (also restores a page you just deleted)"],
-      ["Ctrl+Shift+Z", "Redo"],
-      ["Ctrl+A", "Select all blocks"],
-      ["Shift+click", "Extend the block selection"],
-      ["Del / Backspace", "Delete the selected blocks"],
-    ],
-  },
-  {
-    title: "While editing a block",
-    items: [
-      ["Enter", "New block"],
-      ["Tab", "Indent"],
-      ["Esc", "Outdent a nested block"],
-      ["Backspace", "At the start: merge into the block above"],
-      ["Ctrl+Enter", "Cycle TODO → DOING → DONE"],
-      ["Ctrl+B / Ctrl+I / Ctrl+E", "Bold / italic / inline code"],
-      ["Ctrl+Z", "Undo typing"],
-      ["/", "Insert menu (headings, todo, table, whiteboard…)"],
-      ["[[", "Link to a page"],
-      ["Alt+→ / Alt+←", "Zoom into the block / back out"],
-    ],
-  },
-  {
-    title: "Whiteboard",
-    items: [
-      ["S / D / T / A / B", "Select / draw / text / arrow / box tool"],
-      ["F", "Fit everything in view"],
-      ["Arrows", "Move the selected item (Shift: 10 px)"],
-      ["Enter", "Edit the selected note or text"],
-      ["Esc", "Back to Select, then close"],
-    ],
-  },
-  {
-    title: "Kanban",
-    items: [
-      ["Ctrl+F or /", "Filter cards"],
-      ["Arrows", "Move between cards and columns"],
-      ["N", "New card in the focused card's column"],
-    ],
-  },
-  {
-    title: "Mind map",
-    items: [
-      ["Arrows", "Move between nodes"],
-      ["Tab / Enter", "Add a child / a sibling"],
-      ["Del", "Delete the node"],
-      ["Hold M", "Show the minimap"],
-    ],
-  },
-  {
-    title: "Flashcard review",
-    items: [
-      ["Space / Enter", "Show the answer"],
-      ["1 / 2 / 3 / 4", "Again / hard / good / easy"],
-    ],
-  },
-];
 
 /** Where sync stands, honestly: paused, failing (and why), local only, or when
  *  it last reached the remote — with Sync now / Retry / Sync it here. */
@@ -202,6 +116,33 @@ export default function SettingsPanel({ open, onClose, onOpenSync, onOpenCssSnip
   // Esc closes Settings when it is the topmost layer (lib/layers.ts).
   useLayer(open, "panel", onClose);
 
+  const panelRef = useRef<HTMLDivElement>(null);
+  useDialogFocus(panelRef, open, { trap: false });
+  // Section index (jump links): built from the section titles actually shown
+  // (Security, Sync… depend on the notebook), so it never lists a missing one.
+  const [sections, setSections] = useState<string[]>([]);
+  useEffect(() => {
+    if (!open) return;
+    const read = () => {
+      const titles = [...(panelRef.current?.querySelectorAll(".settings-section > .settings-section-title") ?? [])]
+        .map(t => (t.textContent ?? "").trim()).filter(Boolean);
+      setSections(prev => (prev.join("|") === titles.join("|") ? prev : titles));
+    };
+    read();
+    const mo = new MutationObserver(read);
+    if (panelRef.current) mo.observe(panelRef.current, { childList: true, subtree: true });
+    return () => mo.disconnect();
+  }, [open]);
+  const jumpTo = (title: string) => {
+    const t = [...(panelRef.current?.querySelectorAll(".settings-section > .settings-section-title") ?? [])]
+      .find(e => (e.textContent ?? "").trim() === title);
+    const section = t?.parentElement as HTMLElement | undefined;
+    if (!section || !panelRef.current) return;
+    const header = panelRef.current.querySelector<HTMLElement>(".settings-sticky");
+    panelRef.current.scrollTo({ top: section.offsetTop - (header?.offsetHeight ?? 0), behavior: "smooth" });
+    (section.querySelector<HTMLElement>("select, input, button") ?? null)?.focus({ preventScroll: true });
+  };
+
   if (!open) return null;
 
   const toggle = (key: keyof MiNotesSettings, value: any) => {
@@ -225,11 +166,22 @@ export default function SettingsPanel({ open, onClose, onOpenSync, onOpenCssSnip
       {/* Click-outside overlay to close */}
       <div className="settings-backdrop" onClick={onClose} />
 
-      <div className="settings-slide-panel">
-        {/* Header */}
-        <div className="settings-header">
-          <span className="settings-title">Settings</span>
-          <button className="settings-close-btn" onClick={onClose} title="Close settings (Esc)" aria-label="Close settings">×</button>
+      <div ref={panelRef} className="settings-slide-panel" role="dialog" aria-label="Settings" data-testid="settings-panel">
+        {/* Header + section index, kept in view while the panel scrolls */}
+        <div className="settings-sticky">
+          <div className="settings-header">
+            <span className="settings-title">Settings</span>
+            <button className="settings-close-btn" onClick={onClose} title="Close settings (Esc)" aria-label="Close settings">×</button>
+          </div>
+          {sections.length > 2 && (
+            <nav className="settings-index" aria-label="Settings sections" data-testid="settings-index">
+              {sections.map(s => (
+                <button key={s} type="button" className="settings-index-link" onClick={() => jumpTo(s)}>
+                  {s.replace(/^Keyboard Shortcuts$/, "Shortcuts").replace(/^Smart suggestions$/, "Suggestions")}
+                </button>
+              ))}
+            </nav>
+          )}
         </div>
 
         {/* Appearance */}
@@ -357,19 +309,7 @@ export default function SettingsPanel({ open, onClose, onOpenSync, onOpenCssSnip
         {/* Keyboard shortcuts */}
         <div className="settings-section">
           <div className="settings-section-title">Keyboard Shortcuts</div>
-          {SHORTCUT_GROUPS.map(group => (
-            <div key={group.title} className="shortcuts-group">
-              <div className="shortcuts-group-title">{group.title}</div>
-              <div className="shortcuts-grid">
-                {group.items.map(([key, desc]) => (
-                  <div key={key + desc} className="shortcut-row">
-                    <kbd className="shortcut-key">{key}</kbd>
-                    <span className="shortcut-desc">{desc}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ))}
+          <ShortcutsList />
         </div>
 
         {/* Smart suggestions — local heuristics, no AI model involved; its own
