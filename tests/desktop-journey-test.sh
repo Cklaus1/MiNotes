@@ -41,7 +41,7 @@ echo "════════════════════════�
 echo "  MiNotes Desktop Journeys (real app, real backend)"
 echo "═══════════════════════════════════════════════"
 
-rm -rf "$STATE"/{persist,devA,devB,nbook,outside,xnb,zip8,barrier10,trust10,rimg,img10,remote.git,enc13,enc13-tmp,enc13-keychain,enc14a,enc14b,enc14c,enc14-tmp,remote14.git,w1,w1-files,w2,j17a,j17b,t17,remote17.git,remote17.git.moved} "$STATE/results.tsv"
+rm -rf "$STATE"/{persist,devA,devB,nbook,outside,xnb,zip8,barrier10,trust10,rimg,img10,remote.git,enc13,enc13-tmp,enc13-keychain,enc14a,enc14b,enc14c,enc14-tmp,remote14.git,w1,w1-files,w2,j17a,j17b,t17,remote17.git,remote17.git.moved,w18} "$STATE/results.tsv"
 if [[ -z "$DESKTOP_NO_BUILD" ]]; then
   "$DC" up --webdriver --profile persist >/dev/null || { echo "build/launch failed"; exit 1; }
 else
@@ -1547,6 +1547,87 @@ waitfor "!!document.querySelector('[data-testid=ai-error]')" 30
 is "Retry asks again (one question, one answer slot)" "$(ev "String(document.querySelectorAll('.ai-turn').length)")" "1"
 "$DC" press Escape >/dev/null 2>&1; sleep 0.5
 fi
+journey "D18. Finding my way with real clicks (UX review Wave 2: navigation)"
+# Nested projects open by clicking (C-10), the TODO badge's Tasks view writes
+# the real block and creates no page (C-8) and removes the old generated page
+# once, Prev stays under the pointer across empty days, Manage notebooks keeps
+# its rows while renaming, and the native window title follows along.
+# Real mouse and keys; WebDriver only sets up and reads back.
+# ═══════════════════════════════════════════════
+A18="const api=await import('/src/lib/api.ts');"
+X18="localhost:${DESKTOP_CHECK_DISPLAY:-97}"
+rclick18() {
+  local xy; xy=$(ev "(()=>{const e=$1;if(!e)return '';e.scrollIntoView({block:'center'});const r=e.getBoundingClientRect();return Math.round(r.left+r.width/2)+' '+Math.round(r.top+r.height/2)})()")
+  [[ -n "$xy" ]] && "$DC" click $xy >/dev/null
+}
+wintitle18() { local id; id=$(DISPLAY="$X18" timeout 5 xdotool search --name 'MiNotes$' 2>/dev/null | head -1); [[ -n "$id" ]] && DISPLAY="$X18" timeout 5 xdotool getwindowname "$id" 2>/dev/null; }
+shown18() { ev "(async()=>{const e=$1;if(!e)return 'missing';let p=e.parentElement;while(p){if(p.classList&&p.classList.contains('folder-children')&&!p.classList.contains('folder-children-expanded'))return 'hidden';p=p.parentElement}return 'shown'})()"; }
+device w18 || true
+NB18=$(ev "(async()=>{$A18 return (await api.getNotebookSession()).name})()")
+
+step "I click a project, then its subproject, then the page inside (real mouse)"
+ev "(async()=>{$A18 const o=await api.createFolder('Outer18');const i=await api.createFolder('Inner18',o.id);const p=await api.createPage('Deep18 page');await api.createBlock(p.id,'deep18');await api.movePageToFolder(p.id,i.id);window.dispatchEvent(new Event('minotes-sidebar-refresh'));return 1})()" >/dev/null
+waitfor "!![...document.querySelectorAll('.folder-item')].find(e=>e.textContent.includes('Outer18'))" 10
+rclick18 "[...document.querySelectorAll('.folder-item')].find(e=>e.textContent.includes('Outer18'))"; sleep 0.8
+rclick18 "[...document.querySelectorAll('.folder-item')].find(e=>e.textContent.includes('Inner18'))"; sleep 0.8
+is "The page two levels down is shown" "$(shown18 "[...document.querySelectorAll('.sidebar .page-item')].find(e=>e.textContent.includes('Deep18 page'))")" "shown"
+rclick18 "[...document.querySelectorAll('.sidebar .page-item')].find(e=>e.textContent.includes('Deep18 page'))"
+waitfor "window.__MINOTES__.getCurrentPage()==='Deep18 page'" 10
+is "…and a click opens it" "$(api 'getCurrentPage()')" "Deep18 page"
+"$DC" shot "d18-nested-projects" >/dev/null
+is "The native window title names the page and the notebook" "$(wintitle18)" "Deep18 page — $NB18 — MiNotes"
+
+step "The TODO badge opens Tasks; ticking a task (real click) writes the block — no page is made"
+ev "(async()=>{$A18 const p=await api.createPage('Tasks18');await api.createBlock(p.id,'TODO water plants18');window.dispatchEvent(new Event('minotes-sidebar-refresh'));return 1})()" >/dev/null; sleep 1
+waitfor "!!document.querySelector('[data-testid=todo-badge]')" 10
+rclick18 "document.querySelector('[data-testid=todo-badge]')"
+waitfor "!![...document.querySelectorAll('[data-testid=task-row]')].find(r=>r.textContent.includes('water plants18'))" 10
+is "Window title: Tasks" "$(wintitle18)" "Tasks — $NB18 — MiNotes"
+rclick18 "[...document.querySelectorAll('[data-testid=task-row]')].find(r=>r.textContent.includes('water plants18'))?.querySelector('[data-testid=task-toggle]')"
+sleep 1.5
+is "The block in the database is now DONE" "$(db w18 "select content from blocks where content like '%water plants18%'")" "DONE water plants18"
+is "No \"All TODOs\" page exists" "$(db w18 "select count(*) from pages where title='All TODOs'")" "0"
+"$DC" shot "d18-tasks-view" >/dev/null
+"$DC" key Escape; sleep 0.5
+
+step "An old generated \"All TODOs\" page goes to the Trash on the next start (once)"
+ev "(async()=>{$A18 const t=await api.getPageTree('Tasks18');const p=await api.createPage('All TODOs');await api.createBlock(p.id,'{{todo:pending}} [[Tasks18|'+t.page.id+']] water plants18');await api.setUiState('cleanup.all-todos-v1','');return 1})()" >/dev/null
+"$DC" restart >/dev/null; waitfor "window.__MINOTES__ && !!window.__MINOTES__.navigateTo" 30
+waitfor "[...document.querySelectorAll('.minotes-toast')].some(t=>t.innerText.includes('All TODOs'))" 15 \
+  && pass "A toast says the generated page was moved to the Trash" || fail "No cleanup toast" "$(ev "[...document.querySelectorAll('.minotes-toast')].map(t=>t.innerText).join('|')")"
+is "It is in the Trash (restorable), not deleted" "$(db w18 "select count(*) from trash t join pages p on p.id=t.page_id where p.title='All TODOs'")" "1"
+is "The flag is set, so it runs once" "$(db w18 "select value from ui_state where key='cleanup.all-todos-v1'")" "done"
+
+step "Prev stays under the pointer: three real clicks at one spot step back three days"
+api "openJournal()" >/dev/null; waitfor "!!document.querySelector('.journal-nav')" 10; sleep 1
+XY18=$(ev "(()=>{const b=[...document.querySelectorAll('.journal-nav button')].find(x=>x.textContent.includes('Prev'));const r=b.getBoundingClientRect();return Math.round(r.left+r.width/2)+' '+Math.round(r.top+r.height/2)})()")
+DAYS18=""
+for n in 1 2 3; do
+  "$DC" click $XY18 >/dev/null; sleep 1.2
+  DAYS18+="$(ev "document.querySelector('.pending-journal')?.dataset.date||(window.__MINOTES__.getCurrentPage()||'').replace('Journal/','')")|"
+done
+is "Prev ×3 at the same spot" "$DAYS18" "$(date -d '-1 day' +%F)|$(date -d '-2 day' +%F)|$(date -d '-3 day' +%F)|"
+"$DC" shot "d18-empty-day" >/dev/null
+is "Window title on an empty day names the date" "$(wintitle18)" "$(ev "new Date($(date -d '-3 day' +%Y),$(( 10#$(date -d '-3 day' +%m) - 1 )),$(( 10#$(date -d '-3 day' +%d) ))).toLocaleDateString(undefined,{weekday:'long',year:'numeric',month:'long',day:'numeric'})") — $NB18 — MiNotes"
+ev "document.activeElement?.blur()" >/dev/null
+"$DC" key alt+Down; sleep 1.2
+is "Alt+↓ (real key) goes to the next day" "$(ev "document.querySelector('.pending-journal')?.dataset.date||''")" "$(date -d '-2 day' +%F)"
+
+step "Manage notebooks: renaming (real typing) keeps every row in place"
+ev "(async()=>{$A18 await api.createNotebook('Bravo18');await api.createNotebook('Charlie18');window.dispatchEvent(new Event('minotes-notebooks-changed'));return 1})()" >/dev/null; sleep 0.5
+ev "window.dispatchEvent(new CustomEvent('minotes-open-notebook-dialog',{detail:'manage'}))" >/dev/null
+waitfor "!!document.querySelector('[data-testid=manage-notebooks-dialog] .nb-manage-row')" 10
+ORDER18=$(ev "[...document.querySelectorAll('[data-testid=manage-notebooks-dialog] .nb-manage-row')].map(r=>r.dataset.notebookKey).join(',')")
+CHARLIE18=$(ev "[...document.querySelectorAll('[data-testid=manage-notebooks-dialog] .nb-manage-row')].find(r=>r.textContent.includes('Charlie18'))?.dataset.notebookKey||''")
+rclick18 "document.querySelector('[data-testid=manage-notebooks-dialog] [data-notebook-key=\"$CHARLIE18\"] [data-testid=rename-notebook]')"; sleep 0.5
+"$DC" key ctrl+a; "$DC" type "Aardvark18"; "$DC" key Return; sleep 1
+is "Rows keep their order after the rename" "$(ev "[...document.querySelectorAll('[data-testid=manage-notebooks-dialog] .nb-manage-row')].map(r=>r.dataset.notebookKey).join(',')")" "$ORDER18"
+is "…and the renamed row shows its new name" "$(ev "document.querySelector('[data-testid=manage-notebooks-dialog] [data-notebook-key=\"$CHARLIE18\"] .nb-manage-name')?.textContent||''")" "Aardvark18"
+"$DC" shot "d18-manage-after-rename" >/dev/null
+rclick18 "document.querySelector('[data-testid=manage-notebooks-dialog] [data-notebook-key=\"$CHARLIE18\"] [data-testid=open-notebook]')"
+waitfor "!document.querySelector('[data-testid=manage-notebooks-dialog]')" 15; sleep 2
+T18=$(wintitle18)
+[[ "$T18" == *" — Aardvark18 — MiNotes" ]] && pass "Open switched notebooks; the window title follows ($T18)" || fail "Window title after Open" "$T18"
 
 # ═══════════════════════════════════════════════
 echo ""

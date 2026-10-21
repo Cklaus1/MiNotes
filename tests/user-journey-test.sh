@@ -1919,10 +1919,10 @@ FAVS=$(ev "(async()=>{const api=await import('/src/lib/api.ts');return (await ap
 step "Pinned pages not duplicated in main list"
 S=$(snap)
 # This is hard to test via snapshot alone — verify via API
-# getFolderTree() still lists pinned pages; the Sidebar filters them out of its
-# "Pages" section. So check what is rendered: no pinned title appears twice.
-DUP=$(ev "(async()=>{const api=await import('/src/lib/api.ts');const favs=await api.listFavorites();const texts=[...document.querySelectorAll('.sidebar *')].filter(e=>e.children.length===0).map(e=>e.textContent.trim());return favs.filter(f=>texts.filter(t=>t===f.title).length>1).length})()")
-[[ "$DUP" == "0" ]] && pass "No duplicate pinned pages in root list" || fail "Pinned pages duplicated in root list" "$DUP"
+# Pinned is a shortcut: a pinned page is listed under Pinned AND where it lives
+# (its project or Pages) — UX review Wave 2 — but never more than that.
+DUP=$(ev "(async()=>{const api=await import('/src/lib/api.ts');const favs=await api.listFavorites();const texts=[...document.querySelectorAll('.sidebar *')].filter(e=>e.children.length===0).map(e=>e.textContent.trim());return favs.filter(f=>texts.filter(t=>t===f.title).length>2).length})()")
+[[ "$DUP" == "0" ]] && pass "Pinned pages listed under Pinned and where they live, no more" || fail "Pinned pages listed more than twice" "$DUP"
 
 step "Unpin a page"
 ev "(async()=>{const api=await import('/src/lib/api.ts');const favs=await api.listFavorites();if(favs.length>0){await api.removeFavorite(favs[0].id);return 'unpinned'}return 'none'})()" > /dev/null; sleep 1
@@ -3449,6 +3449,8 @@ for _ in $(seq 1 30); do sleep 0.5; RK65=$(ev "document.querySelector('[data-tes
 [[ "$RK65" =~ ^[A-Z2-7]{7}(-[A-Z2-7]{7}){7}$ ]] && pass "The recovery key is shown once: 8 groups of 7 ($RK65)" || fail "Recovery key" "$RK65"
 R=$(ev "document.querySelector('[data-testid=recovery-done]')?.disabled" | tr -d '"')
 [[ "$R" == "true" ]] && pass "Can't continue before ticking 'I have saved my recovery key'" || fail "Saved checkbox" "$R"
+R=$(ev "(()=>{const b=document.querySelector('[data-testid=recovery-done]');const cs=getComputedStyle(b);return (parseFloat(cs.opacity)<0.8)+'|'+cs.cursor+'|'+(document.querySelector('[data-testid=recovery-done-reason]')?.textContent||'')})()" | tr -d '"')
+[[ "$R" == "true|not-allowed|"*"I have saved my recovery key"* ]] && pass "…and it looks disabled and says why ($R)" || fail "Recovery button looks enabled / no reason" "$R"
 ss "65-recovery-key"
 # The key is shown once: a stray Escape or click outside must not lose it (C-1).
 ev "(()=>{document.activeElement?.blur?.();window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));const b=document.querySelector('.nb-modal-backdrop');b?.dispatchEvent(new MouseEvent('mousedown',{bubbles:true}));return 1})()" >/dev/null; sleep 0.4
@@ -3474,6 +3476,8 @@ click65 "[data-testid=menu-lock-now]" >/dev/null
 for _ in $(seq 1 20); do sleep 0.5; R=$(ev "!!document.querySelector('[data-testid=unlock-screen]')" | tr -d '"'); [[ "$R" == "true" ]] && break; done
 R=$(ev "[!!document.querySelector('[data-testid=unlock-screen]'),!!document.querySelector('.sidebar'),document.body.innerText.includes('Narwhal65')].join('|')" | tr -d '"')
 [[ "$R" == "true|false|false" ]] && pass "Unlock screen only, no sidebar, no titles ($R)" || fail "Locked view" "$R"
+R=$(ev "document.title" | tr -d '"')
+[[ "$R" == "Locked — $NB65 — MiNotes" ]] && pass "Window title: \"$R\" (no page title)" || fail "Locked window title" "$R"
 R=$(ev "(async()=>{$A65 try{await api.listPages(10);return 'read'}catch(e){return String(e).split(':')[0]}})()" | tr -d '"')
 [[ "$R" == "NOTEBOOK_LOCKED" ]] && pass "Data commands refuse while locked" || fail "Locked data" "$R"
 R=$(ev "JSON.stringify(Object.keys(localStorage).map(k=>k+'='+localStorage.getItem(k))).includes('Narwhal65')" | tr -d '"')
@@ -4281,6 +4285,277 @@ T=$(ev "document.querySelector('[data-testid=settings-sync-state]')?.innerText||
 ev "(async()=>{$M78 Object.assign(m.mockSync,{enabled:false,needs_confirmation:false,remote_url:null,last_sync:null});return 1})()" >/dev/null
 api "closePanel()" >/dev/null; sleep 0.3
 fi
+
+# ═══════════════════════════════════════════════
+journey "79. Projects inside projects open, move and nest (UX review C-10)"
+# Subfolders used to be drawn with a dead toggle, so pages in a nested project
+# were unreachable, and only 2 projects could be open at once.
+# ═══════════════════════════════════════════════
+A79="const api=await import('/src/lib/api.ts');"
+wait79() { for _ in $(seq 1 20); do [[ "$(ev "$1" | tr -d '"')" == "true" ]] && return 0; sleep 0.3; done; return 1; }
+# Is this sidebar row shown (every project around it open)?
+shown79() { ev "(()=>{const e=$1;if(!e)return 'missing';let p=e.parentElement;while(p){if(p.classList&&p.classList.contains('folder-children')&&!p.classList.contains('folder-children-expanded'))return 'hidden';p=p.parentElement}return 'shown'})()" | tr -d '"'; }
+frow79() { echo "[...document.querySelectorAll('.folder-item')].find(e=>e.textContent.includes('$1'))"; }
+prow79() { echo "[...document.querySelectorAll('.sidebar .page-item')].find(e=>e.textContent.includes('$1'))"; }
+menu79() { ev "(()=>{const r=$1;if(!r)return 'none';r.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true,clientX:100,clientY:200}));return 1})()" >/dev/null; sleep 0.4; }
+item79() { ev "[...document.querySelectorAll('.sidebar-context-menu-item')].find(b=>b.textContent.includes('$1'))?.click()" >/dev/null; sleep 0.4; }
+api "closePanel()" >/dev/null; press "Escape"; sleep 0.3
+IDS79=$(ev "(async()=>{$A79 const o=await api.createFolder('Outer79');const i=await api.createFolder('Inner79',o.id);const d=await api.createFolder('Deep79',i.id);await api.createFolder('Other79a');const b=await api.createFolder('Other79b');const p1=await api.createPage('Page79 deep');await api.movePageToFolder(p1.id,d.id);const p2=await api.createPage('Page79 inner');await api.movePageToFolder(p2.id,i.id);const p3=await api.createPage('Page79 outer');await api.movePageToFolder(p3.id,o.id);window.dispatchEvent(new Event('minotes-sidebar-refresh'));return [o.id,i.id,d.id,b.id,p2.id].join(',')})()" | tr -d '"')
+IFS=, read -r OUT79 INN79 DEEP79 OTHB79 PIN79 <<<"$IDS79"
+wait79 "!!($(frow79 Outer79))" || true
+
+step "Clicking Outer79 → Inner79 → Deep79 opens each level down to the nested page"
+for f in Outer79 Inner79 Deep79; do ev "$(frow79 $f)?.click()" >/dev/null; sleep 0.4; done
+R=$(shown79 "$(prow79 'Page79 deep')")
+[[ "$R" == "shown" ]] && pass "The page two projects deep is reachable" || fail "Nested page not reachable" "$R"
+R=$(ev "($(frow79 Inner79))?.getAttribute('aria-expanded')" | tr -d '"')
+[[ "$R" == "true" ]] && pass "The subproject says it is expanded" || fail "Subproject expanded state" "$R"
+ss "79-nested-open"
+
+step "Opening two more projects doesn't close the first (no 2-project limit)"
+ev "$(frow79 Other79a)?.click()" >/dev/null; sleep 0.3
+ev "$(frow79 Other79b)?.click()" >/dev/null; sleep 0.3
+R=$(shown79 "$(prow79 'Page79 deep')")
+[[ "$R" == "shown" ]] && pass "Outer79 stays open with two more projects open" || fail "Opening other projects closed Outer79" "$R"
+R=$(ev "(()=>{try{const a=JSON.parse(localStorage.getItem('minotes-expanded-projects')||'[]');return ['$OUT79','$INN79','$DEEP79'].every(i=>a.includes(i))}catch(e){return false}})()" | tr -d '"')
+[[ "$R" == "true" ]] && pass "Open projects are remembered at every depth" || fail "Expanded state not persisted" "$R"
+
+step "A project's count includes its nested pages"
+R=$(ev "($(frow79 Outer79))?.querySelector('.folder-count')?.textContent?.trim()" | tr -d '"')
+[[ "$R" == "3" ]] && pass "Outer79 shows 3 (1 own + 2 nested)" || fail "Parent count" "$R"
+
+step "Move to… lists the whole tree and Top level; moving into Deep79 works"
+menu79 "$(prow79 'Page79 inner')"; item79 "Move to"
+R=$(ev "[...document.querySelectorAll('.sidebar-context-submenu .sidebar-context-menu-item')].map(b=>b.textContent.trim()+(b.disabled?' (here)':'')).join('|')" | tr -d '"')
+[[ "$R" == *"Top level"* && "$R" == *"Deep79"* && "$R" == *"Outer79"* && "$R" == *"Inner79 (here)"* ]] && pass "Move to…: Top level + nested projects ($R)" || fail "Move to… list" "$R"
+ev "[...document.querySelectorAll('.sidebar-context-submenu .sidebar-context-menu-item')].find(b=>b.textContent.includes('Deep79'))?.click()" >/dev/null; sleep 0.8
+R=$(ev "(async()=>{$A79 const t=await api.getFolderTree();const f=(l)=>{for(const x of l){if(x.id==='$DEEP79')return x;const y=f(x.children||[]);if(y)return y}};return f(t.folders).pages.map(p=>p.title).sort().join(',')})()" | tr -d '"')
+[[ "$R" == "Page79 deep,Page79 inner" ]] && pass "Moved into the nested project" || fail "Move into Deep79" "$R"
+
+step "A project can be moved into another project"
+menu79 "$(frow79 Other79b)"; item79 "Move to"
+ev "[...document.querySelectorAll('.sidebar-context-submenu .sidebar-context-menu-item')].find(b=>b.textContent.trim().endsWith('Outer79'))?.click()" >/dev/null; sleep 0.8
+R=$(ev "(async()=>{$A79 const t=await api.getFolderTree();const o=t.folders.find(f=>f.id==='$OUT79');return (o?o.children:[]).map(c=>c.name).sort().join(',')+'|'+t.folders.some(f=>f.id==='$OTHB79')})()" | tr -d '"')
+[[ "$R" == "Inner79,Other79b|false" ]] && pass "Other79b now lives in Outer79" || fail "Move project into project" "$R"
+
+step "New sub-project from the project menu"
+menu79 "$(frow79 Outer79)"; item79 "New sub-project"
+ev "(()=>{const i=document.querySelector('input[aria-label=\"New sub-project in Outer79\"]');if(!i)return 'no input';const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;set.call(i,'Sub79');i.dispatchEvent(new Event('input',{bubbles:true}));i.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));return 'ok'})()" >/dev/null; sleep 0.8
+R=$(ev "(async()=>{$A79 const t=await api.getFolderTree();const o=t.folders.find(f=>f.id==='$OUT79');return (o?o.children:[]).map(c=>c.name).sort().join(',')})()" | tr -d '"')
+[[ "$R" == "Inner79,Other79b,Sub79" ]] && pass "Sub79 created inside Outer79" || fail "New sub-project" "$R"
+R=$(shown79 "$(frow79 Sub79)")
+[[ "$R" == "shown" ]] && pass "…and shown under it" || fail "Sub-project not shown" "$R"
+
+step "A pinned page still shows in its project"
+ev "(async()=>{$A79 await api.addFavorite('$PIN79');window.dispatchEvent(new Event('minotes-sidebar-refresh'));return 1})()" >/dev/null; sleep 1
+R=$(ev "[...document.querySelectorAll('.sidebar .page-item')].filter(e=>e.textContent.includes('Page79 inner')).length" | tr -d '"')
+[[ "$R" == "2" ]] && pass "Listed under Pinned and in its project" || fail "Pinned page hidden from its project" "$R rows"
+ev "(async()=>{$A79 await api.removeFavorite('$PIN79');window.dispatchEvent(new Event('minotes-sidebar-refresh'));return 1})()" >/dev/null
+
+step "An archived page leaves Recent in the search palette"
+api "navigateTo('Page79 outer')" >/dev/null; sleep 1.5
+api "navigateTo('Page79 deep')" >/dev/null; sleep 1.5
+ev "(async()=>{$A79 const p=await api.getPageTree('Page79 outer');await api.archivePage(p.page.id);window.dispatchEvent(new Event('minotes-sidebar-refresh'));return 1})()" >/dev/null; sleep 0.5
+api "openSearch()" >/dev/null; sleep 1
+R=$(ev "(()=>{const s=[...document.querySelectorAll('.command-palette-item')].map(e=>e.textContent);return s.some(t=>t.includes('Page79 outer'))+'|'+s.some(t=>t.includes('Page79 deep'))})()" | tr -d '"')
+[[ "$R" == "false|true" ]] && pass "Recent: the archived page is gone, the others stay" || fail "Archived page still in Recent" "$R"
+press "Escape"; sleep 0.3; api "closePanel()" >/dev/null
+
+# ═══════════════════════════════════════════════
+journey "80. The TODO badge opens a live Tasks view — no generated page (UX review C-8)"
+# It used to write a real "All TODOs" page of raw {{todo:pending}} markup.
+# ═══════════════════════════════════════════════
+A80="const api=await import('/src/lib/api.ts');"
+wait80() { for _ in $(seq 1 20); do [[ "$(ev "$1" | tr -d '"')" == "true" ]] && return 0; sleep 0.3; done; return 1; }
+row80() { echo "[...document.querySelectorAll('[data-testid=task-row]')].find(e=>e.textContent.includes('$1'))"; }
+content80() { ev "(async()=>{$A80 const t=await api.getPageTree('Tasks80');return t.blocks.map(b=>b.content).join(' ¦ ')})()" | tr -d '"'; }
+api "closePanel()" >/dev/null; press "Escape"; sleep 0.3
+ev "(async()=>{$A80 const p=await api.createPage('Tasks80');for(const c of ['TODO buy milk80','DOING write report80','DONE file taxes80','- [ ] call bob80'])await api.createBlock(p.id,c);window.dispatchEvent(new Event('minotes-sidebar-refresh'));return 1})()" >/dev/null; sleep 1.5
+PAGES80=$(ev "(async()=>{$A80 return (await api.listPages(1000)).length})()" | tr -d '"')
+
+step "Clicking the TODO badge opens the Tasks view, grouped by page"
+ev "document.querySelector('[data-testid=todo-badge]')?.click()" >/dev/null
+wait80 "!!document.querySelector('[data-testid=tasks-view]')" && pass "Tasks view opened" || fail "No Tasks view" "$(ev "document.querySelector('.main')?.innerText?.slice(0,120)")"
+sleep 1
+R=$(ev "(()=>{const g=[...document.querySelectorAll('[data-testid=tasks-group]')].find(e=>e.textContent.includes('Tasks80'));if(!g)return 'no group';return [...g.querySelectorAll('[data-testid=task-row]')].map(r=>r.dataset.state).join(',')})()" | tr -d '"')
+[[ "$R" == *"todo"* && "$R" == *"doing"* ]] && pass "Group Tasks80 lists its open tasks ($R)" || fail "Tasks80 group" "$R"
+R=$(ev "document.querySelector('[data-testid=tasks-view]')?.innerText||''" | tr -d '"')
+[[ "$R" != *"{{todo"* && "$R" != *"[["* ]] && pass "No raw markup in the view" || fail "Raw markup shown" "${R:0:120}"
+ss "80-tasks-view"
+R=$(ev "(async()=>{$A80 const l=await api.listPages(1000);return l.length+'|'+l.some(p=>p.title==='All TODOs')})()" | tr -d '"')
+[[ "$R" == "$PAGES80|false" ]] && pass "No page was created ($R)" || fail "Opening tasks created a page" "$R (before: $PAGES80)"
+
+step "Ticking a task writes the real block"
+ev "($(row80 'buy milk80'))?.querySelector('[data-testid=task-toggle]')?.click()" >/dev/null; sleep 1
+R=$(content80)
+[[ "$R" == *"DONE buy milk80"* ]] && pass "TODO → DONE in Tasks80 ($R)" || fail "Toggle didn't write the block" "$R"
+ev "($(row80 'call bob80'))?.querySelector('[data-testid=task-toggle]')?.click()" >/dev/null; sleep 1
+R=$(content80)
+[[ "$R" == *"- [x] call bob80"* ]] && pass "A checkbox task is ticked in place" || fail "Checkbox toggle" "$R"
+
+step "Filters: DONE shows the finished ones only"
+ev "document.querySelector('[data-testid=tasks-filter-done]')?.click()" >/dev/null; sleep 0.8
+R=$(ev "[...document.querySelectorAll('[data-testid=task-row]')].filter(r=>r.textContent.includes('69')).map(r=>r.textContent.replace(/\\s+/g,' ').trim()).join('|')" | tr -d '"')
+[[ "$R" == *"buy milk80"* && "$R" == *"file taxes80"* && "$R" != *"write report80"* ]] && pass "DONE filter ($R)" || fail "DONE filter" "$R"
+ev "document.querySelector('[data-testid=tasks-filter-doing]')?.click()" >/dev/null; sleep 0.8
+R=$(ev "[...document.querySelectorAll('[data-testid=task-row]')].filter(r=>r.textContent.includes('69')).map(r=>r.dataset.state).join(',')" | tr -d '"')
+[[ "$R" == "doing" ]] && pass "DOING filter" || fail "DOING filter" "$R"
+
+step "Clicking a task opens its page"
+ev "($(row80 'write report80'))?.querySelector('[data-testid=task-open]')?.click()" >/dev/null; sleep 1.5
+R=$(api "getCurrentPage()" | tr -d '"')
+V=$(ev "!!document.querySelector('[data-testid=tasks-view]')" | tr -d '"')
+[[ "$R" == "Tasks80" && "$V" == "false" ]] && pass "Jumped to Tasks80, Tasks view closed" || fail "Jump to task" "$R view=$V"
+
+step "Old generated \"All TODOs\" pages are moved to the Trash, a hand-written one is kept"
+R=$(ev "(async()=>{$A80 const t=await api.getPageTree('Tasks80');const p=await api.createPage('All TODOs');await api.createBlock(p.id,'{{todo:pending}} [[Tasks80|'+t.page.id+']] write report80');await api.createBlock(p.id,'{{todo:pending}} [[Tasks80|'+t.page.id+']] call bob80');const r=await api.cleanupGeneratedTodoPages();const tr=await api.listTrash();return r.length+'|'+tr.some(x=>x.id===p.id)})()" | tr -d '"')
+[[ "$R" == "1|true" ]] && pass "Generated page trashed ($R)" || fail "Cleanup of generated page" "$R"
+R=$(ev "(async()=>{$A80 const p=await api.createPage('All TODOs');await api.createBlock(p.id,'my own list');const r=await api.cleanupGeneratedTodoPages();const tr=await api.listTrash();return r.length+'|'+tr.some(x=>x.id===p.id)})()" | tr -d '"')
+[[ "$R" == "0|false" ]] && pass "A page someone wrote is left alone" || fail "Cleanup touched a hand-written page" "$R"
+api "closePanel()" >/dev/null
+
+# ═══════════════════════════════════════════════
+journey "81. Stepping through journal days — the buttons stay put"
+# On an empty day Prev/Today/Next moved to the middle of the page; the calendar
+# didn't show which day is open; there was no key for the next/previous day.
+# ═══════════════════════════════════════════════
+api "closePanel()" >/dev/null; press "Escape"; sleep 0.3
+navxy81() { ev "(()=>{const b=[...document.querySelectorAll('.journal-nav button')].find(x=>x.textContent.includes('Prev'));if(!b)return 'none';const r=b.getBoundingClientRect();return Math.round(r.left)+','+Math.round(r.top)})()" | tr -d '"'; }
+api "openJournal()" >/dev/null; sleep 1.5
+XY_FULL=$(navxy81)
+api "openJournal('2020-01-15')" >/dev/null; sleep 1.5
+XY_EMPTY=$(navxy81)
+R=$(ev "!!document.querySelector('.pending-journal .main-header .journal-nav')" | tr -d '"')
+[[ "$R" == "true" ]] && pass "Empty day: Prev/Today/Next sit in the header" || fail "Empty day nav not in the header" "$R"
+[[ "$XY_EMPTY" != "none" && "$XY_EMPTY" == "$XY_FULL" ]] && pass "Prev is at the same spot on a full and an empty day ($XY_FULL)" || fail "Prev moved" "full=$XY_FULL empty=$XY_EMPTY"
+ss "81-empty-day"
+
+step "Prev on an empty day goes one day back"
+ev "[...document.querySelectorAll('.journal-nav button')].find(x=>x.textContent.includes('Prev'))?.click()" >/dev/null; sleep 1
+R=$(ev "document.querySelector('.pending-journal')?.dataset.date||''" | tr -d '"')
+[[ "$R" == "2020-01-14" ]] && pass "Now on 2020-01-14" || fail "Prev from empty day" "$R"
+
+step "Alt+↓ / Alt+↑ step to the next / previous day"
+ev "(()=>{document.activeElement?.blur?.();return 1})()" >/dev/null
+press "Alt+ArrowDown"; sleep 1
+R=$(ev "document.querySelector('.pending-journal')?.dataset.date||''" | tr -d '"')
+press "Alt+ArrowDown"; sleep 1
+R2=$(ev "document.querySelector('.pending-journal')?.dataset.date||''" | tr -d '"')
+press "Alt+ArrowUp"; sleep 1
+R3=$(ev "document.querySelector('.pending-journal')?.dataset.date||''" | tr -d '"')
+[[ "$R|$R2|$R3" == "2020-01-15|2020-01-16|2020-01-15" ]] && pass "Alt+↓ ↓ ↑: $R → $R2 → $R3" || fail "Alt+arrows" "$R|$R2|$R3"
+
+step "The calendar marks the day that is open"
+ev "(()=>{const c=document.querySelector('.sidebar-journal-row .sidebar-section-chevron');if(c&&!document.querySelector('.cal-widget'))c.click();return 1})()" >/dev/null; sleep 0.5
+R=$(ev "(()=>{const s=document.querySelector('.cal-day.selected');return s?s.title+'|'+s.getAttribute('aria-current'):'none'})()" | tr -d '"')
+[[ "$R" == "2020-01-15|date" ]] && pass "Calendar shows Jan 2020 with the 15th selected" || fail "Calendar selection" "$R"
+ss "81-calendar-selected"
+ev "(()=>{const c=document.querySelector('.sidebar-journal-row .sidebar-section-chevron');if(document.querySelector('.cal-widget'))c?.click();return 1})()" >/dev/null
+api "openJournal()" >/dev/null; sleep 1
+
+# ═══════════════════════════════════════════════
+journey "82. Manage notebooks stays in order while I work in it"
+# Renaming re-sorted the rows, so the next click hit another notebook; errors
+# stayed after a success; disabled buttons looked enabled.
+# ═══════════════════════════════════════════════
+A82="const api=await import('/src/lib/api.ts');"
+setv82() { ev "(()=>{const i=document.querySelector('$1');if(!i)return 'no input';const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;set.call(i,'$2');i.dispatchEvent(new Event('input',{bubbles:true}));return 'ok'})()" >/dev/null; }
+order82() { ev "[...document.querySelectorAll('[data-testid=manage-notebooks-dialog] .nb-manage-row')].map(r=>r.dataset.notebookKey).join(',')" | tr -d '"'; }
+rename82() { # <key> <new name>
+  ev "[...document.querySelectorAll('[data-testid=manage-notebooks-dialog] [data-notebook-key=\"$1\"] button')].find(b=>b.textContent.trim()==='Rename')?.click()" >/dev/null; sleep 0.3
+  setv82 "[data-testid=manage-notebooks-dialog] [data-notebook-key=\"$1\"] input" "$2"
+  ev "document.querySelector('[data-testid=manage-notebooks-dialog] [data-notebook-key=\"$1\"] input')?.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}))" >/dev/null; sleep 0.8
+}
+api "closePanel()" >/dev/null; press "Escape"; sleep 0.3
+S82=$(date +%s)
+HOME82=$(ev "(async()=>{$A82 return (await api.getNotebookSession()).key})()" | tr -d '"')
+ZED82=$(ev "(async()=>{$A82 await api.createNotebook('Mid82 $S82');const z=await api.createNotebook('Zed82 $S82');window.dispatchEvent(new Event('minotes-notebooks-changed'));return z.key})()" | tr -d '"'); sleep 0.5
+ev "window.dispatchEvent(new CustomEvent('minotes-open-notebook-dialog',{detail:'manage'}))" >/dev/null; sleep 0.8
+BEFORE82=$(order82)
+
+step "Renaming Zed82 to Aaa82 keeps every row where it was"
+rename82 "$ZED82" "Aaa82 $S82"
+AFTER82=$(order82)
+NAME82=$(ev "document.querySelector('[data-testid=manage-notebooks-dialog] [data-notebook-key=\"$ZED82\"] .nb-manage-name')?.textContent||''" | tr -d '"')
+[[ -n "$BEFORE82" && "$AFTER82" == "$BEFORE82" && "$NAME82" == "Aaa82 $S82"* ]] && pass "Order unchanged after rename ($NAME82)" || fail "Rows re-sorted" "before=$BEFORE82 after=$AFTER82 name=$NAME82"
+ss "82-manage-after-rename"
+
+step "A failed rename shows why; cancelling it or the next success clears it"
+err82() { ev "document.querySelector('[data-testid=manage-notebooks-dialog] [role=alert]')?.textContent||''" | tr -d '"'; }
+rename82 "$ZED82" "Mid82 $S82"
+E1=$(err82)
+ev "document.querySelector('[data-testid=manage-notebooks-dialog] [data-notebook-key=\"$ZED82\"] input')?.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}))" >/dev/null; sleep 0.3
+E2=$(err82)
+D2=$(ev "!!document.querySelector('[data-testid=manage-notebooks-dialog]')" | tr -d '"')
+[[ "$D2" == "true" ]] && pass "Escape in the rename field cancels the rename, not the dialog" || fail "Escape in rename closed Manage notebooks" "$D2"
+rename82 "$ZED82" "Bbb82 $S82"
+E3=$(err82)
+[[ "$E1" == *"already"* && -z "$E2" && -z "$E3" ]] && pass "Error shown ($E1), then cleared" || fail "Stale error" "e1=$E1 after-escape=$E2 after-success=$E3"
+
+step "Each other notebook has Open; Delete is a quiet secondary button"
+R=$(ev "(()=>{const r=document.querySelector('[data-testid=manage-notebooks-dialog] [data-notebook-key=\"$ZED82\"]');const d=r?.querySelector('[data-testid=delete-notebook]');return !!r?.querySelector('[data-testid=open-notebook]')+'|'+(d?d.classList.contains('btn-danger'):'none')})()" | tr -d '"')
+[[ "$R" == "true|false" ]] && pass "Open button; Delete not red" || fail "Row actions" "$R"
+ev "document.querySelector('[data-testid=manage-notebooks-dialog] [data-notebook-key=\"$ZED82\"] [data-testid=open-notebook]')?.click()" >/dev/null; sleep 1.5
+R=$(ev "(async()=>{$A82 return (await api.getNotebookSession()).key})()" | tr -d '"')
+[[ "$R" == "$ZED82" ]] && pass "Open switches to that notebook" || fail "Open from Manage" "$R"
+ev "(async()=>{const n=await import('/src/lib/notebooks.ts');await n.switchNotebook('$HOME82');return 1})()" >/dev/null; sleep 1.5
+press "Escape"; sleep 0.3
+
+step "A disabled Create button looks disabled and says why"
+ev "window.dispatchEvent(new CustomEvent('minotes-open-notebook-dialog',{detail:'new'}))" >/dev/null; sleep 0.6
+setv82 "[data-testid=new-notebook-name]" "Weak82 $S82"
+ev "document.querySelector('[data-testid=new-notebook-encrypt]')?.click()" >/dev/null; sleep 0.2
+setv82 "[data-testid=new-notebook-passphrase]" "abc"
+setv82 "[data-testid=new-notebook-passphrase-confirm]" "abc"; sleep 0.3
+R=$(ev "(()=>{const b=document.querySelector('[data-testid=new-notebook-create]');const cs=getComputedStyle(b);const why=document.querySelector('[data-testid=new-notebook-create-reason]')?.textContent||'';return b.disabled+'|'+(parseFloat(cs.opacity)<0.8)+'|'+cs.cursor+'|'+why})()" | tr -d '"')
+[[ "$R" == "true|true|not-allowed|"*"easy to guess"* ]] && pass "Looks disabled, reason inline ($R)" || fail "Disabled Create" "$R"
+ss "82-disabled-create"
+press "Escape"; sleep 0.3
+
+# ═══════════════════════════════════════════════
+journey "83. The window title names the page and the notebook"
+# ═══════════════════════════════════════════════
+A83="const api=await import('/src/lib/api.ts');"
+api "closePanel()" >/dev/null; press "Escape"; sleep 0.3
+NBNAME83=$(ev "(async()=>{$A83 return (await api.getNotebookSession()).name})()" | tr -d '"')
+HOME83=$(ev "(async()=>{$A83 return (await api.getNotebookSession()).key})()" | tr -d '"')
+S83=$(date +%s)
+OTHER83=$(ev "(async()=>{$A83 const n=await api.createNotebook('Title83 $S83');return n.key})()" | tr -d '"')
+api "navigateTo('Project Alpha')" >/dev/null; sleep 1.5
+R=$(ev "document.title" | tr -d '"')
+[[ "$R" == "Project Alpha — $NBNAME83 — MiNotes" ]] && pass "Title: $R" || fail "Window title on a page" "$R"
+api "navigateTo('Getting Started')" >/dev/null; sleep 1.5
+R=$(ev "document.title" | tr -d '"')
+[[ "$R" == "Getting Started — $NBNAME83 — MiNotes" ]] && pass "Follows navigation: $R" || fail "Title after navigating" "$R"
+ev "(async()=>{const n=await import('/src/lib/notebooks.ts');await n.switchNotebook('$OTHER83');return 1})()" >/dev/null; sleep 2
+R=$(ev "document.title" | tr -d '"')
+[[ "$R" == *" — Title83 $S83 — MiNotes" ]] && pass "Follows a notebook switch: $R" || fail "Title after switching notebooks" "$R"
+ev "(async()=>{const n=await import('/src/lib/notebooks.ts');await n.switchNotebook('$HOME83');return 1})()" >/dev/null; sleep 2
+
+# ═══════════════════════════════════════════════
+journey "84. Search results read as text and say where they are"
+# ═══════════════════════════════════════════════
+A84="const api=await import('/src/lib/api.ts');"
+search84() { ev "(async()=>{const T=window.__MINOTES__;T.closePanel();T.openSearch();await new Promise(r=>setTimeout(r,400));const i=document.querySelector('.command-palette-input');const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;set.call(i,'$1');i.dispatchEvent(new Event('input',{bubbles:true}));await new Promise(r=>setTimeout(r,900));return 1})()" >/dev/null; }
+api "closePanel()" >/dev/null; press "Escape"; sleep 0.3
+ev "(async()=>{$A84 const t=await api.createPage('Travel — Lisbon 2027');const p=await api.createPage('Plans84');await api.createBlock(p.id,'TODO book flights84 for [[Travel — Lisbon 2027|'+t.id+']] see ((0e1d2c3b-4a59-4687-a6b5-c4d3e2f1a0b9)) {{whiteboard:wb84}}');return 1})()" >/dev/null; sleep 0.5
+
+step "\"lisbon travel\" finds the page \"Travel — Lisbon 2027\""
+search84 "lisbon travel"
+# Page hits are the rows above the "Blocks" section.
+R=$(ev "(()=>{const out=[];for(const e of document.querySelector('.command-palette-results')?.children||[]){if(e.classList.contains('command-palette-section'))break;if(e.classList.contains('command-palette-item'))out.push(e.textContent)}return out.join('|')})()" | tr -d '"')
+[[ "$R" == *"Travel — Lisbon 2027"* ]] && pass "Page found by words in any order ($R)" || fail "Token-wise title match" "$R"
+
+step "A block result is plain text with its page name"
+search84 "flights84"
+R=$(ev "(()=>{const b=document.querySelector('.command-palette-block');if(!b)return 'none';return (b.querySelector('.result-content')?.textContent||'')+'|'+(b.querySelector('.command-palette-block-page')?.textContent||'')})()" | tr -d '"')
+[[ "$R" == *"book flights84 for Travel — Lisbon 2027"*"|Plans84" && "$R" != *"[["* && "$R" != *"{{"* && "$R" != *"0e1d2c3b"* ]] && pass "Plain text + source page ($R)" || fail "Block result text" "$R"
+ss "84-search-blocks"
+
+step "The All notebooks checkbox is visibly unchecked"
+R=$(ev "(()=>{const c=document.querySelector('[data-testid=search-all-notebooks]');if(!c)return 'none';const cs=getComputedStyle(c);return c.checked+'|'+cs.borderTopStyle+'|'+(parseFloat(cs.borderTopWidth)>=1)+'|'+(parseFloat(cs.width)>=12)})()" | tr -d '"')
+[[ "$R" == "false|solid|true|true" ]] && pass "Unchecked box has a visible border ($R)" || fail "All-notebooks checkbox" "$R"
+press "Escape"; sleep 0.3; api "closePanel()" >/dev/null
 
 # ═══════════════════════════════════════════════
 close_app

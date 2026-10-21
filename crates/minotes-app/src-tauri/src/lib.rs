@@ -486,6 +486,20 @@ fn delete_folder(state: State<'_, AppState>, id: String) -> Result<bool, String>
     db.delete_folder(&uuid, "user").map_err(|e| e.to_string())
 }
 
+/// Move a project into another project (`parent_id`), or to the top level (None).
+/// Moving it into itself or one of its own subprojects is refused.
+#[tauri::command]
+fn move_folder(state: State<'_, AppState>, id: String, parent_id: Option<String>) -> Result<Folder, String> {
+    let db = state.db_guard()?;
+    let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+    let parent = parent_id
+        .as_deref()
+        .map(uuid::Uuid::parse_str)
+        .transpose()
+        .map_err(|e| e.to_string())?;
+    db.move_folder(&uuid, parent.as_ref(), "user").map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn update_folder_appearance(state: State<'_, AppState>, id: String, icon: Option<String>, color: Option<String>) -> Result<Folder, String> {
     let db = state.db_guard()?;
@@ -1385,6 +1399,25 @@ fn get_pending_todo_count(db: tauri::State<AppState>) -> Result<usize, String> {
     conn.count_pending_todos().map_err(|e| e.to_string())
 }
 
+/// Every task line (TODO / DOING / DONE, checkboxes) for the Tasks view.
+#[tauri::command]
+fn list_tasks(state: State<'_, AppState>) -> Result<Vec<minotes_core::repo::ai_suggestions::TaskItem>, String> {
+    let db = state.db_guard()?;
+    db.list_tasks().map_err(|e| e.to_string())
+}
+
+/// Move the "All TODOs" pages the old TODO badge generated to the Trash
+/// (only that exact generated shape). Returns `[id, title]` of each one.
+#[tauri::command]
+fn cleanup_generated_todo_pages(state: State<'_, AppState>) -> Result<Vec<(String, String)>, String> {
+    let db = state.db_guard()?;
+    let removed = db.trash_generated_todo_pages().map_err(|e| e.to_string())?;
+    for (id, title) in &removed {
+        eprintln!("[minotes] moved the generated \"{title}\" page ({id}) to the Trash");
+    }
+    Ok(removed)
+}
+
 /// List all pending TODOs across all pages with source page titles.
 #[tauri::command]
 fn list_pending_todos(db: tauri::State<AppState>) -> Result<Vec<serde_json::Value>, String> {
@@ -1607,6 +1640,7 @@ pub fn run() {
             move_page_to_folder,
             reorder_page,
             delete_folder,
+            move_folder,
             rename_folder,
             update_folder_appearance,
             set_property,
@@ -1689,6 +1723,8 @@ pub fn run() {
             get_pending_todo_count,
             list_pending_todos,
             list_pending_todos_with_page_ids,
+            list_tasks,
+            cleanup_generated_todo_pages,
             get_whiteboard,
             get_ui_state,
             set_ui_state,

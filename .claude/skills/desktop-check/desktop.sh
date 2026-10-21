@@ -59,7 +59,8 @@ wd() { python3 "$HERE/wd.py" "http://127.0.0.1:$WD_PORT" "$STATE/wd.sid" "$@"; }
 jsstr() { python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1"; }
 alive() { [ -f "$STATE/$1.pid" ] && kill -0 "$(cat "$STATE/$1.pid")" 2>/dev/null; }
 x() { timeout 15 "$@"; }
-win() { x xwininfo -root -tree 2>/dev/null | awk '/"MiNotes"/ {print $1; exit}'; }
+# The window's title ends in "MiNotes" ("Page — Notebook — MiNotes"); the 10x10 GTK leader is "minotes-app".
+win() { x xwininfo -root -tree 2>/dev/null | awk '/MiNotes": \(/ {print $1; exit}'; }
 need() { for t in "$@"; do command -v "$t" >/dev/null || { echo "missing tool: $t" >&2; exit 2; }; done; }
 record() { printf '%s\t%s\t%s\n' "$1" "$2" "${3:-}" >>"$RESULTS"; }
 
@@ -81,7 +82,7 @@ stop_app() {
   # tauri-driver leaves the app and WebKitWebDriver behind if the session wasn't
   # closed cleanly; they'd keep the profile's database open.
   for _ in $(seq 1 20); do [ -z "$(win)" ] && break; sleep 0.25; done
-  if [ -n "$(win)" ]; then x xdotool search --name '^MiNotes$' 2>/dev/null | head -1 | xargs -r -I{} timeout 5 xdotool windowkill {} 2>/dev/null || true; sleep 1; fi
+  if [ -n "$(win)" ]; then x xdotool search --name 'MiNotes$' 2>/dev/null | head -1 | xargs -r -I{} timeout 5 xdotool windowkill {} 2>/dev/null || true; sleep 1; fi
   # The next launch reuses these ports; starting tauri-driver while the previous
   # one is still releasing them makes the new session fail ("remote end closed").
   for _ in $(seq 1 40); do listening "$WD_PORT" || listening "$((WD_PORT + 1))" || break; sleep 0.25; done

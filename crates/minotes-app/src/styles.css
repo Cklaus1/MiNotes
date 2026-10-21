@@ -273,6 +273,12 @@ body {
   background: var(--bg-surface);
 }
 
+.sidebar-todo-badge.active {
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
 .sidebar-todo-count {
   /* --text-primary on --bg-surface: 8.5:1 dark, 5.1:1 light (the old accent pill
      used undefined vars and measured 1.46:1). */
@@ -386,6 +392,12 @@ body {
 .journal-nav {
   display: flex;
   gap: 4px;
+}
+
+/* Prev / Today / Next lead the header, so they sit at the same spot on every
+   day — a long or short date title can't push them around. */
+.main-header > .journal-nav {
+  order: -1;
 }
 
 .content {
@@ -893,6 +905,28 @@ body {
   font-size: 11px;
 }
 
+/* Honest disabled state (reusable; the app-wide pass is UX Wave 3): a gated
+   button looks unavailable, keeps its colours on hover, and sits next to a
+   .disabled-reason that says what is missing. */
+.btn-gated:disabled,
+.btn-gated:disabled:hover {
+  opacity: 0.45;
+  cursor: not-allowed;
+  filter: saturate(0.5);
+}
+.btn-gated.btn-primary:disabled:hover {
+  background: var(--accent);
+}
+.btn-gated:not(.btn-primary):disabled:hover {
+  background: var(--bg-surface);
+}
+.disabled-reason {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-right: auto;
+  align-self: center;
+}
+
 /* Search */
 .search-input {
   width: 100%;
@@ -1304,6 +1338,13 @@ body {
 .sidebar-context-menu-item:hover {
   background: var(--bg-surface);
   color: var(--text-primary);
+}
+
+.sidebar-context-menu-item:disabled {
+  color: var(--text-muted);
+  cursor: default;
+  background: none;
+  opacity: 0.6;
 }
 
 .sidebar-context-menu-item.danger {
@@ -5672,6 +5713,17 @@ body.theme-light { /* matches our light theme */ }
   color: var(--text-primary);
 }
 
+/* The day that is open: a filled accent tile (today keeps its bold). */
+.cal-day.selected,
+.cal-day.selected:hover {
+  background: var(--accent);
+  color: var(--bg-primary);
+}
+
+.cal-day.selected .cal-dot {
+  background: var(--bg-primary);
+}
+
 .cal-dot {
   position: absolute;
   bottom: 1px;
@@ -5818,28 +5870,25 @@ body.theme-light { /* matches our light theme */ }
 .pending-journal {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  gap: 12px;
-  padding: 40px;
+  flex: 1;
+  min-height: 0;
 }
 
-.pending-journal-date {
-  font-size: 1.5em;
-  font-weight: 600;
-  color: var(--text-primary);
+/* The header is .main-header (same as a journal page); the date is its h2. */
+.pending-journal-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 40px;
 }
 
 .pending-journal-hint {
   color: var(--text-muted);
   font-size: 14px;
   margin: 0;
-}
-
-.pending-journal-nav {
-  display: flex;
-  gap: 6px;
 }
 
 /* Inline validation message under a text field (rename, new page/project) */
@@ -6501,6 +6550,67 @@ img.img-broken {
   align-items: center;
   gap: 6px;
   cursor: pointer;
+}
+/* A checkbox whose unchecked state is visible in both themes (the native one
+   drew nothing readable in the dark theme). */
+.command-palette-scope input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  border: 1.5px solid var(--text-secondary);
+  border-radius: 3px;
+  background: var(--bg-primary);
+  display: inline-grid;
+  place-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.command-palette-scope input[type="checkbox"]::after {
+  content: "";
+  width: 7px;
+  height: 4px;
+  border-left: 2px solid var(--bg-primary);
+  border-bottom: 2px solid var(--bg-primary);
+  transform: translateY(-1px) rotate(-45deg);
+  visibility: hidden;
+}
+.command-palette-scope input[type="checkbox"]:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.command-palette-scope input[type="checkbox"]:checked::after {
+  visibility: visible;
+}
+.command-palette-scope input[type="checkbox"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+/* Block results: plain text, then the page they are on. */
+.command-palette-block {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.command-palette-block .result-content {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.command-palette-block-page {
+  color: var(--text-muted);
+  font-size: 11px;
+  white-space: nowrap;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 0;
+}
+.command-palette-state {
+  align-self: center;
 }
 .command-palette-scope-note {
   font-style: italic;

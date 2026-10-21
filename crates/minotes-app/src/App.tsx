@@ -19,6 +19,9 @@ import ObsidianPluginBrowser from "./components/ObsidianPluginBrowser";
 import CssSnippetManager from "./components/CssSnippetManager";
 import SettingsPanel from "./components/SettingsPanel";
 import FolderSettingsPanel from "./components/FolderSettingsPanel";
+import TasksView from "./components/TasksView";
+import { cleanupGeneratedTodoPagesOnce } from "./lib/tasks";
+import { composeWindowTitle, journalTitle, setWindowTitle } from "./lib/windowTitle";
 import * as api from "./lib/api";
 import { localDateKey, shiftDateKey } from "./lib/dates";
 import { isTauri } from "./lib/api";
@@ -41,7 +44,7 @@ import {
 } from "./lib/syncStatus";
 import { listenOutsideEdits, OUTSIDE_PAGES_CHANGED } from "./lib/outsideEdits";
 import {
-  NOTEBOOK_SWITCHED, setNextExportDest, setNextPickedFolder, setNextZipPick, switchNotebook, useCapabilities,
+  NOTEBOOK_SWITCHED, NOTEBOOKS_CHANGED, setNextExportDest, setNextPickedFolder, setNextZipPick, switchNotebook, useCapabilities,
 } from "./lib/notebooks";
 import { OPEN_IN_NOTEBOOK, type OpenInNotebook } from "./lib/crossNotebook";
 import { setPendingReveal } from "./lib/pendingReveal";
@@ -92,6 +95,8 @@ export default function App() {
   const [rightSidebarPanels, setRightSidebarPanels] = useState<Array<{id: string, title: string}>>([]);
   const [rightSidebarVisible, setRightSidebarVisible] = useState(true);
   const [folderSettingsId, setFolderSettingsId] = useState<string | null>(null);
+  // The Tasks view (sidebar TODO badge): shown in place of the page.
+  const [showTasks, setShowTasks] = useState(false);
 
   // Git Sync state: the shared status lives in lib/syncStatus (chip, Settings).
   const syncingRef = useRef(false);
@@ -112,6 +117,17 @@ export default function App() {
       console.error("Failed to refresh:", e);
     }
   }, []);
+
+  // Once per notebook: the old TODO badge's generated "All TODOs" pages go to the
+  // Trash (the Tasks view replaces them). Says so, so nothing vanishes silently.
+  const runTodoPageCleanup = useCallback(() => {
+    cleanupGeneratedTodoPagesOnce().then(titles => {
+      if (titles.length === 0) return;
+      showToast("Moved the old generated “All TODOs” page to the Trash — the TODO badge now opens the Tasks view", 8000);
+      refresh();
+      window.dispatchEvent(new Event("minotes-sidebar-refresh"));
+    });
+  }, [refresh]);
 
   // Mobile: the OS may kill a backgrounded app at any time, and the editor saves
   // a block on blur. Blur it when the app goes to the background so the normal
@@ -175,6 +191,7 @@ export default function App() {
       }
       console.log("[openPage] got tree:", tree.page.title, "blocks:", tree.blocks.length);
       if (stale()) return; // superseded by a later navigation
+      if (!isRefresh) setShowTasks(false);
       setActivePage(tree);
       setRefreshKey(k => k + 1);
       addRecentPage(tree.page.id, tree.page.title);
@@ -269,6 +286,7 @@ export default function App() {
 
   const openJournal = useCallback(async (date?: string) => {
     const token = ++navTokenRef.current;
+    setShowTasks(false);
     try {
       const d = date ?? localDateKey();
       const isToday = !date || d === localDateKey();
@@ -643,6 +661,7 @@ export default function App() {
       setPdfViewerPath(null);
       setRightSidebarPanels([]);
       setFolderSettingsId(null);
+      setShowTasks(false);
       setLastError(null);
       setPendingJournalDate(null);
       setActivePage(null);
@@ -654,6 +673,7 @@ export default function App() {
       refresh();
       window.dispatchEvent(new Event("minotes-sidebar-refresh"));
       openJournal().catch(() => {});
+      runTodoPageCleanup();
       api.gitSyncStatus().then(status => {
         applySyncStatus(status);
         if (status.enabled) setTimeout(() => window.dispatchEvent(new Event("minotes-trigger-sync")), 0);
@@ -661,7 +681,7 @@ export default function App() {
     };
     window.addEventListener(NOTEBOOK_SWITCHED, onSwitch);
     return () => window.removeEventListener(NOTEBOOK_SWITCHED, onSwitch);
-  }, [refresh, openJournal]);
+  }, [refresh, openJournal, runTodoPageCleanup]);
 
   // A cross-notebook search result or [[Notebook::Page]] link: switch notebooks
   // (the usual flow: views reset, undo cleared) and open the page there. The
@@ -785,7 +805,7 @@ export default function App() {
       isPanelOpen: (name: string) => {
         const map: Record<string, boolean> = {
           search: openPanel === "search", query: openPanel === "query", graph: canvasMode === "graph",
-          review: openPanel === "review", settings: openPanel === "settings",
+          review: openPanel === "review", settings: openPanel === "settings", tasks: showTasks,
         };
         return map[name] ?? false;
       },
@@ -799,7 +819,7 @@ export default function App() {
       setNextExportDest: (path: string | null) => { setNextExportDest(path); return true; },
       getNotebookKey: () => notebookKey,
     } as any);
-  }, [activePage, openPanel, canvasMode, whiteboardId, notebookKey]);
+  }, [activePage, openPanel, canvasMode, whiteboardId, notebookKey, showTasks]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -935,6 +955,48 @@ export default function App() {
     return () => window.removeEventListener("keydown", handler);
   }, [openJournal, createPage, activePage, whiteboardId, canvasMode, openNewWhiteboard, openPage, refresh, openPdfFlow]);
 
+  // Window title: "Page — Notebook — MiNotes", following navigation, the view
+  // shown, and notebook switches / renames. (Locked: LockGate sets it.)
+  const [notebookName, setNotebookName] = useState("");
+  useEffect(() => {
+    const load = () => { api.getNotebookSession().then(s => setNotebookName(s?.name ?? "")).catch(() => {}); };
+    load();
+    window.addEventListener(NOTEBOOK_SWITCHED, load);
+    window.addEventListener(NOTEBOOKS_CHANGED, load);
+    return () => {
+      window.removeEventListener(NOTEBOOK_SWITCHED, load);
+      window.removeEventListener(NOTEBOOKS_CHANGED, load);
+    };
+  }, []);
+  const viewLabel = showTasks ? "Tasks"
+    : canvasMode === "graph" ? "Graph"
+    : canvasMode === "pages" ? "All pages"
+    : activePage ? (activePage.page.is_journal && activePage.page.journal_date ? journalTitle(activePage.page.journal_date) : activePage.page.title)
+    : pendingJournalDate ? journalTitle(pendingJournalDate)
+    : null;
+  useEffect(() => {
+    setWindowTitle(composeWindowTitle(viewLabel, notebookName));
+  }, [viewLabel, notebookName]);
+
+  // Alt+↑ / Alt+↓: previous / next journal day, while a journal day is shown
+  // (a written one or an empty one). Not in text fields; a key something else
+  // already handled (e.g. an editor binding) is left alone. Alt+←/→ zoom blocks.
+  const journalDateShown = showTasks ? null : (activePage?.page.is_journal ? activePage.page.journal_date ?? null : pendingJournalDate);
+  useEffect(() => {
+    if (!journalDateShown || canvasMode) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || e.defaultPrevented) return;
+      if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT")) return;
+      if (document.querySelector("[role=dialog], .command-palette-overlay")) return;
+      e.preventDefault();
+      openJournal(shiftDateKey(journalDateShown, e.key === "ArrowUp" ? -1 : 1));
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [journalDateShown, canvasMode, openJournal]);
+
   // UX-009: Journal as default landing + UX-017: Onboarding tutorial on first launch
   useEffect(() => {
     const init = async () => {
@@ -961,6 +1023,7 @@ export default function App() {
         }
       }
 
+      runTodoPageCleanup();
       try {
         await openJournal();
       } catch (e) {
@@ -991,29 +1054,13 @@ export default function App() {
         onSettingsClick={() => setOpenPanel(prev => prev === "settings" ? null : "settings")}
         onFolderSettings={(id) => setFolderSettingsId(prev => prev === id ? null : id)}
         onReviewClick={() => setOpenPanel("review")}
-        onTodoBadgeClick={async () => {
+        onTodoBadgeClick={() => {
           if (getSettings().ai?.todoExtraction === false) return; // Settings → AI → TODO extraction off
-          try {
-            const allPages = await api.listPages();
-            let todoPage = allPages.find(p => p.title === "All TODOs");
-            if (!todoPage) {
-              todoPage = await api.createPage("All TODOs");
-            }
-            const todos = await api.listPendingTodosWithIds();
-            const tree = await api.getPageTree(todoPage.id);
-            const existingTodoIds = tree.blocks.filter(b => b.content.startsWith("{{todo:")).map(b => b.id);
-            for (const id of existingTodoIds) {
-              await api.deleteBlock(id);
-            }
-            for (const todo of todos) {
-              const blockContent = `{{todo:pending}} [[${todo.page_title}|${todo.page_id}]] ${todo.text}`;
-              await api.createBlock(todoPage.id, blockContent);
-            }
-            openPage(todoPage.id);
-          } catch {
-            // ignore
-          }
+          setCanvasMode(null);
+          setShowTasks(true);
         }}
+        tasksOpen={showTasks}
+        selectedJournalDate={showTasks ? null : (activePage?.page.is_journal ? activePage.page.journal_date ?? null : pendingJournalDate)}
         activeMode={canvasMode === "graph" ? "graph" : canvasMode === "mindmap" ? "mindmap" : canvasMode === "draw" ? "whiteboard" : canvasMode === "kanban" ? "kanban" : canvasMode === "pages" ? "pages" : null}
         refreshKey={refreshKey}
       />
@@ -1081,7 +1128,18 @@ export default function App() {
               } : undefined}
             />
           )}
-          {activePage ? (
+          {showTasks ? (
+            <TasksView
+              onOpenTask={(t) => {
+                setPendingReveal(t.block_id);
+                openPage(t.page_id).catch(() => {});
+              }}
+              onClose={() => {
+                setShowTasks(false);
+                if (activePage) openPage(activePage.page.id).catch(() => {}); // tasks may have changed it
+              }}
+            />
+          ) : activePage ? (
             <PageView
               pageTree={activePage}
               onUpdateBlock={updateBlock}
@@ -1097,28 +1155,34 @@ export default function App() {
               }}
             />
           ) : pendingJournalDate ? (
-            <div className="pending-journal">
-              {/* Same Prev / Today / Next as a journal page, so a future (not yet
-                  written) day is never a dead end. */}
-              <div className="journal-nav pending-journal-nav">
-                <button className="btn btn-sm" onClick={() => openJournal(shiftDateKey(pendingJournalDate, -1))}>← Prev</button>
-                <button className="btn btn-sm" onClick={() => openJournal(localDateKey())}>Today</button>
-                <button className="btn btn-sm" onClick={() => openJournal(shiftDateKey(pendingJournalDate, 1))}>Next →</button>
+            <div className="pending-journal" data-date={pendingJournalDate}>
+              {/* The same header as a journal page (title, Prev / Today / Next in
+                  the same place), so stepping through days never moves the
+                  buttons and a not-yet-written day is never a dead end. */}
+              <div className="main-header">
+                <h2 className="pending-journal-date">
+                  {"\u{1F4C5}"} {(() => {
+                    const [y, m, d] = pendingJournalDate.split("-").map(Number);
+                    const dt = new Date(y, m - 1, d);
+                    return isNaN(dt.getTime()) ? pendingJournalDate : dt.toLocaleDateString(undefined, {
+                      weekday: "long", year: "numeric", month: "long", day: "numeric",
+                    });
+                  })()}
+                </h2>
+                <div className="journal-nav">
+                  <button className="btn btn-sm" onClick={() => openJournal(shiftDateKey(pendingJournalDate, -1))} title="Previous day (Alt+↑)">← Prev</button>
+                  <button className="btn btn-sm" onClick={() => openJournal(localDateKey())} title="Today (Ctrl+J)">Today</button>
+                  <button className="btn btn-sm" onClick={() => openJournal(shiftDateKey(pendingJournalDate, 1))} title="Next day (Alt+↓)">Next →</button>
+                </div>
               </div>
-              <div className="pending-journal-date">
-                {(() => {
-                  const [y, m, d] = pendingJournalDate.split("-").map(Number);
-                  return new Date(y, m - 1, d).toLocaleDateString(undefined, {
-                    weekday: "long", month: "long", day: "numeric", year: "numeric",
-                  });
-                })()}
+              <div className="pending-journal-body">
+                <p className="pending-journal-hint">No journal entry yet</p>
+                <button className="btn btn-primary" onClick={materializeJournal}>+ Start writing</button>
+                {/* ── Import: an empty notebook offers to bring notes in ── */}
+                {stats?.pages === 0 && caps.import_from_files && (
+                  <button className="btn btn-sm pending-journal-import" onClick={() => openImport()} data-testid="empty-import">Import notes from Obsidian, Evernote or markdown…</button>
+                )}
               </div>
-              <p className="pending-journal-hint">No journal entry yet</p>
-              <button className="btn btn-primary" onClick={materializeJournal}>+ Start writing</button>
-              {/* ── Import: an empty notebook offers to bring notes in ── */}
-              {stats?.pages === 0 && caps.import_from_files && (
-                <button className="btn btn-sm pending-journal-import" onClick={() => openImport()} data-testid="empty-import">Import notes from Obsidian, Evernote or markdown…</button>
-              )}
             </div>
           ) : (
             <EmptyState onCreatePage={createPage} />

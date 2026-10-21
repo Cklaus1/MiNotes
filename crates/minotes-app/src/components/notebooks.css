@@ -295,6 +295,16 @@
 .nb-rename-input {
   max-width: 260px;
 }
+.nb-manage-row.current {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+/* Delete… is a quiet secondary button; red only on hover/focus (the typed-name
+   confirmation that follows is the real gate). */
+.nb-delete-btn:not(:disabled):hover,
+.nb-delete-btn:not(:disabled):focus-visible {
+  color: var(--danger);
+  border-color: var(--danger);
+}
 .nb-delete-confirm {
   display: flex;
   flex-direction: column;

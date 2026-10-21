@@ -178,6 +178,155 @@ impl Database {
 
         Ok(todos)
     }
+
+    /// Every task line (TODO / DOING / DONE, `- [ ]` / `- [x]`, `todo:`-style
+    /// keywords) on visible pages, for the app's Tasks view. Pages are ordered by
+    /// last edit (newest first), tasks within a page in outline order. A line is
+    /// pending exactly when [`parse_pending_todo`] says so.
+    pub fn list_tasks(&self) -> Result<Vec<TaskItem>> {
+        let mut stmt = self.conn.prepare(&format!(
+            "WITH RECURSIVE {TRASHED_FOLDER_TREE}, {ARCHIVED_FOLDER_TREE}
+             SELECT DISTINCT p.id, p.title, p.is_journal, p.journal_date FROM blocks b
+             JOIN pages p ON b.page_id = p.id
+             WHERE {VISIBLE_PAGE_FILTER}
+               AND (b.content LIKE '%TODO %' OR b.content LIKE '%DOING %' OR b.content LIKE '%DONE %'
+                    OR b.content LIKE '%[%]%' OR b.content LIKE '%:%')
+             ORDER BY p.updated_at DESC"
+        ))?;
+        let pages = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, bool>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let mut tasks = Vec::new();
+        for (page_id, page_title, is_journal, journal_date) in pages {
+            let Ok(pid) = uuid::Uuid::parse_str(&page_id) else { continue };
+            for block in self.get_page_blocks(&pid)? {
+                for (line, text) in block.content.split('\n').enumerate() {
+                    if let Some(t) = parse_task_line(text) {
+                        tasks.push(TaskItem {
+                            block_id: block.id.to_string(),
+                            page_id: page_id.clone(),
+                            page_title: page_title.clone(),
+                            is_journal,
+                            journal_date: journal_date.clone(),
+                            line,
+                            state: t.state,
+                            kind: t.kind,
+                            text: t.text,
+                        });
+                    }
+                }
+            }
+        }
+        Ok(tasks)
+    }
+
+    /// Move the "All TODOs" pages the old TODO badge generated to the Trash, and
+    /// return them (id, title). Only a page with exactly that title whose every
+    /// block is empty or a top-level `{{todo:pending}} [[Title|<page uuid>]] text`
+    /// line — the exact shape the badge wrote — is touched: anything a person
+    /// typed there keeps the page. Trash, not a hard delete, so it can be restored.
+    pub fn trash_generated_todo_pages(&self) -> Result<Vec<(String, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, title FROM pages
+             WHERE title = 'All TODOs' AND is_journal = 0
+               AND id NOT IN (SELECT page_id FROM trash)",
+        )?;
+        let candidates = stmt
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let mut trashed = Vec::new();
+        for (id, title) in candidates {
+            let Ok(pid) = uuid::Uuid::parse_str(&id) else { continue };
+            let blocks = self.get_page_blocks(&pid)?;
+            let generated = blocks.iter().all(|b| {
+                b.content.trim().is_empty() || (b.parent_id.is_none() && is_generated_todo_line(&b.content))
+            });
+            if generated {
+                self.trash_page(&pid)?;
+                trashed.push((id, title));
+            }
+        }
+        Ok(trashed)
+    }
+}
+
+/// A task in the Tasks view: one line of a block.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TaskItem {
+    pub block_id: String,
+    pub page_id: String,
+    pub page_title: String,
+    pub is_journal: bool,
+    pub journal_date: Option<String>,
+    /// Line index inside the block's content.
+    pub line: usize,
+    /// "todo" | "doing" | "done"
+    pub state: &'static str,
+    /// "marker" (TODO/DOING/DONE), "checkbox" (`- [ ]`), "keyword" (`todo:` …)
+    pub kind: &'static str,
+    pub text: String,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct TaskLine {
+    pub state: &'static str,
+    pub kind: &'static str,
+    pub text: String,
+}
+
+/// One line as a task (pending or done), or None. The pending ones are exactly
+/// what [`parse_pending_todo`] finds; DONE markers and `- [x]` are the done ones.
+/// `{{todo:…}}` lines (the old generated "All TODOs" page) are not tasks.
+pub fn parse_task_line(line: &str) -> Option<TaskLine> {
+    let trimmed = line.strip_prefix('\u{feff}').unwrap_or(line).trim_start();
+    for (kw, state) in [("TODO ", "todo"), ("DOING ", "doing"), ("DONE ", "done")] {
+        if let Some(rest) = trimmed.strip_prefix(kw) {
+            let text = rest.trim();
+            return (!text.is_empty()).then(|| TaskLine { state, kind: "marker", text: text.to_string() });
+        }
+    }
+    if trimmed.starts_with("{{todo:") {
+        return None;
+    }
+    if let Some(text) = parse_pending_todo(line) {
+        let kind = if matches!(trimmed.chars().next(), Some('-' | '*' | '+')) { "checkbox" } else { "keyword" };
+        return Some(TaskLine { state: "todo", kind, text });
+    }
+    // A ticked checkbox: marker, 1+ spaces, [x]/[X], 1+ spaces, text.
+    let first = trimmed.chars().next();
+    if matches!(first, Some('-' | '*' | '+')) {
+        let rest = trimmed[1..].trim_start();
+        if rest.len() < trimmed.len() - 1 {
+            if let Some(after) = rest.strip_prefix("[x]").or_else(|| rest.strip_prefix("[X]")) {
+                let text = after.trim_start();
+                if text.len() < after.len() && !text.trim().is_empty() {
+                    return Some(TaskLine { state: "done", kind: "checkbox", text: text.trim().to_string() });
+                }
+            }
+        }
+    }
+    None
+}
+
+/// `{{todo:pending}} [[<title>|<36-char uuid>]] <text>`: a line the old TODO
+/// badge wrote into its "All TODOs" page.
+fn is_generated_todo_line(content: &str) -> bool {
+    let Some(rest) = content.strip_prefix("{{todo:pending}} [[") else { return false };
+    if content.contains('\n') {
+        return false;
+    }
+    // The link ends at the first "]] " after a "|<uuid>".
+    let Some(end) = rest.find("]] ") else { return false };
+    let link = &rest[..end];
+    let Some(bar) = link.rfind('|') else { return false };
+    uuid::Uuid::parse_str(&link[bar + 1..]).is_ok() && link[bar + 1..].len() == 36
 }
 
 #[cfg(test)]
@@ -329,5 +478,61 @@ mod tests {
     #[test]
     fn test_pending_todo_flexible_whitespace() {
         assert_eq!(parse_pending_todo("-  [ ]  Task").as_deref(), Some("Task"));
+    }
+
+    #[test]
+    fn task_lines_have_a_state_and_pending_matches_the_badge() {
+        let t = |l: &str| parse_task_line(l).map(|t| (t.state, t.kind, t.text));
+        assert_eq!(t("TODO buy milk"), Some(("todo", "marker", "buy milk".into())));
+        assert_eq!(t("DOING write"), Some(("doing", "marker", "write".into())));
+        assert_eq!(t("DONE shipped"), Some(("done", "marker", "shipped".into())));
+        assert_eq!(t("- [ ] call bob"), Some(("todo", "checkbox", "call bob".into())));
+        assert_eq!(t("  * [x] paid"), Some(("done", "checkbox", "paid".into())));
+        assert_eq!(t("Follow up: Ann"), Some(("todo", "keyword", "Ann".into())));
+        assert_eq!(t("{{todo:pending}} [[A|x]] y"), None);
+        assert_eq!(t("DONE "), None);
+        assert_eq!(t("-[x] no space"), None);
+        assert_eq!(t("plain"), None);
+        for l in ["TODO a", "DOING b", "DONE c", "- [ ] d", "- [x] e", "next: f", "{{todo:done}} g", "- [ ]", "x"] {
+            let pending = parse_task_line(l).map(|t| t.state != "done").unwrap_or(false);
+            assert_eq!(pending, parse_pending_todo(l).is_some(), "line {l:?}");
+        }
+    }
+
+    #[test]
+    fn list_tasks_groups_by_page_in_outline_order_and_skips_hidden_pages() {
+        let db = test_db();
+        let p = db.create_page("Plans", None, false, None, "test").unwrap();
+        let a = db.create_block(&p.id, "TODO first", None, None, "test").unwrap();
+        db.create_block(&p.id, "DONE child", Some(&a.id), None, "test").unwrap();
+        db.create_block(&p.id, "notes\n- [ ] second", None, None, "test").unwrap();
+        let gone = db.create_page("Gone", None, false, None, "test").unwrap();
+        db.create_block(&gone.id, "TODO hidden", None, None, "test").unwrap();
+        db.trash_page(&gone.id).unwrap();
+        let tasks = db.list_tasks().unwrap();
+        let got: Vec<_> = tasks.iter().map(|t| (t.text.as_str(), t.state, t.line)).collect();
+        assert_eq!(got, vec![("first", "todo", 0), ("child", "done", 0), ("second", "todo", 1)]);
+        assert!(tasks.iter().all(|t| t.page_title == "Plans"));
+    }
+
+    #[test]
+    fn only_generated_all_todos_pages_are_trashed() {
+        let db = test_db();
+        let src = db.create_page("Work", None, false, None, "test").unwrap();
+        let gen = db.create_page("All TODOs", None, false, None, "test").unwrap();
+        db.create_block(&gen.id, "", None, None, "test").unwrap();
+        db.create_block(&gen.id, &format!("{{{{todo:pending}}}} [[Work|{}]] ship it", src.id), None, None, "test").unwrap();
+        let trashed = db.trash_generated_todo_pages().unwrap();
+        assert_eq!(trashed, vec![(gen.id.to_string(), "All TODOs".to_string())]);
+        assert!(db.trash_generated_todo_pages().unwrap().is_empty(), "already in the trash");
+
+        // Someone wrote in it (or it isn't the generated shape): kept.
+        db.permanently_delete_page(&gen.id, "test").unwrap();
+        let mine = db.create_page("All TODOs", None, false, None, "test").unwrap();
+        db.create_block(&mine.id, &format!("{{{{todo:pending}}}} [[Work|{}]] ship it", src.id), None, None, "test").unwrap();
+        db.create_block(&mine.id, "my own note", None, None, "test").unwrap();
+        assert!(db.trash_generated_todo_pages().unwrap().is_empty());
+        assert!(!is_generated_todo_line("{{todo:pending}} [[Work|not-a-uuid]] x"));
+        assert!(!is_generated_todo_line("{{todo:done}} [[Work|0e1d2c3b-4a59-4687-a6b5-c4d3e2f1a0b9]] x"));
     }
 }

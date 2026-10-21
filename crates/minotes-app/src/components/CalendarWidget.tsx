@@ -1,8 +1,10 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 
 interface Props {
   journalDates: Set<string>;
   onDateClick: (date: string) => void;
+  /** The journal day that is open ("YYYY-MM-DD"): marked, and its month shown. */
+  selectedDate?: string | null;
 }
 
 const DAYS = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
@@ -14,10 +16,22 @@ function toKey(y: number, m: number, d: number): string {
   return `${y}-${pad(m + 1)}-${pad(d)}`;
 }
 
-export default function CalendarWidget({ journalDates, onDateClick }: Props) {
+function parseKey(key?: string | null): { y: number; m: number } | null {
+  const m = key ? /^(\d{4})-(\d{2})-\d{2}$/.exec(key) : null;
+  return m ? { y: Number(m[1]), m: Number(m[2]) - 1 } : null;
+}
+
+export default function CalendarWidget({ journalDates, onDateClick, selectedDate }: Props) {
   const today = new Date();
-  const [year, setYear] = useState(today.getFullYear());
-  const [month, setMonth] = useState(today.getMonth());
+  const initial = parseKey(selectedDate);
+  const [year, setYear] = useState(initial?.y ?? today.getFullYear());
+  const [month, setMonth] = useState(initial?.m ?? today.getMonth());
+
+  // Opening another day shows its month.
+  useEffect(() => {
+    const p = parseKey(selectedDate);
+    if (p) { setYear(p.y); setMonth(p.m); }
+  }, [selectedDate]);
 
   const days = useMemo(() => {
     const firstDay = new Date(year, month, 1).getDay();
@@ -43,9 +57,9 @@ export default function CalendarWidget({ journalDates, onDateClick }: Props) {
   return (
     <div className="cal-widget">
       <div className="cal-header">
-        <button className="cal-nav" onClick={prev}>‹</button>
+        <button className="cal-nav" onClick={prev} aria-label="Previous month">‹</button>
         <span className="cal-month">{MONTHS[month]} {year}</span>
-        <button className="cal-nav" onClick={next}>›</button>
+        <button className="cal-nav" onClick={next} aria-label="Next month">›</button>
       </div>
       <div className="cal-grid">
         {DAYS.map((d) => (
@@ -55,9 +69,10 @@ export default function CalendarWidget({ journalDates, onDateClick }: Props) {
           cell ? (
             <button
               key={i}
-              className={`cal-day${journalDates.has(cell.key) ? " has-entry" : ""}${cell.key === todayKey ? " today" : ""}`}
+              className={`cal-day${journalDates.has(cell.key) ? " has-entry" : ""}${cell.key === todayKey ? " today" : ""}${cell.key === selectedDate ? " selected" : ""}`}
               onClick={() => onDateClick(cell.key)}
               title={cell.key}
+              aria-current={cell.key === selectedDate ? "date" : undefined}
             >
               {cell.day}
               {journalDates.has(cell.key) && <span className="cal-dot" />}

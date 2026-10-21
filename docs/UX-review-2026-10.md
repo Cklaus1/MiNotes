@@ -60,7 +60,7 @@ Average **5.2 / 10** across 72 features. Nothing scores 10; the best is 9
 | Wiki links `[[` | 7 | Good autocomplete and creation; no `]]` auto-close |
 | Block references / transclusion `((` | 3 | **Fixed** (`9e370f7` parse, `50a636d` C-12: live chip text, card only for `{{embed ((uuid))}}`, page names in the picker) — Raw `((uuid))` after any reload; content shown twice; stale until reload |
 | TODO / DOING / DONE | 7 | **Fixed** (`e271c67`: DONE struck through and dimmed, room after the badge) — Ctrl+Enter cycles with coloured badges; DONE not struck through |
-| TODO badge / "All TODOs" | 2–3 | Writes a real page of raw `{{todo:pending}}` markup (both reviewers) |
+| TODO badge / "All TODOs" | 2–3 | **Fixed** (`0edbc9c`: a live Tasks view, see C-8) — Writes a real page of raw `{{todo:pending}}` markup (both reviewers) |
 | Tables | 7 | Tab between cells, clean markdown; columns resize while typing |
 | Code blocks | 5 | Highlighting works; no language picker; typed fence + Enter saves escaped text (**fixed**, `01d33e6`) |
 | Quotes / callouts | 6 | Quote fine; no callout block |
@@ -81,20 +81,20 @@ Average **5.2 / 10** across 72 features. Nothing scores 10; the best is 9
 | Feature | Score | Verdict |
 |---|---|---|
 | First run / empty notebook | 6 | Good Getting Started page; new notebooks open bare and silent |
-| Projects / folder tree | 3 | **Subfolders can never be expanded** — nested pages unreachable; max 2 open projects |
-| Pinned / recent / TODO badge | 3 | Pinning works; TODO badge materialises the "All TODOs" page |
-| Journal | 6 | Calendar with dots; Prev/Next jump position on empty days; no day shortcuts |
+| Projects / folder tree | 3 | **Fixed** (`8cbd704`: any depth, no limit, Move to… the whole tree, projects into projects, New sub-project) — **Subfolders can never be expanded** — nested pages unreachable; max 2 open projects |
+| Pinned / recent / TODO badge | 3 | **Fixed** (`44393ca`: pinned pages stay in their project, archived/trashed pages leave Recent; `0edbc9c`: Tasks view) — Pinning works; TODO badge materialises the "All TODOs" page |
+| Journal | 6 | **Fixed** (`d132ce9`: same header on empty days, buttons lead it; open day marked in the calendar; Alt+↑/↓) — Calendar with dots; Prev/Next jump position on empty days; no day shortcuts |
 | All Pages | 6 | Sort and filter; no actions, no path, stray scrollbar, sidebar hidden |
 | Trash and Archive | 3 | Delete has Undo, but **Empty trash and ✕ are permanent with no confirm**, and ✕ is clipped off-screen |
-| Search palette (Ctrl+K) | 5 | Fast and keyboard-friendly; raw markup/UUIDs in results; no fuzzy matching |
+| Search palette (Ctrl+K) | 5 | **Partly fixed** (`a0b0fd8`: plain-text block results with their page, word-by-word title match, visible checkbox; fuzzy ranking is Wave 4) — Fast and keyboard-friendly; raw markup/UUIDs in results; no fuzzy matching |
 | Command palette (`>`) | 4 | Only 10 commands |
 | Cross-notebook `[[NB::Page]]` links | 7 | Clear states; a locked target is a dead end; no way back |
-| Notebook switcher / New notebook / encryption | 7 | Excellent copy and recovery flow; disabled buttons look enabled; 5–10 s switches with no progress |
-| Manage notebooks | 6 | Safe delete; list re-sorts after rename (the next click hit the wrong notebook) |
+| Notebook switcher / New notebook / encryption | 7 | **Partly fixed** (`3b9c8b1`: disabled buttons in the notebook dialogs look disabled and say why; switch progress is Wave 3) — Excellent copy and recovery flow; disabled buttons look enabled; 5–10 s switches with no progress |
+| Manage notebooks | 6 | **Fixed** (`efd9451`: rows keep their order, errors clear, Open per row, lock badge, quiet Delete) — Safe delete; list re-sorts after rename (the next click hit the wrong notebook) |
 | Unlock / recovery / Lock now | 7 | Clear; lock takes ~5 s with no feedback |
 | Settings → Security | 7 | Complete and honest; unreadable dropdowns |
 | Shortcuts (help + do they work) | 5 | Full list buried in Settings; Ctrl+N opens a native `prompt()`; no back/forward |
-| Window title | 2 | Always "MiNotes" |
+| Window title | 2 | **Fixed** (`fad7c73`: "Page — Notebook — MiNotes", "Locked — Notebook — MiNotes") — Always "MiNotes" |
 | Narrow window (800 / 600 px) | 4 | Sidebar can't collapse; 600 px layout's Menu tab does nothing |
 | Theme and contrast | 6 | Clean; tooltips cover menus; native dropdowns unreadable in dark theme |
 
@@ -150,9 +150,9 @@ Ranked by harm. **D** = data loss or corruption, **S** = safety/security, **B** 
 | C-5 | D | **Fixed** (`f2673b4`: confirm with counts; title ellipsis keeps ✕ visible) — **Empty trash and per-item delete are permanent with no confirmation**; the ✕ button is clipped out of view | `Sidebar.tsx` ~672 | S |
 | C-6 | D | **Fixed** (`01d33e6`: structure-aware paste, `editor/pasteMarkdown.ts`; ```` ```lang ```` + Enter makes a code block) — **Pasted markdown is mangled** (escaped headings, flattened nesting, indented lines → code); typed ```` ```lang ```` + Enter saves escaped text | paste / input rules | M |
 | C-7 | D | **Fixed** (`01ddbfa`: "N blocks deleted · Undo" toast; confirm before deleting every block) — **Ctrl+A → Backspace outside the editor deletes the whole page** with no confirmation or toast (Ctrl+Z restores it, nothing says so) | multi-select | S |
-| C-8 | D | **The TODO badge writes a real "All TODOs" page** of raw markup that pollutes the page list, every page's backlinks and search | `App.tsx` ~950 | M |
+| C-8 | D | **Fixed** (`0edbc9c`: a virtual Tasks view; generated pages moved to the Trash once per notebook) — **The TODO badge writes a real "All TODOs" page** of raw markup that pollutes the page list, every page's backlinks and search | `App.tsx` ~950 | M |
 | C-9 | D | **Fixed** (`29f6908`: the seeded onboarding page is recorded and, while untouched, gives way to a pulled page of the same title; an empty local journal gives way too; numbering is idempotent; the mirror state follows a file the pull gave to another page) — **Git sync: joining from a fresh device duplicates the onboarding page**, and copies multiply ("Getting Started (2) (2)") | sync import | M |
-| C-10 | B | **Subfolders can never be expanded** — pages in nested projects are unreachable from the sidebar | `Sidebar.tsx` ~1283 | S |
+| C-10 | B | **Fixed** (`8cbd704`: expanded state per project at any depth, no 2-project limit) — **Subfolders can never be expanded** — pages in nested projects are unreachable from the sidebar | `Sidebar.tsx` ~1283 | S |
 | C-11 | B | **Fixed** (`3b45b43`: gutter columns, arrow on top; ringed bullet + hidden count; Ctrl+Up/Down, block menu, Collapse all) — **Collapse can't be done with the mouse** — the toggle is covered by the drag handle and zoom trigger | block controls CSS | S |
 | C-12 | B | **Fixed** (`9e370f7`: `((uuid))` parses into a block-ref chip; `50a636d`: the chip shows the referenced text, live, via `lib/blockRefs.ts`; the card only for `{{embed ((uuid))}}`) — **Block references render as raw `((uuid))` after any reload** | markdown → node parse | S/M |
 | C-13 | B | **Fixed** (`6675717`: `lib/blockTree.ts` applyDrop + outline order; text drag image; drop as a child) — **After a drag, the outline renders scrambled** until reload (data is correct; positions sorted without outline order) | `PageView` `localBlocks` | S |
@@ -168,6 +168,9 @@ Also worth fixing soon: link previews and remote images send no User-Agent
 whole board (**fixed** in `6f3a0fd`); the whiteboard overlay lets typing reach
 the hidden page underneath (**fixed** in `ccb7fb4`); Manage notebooks re-sorts rows
 after a rename; split→merge isn't reversible (**fixed**, `9541610`).
+(Wikipedia/Wikimedia answer 403); Kanban Esc closes the whole board; the
+whiteboard overlay lets typing reach the hidden page underneath; Manage
+notebooks re-sorts rows after a rename (**fixed**, `efd9451`); split→merge isn't reversible.
 
 **Wave 1 notes (2026-10-21).** The markdown round-trip suite
 (`src/editor/markdownRoundTrip.test.ts`, `npm test`) also found and fixed: task
@@ -216,6 +219,27 @@ loopback ports (curl times out too); on most machines a refused connection is
 immediate — the 2 s loopback connect timeout covers both. Not done here
 (Wave 4): a remote field / join wizard, a conflict compare view; the chip's
 details popover doesn't scroll Settings to its Sync section.
+
+**Wave 2 notes — navigation (2026-10-21).** Decisions: a project's count
+includes its subprojects' pages (tooltip: "N here, M in subprojects"); Move to…
+lists Top level and the whole tree (the current place disabled); open projects
+are remembered per notebook at any depth. Pinned is a shortcut, so a pinned
+page also stays in its project and in Pages. The Tasks view is not a page:
+Open/TODO/DOING/DONE/All, a checkbox and a state chip rewrite the task's own
+line (a `todo:`-style line becomes `DONE …`; a checkbox has no DOING, so DOING
+turns it into a marker). The one-time cleanup trashes only pages titled "All
+TODOs" whose every block is empty or exactly `{{todo:pending}} [[Title|<uuid>]]
+text` at the top level (the old generated shape), logs them, says so in a
+toast, and sets the `cleanup.all-todos-v1` UI-state flag. Journal Prev / Today /
+Next now lead the header so the date's length can't move them. Alt+↑/↓ (free:
+Alt+←/→ zoom blocks) step days. Manage notebooks keeps the rows' order from
+when it opened; Escape in its rename field no longer closes the dialog
+(`data-escape-local` in `Modal`). The window title shows the notebook's name
+while locked (PRD-encryption §9 Q5: names shown), never a page title; the
+desktop harness now finds the window by a title ending in "MiNotes". Journeys:
+browser 79–84 (+ title and disabled-button checks in 65), desktop D18 (real
+clicks: nested projects, Tasks toggle → database, Prev ×3 at one spot, rename in
+Manage notebooks, `xdotool getwindowname`).
 
 ## 4. Patterns behind the scores
 

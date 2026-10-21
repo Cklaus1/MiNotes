@@ -353,6 +353,10 @@ export const reorderPage = (id: string, newPosition: number) =>
 export const deleteFolder = (id: string) =>
   invoke<boolean>("delete_folder", { id });
 
+/** Move a project into `parentId` (undefined: the top level). */
+export const moveFolder = (id: string, parentId?: string) =>
+  invoke<Folder>("move_folder", { id, parentId: parentId ?? null });
+
 export const renameFolder = (id: string, newName: string) =>
   invoke<Folder>("rename_folder", { id, newName });
 
@@ -1015,6 +1019,28 @@ export const getPendingTodoCount = () =>
 // AI: List all pending TODOs with source page titles
 export const listPendingTodos = () =>
   invoke<Array<{ page_title: string; text: string }>>("list_pending_todos");
+
+/** One task line (of a block) for the Tasks view. */
+export interface TaskItem {
+  block_id: string;
+  page_id: string;
+  page_title: string;
+  is_journal: boolean;
+  journal_date: string | null;
+  /** Line index inside the block's content. */
+  line: number;
+  state: "todo" | "doing" | "done";
+  /** "marker" (TODO/DOING/DONE), "checkbox" (- [ ]), "keyword" (todo: …). */
+  kind: "marker" | "checkbox" | "keyword";
+  text: string;
+}
+
+/** Every task on visible pages: pages newest first, tasks in outline order. */
+export const listTasks = () => invoke<TaskItem[]>("list_tasks");
+
+/** Move the old generated "All TODOs" pages to the Trash; returns [id, title] pairs. */
+export const cleanupGeneratedTodoPages = () =>
+  invoke<Array<[string, string]>>("cleanup_generated_todo_pages");
 
 export const listPendingTodosWithIds = () =>
   invoke<Array<{ page_id: string; page_title: string; text: string }>>("list_pending_todos_with_page_ids");

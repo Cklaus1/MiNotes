@@ -1,0 +1,147 @@
+/* Tasks view (the sidebar's TODO badge). Theme variables only; the state chips
+   use the same colours as the editor's TODO/DOING/DONE badges. */
+
+.tasks-view {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.tasks-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 24px;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+
+.tasks-header h2 {
+  font-size: 20px;
+  font-weight: 600;
+  margin: 0;
+}
+
+.tasks-filters {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.tasks-filter {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+
+.tasks-filter:hover { color: var(--text-primary); background: var(--bg-surface); }
+
+.tasks-filter.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--bg-primary);
+}
+
+.tasks-filter-count {
+  font-size: 11px;
+  opacity: 0.75;
+  margin-left: 2px;
+}
+
+.tasks-close { margin-left: auto; }
+
+.tasks-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 24px 48px;
+}
+
+.tasks-empty {
+  color: var(--text-muted);
+  padding: 32px 0;
+  text-align: center;
+}
+
+.tasks-group { margin: 12px 0 20px; max-width: 820px; }
+
+.tasks-group-title {
+  background: none;
+  border: none;
+  padding: 0 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  cursor: pointer;
+  text-align: left;
+}
+
+.tasks-group-title:hover { color: var(--accent); text-decoration: underline; }
+
+.tasks-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--border);
+}
+
+.tasks-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+.tasks-row:hover { background: var(--bg-surface); }
+
+.tasks-check {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.tasks-state {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 1px 6px;
+  border-radius: 4px;
+  border: none;
+  color: #1e1e2e;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.tasks-state-todo { background: #f9e2af; }
+.tasks-state-doing { background: #89b4fa; }
+.tasks-state-done { background: #a6e3a1; }
+
+.tasks-text {
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--text-primary);
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tasks-text:hover { text-decoration: underline; }
+
+.tasks-row.state-done .tasks-text {
+  color: var(--text-muted);
+  text-decoration: line-through;
+}

@@ -6,6 +6,7 @@ import { getSettings } from "../lib/settings";
 import { showToast } from "../lib/toast";
 import { errorMessage } from "../lib/errors";
 import { PassphrasePrompt, UnlockScreen } from "./EncryptionDialogs";
+import { composeWindowTitle, setWindowTitle } from "../lib/windowTitle";
 
 /** How often the auto-lock check runs, and the clock jump that means the
  *  computer slept (Tauri reports no sleep event — PRD-encryption §4.4). */
@@ -57,6 +58,13 @@ export default function LockGate({ children }: { children: ReactNode }) {
   }, [apply, reload]);
 
   const unlockedEncrypted = !!session?.encrypted && !session.locked;
+
+  // Locked: the window title names only the notebook (as the unlock screen
+  // does), never the page that was open. Unlocked, App sets it.
+  const lockedName = session?.locked ? session.name : null;
+  useEffect(() => {
+    if (lockedName !== null) setWindowTitle(composeWindowTitle("Locked", lockedName));
+  }, [lockedName]);
 
   const doLock = useCallback(() => {
     lockNow().catch(e => showToast(`Couldn't lock: ${errorMessage(e)}`));
