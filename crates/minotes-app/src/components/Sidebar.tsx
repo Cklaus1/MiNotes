@@ -13,6 +13,7 @@ import { folderNameConflict } from "../lib/folderNames";
 import { errorMessage } from "../lib/errors";
 import { pageTitleConflict } from "../lib/pageNames";
 import { confirmDialog, plural } from "../lib/confirm";
+import SyncChip from "./SyncChip";
 function formatJournalDate(dateStr: string): string {
   try {
     const [y, m, d] = dateStr.split("-").map(Number);
@@ -73,13 +74,12 @@ interface Props {
   onReviewClick?: () => void;
   activeMode: "graph" | "mindmap" | "whiteboard" | "kanban" | "pages" | null;
   refreshKey: number;
-  syncState?: "idle" | "syncing" | "error" | "offline";
 }
 
 export default function Sidebar({
   activePage, stats, onPageClick, onCreatePage, onDeletePage,
   onJournalClick, onSearchClick, onGraphClick, onMindmapClick, onWhiteboardClick, onKanbanClick, onPagesClick, onSettingsClick, onFolderSettings, onTodoBadgeClick, activeMode, refreshKey,
-  syncState, onReviewClick,
+  onReviewClick,
 }: Props) {
   const [newTitle, setNewTitle] = useState("");
   const [showCreate, setShowCreate] = useState(false);
@@ -721,15 +721,7 @@ export default function Sidebar({
 
         {/* Tools */}
         <div className="stats-modes-divider" />
-        {syncState === "syncing" && (
-          <div className="sync-indicator sync-syncing">Syncing\u2026</div>
-        )}
-        {syncState === "error" && (
-          <div className="sync-indicator sync-error">\u26A0 Sync failed</div>
-        )}
-        {syncState === "offline" && (
-          <div className="sync-indicator sync-offline">Offline</div>
-        )}
+        <SyncChip onOpenSettings={onSettingsClick} />
         <div className="stats-modes-grid">
           <button className={`stats-mode-btn ${activeMode === "graph" ? "active" : ""}`} onClick={onGraphClick} title="Graph (Ctrl+G)">
             &#128202;Graph

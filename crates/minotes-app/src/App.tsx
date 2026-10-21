@@ -34,6 +34,9 @@ import { pageTitleConflict } from "./lib/pageNames";
 import { getRecentPages } from "./lib/recentFiles";
 import { getSettings } from "./lib/settings";
 import NotebookBanner from "./components/NotebookBanner";
+import {
+  applySyncStatus, getSyncView, phaseOf, setSyncView, SYNC_CONFIRM_EVENT, SYNC_NOW_EVENT,
+} from "./lib/syncStatus";
 import { listenOutsideEdits, OUTSIDE_PAGES_CHANGED } from "./lib/outsideEdits";
 import {
   NOTEBOOK_SWITCHED, setNextExportDest, setNextPickedFolder, setNextZipPick, switchNotebook, useCapabilities,
@@ -72,10 +75,7 @@ export default function App() {
   const [rightSidebarVisible, setRightSidebarVisible] = useState(true);
   const [folderSettingsId, setFolderSettingsId] = useState<string | null>(null);
 
-  // Git Sync state
-  const [syncStatus, setSyncStatus] = useState<api.GitSyncStatus | null>(null);
-  const [syncState, setSyncState] = useState<"idle" | "syncing" | "error" | "offline">("idle");
-  const [syncErrorMsg, setSyncErrorMsg] = useState<string | null>(null);
+  // Git Sync state: the shared status lives in lib/syncStatus (chip, Settings).
   const syncingRef = useRef(false);
   const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Deletions from another device that sync's mass-delete guard is holding.
@@ -489,63 +489,76 @@ export default function App() {
     openPage(p.id).catch(() => {});
   }, [activePage, openPage, openJournal]);
 
-  const triggerSync = useCallback(async () => {
-    if (syncingRef.current) return;
+  // `manual`: the user asked ("Sync now") — say what happened, also when
+  // nothing could run. Automatic syncs (open, focus, after edits) stay quiet
+  // unless something new goes wrong.
+  const triggerSync = useCallback(async (manual = false) => {
+    if (syncingRef.current) {
+      if (manual) showToast("Already syncing…");
+      return;
+    }
+    const refreshStatus = async () => applySyncStatus(await api.gitSyncStatus().catch(() => getSyncView().status));
     try {
       const status = await api.gitSyncStatus().catch(() => null);
-      if (!status?.enabled) return;
-      if (status.needs_confirmation) {
-        setSyncNeedsConfirm(true);
+      applySyncStatus(status);
+      if (!status?.enabled) {
+        if (manual) showToast("Sync is off for this notebook. Turn it on in Settings → Sync & Backup.");
         return;
       }
+      if (status.needs_confirmation) {
+        setSyncNeedsConfirm(true);
+        if (manual) showToast("Sync is paused: this folder was set up on another computer. Choose “Sync it here” first.");
+        return;
+      }
+      const previousError = getSyncView().error;
       syncingRef.current = true;
-      setSyncState("syncing");
+      setSyncView({ phase: "syncing" });
       const result = await api.gitSync();
+      syncingRef.current = false;
+      await refreshStatus();
       if (result.needs_confirmation) {
         setSyncNeedsConfirm(true);
-        setSyncState("idle");
         return;
       }
       setHeldDeletions(result.held_deletions ?? null);
+      // Git conflicts are merged per block; only a block changed on both
+      // devices keeps the other version as a separate page.
+      const copies = result.conflict_pages ?? [];
+      if (copies.length > 0) {
+        const m = /^(.*) \(conflict from (.+?)\)(?: \(\d+\))?$/.exec(copies[0]);
+        const page = m?.[1] ?? copies[0];
+        const device = m?.[2] ?? "another device";
+        const msg = copies.length === 1
+          ? `Sync conflict: “${page}” was changed here and on ${device}. Both versions are kept — yours stays in place, ${device}'s is the page “${copies[0]}”.`
+          : `Sync conflict in ${copies.length} pages (${copies.map(c => `“${(/^(.*) \(conflict from /.exec(c)?.[1]) ?? c}”`).join(", ")}). Both versions are kept — the other device's versions are the “(conflict from ${device})” pages.`;
+        const open = copies[0];
+        showUndoToast(msg, () => {
+          api.getPageTree(open).then(t => openPage(t.page.id)).catch(() => showToast(`Couldn't open “${open}”`));
+        }, 15000, "Open");
+      }
+      if (result.pages_imported > 0) {
+        // (An import problem still brought the rest of the other device's changes.)
+        refresh();
+        reopenAfterSync();
+      }
       if (result.success) {
-        setSyncState("idle");
-        setSyncErrorMsg(null);
-        setSyncStatus(prev => prev ? { ...prev, last_sync: new Date().toISOString() } : prev);
-        // Git conflicts are merged per block; only a block changed on both
-        // devices keeps the other version as a separate page.
-        const copies = result.conflict_pages?.length ?? 0;
-        if (copies > 0) {
-          showToast(
-            `⚠ Sync conflict in ${copies} page(s) — both versions were kept. ` +
-              `Your local version stays in place; the other device's version was saved as a separate page ` +
-              `titled "… (conflict from <device>)". Compare them and merge or delete the copy.`,
-            10000,
-          );
-        }
-        if (result.pages_imported > 0) {
-          refresh();
-          reopenAfterSync();
+        if (manual) {
+          showToast(result.no_remote
+            ? "Saved in the sync folder only: no remote is set, so nothing was sent anywhere."
+            : "Synced");
         }
       } else if (result.offline) {
         // Remote unreachable: not a failure — local edits are kept and synced later.
-        setSyncState("offline");
-        setSyncErrorMsg(result.error ?? "The sync remote can't be reached");
-      } else {
-        const errMsg = result.error ?? "Unknown error";
-        setSyncState("error");
-        setSyncErrorMsg(errMsg);
-        showToast(`Sync failed: ${errMsg}`);
-        // An import problem still brought the rest of the other device's changes.
-        if (result.pages_imported > 0) {
-          refresh();
-          reopenAfterSync();
-        }
+        if (manual) showToast(`Can't reach the sync remote right now. Your notes are kept here and sync later.`);
+      } else if (manual || result.error !== previousError) {
+        showToast(`Sync failed: ${result.error ?? "Unknown error"}`);
       }
     } catch (e) {
-      setSyncState("error");
-      setSyncErrorMsg(String(e));
+      setSyncView({ phase: "error", error: errorMessage(e), errorKind: "other" });
+      if (manual) showToast(`Sync failed: ${errorMessage(e)}`);
     } finally {
       syncingRef.current = false;
+      if (getSyncView().phase === "syncing") setSyncView({ phase: phaseOf(getSyncView().status) });
     }
   }, [refresh, reopenAfterSync]);
 
@@ -614,17 +627,16 @@ export default function App() {
       setActivePage(null);
       setHeldDeletions(null);
       setSyncNeedsConfirm(false);
-      setSyncState("idle");
-      setSyncErrorMsg(null);
+      setSyncView({ phase: "off", status: null, error: null, errorKind: null });
       undoStack.clear();
       notifyCardsChanged();
       refresh();
       window.dispatchEvent(new Event("minotes-sidebar-refresh"));
       openJournal().catch(() => {});
       api.gitSyncStatus().then(status => {
-        setSyncStatus(status);
+        applySyncStatus(status);
         if (status.enabled) setTimeout(() => window.dispatchEvent(new Event("minotes-trigger-sync")), 0);
-      }).catch(() => setSyncStatus(null));
+      }).catch(() => applySyncStatus(null));
     };
     window.addEventListener(NOTEBOOK_SWITCHED, onSwitch);
     return () => window.removeEventListener(NOTEBOOK_SWITCHED, onSwitch);
@@ -653,14 +665,22 @@ export default function App() {
 
   useEffect(() => {
     const h = () => { triggerSync(); };
+    const now = () => { triggerSync(true); };
+    const ok = () => { confirmSync(); };
     window.addEventListener("minotes-trigger-sync", h);
-    return () => window.removeEventListener("minotes-trigger-sync", h);
-  }, [triggerSync]);
+    window.addEventListener(SYNC_NOW_EVENT, now);
+    window.addEventListener(SYNC_CONFIRM_EVENT, ok);
+    return () => {
+      window.removeEventListener("minotes-trigger-sync", h);
+      window.removeEventListener(SYNC_NOW_EVENT, now);
+      window.removeEventListener(SYNC_CONFIRM_EVENT, ok);
+    };
+  }, [triggerSync, confirmSync]);
 
   // Load sync status on mount + sync on app open
   useEffect(() => {
     api.gitSyncStatus().then(status => {
-      setSyncStatus(status);
+      applySyncStatus(status);
       if (status.enabled) triggerSync();
     }).catch(() => {});
   }, []);
@@ -970,7 +990,6 @@ export default function App() {
         }}
         activeMode={canvasMode === "graph" ? "graph" : canvasMode === "mindmap" ? "mindmap" : canvasMode === "draw" ? "whiteboard" : canvasMode === "kanban" ? "kanban" : canvasMode === "pages" ? "pages" : null}
         refreshKey={refreshKey}
-        syncState={syncStatus?.enabled ? syncState : undefined}
       />
       <div className="main workspace-split mod-root" style={{ position: "relative", display: "flex", flexDirection: "row" }}>
         <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }}>
@@ -1123,8 +1142,6 @@ export default function App() {
       <SettingsPanel
         open={openPanel === "settings"}
         onClose={() => setOpenPanel(null)}
-        syncError={syncState === "error" ? syncErrorMsg : null}
-        onSyncRetry={triggerSync}
         onOpenSync={() => setOpenPanel("sync")}
         onOpenCssSnippets={() => setOpenPanel("cssManager")}
       />

@@ -903,7 +903,13 @@ export interface GitSyncStatus {
   /** Sync is on for this folder, but it was set up on another computer (copied
    *  here): it doesn't sync until the user confirms (`gitSyncConfirm`). */
   needs_confirmation?: boolean;
+  /** The last sync's error (kept until a sync reaches the remote again). */
+  last_error?: string | null;
+  last_error_kind?: SyncErrorKind | null;
 }
+
+/** "offline": the network (retried quietly); the others need the user. */
+export type SyncErrorKind = "offline" | "remote_not_found" | "auth" | "other";
 
 export interface GitSyncResult {
   /** Git AND the import went through. */

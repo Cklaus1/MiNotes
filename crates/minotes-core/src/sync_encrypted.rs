@@ -1019,7 +1019,10 @@ where
         held_deletions: None,
         warnings: export.large_attachments.iter().map(|a| format!("{a} is over 50 MB and was not synced")).collect(),
         needs_confirmation: false,
-    })
+        error_kind: None,
+        no_remote: !git_cmd::has_remote(dir),
+    }
+    .classified())
 }
 
 // ── Key rotation ──

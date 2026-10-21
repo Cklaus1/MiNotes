@@ -78,7 +78,15 @@ fn config_path(key: &str) -> PathBuf {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SyncConfig {
     pub enabled: bool,
+    /// When this notebook last reached the remote (pushed). Never set by a
+    /// cycle without a remote: a local commit is not "synced".
     pub last_sync: Option<String>,
+    /// The last cycle's error (cleared by a cycle that reached the remote).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    /// [`sync_error_kind`] of `last_error`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error_kind: Option<String>,
 }
 
 // ── Trust: was sync for this folder set up on this machine? ──
@@ -418,11 +426,17 @@ pub struct GitSyncStatus {
     pub enabled: bool,
     pub remote_url: Option<String>,
     pub branch: Option<String>,
+    /// When this device last reached the remote. None without a remote, before
+    /// the first push, and while sync waits for confirmation (a copied folder's
+    /// config carries the other computer's time).
     pub last_sync: Option<String>,
     /// Sync is on for this folder, but it was set up on another computer: it
     /// does not sync here until the user confirms ([`confirm_sync`]).
     #[serde(default)]
     pub needs_confirmation: bool,
+    /// The last cycle's error, if it failed ([`sync_error_kind`] in `last_error_kind`).
+    pub last_error: Option<String>,
+    pub last_error_kind: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -454,6 +468,13 @@ pub struct GitSyncResult {
     /// user has not confirmed syncing it here yet.
     #[serde(default)]
     pub needs_confirmation: bool,
+    /// [`sync_error_kind`] of `error`.
+    #[serde(default)]
+    pub error_kind: Option<String>,
+    /// The repo has no remote: the cycle only committed locally (nothing was
+    /// sent anywhere — not "synced").
+    #[serde(default)]
+    pub no_remote: bool,
 }
 
 impl GitSyncResult {
@@ -470,7 +491,16 @@ impl GitSyncResult {
             offline: false,
             warnings: vec![],
             needs_confirmation: false,
+            error_kind: None,
+            no_remote: false,
         }
+    }
+
+    /// Fill `error_kind` (and `offline`) from `error`.
+    pub(crate) fn classified(mut self) -> Self {
+        self.error_kind = self.error.as_deref().map(|e| sync_error_kind(e).to_string());
+        self.offline = self.error_kind.as_deref() == Some(SYNC_ERR_OFFLINE);
+        self
     }
 
     fn not_enabled() -> Self {
@@ -487,9 +517,32 @@ impl GitSyncResult {
 
 /// Does a git error mean "the remote is unreachable" (offline) rather than a
 /// real failure?
+///
+/// Only network failures: a remote that answers "not found" or refuses the
+/// credentials is a real error the user has to fix, never a quiet "Offline"
+/// (UX review: a moved remote showed only a grey "Offline").
 pub fn is_offline_error(msg: &str) -> bool {
+    sync_error_kind(msg) == SYNC_ERR_OFFLINE
+}
+
+/// [`sync_error_kind`]: the remote can't be reached (network). Retried quietly.
+pub const SYNC_ERR_OFFLINE: &str = "offline";
+/// The remote's address leads nowhere: moved, deleted, mistyped.
+pub const SYNC_ERR_REMOTE_NOT_FOUND: &str = "remote_not_found";
+/// The remote refused the credentials.
+pub const SYNC_ERR_AUTH: &str = "auth";
+/// Anything else (an import problem, a git failure).
+pub const SYNC_ERR_OTHER: &str = "other";
+
+/// What kind of failure a sync error message is, for the UI.
+pub fn sync_error_kind(msg: &str) -> &'static str {
     let m = msg.to_lowercase();
-    [
+    let any = |keys: &[&str]| keys.iter().any(|k| m.contains(k));
+    if any(&["authentication failed", "permission denied", "could not read username", "terminal prompts disabled", "returned error: 403", "returned error: 401"]) {
+        SYNC_ERR_AUTH
+    } else if any(&["remote not found", "does not appear to be a git repository", "repository not found", "' not found", "returned error: 404"]) {
+        SYNC_ERR_REMOTE_NOT_FOUND
+    } else if any(&[
         "network error",
         "could not resolve host",
         "could not resolve hostname",
@@ -497,14 +550,15 @@ pub fn is_offline_error(msg: &str) -> bool {
         "connection timed out",
         "network is unreachable",
         "no route to host",
-        "could not read from remote repository",
-        "unable to access",
         "failed to connect",
         "operation timed out",
         "temporary failure in name resolution",
-    ]
-    .iter()
-    .any(|k| m.contains(k))
+        "connection reset",
+    ]) {
+        SYNC_ERR_OFFLINE
+    } else {
+        SYNC_ERR_OTHER
+    }
 }
 
 /// Outcome of phase 1.
@@ -555,26 +609,61 @@ pub fn get_sync_status(key: &str) -> Result<GitSyncStatus> {
     let sync_dir = sync_dir_for_notebook(key);
     let needs_confirmation = config.enabled && !sync_trusted(key);
 
+    // Waiting for the user's OK: whatever the folder's config says happened
+    // happened on another computer (its time, its errors).
+    let (last_error, last_error_kind) = if config.enabled && !needs_confirmation {
+        (config.last_error.clone(), config.last_error_kind.clone())
+    } else {
+        (None, None)
+    };
+
     if !config.enabled || !git_cmd::is_git_repo(&sync_dir) {
         return Ok(GitSyncStatus {
             enabled: config.enabled,
             remote_url: None,
             branch: None,
-            last_sync: config.last_sync,
+            last_sync: None,
             needs_confirmation,
+            last_error,
+            last_error_kind,
         });
     }
 
     let remote_url = git_cmd::get_remote_url(&sync_dir)?;
     let branch = git_cmd::get_branch(&sync_dir).ok().flatten();
+    // Only a push is "synced": never without a remote (older versions stamped
+    // the time a local-only commit was made).
+    let last_sync = if needs_confirmation || remote_url.is_none() { None } else { config.last_sync };
 
     Ok(GitSyncStatus {
         enabled: config.enabled,
         remote_url,
         branch,
-        last_sync: config.last_sync,
+        last_sync,
         needs_confirmation,
+        last_error,
+        last_error_kind,
     })
+}
+
+/// Record a cycle's outcome in the notebook's sync config: the time it reached
+/// the remote, or its error.
+fn record_outcome(key: &str, reached_remote: bool, error: Option<&str>) -> Result<()> {
+    let mut config = read_config(key);
+    match error {
+        Some(e) => {
+            config.last_error = Some(e.to_string());
+            config.last_error_kind = Some(sync_error_kind(e).to_string());
+        }
+        None => {
+            config.last_error = None;
+            config.last_error_kind = None;
+            if reached_remote {
+                config.last_sync = Some(Utc::now().to_rfc3339());
+            }
+        }
+    }
+    write_config(key, &config)
 }
 
 /// Enable git sync for a notebook. `lock_db` is called only around the DB work (never
@@ -587,7 +676,7 @@ where
     if !git_cmd::git_available() {
         return Err(Error::Git("Git is not installed".to_string()));
     }
-    {
+    let (git_error, has_remote) = {
         let _guard = SYNC_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let target = MirrorTarget::for_notebook(&notebook(key));
         // Turning sync on is the user's explicit choice for this folder: an
@@ -596,14 +685,19 @@ where
         if git_cmd::is_git_repo(&target.dir) && !repo_trusted(&target.dir) {
             git_cmd::strip_untrusted_config(&target.dir)?;
         }
-        enable_in_dir(&target, &lock_db)?;
+        let e = enable_in_dir(&target, &lock_db)?;
         trust_repo(&target.dir)?;
-    }
+        (e, git_cmd::has_remote(&target.dir))
+    };
 
     let mut config = read_config(key);
     config.enabled = true;
-    config.last_sync = Some(Utc::now().to_rfc3339());
+    if !has_remote {
+        // A copied folder's config may carry another computer's time.
+        config.last_sync = None;
+    }
     write_config(key, &config)?;
+    record_outcome(key, has_remote, git_error.as_deref())?;
 
     get_sync_status(key)
 }
@@ -625,7 +719,10 @@ pub fn enable_sync(db: &Database, key: &str) -> Result<GitSyncStatus> {
 /// changed: every page whose file the pull left alone is protected, and so is
 /// every page edited during the network phase. Blocks the pull removed are
 /// parked in a Trash page "(removed by sync …)", never deleted.
-pub fn enable_in_dir<G, F>(target: &MirrorTarget, lock_db: &F) -> Result<()>
+///
+/// Returns the remote's error, if the pull or the push failed (sync is on and
+/// everything is committed locally; the next cycle retries).
+pub fn enable_in_dir<G, F>(target: &MirrorTarget, lock_db: &F) -> Result<Option<String>>
 where
     G: Deref<Target = Database>,
     F: Fn() -> Result<G>,
@@ -635,11 +732,12 @@ where
         // Fails closed (before anything is committed or pushed) when the remote
         // holds another notebook.
         let r = crate::sync_encrypted::cycle(sync_dir, lock_db, true)?;
-        if let Some(e) = r.error.filter(|_| !r.offline) {
+        if let Some(e) = r.error.clone().filter(|_| !r.offline) {
             return Err(Error::Git(e));
         }
-        return Ok(());
+        return Ok(r.error);
     }
+    let mut remote_error: Option<String> = None;
     if !git_cmd::is_git_repo(sync_dir) {
         git_cmd::init_repo(sync_dir)?;
     }
@@ -657,8 +755,9 @@ where
     // 2. (no DB lock) Bring in what other devices pushed.
     if git_cmd::has_remote(sync_dir) {
         if let Err(e) = pull_with_resolve(sync_dir) {
-            // Empty/unreachable remote — first push will create it.
+            // (An empty remote is not an error: the first push creates the branch.)
             eprintln!("[minotes-sync] enable: pull skipped: {e}");
+            remote_error = Some(e.to_string());
         }
     }
 
@@ -698,11 +797,15 @@ where
     }
 
     if git_cmd::has_remote(sync_dir) {
-        if let Err(e) = git_cmd::push(sync_dir) {
-            eprintln!("[minotes-sync] enable: push failed: {e}");
+        match git_cmd::push(sync_dir) {
+            Ok(_) => remote_error = None,
+            Err(e) => {
+                eprintln!("[minotes-sync] enable: push failed: {e}");
+                remote_error = Some(e.to_string());
+            }
         }
     }
-    Ok(())
+    Ok(remote_error)
 }
 
 /// Every page except those whose file is among `paths` (changed by a pull):
@@ -1125,7 +1228,10 @@ where
             .map(|a| format!("{a} is over 50 MB and was not synced"))
             .collect(),
         needs_confirmation: false,
-    })
+        error_kind: None,
+        no_remote: !git_cmd::has_remote(sync_dir),
+    }
+    .classified())
 }
 
 /// Update the last_sync timestamp in the notebook's sync config file.
@@ -1148,10 +1254,12 @@ where
     if !sync_trusted(key) {
         return Ok(GitSyncResult::unconfirmed());
     }
-    let result = sync_cycle(&MirrorTarget::for_notebook(&notebook(key)), lock_db)?;
-    if result.success {
-        update_last_sync(key)?;
-    }
+    let target = MirrorTarget::for_notebook(&notebook(key));
+    let mut result = sync_cycle(&target, lock_db)?.classified();
+    result.no_remote = !git_cmd::has_remote(&target.dir);
+    // "Last synced" means the remote has it: a cycle without a remote only
+    // committed locally.
+    record_outcome(key, result.success && !result.no_remote, result.error.as_deref())?;
     Ok(result)
 }
 
@@ -1903,9 +2011,11 @@ mod tests {
         assert!(db_b.get_page(&poison.id).unwrap().is_some(), "retried next cycle");
     }
 
-    // P0: an unreachable remote is "offline", not a hard failure.
+    // P0: an unreachable remote is "offline", not a hard failure — but a remote
+    // that is gone (moved, deleted, mistyped) is an error the user must see, not
+    // a quiet grey "Offline" (UX review, Sync error states).
     #[test]
-    fn test_unreachable_remote_is_offline() {
+    fn test_missing_remote_is_an_error_not_offline() {
         if !git_cmd::git_available() {
             return;
         }
@@ -1917,9 +2027,66 @@ mod tests {
         std::fs::rename(&remote, tmp.path().join("gone.git")).unwrap();
         let r = cycle_any(&a, &db_a);
         assert!(!r.success);
+        assert!(!r.offline, "{:?}", r.error);
+        assert_eq!(r.error_kind.as_deref(), Some(SYNC_ERR_REMOTE_NOT_FOUND), "{:?}", r.error);
+        assert!(r.error.as_deref().unwrap_or("").contains("Remote not found"), "{:?}", r.error);
+
+        // A host that can't be resolved is offline (retried quietly).
+        git_cmd::run_git(&a, &["remote", "set-url", "origin", "https://nonexistent.invalid/notes.git"]).unwrap();
+        let r = cycle_any(&a, &db_a);
+        assert!(!r.success);
         assert!(r.offline, "{:?}", r.error);
-        assert!(is_offline_error("fatal: unable to access 'https://x/': Could not resolve host: x"));
-        assert!(!is_offline_error("Authentication failed — check your SSH keys or credentials"));
+
+        for (msg, kind) in [
+            ("fatal: unable to access 'https://x/': Could not resolve host: x", SYNC_ERR_OFFLINE),
+            ("Network error — can't reach the sync remote. Check your internet connection", SYNC_ERR_OFFLINE),
+            ("Authentication failed — check your SSH keys or credentials", SYNC_ERR_AUTH),
+            ("remote: Repository not found.\nfatal: repository 'https://github.com/x/y.git/' not found", SYNC_ERR_REMOTE_NOT_FOUND),
+            ("fatal: '/tmp/x.git' does not appear to be a git repository\nfatal: Could not read from remote repository.", SYNC_ERR_REMOTE_NOT_FOUND),
+            ("Could not import 1 file(s) from the other device: x", SYNC_ERR_OTHER),
+        ] {
+            assert_eq!(sync_error_kind(msg), kind, "{msg}");
+            assert_eq!(sync_error_kind(&git_cmd::classify_git_error(msg)), kind, "classified: {msg}");
+        }
+    }
+
+    // "Last synced" only after the remote has it: never for a notebook without a
+    // remote (that only commits locally), and the last error is kept until a
+    // cycle reaches the remote again.
+    #[test]
+    fn test_status_is_honest_about_the_remote() {
+        if !git_cmd::git_available() {
+            return;
+        }
+        let _home = crate::notebook::tests::FakeHome::new();
+        let db = Database::open_in_memory().unwrap();
+        db.create_page("Local only", None, false, None, "user").unwrap();
+        let s = enable_sync(&db, "default").unwrap();
+        assert!(s.enabled && s.remote_url.is_none());
+        assert_eq!(s.last_sync, None, "no remote: nothing was synced anywhere");
+        let r = full_sync(&db, "default").unwrap();
+        assert!(r.success && r.no_remote);
+        let s = get_sync_status("default").unwrap();
+        assert_eq!(s.last_sync, None);
+        assert_eq!(s.last_error, None);
+
+        // A remote that isn't there.
+        let dir = sync_dir_for_notebook("default");
+        let missing = dir.parent().unwrap().join("missing.git");
+        git_cmd::run_git(&dir, &["remote", "add", "origin", missing.to_str().unwrap()]).unwrap();
+        let r = full_sync(&db, "default").unwrap();
+        assert!(!r.success && !r.offline && !r.no_remote);
+        let s = get_sync_status("default").unwrap();
+        assert_eq!(s.last_sync, None);
+        assert_eq!(s.last_error_kind.as_deref(), Some(SYNC_ERR_REMOTE_NOT_FOUND), "{:?}", s.last_error);
+
+        // The remote appears: synced, error cleared.
+        git_cmd::run_git(dir.parent().unwrap(), &["init", "--bare", "-q", missing.to_str().unwrap()]).unwrap();
+        let r = full_sync(&db, "default").unwrap();
+        assert!(r.success, "{:?}", r.error);
+        let s = get_sync_status("default").unwrap();
+        assert!(s.last_sync.is_some());
+        assert_eq!(s.last_error, None);
     }
 
     // Sync on top of the mirror: a notebook's sync dir IS its mirror, and the
@@ -2446,12 +2613,13 @@ mod tests {
         git_cmd::tests::configure_test_repo(&notes);
         git_cmd::run_git(&notes, &["remote", "add", "origin", remote.to_str().unwrap()]).unwrap();
         // As copied: sync on in the folder's own config, no record on this machine.
-        write_config(&nb.key, &SyncConfig { enabled: true, last_sync: None }).unwrap();
+        write_config(&nb.key, &SyncConfig { enabled: true, last_sync: Some("2026-10-01T09:00:00Z".into()), ..Default::default() }).unwrap();
         let marker = home.path().join("PWNED");
         plant_hostile_repo_config(&notes, &marker);
 
         assert!(!sync_trusted(&nb.key));
         assert!(get_sync_status(&nb.key).unwrap().needs_confirmation);
+        assert_eq!(get_sync_status(&nb.key).unwrap().last_sync, None, "the other computer's time is not shown as ours");
         let r = full_sync_with(&nb.key, || Ok(&db)).unwrap();
         assert!(r.needs_confirmation && !r.success);
         assert_eq!(git_cmd::rev_parse_head(&notes).unwrap(), None, "nothing was committed");
