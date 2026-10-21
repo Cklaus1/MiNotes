@@ -5523,6 +5523,22 @@ body.theme-light { /* matches our light theme */ }
   margin-top: auto;
 }
 
+.link-preview-status {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.link-preview-failed .link-preview-status { color: var(--text-muted); }
+.link-preview-skeleton {
+  height: 12px;
+  width: 60%;
+  border-radius: 4px;
+  background: var(--bg-surface);
+  animation: link-preview-pulse 1.2s ease-in-out infinite;
+}
+@keyframes link-preview-pulse { 50% { opacity: 0.45; } }
+@media (prefers-reduced-motion: reduce) { .link-preview-skeleton { animation: none; } }
+.link-preview-domain { font-weight: 500; }
+
 /* ── Feature 9: Block Transclusion ── */
 
 .block-transclusions {

@@ -1450,12 +1450,16 @@ const handlers: Record<string, (args: any) => any> = {
   read_file_base64: notInBrowser("read_file_base64"),
 
   // Feature 8: Link Preview — mock OG metadata
-  fetch_og_metadata: ({ url }: { url: string }) => ({
-    title: new URL(url).hostname + " — Page Title",
-    description: "A brief description of the linked page content.",
-    // Pages whose URL asks for one get an og:image (remote: blocked until allowed).
-    image: /[?&]og-image\b/.test(url) ? new URL("/og-image.png", url).href : "",
-  }),
+  // Like the backend: an unreachable host (here: any `.invalid` one) is an error.
+  fetch_og_metadata: ({ url }: { url: string }) => {
+    if (/\.invalid$/.test(new URL(url).hostname)) throw new Error("Could not reach the site");
+    return {
+      title: new URL(url).hostname + " — Page Title",
+      description: "A brief description of the linked page content.",
+      // Pages whose URL asks for one get an og:image (remote: blocked until allowed).
+      image: /[?&]og-image\b/.test(url) ? new URL("/og-image.png", url).href : "",
+    };
+  },
 
   // A block with its page title (block refs navigate with it), or null.
   get_block: ({ id }: { id: string }) => {

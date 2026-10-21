@@ -3507,6 +3507,25 @@ api "closePanel()" >/dev/null; press "Escape"; sleep 0.5
 sleep 1
 
 # ═══════════════════════════════════════════════
+journey "66. My visual views work: previews, exports, kanban, graph, mind map, PDF, whiteboard"
+# UX review 2026-10 Wave 2 (visual views). Each step names the bug it guards.
+# ═══════════════════════════════════════════════
+A66="const api=await import('/src/lib/api.ts');"
+api "closePanel()" >/dev/null; press "Escape"; sleep 0.3
+P66="Visual66 $(date +%s)"
+ev "(async()=>{$A66 await api.createPage('$P66');return 1})()" >/dev/null
+
+step "A link preview says when it can't load, and shows the site's domain"
+ev "(async()=>{$A66 const t=await api.getPageTree('$P66');await api.createBlock(t.page.id,'{{link-preview:https://nothing.invalid/page}}');await api.createBlock(t.page.id,'{{link-preview:https://www.example.org/wiki/Narwhal}}');return 1})()" >/dev/null
+api "navigateTo('$P66')" >/dev/null; sleep 2
+for _ in $(seq 1 20); do R=$(ev "[...document.querySelectorAll('.link-preview-card')].map(c=>c.dataset.previewState+':'+c.querySelector('.link-preview-domain')?.textContent+':'+(c.querySelector('.link-preview-status')?.textContent||c.querySelector('.link-preview-title')?.textContent||'')).join('|')" | tr -d '"'); [[ "$R" == failed:* && "$R" != *loading* ]] && break; sleep 0.5; done
+[[ "$R" == "failed:nothing.invalid:Preview unavailable · open link|"* ]] && pass "Unreachable site: 'Preview unavailable · open link' + domain" || fail "Link preview failure state" "$R"
+if [[ "$BACKEND" != "desktop" ]]; then
+  [[ "$R" == *"|loaded:example.org:"* ]] && pass "Loaded preview shows title and domain ($R)" || fail "Link preview loaded state" "$R"
+fi
+ss "66-link-previews"
+
+# ═══════════════════════════════════════════════
 close_app
 
 # ═══════════════════════════════════════════════

@@ -24,10 +24,15 @@ const TIMEOUT: Duration = Duration::from_secs(15);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_REDIRECTS: usize = 3;
 
+/// Sent on every outbound fetch (link previews, remote images). Many sites —
+/// Wikipedia/Wikimedia among them — answer 403 to a request without one.
+pub const USER_AGENT: &str = concat!("MiNotes/", env!("CARGO_PKG_VERSION"));
+
 /// The SSRF-safe client: public addresses only (checked at DNS-resolution time),
-/// no automatic redirects, no proxies.
+/// no automatic redirects, no proxies, a `MiNotes/<version>` User-Agent.
 pub fn safe_client(timeout: Duration) -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
+        .user_agent(USER_AGENT)
         .timeout(timeout)
         .connect_timeout(CONNECT_TIMEOUT.min(timeout))
         .redirect(reqwest::redirect::Policy::none())
@@ -303,6 +308,27 @@ mod tests {
         assert_eq!(r.unwrap_err(), "Destination address not allowed");
         std::thread::sleep(Duration::from_millis(100));
         assert_eq!(other_hits.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn requests_carry_a_minotes_user_agent() {
+        // Wikipedia/Wikimedia answer 403 without one (UX review 2026-10).
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = reqwest::Url::parse(&format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port())).unwrap();
+        let seen = Arc::new(std::sync::Mutex::new(String::new()));
+        let s2 = seen.clone();
+        std::thread::spawn(move || {
+            if let Some(Ok(mut s)) = listener.incoming().next() {
+                let mut buf = [0u8; 4096];
+                let n = s.read(&mut buf).unwrap_or(0);
+                *s2.lock().unwrap() = String::from_utf8_lossy(&buf[..n]).to_lowercase();
+                let _ = s.write_all(&http("image/png", PNG, true));
+            }
+        });
+        run(fetch_image(origin.join("/a.png").unwrap().as_str(), Some(&origin), MAX_REMOTE_IMAGE_BYTES)).unwrap();
+        let req = seen.lock().unwrap().clone();
+        assert!(USER_AGENT.starts_with("MiNotes/"));
+        assert!(req.contains(&format!("user-agent: {}", USER_AGENT.to_lowercase())), "request was: {req}");
     }
 
     #[test]

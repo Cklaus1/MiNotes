@@ -1158,14 +1158,9 @@ struct OgMetadata {
 
 #[tauri::command]
 async fn fetch_og_metadata(url: String) -> Result<OgMetadata, String> {
-    match fetch_og_inner(&url).await {
-        Ok(meta) => Ok(meta),
-        Err(_) => Ok(OgMetadata {
-            title: String::new(),
-            description: String::new(),
-            image: String::new(),
-        }),
-    }
+    // An error (unreachable, refused, not HTML…) is reported, so the card can say
+    // "Preview unavailable" instead of repeating the URL as if it were a title.
+    fetch_og_inner(&url).await.map_err(|e| e.to_string())
 }
 
 const OG_MAX_BODY_BYTES: usize = 1024 * 1024;
