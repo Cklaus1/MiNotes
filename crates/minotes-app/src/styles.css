@@ -4,7 +4,7 @@
   --bg-surface: #313244;
   --text-primary: #cdd6f4;
   --text-secondary: #a6adc8;
-  --text-muted: #6c7086;
+  --text-muted: #9399b2;
   --accent: #89b4fa;
   --accent-hover: #74c7ec;
   --border: #45475a;
@@ -12,6 +12,8 @@
   --warning: #f9e2af;
   --danger: #f38ba8;
 }
+/* --text-muted is for secondary information, not decoration: 5.8:1 on
+   bg-primary, 4.4:1 on bg-surface (dark); 6.1:1 / 4.4:1 (light). */
 
 /* Light theme: every text colour below clears WCAG AA (4.5:1) on bg-primary,
    bg-secondary AND bg-surface (active rows, chips), since each is used as text
@@ -24,7 +26,7 @@
   --bg-surface: #ccd0da;
   --text-primary: #4c4f69;
   --text-secondary: #545770;
-  --text-muted: #6c6f85;
+  --text-muted: #565970;
   --accent: #134bbd;
   --accent-hover: #0f45ad;
   --border: #bcc0cc;
@@ -3559,7 +3561,6 @@ body.theme-light { /* matches our light theme */ }
   --background-secondary: var(--bg-secondary);
   --background-modifier-border: var(--border);
   --text-normal: var(--text-primary);
-  --text-muted: var(--text-muted);
   --text-faint: var(--text-muted);
   --text-accent: var(--accent);
   --text-accent-hover: var(--accent-hover);
@@ -3572,7 +3573,6 @@ body.theme-light { /* matches our light theme */ }
   --background-secondary: var(--bg-secondary);
   --background-modifier-border: var(--border);
   --text-normal: var(--text-primary);
-  --text-muted: var(--text-muted);
   --text-faint: var(--text-muted);
   --text-accent: var(--accent);
   --text-accent-hover: var(--accent-hover);
