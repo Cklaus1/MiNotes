@@ -1135,10 +1135,12 @@ export default function App() {
         open={openPanel === "review"}
         onClose={() => setOpenPanel(null)}
       />
-      <ObsidianPluginBrowser
-        open={openPanel === "obsidianPlugins"}
-        onClose={() => setOpenPanel(null)}
-      />
+      {import.meta.env.DEV && (
+        <ObsidianPluginBrowser
+          open={openPanel === "obsidianPlugins"}
+          onClose={() => setOpenPanel(null)}
+        />
+      )}
       <CssSnippetManager
         open={openPanel === "cssManager"}
         onClose={() => setOpenPanel(null)}
