@@ -3615,6 +3615,87 @@ T=$(ev "[...document.querySelectorAll('.minotes-toast-undo')].map(t=>t.innerText
 [[ "$D" == "none" && "$T" == *"1 block deleted"* ]] && pass "No dialog; toast \"1 block deleted · Undo\"" || fail "Partial delete" "dialog=$D toast=$T"
 
 # ═══════════════════════════════════════════════
+journey "71. Sync and AI tell the truth and are easy to reach (UX review Wave 2)"
+# Palette commands for Sync now / Page versions / Ask AI / AI settings; Settings
+# says what sync is doing (no remote, paused, a missing remote with Retry) and
+# never "Last synced" for something that didn't reach a remote. The sync states
+# are simulated through the mock; the desktop backend does them for real (D16).
+# ═══════════════════════════════════════════════
+PAL71="(async(cmd)=>{const T=window.__MINOTES__;T.closePanel();T.openSearch();await new Promise(r=>setTimeout(r,300));const i=document.querySelector('.command-palette-input');const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;set.call(i,'>'+cmd);i.dispatchEvent(new Event('input',{bubbles:true}));await new Promise(r=>setTimeout(r,300));const items=[...document.querySelectorAll('.command-palette-item')].map(e=>e.textContent);if(cmd==='')return items.join(',');i.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));await new Promise(r=>setTimeout(r,500));return 'ran'})"
+step "The palette has Sync Now, Page Versions, Ask AI and AI Settings"
+R=$(ev "($PAL71)('')" | tr -d '"')
+api "closePanel()" >/dev/null
+[[ "$R" == *"Sync Now"* && "$R" == *"Page Versions"* && "$R" == *"Ask AI"* && "$R" == *"AI Settings"* && "$R" != *"Sync & Version History"* ]] && pass "All four commands listed" || fail "Palette commands" "$R"
+ev "($PAL71)('ask ai')" >/dev/null; sleep 0.8
+R=$(ev "String(!!document.querySelector('[data-testid=ask-panel]'))" | tr -d '"')
+[[ "$R" == "true" ]] && pass "Ask AI opens the Ask panel" || fail "Ask AI command" "$R"
+press "Escape"; sleep 0.4
+ev "($PAL71)('ai settings')" >/dev/null; sleep 0.8
+R=$(ev "String(!!document.querySelector('[data-testid=ai-settings]'))" | tr -d '"')
+[[ "$R" == "true" ]] && pass "AI Settings opens AI settings" || fail "AI Settings command" "$R"
+press "Escape"; sleep 0.4
+ev "($PAL71)('page versions')" >/dev/null; sleep 0.8
+R=$(ev "(document.querySelector('[data-testid=page-versions]')?.textContent||'none')" | tr -d '"')
+[[ "$R" == *"Page versions"*"not git sync"*"Never saved"* ]] && pass "Page Versions opens the snapshot dialog, which says it isn't git sync" || fail "Page versions dialog" "${R:0:200}"
+api "closePanel()" >/dev/null; sleep 0.3
+
+step "Settings → Smart suggestions → AI provider… opens AI settings"
+api "openSettings()" >/dev/null; sleep 0.6
+ev "document.querySelector('[data-testid=settings-ai-provider]')?.click()" >/dev/null; sleep 0.8
+R=$(ev "String(!!document.querySelector('[data-testid=ai-settings]'))+'|'+String(!!document.querySelector('.settings-slide-panel:not(.ai-settings)'))" | tr -d '"')
+[[ "$R" == "true|false" ]] && pass "AI settings open (Settings closed)" || fail "AI provider row" "$R"
+press "Escape"; sleep 0.4
+
+if [[ "$JOURNEY_BACKEND" != "desktop" ]]; then
+M71="const m=await import('/src/lib/mockBackend.ts');"
+state71() { ev "(document.querySelector('[data-testid=settings-sync-state]')?.dataset.phase||'none')+'|'+(document.querySelector('[data-testid=sync-chip]')?.textContent||'no chip')" | tr -d '"'; }
+step "Sync on, no remote: \"no remote\", never \"Last synced\""
+ev "(async()=>{$M71 Object.assign(m.mockSync,{enabled:false,remote_url:null,last_sync:null,needs_confirmation:false,last_error:null,last_error_kind:null,fail:null});return 1})()" >/dev/null
+api "openSettings()" >/dev/null; sleep 0.6
+ev "document.querySelector('[data-testid=sync-enable]')?.click()" >/dev/null; sleep 1
+R=$(state71)
+[[ "$R" == "local|Not synced — no remote" ]] && pass "Settings and chip: no remote" || fail "No-remote state" "$R"
+R=$(ev "String(!!document.querySelector('[data-testid=settings-last-synced]'))" | tr -d '"')
+[[ "$R" == "false" ]] && pass "No \"Last synced\"" || fail "Last synced shown without a remote" "$R"
+ev "document.querySelector('[data-testid=settings-sync-now]')?.click()" >/dev/null; sleep 1
+R=$(ev "[...document.querySelectorAll('.minotes-toast')].map(t=>t.textContent).join('|')" | tr -d '"')
+[[ "$R" == *"no remote is set"* ]] && pass "Sync now says nothing was sent anywhere" || fail "Sync now without a remote" "$R"
+
+step "With a remote, Sync now syncs and the chip says when"
+ev "(async()=>{$M71 m.mockSync.remote_url='/srv/notes.git';return 1})()" >/dev/null
+ev "document.querySelector('[data-testid=settings-sync-now]')?.click()" >/dev/null; sleep 1
+R=$(state71)
+[[ "$R" == "idle|Synced just now" ]] && pass "Synced just now" || fail "Sync now with a remote" "$R"
+
+step "The remote is gone: an error with the reason and Retry, not Offline"
+ev "(async()=>{$M71 m.mockSync.fail={error:'Remote not found — the sync remote\\'s address leads nowhere (moved, deleted or mistyped?)',kind:'remote_not_found'};return 1})()" >/dev/null
+ev "document.querySelector('[data-testid=settings-sync-now]')?.click()" >/dev/null; sleep 1
+R=$(state71)
+[[ "$R" == "error|Sync remote not found" ]] && pass "Settings and chip show the error" || fail "Missing-remote state" "$R"
+R=$(ev "document.querySelector('[data-testid=settings-sync-error]')?.textContent||'none'" | tr -d '"')
+[[ "$R" == *"Remote not found"* ]] && pass "Settings shows the reason" || fail "Settings error text" "$R"
+api "closePanel()" >/dev/null; sleep 0.4
+ev "document.querySelector('[data-testid=sync-chip]')?.click()" >/dev/null; sleep 0.5
+R=$(ev "document.querySelector('[data-testid=sync-details]')?.innerText||'none'" | tr -d '"')
+[[ "$R" == *"Sync remote not found"*"Retry"* ]] && pass "The chip opens details with Retry" || fail "Chip details" "$R"
+ev "(async()=>{$M71 m.mockSync.fail=null;return 1})()" >/dev/null
+ev "document.querySelector('[data-testid=sync-details-retry]')?.click()" >/dev/null; sleep 1
+R=$(ev "document.querySelector('[data-testid=sync-chip]')?.textContent||'none'" | tr -d '"')
+[[ "$R" == "Synced just now" ]] && pass "Retry: synced" || fail "Retry" "$R"
+press "Escape"; sleep 0.3
+
+step "A folder set up elsewhere: after Not now, Settings says Paused"
+ev "(async()=>{$M71 m.mockSync.needs_confirmation=true;window.dispatchEvent(new Event('minotes-trigger-sync'));return 1})()" >/dev/null; sleep 1
+ev "document.querySelector('[data-testid=sync-decline]')?.click()" >/dev/null; sleep 0.5
+api "openSettings()" >/dev/null; sleep 0.6
+R=$(state71)
+T=$(ev "document.querySelector('[data-testid=settings-sync-state]')?.innerText||'none'" | tr -d '"')
+[[ "$R" == "paused|Sync paused" && "$T" == *"Paused — waiting for your OK"* ]] && pass "Paused — waiting for your OK" || fail "Paused state" "$R / $T"
+ev "(async()=>{$M71 Object.assign(m.mockSync,{enabled:false,needs_confirmation:false,remote_url:null,last_sync:null});return 1})()" >/dev/null
+api "closePanel()" >/dev/null; sleep 0.3
+fi
+
+# ═══════════════════════════════════════════════
 close_app
 
 # ═══════════════════════════════════════════════

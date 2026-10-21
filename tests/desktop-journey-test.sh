@@ -41,7 +41,7 @@ echo "════════════════════════�
 echo "  MiNotes Desktop Journeys (real app, real backend)"
 echo "═══════════════════════════════════════════════"
 
-rm -rf "$STATE"/{persist,devA,devB,nbook,outside,xnb,zip8,barrier10,trust10,rimg,img10,remote.git,enc13,enc13-tmp,enc13-keychain,enc14a,enc14b,enc14c,enc14-tmp,remote14.git,w1,w1-files} "$STATE/results.tsv"
+rm -rf "$STATE"/{persist,devA,devB,nbook,outside,xnb,zip8,barrier10,trust10,rimg,img10,remote.git,enc13,enc13-tmp,enc13-keychain,enc14a,enc14b,enc14c,enc14-tmp,remote14.git,w1,w1-files,j16a,j16b,t16,remote16.git,remote16.git.moved} "$STATE/results.tsv"
 if [[ -z "$DESKTOP_NO_BUILD" ]]; then
   "$DC" up --webdriver --profile persist >/dev/null || { echo "build/launch failed"; exit 1; }
 else
@@ -1295,6 +1295,164 @@ is "Cancel: the trash still holds $N15 items" "$(ev "(async()=>{$A15 return Stri
 rclick15 "document.querySelector('[data-testid=empty-trash]')"; sleep 0.8
 "$DC" key Escape; sleep 0.8
 is "Escape closes the dialog and deletes nothing" "$(dialog15)|$(ev "(async()=>{$A15 return String((await api.listTrash()).length)})()")" "none|$N15"
+
+# ═══════════════════════════════════════════════
+journey "D16. Sync tells the truth — and a new device joins cleanly (UX review Wave 2)"
+# A fresh device joining sync keeps ONE "Getting Started" (C-9). "Sync now" and
+# the sidebar status chip; a conflict toast that names the page and the device,
+# with Open; a remote that is gone is an error with Retry, not a grey
+# "Offline"; no remote is "no remote", never "Last synced"; a copied folder
+# after "Not now" is "Paused — waiting for your OK". Real clicks on the chip,
+# Settings and the toast; WebDriver sets up and reads back.
+# ═══════════════════════════════════════════════
+if command -v git >/dev/null; then
+A16="const api=await import('/src/lib/api.ts');"
+R16="$STATE/remote16.git"
+git init -q --bare -b main "$R16"
+for d in j16a j16b t16; do
+  mkdir -p "$STATE/$d"
+  printf '[user]\n\tname = %s\n\temail = %s@example.test\n[init]\n\tdefaultBranch = main\n' "$d" "$d" >"$STATE/$d/.gitconfig"
+done
+rclick16() {
+  local xy; xy=$(ev "(()=>{const e=$1;if(!e)return '';e.scrollIntoView({block:'center'});const r=e.getBoundingClientRect();return Math.round(r.left+r.width/2)+' '+Math.round(r.top+r.height/2)})()")
+  [[ -n "$xy" ]] && "$DC" click $xy >/dev/null
+}
+ready16() { waitfor "window.__MINOTES__ && !!window.__MINOTES__.navigateTo" 30; sleep 1.5; }
+chip16() { ev "(document.querySelector('[data-testid=sync-chip]')?.textContent||'none')"; }
+phase16() { ev "(document.querySelector('[data-testid=sync-chip]')?.dataset.phase||'none')"; }
+# Titles of every "Getting Started…" page, and every numbered "(n)" title anywhere (Trash too).
+gs16_() { ev "(async()=>{$A16 return (await api.listPages(1000)).map(p=>p.title).filter(t=>t.startsWith('Getting Started')).sort().join('|')})()"; }
+numbered16_() { ev "(async()=>{$A16 const live=(await api.listPages(1000)).map(p=>p.title);const tr=(await api.listTrash()).map(t=>t.title);return live.concat(tr).filter(t=>/\\(\\d+\\)$/.test(t)).join('|')||'none'})()"; }
+# (Retried once: an eval that lands while a sync reopens the page comes back empty.)
+gs16() { local r; r=$(gs16_); [[ -n "$r" ]] || { sleep 1.5; r=$(gs16_); }; echo "$r"; }
+numbered16() { local r; r=$(numbered16_); [[ -n "$r" ]] || { sleep 1.5; r=$(numbered16_); }; echo "$r"; }
+# Sync now, as the user does it (the palette/Settings event), then wait for it to finish.
+syncnow16() {
+  ev "window.dispatchEvent(new Event('minotes-sync-now'))" >/dev/null; sleep 0.5
+  waitfor "!!document.querySelector('[data-testid=sync-chip]') && document.querySelector('[data-testid=sync-chip]').dataset.phase!=='syncing'" 40; sleep 0.8
+}
+# Turn sync on with the Settings toggle (a real click).
+enable16() {
+  api "openSettings()" >/dev/null; sleep 0.8
+  rclick16 "document.querySelector('[data-testid=sync-enable]')?.closest('label')"
+  waitfor "!!document.querySelector('[data-testid=settings-sync-state]')" 40; sleep 0.5
+}
+
+step "Device A: a fresh install, sync on, pushing to the remote"
+mkdir -p "$STATE/j16a/MiNotes_Sync"
+HOME="$STATE/j16a" git -C "$STATE/j16a/MiNotes_Sync" init -q -b main
+HOME="$STATE/j16a" git -C "$STATE/j16a/MiNotes_Sync" remote add origin "$R16"
+device j16a keep || true
+ready16
+is "A starts with its Getting Started" "$(gs16)" "Getting Started"
+enable16
+is "Settings: synced (A reached the remote)" "$(ev "document.querySelector('[data-testid=settings-sync-state]')?.dataset.phase||'none'")|$(ev "String(!!document.querySelector('[data-testid=settings-last-synced]'))")" "idle|true"
+api "closePanel()" >/dev/null; sleep 0.5
+[[ "$(chip16)" == Synced* ]] && pass "The sidebar chip says $(chip16)" || fail "Chip after the first sync" "$(chip16)"
+ev "(async()=>{$A16 const p=await api.createPage('Roadmap16');await api.createBlock(p.id,'Q1 plan');return 1})()" >/dev/null
+syncnow16
+REMOTE16=$(git --git-dir="$R16" ls-tree -r --name-only main 2>/dev/null | grep -c '^Getting Started\.md$\|^Roadmap16\.md$')
+is "The remote has A's Getting Started and Roadmap16" "$REMOTE16" "2"
+
+step "Device B: a fresh install that clones the sync folder and joins"
+HOME="$STATE/j16b" git clone -q "$R16" "$STATE/j16b/MiNotes_Sync" 2>/dev/null
+device j16b keep || true
+ready16
+enable16
+api "closePanel()" >/dev/null; sleep 0.5
+syncnow16
+is "B has exactly one Getting Started" "$(gs16)" "Getting Started"
+is "…and no numbered copies anywhere, Trash included" "$(numbered16)" "none"
+[[ "$(ev "(async()=>{$A16 return (await api.listPages(1000)).map(p=>p.title).join('|')})()")" == *"Roadmap16"* ]] && pass "B has A's notes" || fail "B did not get Roadmap16" "$(ev "(async()=>{$A16 return (await api.listPages(1000)).map(p=>p.title).join('|')})()")"
+"$DC" wshot "d16-b-joined" >/dev/null
+
+step "Both devices change the same line: the toast names the page and the device, and Open goes there"
+ev "(async()=>{$A16 const t=await api.getPageTree('Roadmap16');await api.updateBlock(t.blocks[0].id,'Q1 plan, edited on B');return 1})()" >/dev/null
+device j16a keep || true
+ready16
+syncnow16
+is "A has exactly one Getting Started after B joined" "$(gs16)" "Getting Started"
+is "A has no numbered copies either" "$(numbered16)" "none"
+ev "(async()=>{$A16 const t=await api.getPageTree('Roadmap16');await api.updateBlock(t.blocks[0].id,'Q1 plan, edited on A');return 1})()" >/dev/null
+syncnow16
+device j16b keep || true
+ready16
+# B's own edit is already in its database; this sync brings A's.
+syncnow16
+waitfor "[...document.querySelectorAll('.minotes-toast')].some(t=>t.textContent.includes('Sync conflict'))" 15
+T16=$(ev "([...document.querySelectorAll('.minotes-toast')].find(t=>t.textContent.includes('Sync conflict'))?.textContent||'none')")
+"$DC" shot "d16-conflict-toast" >/dev/null
+[[ "$T16" == *"Roadmap16"*"(conflict from "* && "$T16" != *"<device>"* ]] && pass "The toast names the page and the copy ($T16)" || fail "Conflict toast text" "$T16"
+rclick16 "[...document.querySelectorAll('.minotes-toast')].find(t=>t.textContent.includes('Sync conflict'))?.querySelector('button')"
+sleep 1.5
+[[ "$(api 'getCurrentPage()')" == "Roadmap16 (conflict from "* ]] && pass "Open shows the conflict copy" || fail "Open did not go to the copy" "$(api 'getCurrentPage()')"
+
+step "The remote is moved away: an error with the reason and Retry — not a grey Offline"
+mv "$R16" "$R16.moved"
+syncnow16
+is "Chip: error" "$(phase16)|$(chip16)" "error|Sync remote not found"
+TIP16=$(ev "document.querySelector('[data-testid=sync-chip]')?.title||''")
+[[ "$TIP16" == *"Remote not found"* ]] && pass "Its tooltip gives the reason" || fail "Chip tooltip" "$TIP16"
+rclick16 "document.querySelector('[data-testid=sync-chip]')"; sleep 0.6
+[[ "$(ev "document.querySelector('[data-testid=sync-details]')?.innerText||'none'")" == *"Sync remote not found"*"Retry"* ]] && pass "Clicking it shows the error and Retry" || fail "Chip details" "$(ev "document.querySelector('[data-testid=sync-details]')?.innerText||'none'")"
+"$DC" shot "d16-missing-remote" >/dev/null
+api "openSettings()" >/dev/null; sleep 0.8
+S16=$(ev "document.querySelector('[data-testid=settings-sync-state]')?.innerText||'none'")
+[[ "$S16" == *"Sync remote not found"*"Remote not found"*"Retry"* ]] && pass "Settings shows the error, the remote and Retry" || fail "Settings sync error" "$S16"
+"$DC" wshot "d16-settings-error" >/dev/null
+api "closePanel()" >/dev/null; sleep 0.5
+mv "$R16.moved" "$R16"
+[[ "$(ev "String(!!document.querySelector('[data-testid=sync-details]'))")" == "true" ]] || { rclick16 "document.querySelector('[data-testid=sync-chip]')"; sleep 0.5; }
+rclick16 "document.querySelector('[data-testid=sync-details-retry]')"
+waitfor "document.querySelector('[data-testid=sync-chip]')?.dataset.phase==='idle'" 40
+[[ "$(chip16)" == Synced* ]] && pass "Retry with the remote back: $(chip16)" || fail "Retry" "$(phase16)|$(chip16)"
+
+step "A notebook with sync on but no remote says so — never \"Last synced\""
+device t16 keep || true
+ready16
+enable16
+is "Settings: on, no remote" "$(ev "document.querySelector('[data-testid=settings-sync-state]')?.dataset.phase||'none'")|$(ev "String(!!document.querySelector('[data-testid=settings-last-synced]'))")" "local|false"
+api "closePanel()" >/dev/null; sleep 0.5
+syncnow16
+is "Chip: no remote" "$(chip16)" "Not synced — no remote"
+is "Status has no last-synced time" "$(ev "(async()=>{$A16 return String((await api.gitSyncStatus()).last_sync)})()")" "null"
+
+step "A folder synced on another computer: after Not now, Settings says Paused"
+F16="$STATE/t16/Incoming/Copied16"
+KEY16=$(ev "(async()=>{$A16 const n=await api.createNotebook('Copied16','$F16');return n.key})()")
+HOME="$STATE/t16" git -C "$F16/notes" init -q -b main
+HOME="$STATE/t16" git -C "$F16/notes" remote add origin "$R16"
+mkdir -p "$F16/.minotes"; printf '{"enabled": true, "last_sync": "2026-10-01T09:00:00Z"}\n' >"$F16/.minotes/sync-config.json"
+ev "window.__MINOTES__.switchNotebook('$KEY16')" >/dev/null
+waitfor "!!document.querySelector('[data-testid=sync-confirm-banner]')" 20 && pass "The trust banner asks" || fail "No trust banner" ""
+rclick16 "document.querySelector('[data-testid=sync-decline]')"; sleep 0.8
+is "Chip: paused" "$(phase16)|$(chip16)" "paused|Sync paused"
+api "openSettings()" >/dev/null; sleep 0.8
+P16=$(ev "document.querySelector('[data-testid=settings-sync-state]')?.innerText||'none'")
+[[ "$P16" == *"Paused — waiting for your OK"* && "$(ev "String(!!document.querySelector('[data-testid=settings-last-synced]'))")" == "false" ]] \
+  && pass "Settings: Paused — waiting for your OK (no other computer's Last synced)" || fail "Settings while paused" "$P16"
+"$DC" wshot "d16-paused" >/dev/null
+api "closePanel()" >/dev/null; sleep 0.5
+
+step "Ask with a local model server that isn't running: a clear message within seconds, and Retry"
+CLOSED16=$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')
+ev "(async()=>{$A16 const s=(await api.aiGetStatus()).settings;s.provider='local';s.local.base_url='http://127.0.0.1:$CLOSED16/v1';s.local.model='test-model';await api.aiSaveSettings(s);return 1})()" >/dev/null
+ev "window.dispatchEvent(new CustomEvent('minotes:open-ai',{detail:'ask'}))" >/dev/null
+waitfor "!!document.querySelector('[data-testid=ai-input]')" 15
+ev "(()=>{const t=document.querySelector('[data-testid=ai-input]');const set=Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set;set.call(t,'What is on my roadmap?');t.dispatchEvent(new Event('input',{bubbles:true}));return 1})()" >/dev/null
+T0=$SECONDS
+rclick16 "document.querySelector('[data-testid=ai-send]')"
+waitfor "!!document.querySelector('[data-testid=ai-error]')" 30
+TOOK16=$((SECONDS - T0))
+E16=$(ev "document.querySelector('[data-testid=ai-error]')?.innerText||'none'")
+[[ "$TOOK16" -le 8 ]] && pass "It failed in ${TOOK16}s (was ~15 s)" || fail "Ask took too long to fail" "${TOOK16}s"
+[[ "$E16" == *"isn't running"*"Retry"* && "$E16" != *"timeout"* ]] && pass "It says the server isn't running, with Retry" || fail "Ask error text" "$E16"
+"$DC" wshot "d16-ask-refused" >/dev/null
+rclick16 "document.querySelector('[data-testid=ai-retry]')"; sleep 0.5
+waitfor "!!document.querySelector('[data-testid=ai-error]')" 30
+is "Retry asks again (one question, one answer slot)" "$(ev "String(document.querySelectorAll('.ai-turn').length)")" "1"
+"$DC" press Escape >/dev/null 2>&1; sleep 0.5
+fi
 
 # ═══════════════════════════════════════════════
 echo ""
