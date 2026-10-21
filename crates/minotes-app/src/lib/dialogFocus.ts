@@ -45,7 +45,10 @@ export function useDialogFocus(
     const previous = opener.current;
     // Focus inside, unless something inside already has it (autoFocus ran).
     if (initialFocus && !root.contains(document.activeElement)) {
-      const first = root.querySelector<HTMLElement>("[autofocus], [data-autofocus]") ?? focusables(root)[0];
+      // The first real control — not the header's × (a ring on it reads as an error).
+      const list = focusables(root);
+      const first = root.querySelector<HTMLElement>("[autofocus], [data-autofocus]")
+        ?? list.find(el => !el.matches(".settings-close-btn, [aria-label='Close'], [aria-label^='Close ']")) ?? list[0];
       (first ?? root).focus({ preventScroll: true });
     }
     const onKey = (e: KeyboardEvent) => {

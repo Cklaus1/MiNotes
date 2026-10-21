@@ -4630,6 +4630,8 @@ step "Hovering the page ⋮ button shows the app's tooltip, not the platform's"
 hover88 "$BTN88"; sleep 0.9
 R="$(tip88)|$(ev "document.querySelector('$BTN88')?.hasAttribute('title')" | tr -d '"')"
 [[ "$R" == "Page actions (Shift+F10)|false" ]] && pass "App tooltip shown, native title lifted while hovered ($R)" || fail "App tooltip on hover" "$R"
+R=$(ev "(()=>{let n=document.querySelector('$BTN88');while(n&&n!==document.body){if(n.hasAttribute('title'))return 'title on '+n.className;n=n.parentElement}return 'none'})()" | tr -d '"')
+[[ "$R" == "none" ]] && pass "No title left on the row around it either (the platform would draw that one)" || fail "Ancestor title while hovering" "$R"
 
 step "The tooltip sits beside the button, not under the pointer"
 R=$(ev "(()=>{const t=document.querySelector('.app-tooltip.visible');const b=document.querySelector('$BTN88');if(!t||!b)return 'none';const tr=t.getBoundingClientRect(),br=b.getBoundingClientRect();const cx=br.left+br.width/2,cy=br.top+br.height/2;return !(cx>=tr.left&&cx<=tr.right&&cy>=tr.top&&cy<=tr.bottom)&&!(tr.top<br.bottom&&tr.bottom>br.top&&tr.left<br.right&&tr.right>br.left)})()" | tr -d '"')

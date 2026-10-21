@@ -33,7 +33,9 @@ const OVERLAY_SELECTOR = `${MENU_SELECTOR},${DIALOG_SELECTOR}`;
 
 let bubble: HTMLDivElement | null = null;
 let target: HTMLElement | null = null;
-let stashed: { el: HTMLElement; title: string } | null = null;
+/** Titles lifted off the hovered element AND its ancestors (the platform
+ *  shows an ancestor's title when the hovered element has none). */
+let stashed: Array<{ el: HTMLElement; title: string }> = [];
 let timer: ReturnType<typeof setTimeout> | null = null;
 let lastHiddenAt = 0;
 let pointer = { x: 0, y: 0 };
@@ -60,23 +62,25 @@ export function tooltipAllowed(el: HTMLElement): boolean {
 }
 
 function tipText(el: HTMLElement): string {
-  return (stashed?.el === el ? stashed.title : el.getAttribute("title")) || el.dataset.tip || "";
+  return (stashed.find(s => s.el === el)?.title ?? el.getAttribute("title")) || el.dataset.tip || "";
 }
 
 function restoreTitle() {
-  if (!stashed) return;
-  const { el, title } = stashed;
-  // React may have set a new title meanwhile; never overwrite it.
-  if (!el.hasAttribute("title")) el.setAttribute("title", title);
-  stashed = null;
+  for (const { el, title } of stashed) {
+    // React may have set a new title meanwhile; never overwrite it.
+    if (!el.hasAttribute("title")) el.setAttribute("title", title);
+  }
+  stashed = [];
 }
 
 function liftTitle(el: HTMLElement) {
-  const t = el.getAttribute("title");
-  if (t == null) return;
   restoreTitle();
-  stashed = { el, title: t };
-  el.removeAttribute("title");
+  for (let n: HTMLElement | null = el; n && n !== document.body; n = n.parentElement) {
+    const t = n.getAttribute("title");
+    if (t == null) continue;
+    stashed.push({ el: n, title: t });
+    n.removeAttribute("title");
+  }
 }
 
 function ensureBubble(): HTMLDivElement {

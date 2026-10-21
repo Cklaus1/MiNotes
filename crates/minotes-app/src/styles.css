@@ -344,7 +344,7 @@ body {
   cursor: pointer;
   font-size: 14px;
   line-height: 1;
-  color: var(--text-muted);
+  color: var(--text-secondary); /* on the active row (bg-surface) muted is 4.4:1 */
   opacity: 0;
   padding: 0 4px;
   transition: opacity 0.15s;

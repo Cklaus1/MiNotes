@@ -117,7 +117,7 @@ export default function SettingsPanel({ open, onClose, onOpenSync, onOpenCssSnip
   useLayer(open, "panel", onClose);
 
   const panelRef = useRef<HTMLDivElement>(null);
-  useDialogFocus(panelRef, open, { trap: false });
+  useDialogFocus(panelRef, open, { trap: false, initialFocus: false });
   // Section index (jump links): built from the section titles actually shown
   // (Security, Sync… depend on the notebook), so it never lists a missing one.
   const [sections, setSections] = useState<string[]>([]);

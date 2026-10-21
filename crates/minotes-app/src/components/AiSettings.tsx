@@ -91,7 +91,7 @@ export default function AiSettings({ open, onClose, onSaved }: Props) {
   }, [draft, folders, recommended]);
 
   const panelRef = useRef<HTMLDivElement>(null);
-  useDialogFocus(panelRef, open, { trap: false });
+  useDialogFocus(panelRef, open, { trap: false, initialFocus: false });
 
   if (!open) return null;
 
