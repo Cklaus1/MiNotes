@@ -42,6 +42,8 @@ const SHORTCUT_GROUPS: Array<{ title: string; items: Array<[string, string]> }> 
       ["Ctrl+Shift+C", "Copy the page as text"],
       ["Ctrl+Shift+T", "Toggle light/dark theme"],
       ["Ctrl+Shift+L", "Lock an encrypted notebook"],
+      ["Ctrl+Shift+A", "Ask AI about your notes"],
+      ["Ctrl+Shift+I", "Import from Obsidian, Evernote or markdown"],
       ["Ctrl+,", "Settings"],
       ["Ctrl+\\", "Show/hide the right sidebar"],
       ["Esc", "Close the open panel, menu or view"],
@@ -373,9 +375,12 @@ export default function SettingsPanel({ open, onClose, onOpenSync, onOpenCssSnip
           ))}
         </div>
 
-        {/* AI Assistant — its own always-visible section (not part of Advanced, which stays last) */}
+        {/* Smart suggestions — local heuristics, no AI model involved; its own
+            always-visible section (not part of Advanced, which stays last). The
+            AI provider (Ask) has its own dialog, linked from here. */}
         <div className="settings-section" data-section="ai">
-          <div className="settings-section-title">AI Assistant</div>
+          <div className="settings-section-title">Smart suggestions</div>
+          <div className="nb-hint">Worked out on this device from your notes — nothing is sent anywhere.</div>
           {([
             ["autoTag", "Suggest tags", "Suggest tags for a page from its content"],
             ["linkSuggestions", "Suggest links", "Suggest related pages to link from the current page"],
@@ -394,6 +399,18 @@ export default function SettingsPanel({ open, onClose, onOpenSync, onOpenCssSnip
               </label>
             </div>
           ))}
+          <div className="settings-row">
+            <span className="settings-row-label" title="Ask questions about your notes with an AI model you choose (Ctrl+Shift+A)">
+              Ask AI (model and privacy)
+            </span>
+            <button
+              className="btn btn-sm"
+              data-testid="settings-ai-provider"
+              onClick={() => { onClose(); window.dispatchEvent(new CustomEvent("minotes:open-ai", { detail: "settings" })); }}
+            >
+              AI provider…
+            </button>
+          </div>
         </div>
 
         {/* Advanced — collapsible */}

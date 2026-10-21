@@ -96,11 +96,13 @@ export default function AskPanel({ open, onClose, activePageId, onOpenBlock, onO
 
   if (!open) return null;
 
-  const ask = async () => {
-    const q = input.trim();
+  /** Ask `again` (Retry of the failed last turn, which it replaces) or the input. */
+  const ask = async (again?: string) => {
+    const q = (again ?? input).trim();
     if (!q || running) return;
-    setInput("");
-    setTurns(prev => [...prev, { question: q, streaming: "", status: "Thinking…", running: true, result: null, error: null, notConfigured: false }]);
+    if (again === undefined) setInput("");
+    const turn: Turn = { question: q, streaming: "", status: "Thinking…", running: true, result: null, error: null, notConfigured: false };
+    setTurns(prev => again !== undefined && prev.length && prev[prev.length - 1].error ? [...prev.slice(0, -1), turn] : [...prev, turn]);
     try {
       // Set the id before events can arrive (the backend replies with the same id).
       if (!convRef.current) convRef.current = `conv-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -216,9 +218,14 @@ export default function AskPanel({ open, onClose, activePageId, onOpenBlock, onO
                       </div>
                     </>
                   ) : t.error ? (
-                    <div className="ai-error">
+                    <div className="ai-error" data-testid="ai-error">
                       {t.error}
-                      {t.notConfigured && <> <button className="ai-link" onClick={onOpenSettings}>Open AI settings</button></>}
+                      <div className="ai-error-actions">
+                        {i === turns.length - 1 && !t.notConfigured && t.error !== "Stopped." && (
+                          <button className="btn btn-sm" onClick={() => ask(t.question)} disabled={running} data-testid="ai-retry">Retry</button>
+                        )}
+                        <button className="ai-link" onClick={onOpenSettings}>{t.notConfigured ? "Open AI settings" : "AI settings"}</button>
+                      </div>
                     </div>
                   ) : (
                     <>
@@ -249,7 +256,7 @@ export default function AskPanel({ open, onClose, activePageId, onOpenBlock, onO
               </span>
               {running
                 ? <button className="btn" onClick={stop}>Stop</button>
-                : <button className="btn btn-primary" onClick={ask} disabled={!input.trim()} data-testid="ai-send">Ask</button>}
+                : <button className="btn btn-primary" onClick={() => ask()} disabled={!input.trim()} data-testid="ai-send">Ask</button>}
             </div>
           </div>
         </>

@@ -27,7 +27,13 @@ interface Props {
   onGraph?: () => void;
   onQuery?: () => void;
   onReview?: () => void;
+  /** Page versions (local snapshots — not git sync). */
   onSync?: () => void;
+  /** Git sync now. */
+  onSyncNow?: () => void;
+  onAskAi?: () => void;
+  onAiSettings?: () => void;
+  /** Dev builds only (unsafe stub): the command is hidden without it. */
   onObsidianPlugins?: () => void;
   onCssManager?: () => void;
   onSettings?: () => void;
@@ -72,7 +78,7 @@ interface Command {
 
 export default function SearchPanel({
   open, onClose, onPageClick,
-  onToggleTheme, onNewPage, onCreatePage, onJournal, onGraph, onQuery, onReview, onSync, onObsidianPlugins, onCssManager, onSettings,
+  onToggleTheme, onNewPage, onCreatePage, onJournal, onGraph, onQuery, onReview, onSync, onSyncNow, onAskAi, onAiSettings, onObsidianPlugins, onCssManager, onSettings,
 }: Props) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
@@ -98,11 +104,14 @@ export default function SearchPanel({
     { id: "graph", label: "Open Graph View", shortcut: "Ctrl+G", action: () => onGraph?.() },
     { id: "query", label: "Open SQL Query Panel", shortcut: "Ctrl+Q", action: () => onQuery?.() },
     { id: "review", label: "Open Flashcard Review", shortcut: "Ctrl+R", action: () => onReview?.() },
-    { id: "sync", label: "Sync & Version History", action: () => onSync?.() },
-    { id: "obsidian-plugins", label: "Obsidian Plugins", action: () => onObsidianPlugins?.() },
+    { id: "sync-now", label: "Sync Now", action: () => onSyncNow?.() },
+    { id: "sync", label: "Page Versions", action: () => onSync?.() },
+    { id: "ask-ai", label: "Ask AI", shortcut: "Ctrl+Shift+A", action: () => onAskAi?.() },
+    { id: "ai-settings", label: "AI Settings", action: () => onAiSettings?.() },
+    ...(onObsidianPlugins ? [{ id: "obsidian-plugins", label: "Obsidian Plugins (dev)", action: () => onObsidianPlugins() }] : []),
     { id: "css-snippets", label: "CSS Snippets", action: () => onCssManager?.() },
-    { id: "settings", label: "Settings", action: () => onSettings?.() },
-  ], [onToggleTheme, onNewPage, onJournal, onGraph, onQuery, onReview, onSync, onObsidianPlugins, onCssManager, onSettings]);
+    { id: "settings", label: "Settings", shortcut: "Ctrl+,", action: () => onSettings?.() },
+  ], [onToggleTheme, onNewPage, onJournal, onGraph, onQuery, onReview, onSync, onSyncNow, onAskAi, onAiSettings, onObsidianPlugins, onCssManager, onSettings]);
 
   const filteredCommands = useMemo(() => {
     if (!isCommandMode) return [];

@@ -241,9 +241,9 @@ echo "$S" | grep -qi "Theme" && echo "$S" | grep -qi "Dark\|Light" && pass "Them
 step "I can see Advanced section"
 echo "$S" | grep -qi "Advanced" && pass "Advanced section available" || fail "No Advanced section in settings" ""
 
-step "AI Assistant is its own section, visible while Advanced stays collapsed"
-R=$(ev "(()=>{const sec=document.querySelector('.settings-section[data-section=ai]');if(!sec)return 'missing';const title=sec.querySelector('.settings-section-title')?.textContent;const nested=!!sec.parentElement.closest('.settings-section');const adv=document.querySelector('.settings-advanced-content');return [title,nested,sec.querySelectorAll('.settings-toggle input').length,adv?'open':'collapsed'].join('|')})()" | tr -d '"')
-[[ "$R" == "AI Assistant|false|3|collapsed" ]] && pass "AI Assistant section: own header, 3 toggles, not under Advanced" || fail "AI Assistant section layout" "$R"
+step "Smart suggestions (local, not AI) is its own section with a way to the AI provider; Advanced stays collapsed"
+R=$(ev "(()=>{const sec=document.querySelector('.settings-section[data-section=ai]');if(!sec)return 'missing';const title=sec.querySelector('.settings-section-title')?.textContent;const nested=!!sec.parentElement.closest('.settings-section');const adv=document.querySelector('.settings-advanced-content');return [title,nested,sec.querySelectorAll('.settings-toggle input').length,adv?'open':'collapsed',!!sec.querySelector('[data-testid=settings-ai-provider]')].join('|')})()" | tr -d '"')
+[[ "$R" == "Smart suggestions|false|3|collapsed|true" ]] && pass "Smart suggestions section: own header, 3 toggles, AI provider… row, not under Advanced" || fail "Smart suggestions section layout" "$R"
 
 step "I can see all keyboard shortcuts"
 SHORTCUTS=0
@@ -2552,12 +2552,12 @@ ev "($SH_PAL)('settings')" > /dev/null; sleep 0.5
 S1=$(api "isPanelOpen('settings')" | tr -d '"')
 [[ "$Q" == "true" && "$S1" == "true" ]] && pass "Palette commands open their panel" || fail "Palette command opened nothing" "query=$Q settings=$S1"
 
-step "Settings reaches Sync and CSS snippets; the × has a name; the shortcut list is complete"
-R=$(ev "(()=>{const t=document.querySelector('.settings-slide-panel')?.textContent||'';const x=document.querySelector('.settings-close-btn')?.getAttribute('aria-label');return [t.includes('Sync & version history'),t.includes('CSS snippets'),!!x,['Ctrl+Shift+K','Alt+→','Ctrl+1','Ctrl+Shift+C','Ctrl+P','Ctrl+A'].every(k=>t.includes(k))].join('|')})()" | tr -d '"')
-[[ "$R" == "true|true|true|true" ]] && pass "Settings: Sync + CSS entry points, labelled ×, full shortcut list" || fail "Settings entry points / shortcuts" "$R"
-ev "[...document.querySelectorAll('.settings-slide-panel button')].find(b=>b.textContent.includes('Sync & version history'))?.click()" > /dev/null; sleep 0.8
-R=$(ev "!!document.querySelector('.sync-panel')" | tr -d '"')
-[[ "$R" == "true" ]] && pass "Settings → Sync & version history opens the Sync panel" || fail "Sync panel not reachable from Settings" "$R"
+step "Settings reaches Page versions and CSS snippets; the × has a name; the shortcut list is complete"
+R=$(ev "(()=>{const t=document.querySelector('.settings-slide-panel')?.textContent||'';const x=document.querySelector('.settings-close-btn')?.getAttribute('aria-label');return [t.includes('Page versions'),t.includes('CSS snippets'),!!x,['Ctrl+Shift+K','Alt+→','Ctrl+1','Ctrl+Shift+C','Ctrl+P','Ctrl+A','Ctrl+Shift+A','Ctrl+Shift+I'].every(k=>t.includes(k))].join('|')})()" | tr -d '"')
+[[ "$R" == "true|true|true|true" ]] && pass "Settings: Page versions + CSS entry points, labelled ×, full shortcut list (Ask, Import too)" || fail "Settings entry points / shortcuts" "$R"
+ev "[...document.querySelectorAll('.settings-slide-panel button')].find(b=>b.textContent.includes('Page versions'))?.click()" > /dev/null; sleep 0.8
+R=$(ev "document.querySelector('[data-testid=page-versions] h3')?.textContent||'none'" | tr -d '"')
+[[ "$R" == "Page versions" ]] && pass "Settings → Page versions opens the Page versions dialog" || fail "Page versions not reachable from Settings" "$R"
 api "closePanel()" > /dev/null; sleep 0.3
 
 step "The palette no longer offers dead commands (Plugins, Export Markdown)"

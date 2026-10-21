@@ -1118,7 +1118,11 @@ export default function App() {
         onQuery={() => { setOpenPanel("query"); }}
         onReview={() => { setOpenPanel("review"); }}
         onSync={() => { setOpenPanel("sync"); }}
-        onObsidianPlugins={() => { setOpenPanel("obsidianPlugins"); }}
+        onSyncNow={() => { setOpenPanel(null); triggerSync(true); }}
+        onAskAi={() => { setOpenPanel(null); window.dispatchEvent(new CustomEvent("minotes:open-ai", { detail: "ask" })); }}
+        onAiSettings={() => { setOpenPanel(null); window.dispatchEvent(new CustomEvent("minotes:open-ai", { detail: "settings" })); }}
+        // The Obsidian plugin loader is an unsafe stub: development builds only.
+        onObsidianPlugins={import.meta.env.DEV ? () => { setOpenPanel("obsidianPlugins"); } : undefined}
         onCssManager={() => { setOpenPanel("cssManager"); }}
         onSettings={() => { setOpenPanel("settings"); }}
       />
