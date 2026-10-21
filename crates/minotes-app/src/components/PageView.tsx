@@ -11,12 +11,14 @@ import BacklinksPanel from "./BacklinksPanel";
 import UnlinkedRefsPanel from "./UnlinkedRefsPanel";
 import LinkPreview from "./LinkPreview";
 import { undoStack } from "../lib/undoStack";
-import { executeRedo } from "../lib/undoManager";
+import { executeRedo, executeUndo } from "../lib/undoManager";
 import { registerTestApi } from "../lib/testApi";
 import TableOfContents from "./TableOfContents";
 import { downloadHtml, printPage } from "../lib/exportPage";
 import { extractTags } from "../lib/tagExtractor";
-import { showToast } from "../lib/toast";
+import { showToast, showUndoToast } from "../lib/toast";
+import { confirmDialog, plural } from "../lib/confirm";
+import { errorMessage } from "../lib/errors";
 import { suggestLinks, type LinkSuggestion } from "../lib/linkSuggestions";
 import { prefetchBlockProperties } from "../lib/blockProperties";
 import { registerFlush } from "../lib/pendingEdits";
@@ -1467,9 +1469,31 @@ export default function PageView({
     await opQueueRef.current;
     const current = localBlocksRef.current;
     const toDelete = current.filter(b => selectedBlockIds.has(b.id) || [...selectedBlockIds].some(s => rid(s) === b.id));
+    if (toDelete.length === 0) {
+      setSelectedBlockIds(new Set());
+      setSelectionAnchor(null);
+      return;
+    }
+    // Deleting every block of the page (Ctrl+A → Backspace) asks first (C-7).
+    const chosen = new Set(toDelete.map(b => b.id));
+    const parentOf = new Map(current.map(b => [b.id, b.parent_id ?? null]));
+    const covered = (id: string): boolean => {
+      for (let x: string | null = id, guard = 0; x && guard < 1000; x = parentOf.get(x) ?? null, guard++) {
+        if (chosen.has(x)) return true;
+      }
+      return false;
+    };
+    if (current.length > 1 && current.every(b => covered(b.id))) {
+      const ok = await confirmDialog({
+        title: "Delete all blocks on this page?",
+        message: `All ${current.length} blocks of “${page.title}” are deleted. Undo (Ctrl+Z) brings them back.`,
+        confirmLabel: `Delete ${current.length} blocks`,
+        danger: true,
+      });
+      if (!ok) return; // the selection stays
+    }
     setSelectedBlockIds(new Set());
     setSelectionAnchor(null);
-    if (toDelete.length === 0) return;
     // One undo entry for the whole group: every selected block plus its whole
     // subtree (deleteBlock cascades), parents-first, with properties. Undo
     // restores them all in one call with their original ids and positions.
@@ -1500,10 +1524,18 @@ export default function PageView({
     }
     const restore = snapshot.filter(s => gone.has(s.id));
     if (restore.length > 0) {
-      undoStack.push({ type: 'delete', blockId: restore[0].id, pageId: page.id, restore, timestamp: Date.now() });
+      const entry = { type: 'delete' as const, blockId: restore[0].id, pageId: page.id, restore, timestamp: Date.now() };
+      undoStack.push(entry);
+      // Say what happened and offer the way back (C-7: a selection delete was silent).
+      showUndoToast(`${plural(gone.size, "block")} deleted`, () => {
+        if (undoStack.peekUndo() !== entry) { showToast("That delete can't be undone from here any more — use Ctrl+Z"); return; }
+        executeUndo().then(() => onRefreshPage()).catch(e => showToast(`Couldn't undo: ${errorMessage(e)}`));
+      }, 8000);
+    } else if (gone.size > 0) {
+      showToast(`${plural(gone.size, "block")} deleted`);
     }
     onRefreshPage();
-  }, [selectedBlockIds, onRefreshPage, page.id]);
+  }, [selectedBlockIds, onRefreshPage, page.id, page.title]);
 
   const copySelected = useCallback(() => {
     const text = filteredVisibleBlocks

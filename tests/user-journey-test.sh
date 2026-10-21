@@ -3567,6 +3567,47 @@ ev "(async()=>{$A66 await api.deleteCssSnippet('snippet66');return 1})()" >/dev/
 press "Escape"; sleep 0.3; api "closePanel()" >/dev/null
 
 # ═══════════════════════════════════════════════
+journey "67. Ctrl+A → Backspace can't silently wipe a page (UX review C-7)"
+# Deleting every block asks first; any selection delete says what it did and
+# offers Undo.
+# ═══════════════════════════════════════════════
+A67="const api=await import('/src/lib/api.ts');"
+count67() { ev "(async()=>{$A67 return (await api.getPageTree('Delete67 page')).blocks.length})()" | tr -d '"'; }
+blur67() { ev "(()=>{document.activeElement?.blur?.();document.body.focus();return 1})()" >/dev/null; }
+ev "(async()=>{$A67 const p=await api.createPage('Delete67 page');const a=await api.createBlock(p.id,'first67');await api.createBlock(p.id,'child67',a.id);await api.createBlock(p.id,'second67');await api.createBlock(p.id,'third67');return 1})()" >/dev/null
+api "navigateTo('Delete67 page')" >/dev/null; sleep 2
+N67=$(count67)
+
+step "Ctrl+A then Backspace asks before deleting all $N67 blocks; Escape keeps them (and the selection)"
+blur67; press "Control+a"; sleep 0.4
+SEL67=$(api "getSelectedCount()" | tr -d '"')
+press "Backspace"; sleep 0.5
+R=$(ev "(document.querySelector('[data-testid=confirm-dialog]')?.innerText||'none')" | tr -d '"')
+[[ "$R" == *"Delete all blocks"* && "$R" == *"$N67 blocks"* ]] && pass "Asks: delete all $N67 blocks? (selected $SEL67)" || fail "No confirmation for a whole-page delete" "$R (selected $SEL67)"
+ss "67-delete-all-confirm"
+press "Escape"; sleep 0.5
+R=$(count67); S=$(api "getSelectedCount()" | tr -d '"')
+[[ "$R" == "$N67" && "$S" -ge 1 ]] 2>/dev/null && pass "Escape: all $N67 blocks still there, still selected" || fail "Escape deleted blocks" "$R of $N67, selected $S"
+
+step "Confirming deletes them, and a toast says so with Undo — which brings them back"
+press "Backspace"; sleep 0.5
+ev "document.querySelector('[data-testid=confirm-ok]')?.click()" >/dev/null; sleep 1.5
+R=$(count67)
+T=$(ev "[...document.querySelectorAll('.minotes-toast-undo')].map(t=>t.innerText).join('|')" | tr -d '"')
+[[ "$T" == *"$N67 blocks deleted"* ]] && pass "Toast: \"$N67 blocks deleted · Undo\" (page now has $R)" || fail "No delete toast" "$T"
+ev "[...document.querySelectorAll('.minotes-toast-undo')].find(t=>t.innerText.includes('blocks deleted'))?.querySelector('button')?.click()" >/dev/null; sleep 2
+R=$(ev "(async()=>{$A67 const t=await api.getPageTree('Delete67 page');return t.blocks.map(b=>b.content).filter(c=>c.endsWith('67')).join(',')})()" | tr -d '"')
+[[ "$R" == "first67,child67,second67,third67" ]] && pass "Undo restored every block, nesting and order included" || fail "Undo" "$R"
+
+step "Deleting part of the page doesn't ask, but still shows the toast"
+api "navigateTo('Delete67 page')" >/dev/null; sleep 1.5
+blur67; api "selectBlocks(2, 2)" >/dev/null; sleep 0.3
+press "Backspace"; sleep 1
+D=$(ev "(document.querySelector('[data-testid=confirm-dialog]')?.innerText||'none')" | tr -d '"')
+T=$(ev "[...document.querySelectorAll('.minotes-toast-undo')].map(t=>t.innerText).join('|')" | tr -d '"')
+[[ "$D" == "none" && "$T" == *"1 block deleted"* ]] && pass "No dialog; toast \"1 block deleted · Undo\"" || fail "Partial delete" "dialog=$D toast=$T"
+
+# ═══════════════════════════════════════════════
 close_app
 
 # ═══════════════════════════════════════════════
