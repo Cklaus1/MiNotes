@@ -6,6 +6,7 @@ import { openInNotebook } from "../lib/crossNotebook";
 import { setPendingReveal } from "../lib/pendingReveal";
 import { blockPlainText } from "../lib/plainText";
 import "./tasks.css";
+import { useLayer } from "../lib/layers";
 
 function formatTitle(title: string, isJournal?: boolean, journalDate?: string): string {
   const dateStr = journalDate ?? (title.startsWith("Journal/") ? title.slice(8) : null);
@@ -259,9 +260,6 @@ export default function SearchPanel({
       } else if (e.key === "Enter") {
         e.preventDefault();
         if (selectedIndex < filteredCommands.length) runCommand(filteredCommands[selectedIndex]);
-      } else if (e.key === "Escape") {
-        e.preventDefault();
-        onClose();
       }
       return;
     }
@@ -297,11 +295,11 @@ export default function SearchPanel({
           createFromQuery();
         }
       }
-    } else if (e.key === "Escape") {
-      e.preventDefault();
-      onClose();
     }
   };
+
+  // Esc closes the palette when it is the topmost layer (lib/layers.ts).
+  useLayer(open, "dialog", onClose);
 
   // Reset selection when switching modes or filtering changes
   useEffect(() => {

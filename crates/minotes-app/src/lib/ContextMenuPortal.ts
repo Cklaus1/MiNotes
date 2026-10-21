@@ -1,5 +1,6 @@
 import { createPortal } from "react-dom";
 import { createElement, useEffect, useRef, type ReactNode } from "react";
+import { useLayer } from "./layers";
 
 /**
  * Renders a context menu as a portal attached to document.body.
@@ -31,14 +32,8 @@ export function ContextMenuPortal({
     };
   }, [onClose]);
 
-  // Close on Escape
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") { e.preventDefault(); onClose(); }
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [onClose]);
+  // Esc closes the menu (the topmost layer while it is open).
+  useLayer(true, "menu", onClose);
 
   // Adjust position to stay within viewport
   useEffect(() => {

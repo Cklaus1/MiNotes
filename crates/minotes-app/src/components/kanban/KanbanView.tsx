@@ -9,6 +9,7 @@ import { extractLabel, extractTaskLabel } from "../mindmap/blocksToFlow";
 import KanbanColumn from "./KanbanColumn";
 import { buildKanbanModel, UNSORTED_ID, UNSORTED_TITLE } from "./kanbanModel";
 import { useEscapeToClose } from "../../lib/escapeStack";
+import { coveredAbove } from "../../lib/layers";
 
 /** Block property holding a column's colour (on the column's section block). */
 const KANBAN_COLOR_PROP = "kanban-color";
@@ -319,9 +320,9 @@ export default function KanbanView({ pageId, pageTitle, blocks, onRefreshPage, o
         if (card.parent_id) api.createBlock(pageId, "", card.parent_id).then(onRefreshPage).catch(() => {});
       }
 
-      if (e.key === "Escape") {
-        // Handled here (closing the side panel / dropping card focus) — the board
-        // itself only closes on an Escape nothing else used.
+      if (e.key === "Escape" && !coveredAbove("panel")) {
+        // Drops card focus — the board itself only closes on an Escape nothing
+        // else used; the side panel and anything above it are layers of their own.
         e.preventDefault();
         if (sidePanelBlockId) setSidePanelBlockId(null);
         else setFocusedCardId(null);

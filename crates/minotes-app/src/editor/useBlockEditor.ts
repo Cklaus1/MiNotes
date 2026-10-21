@@ -11,6 +11,7 @@ import { showToast } from "../lib/toast";
 import { errorMessage } from "../lib/errors";
 import { blobImageToFile, hasBlobImage, pastedFiles, withoutBlobImages } from "./pastedFiles";
 import { fenceToCodeBlock, parsePastedMarkdown, type PastedBlock } from "./pasteMarkdown";
+import { hasOpenLayer, yieldEscape } from "../lib/layers";
 // ── End import ──
 
 
@@ -284,6 +285,14 @@ export function useBlockEditor({
           // and the cursor stays where it was. (These editorProps run BEFORE plugin
           // key handlers, so swallowing Escape here kept the menus open.)
           if (suggestionMenuOpen(view.state)) return false;
+          // Something open above the page (a menu, a dialog, a side panel) is
+          // the topmost layer: Escape closes that, not the editing (lib/layers.ts)
+          // — unless this editor is inside such a layer itself.
+          if (hasOpenLayer(["menu", "popover", "dialog", "panel"])
+              && (hasOpenLayer(["menu", "popover"]) || !view.dom.closest('[role="dialog"], .kanban-side-panel, .ask-panel'))) {
+            yieldEscape(event); // ProseMirror still calls preventDefault on Escape
+            return false;
+          }
           // Otherwise Escape leaves editing ("Close"); outdenting is Shift+Tab's job.
           if (onEscapeRef.current) {
             event.preventDefault();

@@ -19,7 +19,7 @@ export default function SyncChip({ onOpenSettings }: Props) {
   const [open, setOpen] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const ref = useRef<HTMLDivElement>(null);
-  useEscapeToClose(open, () => setOpen(false));
+  useEscapeToClose(open, () => setOpen(false), "popover");
 
   // "Synced 2 min ago" stays true without a re-render from the store.
   useEffect(() => {

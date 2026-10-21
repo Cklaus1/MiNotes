@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import * as pdfjs from "pdfjs-dist";
 import * as api from "../lib/api";
 import { addRecentPdf, pdfDisplayName } from "../lib/pdfFiles";
+import { coveredAbove } from "../lib/layers";
 
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
   "pdfjs-dist/build/pdf.worker.mjs",
@@ -304,6 +305,8 @@ export default function PdfViewer({ filePath, onClose, onBlockLink }: Props) {
   // Keyboard shortcuts
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      // A dialog, menu or panel over the viewer gets Esc.
+      if (e.key === "Escape" && coveredAbove("canvas")) return;
       if (e.key === "Escape") {
         e.preventDefault();
         if (contextMenu) {

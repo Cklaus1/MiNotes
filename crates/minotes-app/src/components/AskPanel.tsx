@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import * as api from "../lib/api";
+import { useLayer } from "../lib/layers";
 
 interface Props {
   open: boolean;
@@ -86,13 +87,9 @@ export default function AskPanel({ open, onClose, activePageId, onOpenBlock, onO
     if (el) el.scrollTop = el.scrollHeight;
   }, [turns]);
 
-  useEffect(() => {
-    if (!open) return;
-    // Escape closes AI settings first when they are open on top.
-    const h = (e: KeyboardEvent) => { if (e.key === "Escape" && !document.querySelector("[data-testid=ai-settings]")) onClose(); };
-    window.addEventListener("keydown", h);
-    return () => window.removeEventListener("keydown", h);
-  }, [open, onClose]);
+  // Esc closes the panel when it is the topmost layer (AI settings opened from
+  // it come first).
+  useLayer(open, "panel", onClose);
 
   if (!open) return null;
 

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import * as api from "../lib/api";
 import { remoteHost } from "../lib/aiEndpoint";
+import { useLayer } from "../lib/layers";
 
 interface Props {
   open: boolean;
@@ -64,12 +65,7 @@ export default function AiSettings({ open, onClose, onSaved }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, draft?.provider]);
 
-  useEffect(() => {
-    if (!open) return;
-    const h = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
-    window.addEventListener("keydown", h);
-    return () => window.removeEventListener("keydown", h);
-  }, [open, onClose]);
+  useLayer(open, "panel", onClose);
 
   const recommended = models?.recommended ?? null;
   const modelFor = (k: TaskClass) => draft?.models[k] || recommended || "";

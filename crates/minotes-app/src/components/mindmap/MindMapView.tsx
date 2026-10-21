@@ -20,6 +20,7 @@ import { loadCollapsed, saveCollapsed } from "./collapseStore";
 import { buildMindMapSvg, svgToPng } from "./exportImage";
 import MindMapNode from "./MindMapNode";
 import { saveExport } from "../../lib/exportFile";
+import { coveredAbove } from "../../lib/layers";
 
 const nodeTypes = { mindmapNode: MindMapNode };
 
@@ -429,6 +430,8 @@ function MindMapInner({ pageId, pageTitle, isJournal, journalDate, blocks, onClo
   // Keyboard shortcuts
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      // A dialog, menu or panel over the map gets the keys (and Esc).
+      if (coveredAbove("canvas")) return;
       if (e.key === "Escape") {
         e.preventDefault();
         if (contextMenu) { setContextMenu(null); return; }

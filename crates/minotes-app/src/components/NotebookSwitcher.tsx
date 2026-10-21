@@ -11,6 +11,7 @@ import { NewNotebookDialog, ManageNotebooksDialog, MoveNotebookDialog } from "./
 import { JoinNotebookDialog } from "./EncryptionDialogs";
 import { LOCK_CHANGED, lockNow } from "../lib/encryption";
 import "./notebooks.css";
+import { useLayer } from "../lib/layers";
 
 /** Event other views fire to open a notebook dialog (detail: "new" | "manage" | "move"). */
 const OPEN_DIALOG = "minotes-open-notebook-dialog";
@@ -26,6 +27,7 @@ export default function NotebookSwitcher() {
   const [notebooks, setNotebooks] = useState<api.NotebookInfo[]>([]);
   const [session, setSession] = useState<api.NotebookSession | null>(null);
   const [open, setOpen] = useState(false);
+  useLayer(open, "menu", () => setOpen(false));
   const [dialog, setDialog] = useState<Dialog>(null);
   const [busy, setBusy] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -66,14 +68,9 @@ export default function NotebookSwitcher() {
     const onDown = (e: MouseEvent) => {
       if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
     };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") { e.preventDefault(); setOpen(false); }
-    };
     document.addEventListener("mousedown", onDown);
-    window.addEventListener("keydown", onKey);
     return () => {
       document.removeEventListener("mousedown", onDown);
-      window.removeEventListener("keydown", onKey);
     };
   }, [open]);
 

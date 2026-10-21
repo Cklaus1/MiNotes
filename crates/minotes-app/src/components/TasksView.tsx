@@ -54,7 +54,7 @@ export default function TasksView({ onOpenTask, onClose }: {
     };
   }, [load]);
 
-  useEscapeToClose(true, onClose);
+  useEscapeToClose(true, onClose, "canvas");
 
   const chooseFilter = (f: Filter) => {
     setFilter(f);

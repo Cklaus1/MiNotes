@@ -12,6 +12,7 @@ import {
   ago, applySyncStatus, errorHint, errorTitle, requestSyncNow, SYNC_CONFIRM_EVENT, useSyncView,
 } from "../lib/syncStatus";
 import "./sync.css";
+import { useLayer } from "../lib/layers";
 
 interface Props {
   open: boolean;
@@ -198,15 +199,8 @@ export default function SettingsPanel({ open, onClose, onOpenSync, onOpenCssSnip
     }
   }, [open]);
 
-  // Close on Escape
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") { e.preventDefault(); onClose(); }
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [open, onClose]);
+  // Esc closes Settings when it is the topmost layer (lib/layers.ts).
+  useLayer(open, "panel", onClose);
 
   if (!open) return null;
 

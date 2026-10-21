@@ -1,5 +1,6 @@
 import { useEffect, type ReactNode } from "react";
 import "./notebooks.css";
+import { useLayer } from "../lib/layers";
 
 /**
  * The notebook / encryption dialogs' modal: Escape and a click outside close it —
@@ -9,17 +10,10 @@ import "./notebooks.css";
 export default function Modal({ title, onClose, children, wide, testId, dismissable = true }: {
   title: string; onClose: () => void; children: ReactNode; wide?: boolean; testId?: string; dismissable?: boolean;
 }) {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
-      // A field inside that handles Escape itself (an inline rename: Escape
-      // cancels the rename, not the whole dialog) is left to do so.
-      if ((e.target as HTMLElement | null)?.closest?.("[data-escape-local]")) return;
-      e.preventDefault(); e.stopPropagation(); if (dismissable) onClose();
-    };
-    window.addEventListener("keydown", onKey, true);
-    return () => window.removeEventListener("keydown", onKey, true);
-  }, [onClose, dismissable]);
+  // Esc closes the dialog when it is the topmost layer (lib/layers.ts); a field
+  // marked data-escape-local (an inline rename) keeps its own Escape. A
+  // non-dismissable dialog still swallows Esc, so nothing underneath closes.
+  useLayer(true, "dialog", dismissable ? onClose : null);
   return (
     <div className="nb-modal-backdrop" onMouseDown={e => { if (dismissable && e.target === e.currentTarget) onClose(); }}>
       <div className={`nb-modal${wide ? " wide" : ""}`} role="dialog" aria-modal="true" aria-label={title} data-testid={testId}>

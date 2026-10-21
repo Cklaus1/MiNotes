@@ -25,7 +25,7 @@ async function getLoader(): Promise<PluginLoader> {
 }
 
 export default function ObsidianPluginBrowser({ open, onClose }: Props) {
-  useEscapeToClose(open, onClose);
+  useEscapeToClose(open, onClose, "dialog");
   const [manifestJson, setManifestJson] = useState('');
   const [pluginCode, setPluginCode] = useState('');
   const [loaded, setLoaded] = useState<Array<{ id: string; name: string; enabled: boolean }>>([]);

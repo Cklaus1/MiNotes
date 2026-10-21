@@ -4559,6 +4559,63 @@ R=$(ev "(()=>{const c=document.querySelector('[data-testid=search-all-notebooks]
 press "Escape"; sleep 0.3; api "closePanel()" >/dev/null
 
 # ═══════════════════════════════════════════════
+journey "85. Esc closes only the topmost layer (UX Wave 3)"
+# popover > menu > dialog > side panel > canvas overlay — one Esc, one layer.
+# ═══════════════════════════════════════════════
+reset85() { api "closePanel()" >/dev/null; ev "(()=>{for(let i=0;i<4;i++)document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));return 1})()" >/dev/null; sleep 0.4; api "closePanel()" >/dev/null; sleep 0.3; }
+open85() { ev "!!document.querySelector('$1')" | tr -d '"'; }
+reset85
+api "navigateTo('Project Alpha')" >/dev/null; sleep 1.5
+
+step "Settings over the graph: Esc closes Settings, the graph stays"
+press "Control+g"; sleep 1.5
+api "openSettings()" >/dev/null; sleep 0.6
+R1="$(open85 .graph-view)|$(open85 .settings-slide-panel)"
+press "Escape"; sleep 0.5
+R2="$(open85 .graph-view)|$(open85 .settings-slide-panel)"
+press "Escape"; sleep 0.5
+R3="$(open85 .graph-view)"
+[[ "$R1" == "true|true" && "$R2" == "true|false" && "$R3" == "false" ]] && pass "One Esc per layer: settings, then the graph ($R1 → $R2 → $R3)" || fail "Esc over the graph" "$R1 → $R2 → $R3"
+
+step "The search palette over the graph: Esc closes only the palette"
+press "Control+g"; sleep 1.5
+api "openSearch()" >/dev/null; sleep 0.6
+press "Escape"; sleep 0.5
+R="$(open85 .command-palette)|$(open85 .graph-view)"
+[[ "$R" == "false|true" ]] && pass "Palette closed, graph still open ($R)" || fail "Esc on the palette over the graph" "$R"
+reset85
+
+step "The notebook menu over Settings: Esc closes only the menu"
+api "openSettings()" >/dev/null; sleep 0.6
+ev "document.querySelector('.nb-switcher-btn, [data-testid=notebook-switcher]')?.click()" >/dev/null; sleep 0.4
+R1="$(open85 '.nb-menu')|$(open85 .settings-slide-panel)"
+press "Escape"; sleep 0.5
+R2="$(open85 '.nb-menu')|$(open85 .settings-slide-panel)"
+[[ "$R1" == "true|true" && "$R2" == "false|true" ]] && pass "Menu closed, Settings stayed ($R1 → $R2)" || fail "Esc on a menu over Settings" "$R1 → $R2"
+reset85
+
+step "AI settings over the Ask panel: Esc closes AI settings, then Ask"
+api "openAsk()" >/dev/null; sleep 0.5
+api "openAiSettings()" >/dev/null; sleep 0.5
+R1="$(open85 '[data-testid=ask-panel]')|$(open85 '[data-testid=ai-settings]')"
+press "Escape"; sleep 0.5
+R2="$(open85 '[data-testid=ask-panel]')|$(open85 '[data-testid=ai-settings]')"
+press "Escape"; sleep 0.5
+R3="$(open85 '[data-testid=ask-panel]')"
+[[ "$R1" == "true|true" && "$R2" == "true|false" && "$R3" == "false" ]] && pass "AI settings, then Ask ($R1 → $R2 → $R3)" || fail "Esc on AI settings over Ask" "$R1 → $R2 → $R3"
+reset85
+
+step "A dialog opened from Settings: Esc closes the dialog, Settings stays"
+api "openSettings()" >/dev/null; sleep 0.6
+ev "window.dispatchEvent(new CustomEvent('minotes-open-notebook-dialog',{detail:'new'}))" >/dev/null; sleep 0.6
+R1="$(open85 '[aria-modal=true]')|$(open85 .settings-slide-panel)"
+press "Escape"; sleep 0.5
+R2="$(open85 '[aria-modal=true]')|$(open85 .settings-slide-panel)"
+[[ "$R1" == "true|true" && "$R2" == "false|true" ]] && pass "Dialog closed, Settings stayed ($R1 → $R2)" || fail "Esc on a dialog over Settings" "$R1 → $R2"
+ss "85-esc-topmost"
+reset85
+
+# ═══════════════════════════════════════════════
 close_app
 
 # ═══════════════════════════════════════════════

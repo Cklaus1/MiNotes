@@ -1,5 +1,6 @@
 import { useState } from "react";
 import * as api from "../lib/api";
+import { useLayer } from "../lib/layers";
 
 interface Props {
   open: boolean;
@@ -20,6 +21,7 @@ export default function QueryPanel({ open, onClose, onPageClick }: Props) {
   const [result, setResult] = useState<api.QueryResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
+  useLayer(open, "dialog", onClose);
 
   if (!open) return null;
 
@@ -67,7 +69,6 @@ export default function QueryPanel({ open, onClose, onPageClick }: Props) {
               e.preventDefault();
               runQuery();
             }
-            if (e.key === "Escape") { e.preventDefault(); onClose(); }
           }}
           placeholder="SELECT * FROM blocks WHERE content LIKE '%...' LIMIT 20"
           rows={3}

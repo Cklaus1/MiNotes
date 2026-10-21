@@ -282,7 +282,7 @@ export default function Sidebar({
     }
   };
 
-  useEscapeToClose(showCalendar, () => setShowCalendar(false));
+  useEscapeToClose(showCalendar, () => setShowCalendar(false), "popover");
 
   const handleDropOnRoot = async (e: React.DragEvent) => {
     e.preventDefault();

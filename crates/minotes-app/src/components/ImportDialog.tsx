@@ -6,6 +6,7 @@ import { formatSize, pickFolder, prettyPath, switchNotebook } from "../lib/noteb
 import { showToast } from "../lib/toast";
 import { takeNextImportPick } from "../lib/importPicks";
 import "./import.css";
+import { useLayer } from "../lib/layers";
 
 type Step = "source" | "scanning" | "preview" | "importing" | "report" | "undone";
 
@@ -169,13 +170,7 @@ export default function ImportDialog({ initialKind, onClose, onOpenPage, onRefre
     onClose();
   }, [onClose]);
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(); }
-    };
-    window.addEventListener("keydown", onKey, true);
-    return () => window.removeEventListener("keydown", onKey, true);
-  }, [close]);
+  useLayer(true, "dialog", close);
 
   const destination = useMemo<api.ImportDestination>(
     () => dest === "current" ? { kind: "current" } : { kind: "new_notebook", name: nbName.trim() || null },

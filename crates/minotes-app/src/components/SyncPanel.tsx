@@ -10,7 +10,7 @@ interface Props {
 }
 
 export default function SyncPanel({ open, onClose, currentPageId, onPageRestored }: Props) {
-  useEscapeToClose(open, onClose);
+  useEscapeToClose(open, onClose, "dialog");
   const [status, setStatus] = useState<api.SyncStatus | null>(null);
   const [versions, setVersions] = useState<api.VersionInfo[]>([]);
   const [syncing, setSyncing] = useState(false);

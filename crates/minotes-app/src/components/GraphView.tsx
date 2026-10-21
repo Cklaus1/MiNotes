@@ -13,6 +13,7 @@ import {
 import * as api from "../lib/api";
 import { onThemeChange, themeColor } from "../lib/theme";
 import NotebookLabel from "./NotebookLabel";
+import { useLayer } from "../lib/layers";
 
 interface Props {
   onPageClick: (id: string) => void;
@@ -592,14 +593,8 @@ export default function GraphView({ onPageClick, onClose }: Props) {
     return () => ro.disconnect();
   }, [draw, fitToView, publishStats, data]);
 
-  // Close on Escape
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") { e.preventDefault(); onClose(); }
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [onClose]);
+  // Esc closes the graph when nothing above it is open (lib/layers.ts).
+  useLayer(true, "canvas", onClose);
 
   if (loading) {
     return (

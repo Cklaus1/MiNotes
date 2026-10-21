@@ -29,6 +29,7 @@ import { prefetchBlockProperties } from "../lib/blockProperties";
 import { registerFlush } from "../lib/pendingEdits";
 import { getSettingsCached } from "../lib/cachedSettings";
 import RemoteImageBar from "./RemoteImageBar";
+import { hasOpenLayer } from "../lib/layers";
 
 /**
  * Big pages render progressively: the first INITIAL_RENDER blocks at once, the
@@ -1393,7 +1394,7 @@ export default function PageView({
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       // Escape outside any editor/input with nothing selected leaves the zoom.
-      if (e.key === "Escape" && zoomedBlockId && !e.defaultPrevented && selectedCountRef.current === 0) {
+      if (e.key === "Escape" && zoomedBlockId && !e.defaultPrevented && selectedCountRef.current === 0 && !hasOpenLayer()) {
         const t = e.target as HTMLElement | null;
         if (!t || t === document.body || !t.closest?.("input, textarea, [contenteditable='true'], .ProseMirror, [role='dialog']")) {
           e.preventDefault();
@@ -1610,7 +1611,7 @@ export default function PageView({
         e.preventDefault();
         copySelected();
       }
-      if (e.key === "Escape") {
+      if (e.key === "Escape" && !hasOpenLayer()) {
         setSelectedBlockIds(new Set());
         setSelectionAnchor(null);
       }

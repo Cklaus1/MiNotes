@@ -13,7 +13,7 @@ interface Props {
 type EditorMode = "add-custom" | "add-obsidian" | "edit" | null;
 
 export default function CssSnippetManager({ open, onClose }: Props) {
-  useEscapeToClose(open, onClose);
+  useEscapeToClose(open, onClose, "dialog");
   const [snippets, setSnippets] = useState<CssSnippet[]>([]);
   const [mode, setMode] = useState<EditorMode>(null);
   const [editName, setEditName] = useState("");

@@ -56,7 +56,7 @@ export default function CanvasMode({
 
   // Graph, mind map and whiteboard close themselves on Escape; kanban and All
   // Pages have no handler of their own.
-  useEscapeToClose(mode === "kanban" || mode === "pages", onClose);
+  useEscapeToClose(mode === "kanban" || mode === "pages", onClose, "canvas");
 
   const handleModeSwitch = useCallback((newMode: CanvasModeType) => {
     setMode(newMode);

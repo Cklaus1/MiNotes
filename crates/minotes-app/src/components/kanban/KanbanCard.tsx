@@ -48,7 +48,7 @@ function KanbanCard({ block, subBlockCount, columnId, columns, onMoveTo, columnC
   }
 
   // Escape closes only the context menu, not the board.
-  useEscapeToClose(!!contextMenu, () => setContextMenu(null));
+  useEscapeToClose(!!contextMenu, () => setContextMenu(null), "menu");
 
   useEffect(() => {
     const el = ref.current;

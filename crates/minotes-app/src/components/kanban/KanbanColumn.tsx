@@ -97,7 +97,7 @@ function KanbanColumn({
   }, [columnId, isUnsorted]);
 
   // Escape closes only the colour picker (topmost), never the board under it.
-  useEscapeToClose(showColorPicker, () => setShowColorPicker(false));
+  useEscapeToClose(showColorPicker, () => setShowColorPicker(false), "popover");
 
   // Edit the title text only; the heading marker ("## ") that makes the block a
   // column is kept and re-applied on save.

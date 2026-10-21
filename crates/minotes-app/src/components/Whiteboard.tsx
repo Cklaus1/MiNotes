@@ -7,6 +7,7 @@ import { showToast } from "../lib/toast";
 import { registerFlush } from "../lib/pendingEdits";
 import { isRemoteSrc } from "../lib/remoteImages";
 import { useAppTheme } from "../lib/theme";
+import { coveredAbove } from "../lib/layers";
 
 interface StickyNote {
   id: string;
@@ -1721,6 +1722,8 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
       // Typing into an input outside the whiteboard (search, command palette…)
       // must not switch tools, delete elements, or close the board.
       if (isForeignEditable(e.target, containerRef.current)) return;
+      // A dialog, menu or panel over the board gets the keys (and Esc).
+      if (coveredAbove("canvas")) return;
       if (e.key === "Escape") {
         e.preventDefault(); // handled here — views underneath must not close too
         // If a textarea recently handled Escape (within 500ms), skip

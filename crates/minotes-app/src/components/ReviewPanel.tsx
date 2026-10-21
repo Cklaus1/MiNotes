@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import * as api from "../lib/api";
 import { notifyCardsChanged } from "../lib/cards";
+import { useLayer } from "../lib/layers";
 
 interface Props {
   open: boolean;
@@ -11,6 +12,7 @@ export default function ReviewPanel({ open, onClose }: Props) {
   const [dueCards, setDueCards] = useState<api.Card[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [showAnswer, setShowAnswer] = useState(false);
+  useLayer(open, "dialog", onClose);
   const [blockContent, setBlockContent] = useState("");
   const [childBlocks, setChildBlocks] = useState<api.Block[]>([]);
   const [stats, setStats] = useState<api.SrsStats | null>(null);
@@ -109,11 +111,6 @@ export default function ReviewPanel({ open, onClose }: Props) {
   useEffect(() => {
     if (!open) return;
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        onClose();
-        return;
-      }
       if (!showAnswer && (e.key === " " || e.key === "Enter")) {
         e.preventDefault();
         setShowAnswer(true);

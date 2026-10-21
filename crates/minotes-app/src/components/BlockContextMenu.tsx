@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { TABLE_ACTIONS, type TableAction } from "../editor/tables";
+import { useLayer } from "../lib/layers";
 
 interface Props {
   x: number;
@@ -46,14 +47,9 @@ export default function BlockContextMenu({
         onClose();
       }
     };
-    const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === "Escape") { e.preventDefault(); onClose(); }
-    };
     document.addEventListener("mousedown", handleClickOutside);
-    document.addEventListener("keydown", handleEscape);
     return () => {
       document.removeEventListener("mousedown", handleClickOutside);
-      document.removeEventListener("keydown", handleEscape);
     };
   }, [onClose]);
 

@@ -58,7 +58,7 @@ export default function TableOfContents({ blocks, visible, onClose }: Props) {
     return () => observer.disconnect();
   }, [visible, headings]);
 
-  useEscapeToClose(visible && headings.length > 0, onClose);
+  useEscapeToClose(visible && headings.length > 0, onClose, "popover");
 
   // Hide entirely when no headings
   if (!visible || headings.length === 0) return null;
