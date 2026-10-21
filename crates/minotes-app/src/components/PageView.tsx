@@ -875,20 +875,6 @@ export default function PageView({
     onRefreshPage();
   };
 
-  // UX-002: Toggle block collapse
-  const handleToggleCollapse = async (blockId: string) => {
-    const block = blocks.find(b => b.id === blockId);
-    if (!block) return;
-    // Toggle collapsed state via update — we use the content as-is but toggle collapsed
-    // Since updateBlock only updates content, we use reparentBlock-style direct approach
-    // Actually the collapsed field isn't exposed via updateBlock. We'll use a direct approach.
-    // For now, just use updateBlock which preserves collapsed. We need to add a toggle command.
-    // Workaround: use the block's current content to update it (no-op on content) but we can't
-    // toggle collapsed this way. Let's just manage it client-side for now.
-    // Actually, let's just track collapsed state locally since the backend blocks don't get modified.
-    // We'll do this with local state.
-  };
-
   // Track collapsed blocks locally, persisted to localStorage per page
   const [collapsedBlocks, setCollapsedBlocks] = useState<Set<string>>(() => {
     try {
@@ -928,22 +914,49 @@ export default function PageView({
     };
   }, [page.id]);
 
-  const toggleCollapse = (blockId: string) => {
-    // Start from the stored entry (kept in step with every toggle): the mind map
-    // may have changed it since we read it. Computed outside the state updater —
-    // updaters must be pure (StrictMode runs them twice).
-    const key = "minotes-collapsed-" + page.id;
-    let prev = collapsedBlocksRef.current;
-    try {
-      const stored = localStorage.getItem(key);
-      if (stored) prev = new Set(JSON.parse(stored) as string[]);
-    } catch {}
-    const next = new Set(prev);
-    if (next.has(blockId)) next.delete(blockId); else next.add(blockId);
-    try { localStorage.setItem(key, JSON.stringify([...next])); } catch {}
+  /** Write the page's folded set (shared with the mind map through localStorage). */
+  const writeCollapsed = (next: Set<string>) => {
+    try { localStorage.setItem("minotes-collapsed-" + page.id, JSON.stringify([...next])); } catch {}
     collapsedBlocksRef.current = next;
     setCollapsedBlocks(next);
   };
+  /** The stored folded set: the mind map may have changed it since we read it. */
+  const readCollapsed = (): Set<string> => {
+    let prev = collapsedBlocksRef.current;
+    try {
+      const stored = localStorage.getItem("minotes-collapsed-" + page.id);
+      if (stored) prev = new Set(JSON.parse(stored) as string[]);
+    } catch {}
+    return new Set(prev);
+  };
+  // Computed outside the state updater — updaters must be pure (StrictMode runs them twice).
+  const toggleCollapse = (blockId: string) => {
+    const next = readCollapsed();
+    if (next.has(blockId)) next.delete(blockId); else next.add(blockId);
+    writeCollapsed(next);
+  };
+  /** Fold (true) or unfold (false) one block. Only blocks with children fold. */
+  const setCollapsed = (blockId: string, want: boolean) => {
+    const next = readCollapsed();
+    if (want && !localBlocksRef.current.some(b => b.parent_id === blockId)) return;
+    if (want === next.has(blockId)) return;
+    if (want) next.add(blockId); else next.delete(blockId);
+    writeCollapsed(next);
+  };
+  /** Fold / unfold every block with children (page header, block menu). */
+  const setAllCollapsed = (want: boolean) => {
+    const parents = new Set(localBlocksRef.current.map(b => b.parent_id).filter((x): x is string => !!x));
+    writeCollapsed(want ? parents : new Set());
+  };
+  const setCollapsedRef = useRef(setCollapsed);
+  setCollapsedRef.current = setCollapsed;
+  const setCollapsedLive = useCallback((id: string, want: boolean) => setCollapsedRef.current(id, want), []);
+  const setAllCollapsedRef = useRef(setAllCollapsed);
+  setAllCollapsedRef.current = setAllCollapsed;
+  const setAllCollapsedLive = useCallback((want: boolean) => setAllCollapsedRef.current(want), []);
+  const toggleCollapseRef = useRef(toggleCollapse);
+  toggleCollapseRef.current = toggleCollapse;
+  const toggleCollapseLive = useCallback((id: string) => toggleCollapseRef.current(id), []);
 
   // Drag-to-reorder blocks
   const handleDragReorder = useCallback(async (draggedBlockId: string, targetBlockId: string, position: "above" | "below") => {
@@ -1026,8 +1039,21 @@ export default function PageView({
       computeDepth(rootId, 0);
     }
 
+    const descendants = new Map<string, number>();
+    const countDescendants = (id: string): number => {
+      const known = descendants.get(id);
+      if (known !== undefined) return known;
+      descendants.set(id, 0); // cycle guard
+      let n = 0;
+      for (const c of childrenMap.get(id) ?? []) n += 1 + countDescendants(c);
+      descendants.set(id, n);
+      return n;
+    };
+
     return {
       getDepth: (id: string) => depthMap.get(id) ?? 0,
+      /** Every block below this one (what folding it hides). */
+      descendantCount: countDescendants,
       hasChildren: (id: string) => (childrenMap.get(id) ?? []).length > 0,
       isLastSibling: (id: string) => {
         const pid = parentMap.get(id);
@@ -1577,6 +1603,12 @@ export default function PageView({
         setSelectedBlockIds(new Set());
         setSelectionAnchor(null);
       }
+      // Ctrl+Up / Ctrl+Down fold / unfold the selected blocks (C-11).
+      if ((e.key === "ArrowUp" || e.key === "ArrowDown") && (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey) {
+        e.preventDefault();
+        for (const id of selectedBlockIds) setCollapsedRef.current(id, e.key === "ArrowUp");
+        return;
+      }
       // Keyboard navigation of the selection (e.g. after Escape left a block):
       // arrows move it (Shift extends), Enter edits the selected block.
       if ((e.key === "ArrowUp" || e.key === "ArrowDown") && !e.altKey && !e.ctrlKey && !e.metaKey) {
@@ -1680,6 +1712,8 @@ export default function PageView({
   const [editingTitle, setEditingTitle] = useState(false);
   const [showToc, setShowToc] = useState(false);
   const hasHeadings = blocks.some(b => /^#{1,4}\s+/.test(b.content));
+  const hasNesting = blocks.some(b => !!b.parent_id);
+  const anyCollapsed = blocks.some(b => collapsedBlocks.has(b.id) && blocks.some(c => c.parent_id === b.id));
   const [titleDraft, setTitleDraft] = useState(page.title);
   const titleInputRef = useRef<HTMLInputElement>(null);
 
@@ -1726,7 +1760,11 @@ export default function PageView({
       onOutdent={handleOutdent}
       onEscape={handleEscape}
       onDuplicate={handleDuplicate}
-      onToggleCollapse={toggleCollapse}
+      onToggleCollapse={toggleCollapseLive}
+      onSetCollapsed={setCollapsedLive}
+      onSetAllCollapsed={setAllCollapsedLive}
+      collapsed={collapsedBlocks.has(block.id)}
+      hiddenCount={collapsedBlocks.has(block.id) ? blockTreeInfo.descendantCount(block.id) : 0}
       onZoomIn={() => zoomTo(block.id, block.id)}
       hasChildren={blockTreeInfo.hasChildren(block.id)}
       isLastSibling={(() => {
@@ -1750,7 +1788,7 @@ export default function PageView({
       onDragReorder={handleDragReorderLive}
     />
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  )), [filteredVisibleBlocks, renderLimit, selectedBlockIds, blockTreeInfo]);
+  )), [filteredVisibleBlocks, renderLimit, selectedBlockIds, blockTreeInfo, collapsedBlocks]);
 
   return (
     <div className="page-view-wrapper">
@@ -1801,6 +1839,21 @@ export default function PageView({
           </button>
         )}
         {!hasHeadings && <span style={{ marginLeft: "auto" }} />}
+        {hasNesting && (
+          <button
+            className="prop-toggle-btn collapse-all-btn"
+            data-testid="collapse-all"
+            onClick={() => setAllCollapsed(!anyCollapsed)}
+            title={anyCollapsed ? "Expand all blocks" : "Collapse all blocks"}
+            aria-label={anyCollapsed ? "Expand all" : "Collapse all"}
+          >
+            <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
+              {anyCollapsed
+                ? <path d="M3.5 3l3.5 3.5L10.5 3M3.5 7.5L7 11l3.5-3.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                : <path d="M3.5 6.5L7 3l3.5 3.5M3.5 11L7 7.5l3.5 3.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />}
+            </svg>
+          </button>
+        )}
         {saveIndicator?.visible && (
           <span className="save-indicator" style={{
             fontSize: 12,

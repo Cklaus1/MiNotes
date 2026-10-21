@@ -175,6 +175,14 @@ interface Props {
   onEscape?: (blockId: string) => void;
   onDuplicate?: (blockId: string) => void;
   onToggleCollapse?: (blockId: string) => void;
+  /** Fold (true) / unfold (false) this block: Ctrl+Up / Ctrl+Down, the block menu. */
+  onSetCollapsed?: (blockId: string, collapsed: boolean) => void;
+  /** Fold / unfold every block of the page (block menu). */
+  onSetAllCollapsed?: (collapsed: boolean) => void;
+  /** This block's children are hidden (C-11: shown by a ringed bullet + count). */
+  collapsed?: boolean;
+  /** How many blocks the fold hides (all descendants). */
+  hiddenCount?: number;
   onZoomIn?: () => void;
   onShiftClick?: (blockId: string) => void;
   onOpenWhiteboard?: (whiteboardId: string) => void;
@@ -184,7 +192,8 @@ interface Props {
 const BlockItem = forwardRef<BlockItemHandle, Props>(({
   block, depth = 0, hasChildren = false, isLastSibling = false, isOnActivePath = false, onFocusBlock, onBlurBlock, dataBlockId, selected = false, onUpdate, onDelete, onPageLinkClick,
   onBlockRefClick, onEnter, canEnter, onBackspaceAtStart, onArrowUp, onArrowDown, onPasteMultiline,
-  onIndent, onOutdent, onEscape, onDuplicate, onToggleCollapse, onZoomIn, onShiftClick, onOpenWhiteboard, onDragReorder,
+  onIndent, onOutdent, onEscape, onDuplicate, onToggleCollapse, onSetCollapsed, onSetAllCollapsed, collapsed = false, hiddenCount = 0,
+  onZoomIn, onShiftClick, onOpenWhiteboard, onDragReorder,
 }, ref) => {
   const settings = getSettingsCached();
   const [editorMode, setEditorMode] = useState<"minotes" | "obsidian">(
@@ -320,6 +329,7 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
     onIndent: onIndent ? () => onIndent(block.id) : undefined,
     onOutdent: onOutdent ? () => onOutdent(block.id) : undefined,
     onEscape: onEscape ? () => onEscape(block.id) : undefined,
+    onSetCollapsed: onSetCollapsed ? (c) => onSetCollapsed(block.id, c) : undefined,
     onMakeFlashcard: () => { void setFlashcard(true); },
     onSlashCommand: (newMarkdown: string) => {
       // Save to backend + update local state (triggers re-render → setContent)
@@ -615,9 +625,12 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
   return (
     <div
       ref={rootRef}
-      className={`block${selected ? " selected" : ""}${isCard ? " is-flashcard" : ""}${dropPosition === "above" ? " drop-above" : ""}${dropPosition === "below" ? " drop-below" : ""}`}
+      className={`block${selected ? " selected" : ""}${isCard ? " is-flashcard" : ""}${collapsed && hasChildren ? " is-collapsed" : ""}${dropPosition === "above" ? " drop-above" : ""}${dropPosition === "below" ? " drop-below" : ""}`}
       data-depth={depth > 0 ? String(depth) : undefined}
-      style={depth > 0 ? ({ "--depth": depth } as React.CSSProperties) : undefined}
+      style={depth > 0 || (collapsed && hasChildren) ? ({
+        ...(depth > 0 ? { "--depth": depth } : {}),
+        ...(collapsed && hasChildren ? { "--collapsed-label": `"+${hiddenCount}"` } : {}),
+      } as React.CSSProperties) : undefined}
       data-tree-last={isLastSibling ? "true" : undefined}
       data-active-path={isOnActivePath ? "true" : undefined}
       data-block-id={dataBlockId ?? block.id}
@@ -667,7 +680,8 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
           ⠿
         </div>
       )}
-      {/* Zoom trigger on bullet for blocks with children */}
+      {/* Zoom trigger on the bullet (blocks with children). The collapse arrow
+          sits in its own column left of it, so neither covers the other (C-11). */}
       {hasChildren && onZoomIn && (
         <div
           className="block-zoom-trigger"
@@ -675,14 +689,17 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
           title="Zoom into this block"
         />
       )}
-      {/* Collapse toggle for blocks with children */}
       {hasChildren && onToggleCollapse && (
         <button
           className="block-collapse"
-          onClick={() => onToggleCollapse(block.id)}
-          title={block.collapsed ? "Expand" : "Collapse"}
+          onClick={(e) => { e.stopPropagation(); onToggleCollapse(block.id); }}
+          title={collapsed ? `Expand (${hiddenCount} hidden · Ctrl+Down)` : "Collapse (Ctrl+Up)"}
+          aria-label={collapsed ? "Expand" : "Collapse"}
+          aria-expanded={!collapsed}
         >
-          {block.collapsed ? "\u25B6" : "\u25BC"}
+          <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
+            <path d="M3 1.5 L7 5 L3 8.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
         </button>
       )}
 
@@ -897,6 +914,9 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
           onDuplicate={onDuplicate ?? (() => {})}
           onCopyRef={() => {}}
           onToggleTodo={() => handleToggleTodo()}
+          collapsed={hasChildren && onSetCollapsed ? collapsed : undefined}
+          onSetCollapsed={onSetCollapsed ? (c) => onSetCollapsed(block.id, c) : undefined}
+          onSetAllCollapsed={onSetAllCollapsed}
           isFlashcard={isCard}
           onToggleFlashcard={() => { void setFlashcard(!isCard); }}
           onTableAction={menuInTable ? (action) => { handleTableAction(action); } : undefined}
@@ -920,6 +940,8 @@ export default React.memo(BlockItem, (prev, next) => {
     prev.selected === next.selected &&
     prev.hasChildren === next.hasChildren &&
     prev.isLastSibling === next.isLastSibling &&
+    prev.collapsed === next.collapsed &&
+    prev.hiddenCount === next.hiddenCount &&
     !!prev.onDragReorder === !!next.onDragReorder
   );
 });

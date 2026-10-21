@@ -46,6 +46,8 @@ interface UseBlockEditorOptions {
   onTagClick?: (tag: string) => void;
   /** `/flashcard`: make this block a flashcard. */
   onMakeFlashcard?: () => void;
+  /** Ctrl+Up folds this block's children, Ctrl+Down unfolds them. */
+  onSetCollapsed?: (collapsed: boolean) => void;
 }
 
 export function useBlockEditor({
@@ -66,6 +68,7 @@ export function useBlockEditor({
   onSlashCommand,
   onTagClick,
   onMakeFlashcard,
+  onSetCollapsed,
 }: UseBlockEditorOptions) {
   const onSaveRef = useRef(onSave);
   // NOT a mirror of the `content` prop — this tracks the last markdown the editor
@@ -89,6 +92,7 @@ export function useBlockEditor({
   const onSlashCommandRef = useRef(onSlashCommand);
   const onTagClickRef = useRef(onTagClick);
   const onMakeFlashcardRef = useRef(onMakeFlashcard);
+  const onSetCollapsedRef = useRef(onSetCollapsed);
   const editorInstanceRef = useRef<any>(null);
   const skipSyncRef = useRef(false);
   const slashActiveRef = useRef(false);
@@ -115,6 +119,7 @@ export function useBlockEditor({
   onSlashCommandRef.current = onSlashCommand;
   onTagClickRef.current = onTagClick;
   onMakeFlashcardRef.current = onMakeFlashcard;
+  onSetCollapsedRef.current = onSetCollapsed;
 
   // Slash callbacks are set per-editor instance after creation (see useEffect below)
 
@@ -274,6 +279,14 @@ export function useBlockEditor({
             return true;
           }
           return false;
+        }
+
+        // Ctrl+Up / Ctrl+Down — fold / unfold this block's children (C-11).
+        if ((event.key === "ArrowUp" || event.key === "ArrowDown") && (event.ctrlKey || event.metaKey) &&
+            !event.shiftKey && !event.altKey && onSetCollapsedRef.current && !suggestionMenuOpen(view.state)) {
+          event.preventDefault();
+          onSetCollapsedRef.current(event.key === "ArrowUp");
+          return true;
         }
 
         // Ctrl+Enter — cycle TODO state

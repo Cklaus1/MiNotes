@@ -687,11 +687,13 @@ body {
 
 /* Placeholder handled by TipTap Placeholder extension (showOnlyCurrent: true) */
 
-/* Drag handle — visible on hover */
+/* ── Block gutter (C-11) ──
+   Three controls left of the text, each in its own column so none covers
+   another:  [drag ⠿ -30..-16] [collapse › -16..0] [bullet / zoom 0..14] text */
 .block-drag-handle {
   position: absolute;
-  left: -14px;
-  top: 6px;
+  left: -30px;
+  top: 4px;
   width: 14px;
   height: 20px;
   cursor: grab;
@@ -731,34 +733,76 @@ body {
   border-bottom: 2px solid var(--accent);
 }
 
-/* Collapse toggle for parent blocks */
+/* Collapse toggle for parent blocks: left of the bullet, above everything else. */
 .block-collapse {
   position: absolute;
-  left: -4px;
-  top: 10px;
+  left: -16px;
+  top: 5px;
   width: 16px;
-  height: 16px;
+  height: 18px;
   background: none;
   border: none;
   color: var(--text-muted);
-  font-size: 10px;
   cursor: pointer;
   padding: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 2px;
+  border-radius: 3px;
   opacity: 0;
-  transition: opacity 0.1s;
+  transition: opacity 0.1s, transform 0.12s;
+  transform: rotate(90deg);
+  z-index: 4;
 }
 
-.block:hover .block-collapse {
-  opacity: 1;
+.block:hover > .block-collapse,
+.block-collapse:focus-visible {
+  opacity: 0.8;
 }
 
 .block-collapse:hover {
   background: var(--bg-surface);
   color: var(--text-primary);
+  opacity: 1;
+}
+
+/* A folded block: the arrow points right and stays visible, the bullet gets a
+   ring, and the text is followed by how many blocks are hidden. */
+.block.is-collapsed > .block-collapse {
+  transform: none;
+  opacity: 0.7;
+}
+
+.block.is-collapsed::before {
+  background: var(--text-secondary);
+  box-shadow: 0 0 0 3px rgba(166, 173, 200, 0.28);
+}
+
+.block.is-collapsed > .block-content .ProseMirror > :last-child::after {
+  content: var(--collapsed-label);
+  display: inline-block;
+  margin-left: 8px;
+  padding: 0 6px;
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 500;
+  font-style: normal;
+  line-height: 16px;
+  vertical-align: 1px;
+  color: var(--text-muted);
+  background: var(--bg-surface);
+  pointer-events: none;
+  user-select: none;
+}
+
+[data-theme="light"] .block.is-collapsed::before {
+  box-shadow: 0 0 0 3px rgba(76, 79, 105, 0.18);
+}
+
+.collapse-all-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 /* Wiki links in content */
@@ -3824,9 +3868,9 @@ body.theme-light { /* matches our light theme */ }
 .block-zoom-trigger {
   position: absolute;
   left: 0;
-  top: 8px;
-  width: 20px;
-  height: 20px;
+  top: 5px;
+  width: 14px;
+  height: 18px;
   cursor: zoom-in;
   z-index: 3;
   border-radius: 4px;
@@ -6335,3 +6379,10 @@ img.img-broken {
 .remote-images-bar-btn:hover:not(:disabled) { text-decoration: underline; }
 .remote-images-bar-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 3px; }
 .remote-images-bar-btn:disabled { opacity: 0.6; cursor: default; }
+
+.block-context-menu-shortcut {
+  float: right;
+  margin-left: 16px;
+  font-size: 11px;
+  color: var(--text-muted);
+}

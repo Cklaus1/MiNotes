@@ -3608,6 +3608,66 @@ T=$(ev "[...document.querySelectorAll('.minotes-toast-undo')].map(t=>t.innerText
 [[ "$D" == "none" && "$T" == *"1 block deleted"* ]] && pass "No dialog; toast \"1 block deleted · Undo\"" || fail "Partial delete" "dialog=$D toast=$T"
 
 # ═══════════════════════════════════════════════
+journey "68. I fold a long outline with the mouse and the keyboard (UX review C-11)"
+# The collapse arrow used to sit under the drag handle and the zoom trigger, so a
+# click zoomed in; a collapsed block looked like a leaf. Clicks here go to
+# whatever element is really on top at the arrow's centre (elementFromPoint).
+# ═══════════════════════════════════════════════
+A68="const api=await import('/src/lib/api.ts');"
+ev "(async()=>{$A68 const p=await api.createPage('Fold68 page');const a=await api.createBlock(p.id,'parent68');const c=await api.createBlock(p.id,'child68',a.id);await api.createBlock(p.id,'grandchild68',c.id);await api.createBlock(p.id,'second child68',a.id);const b=await api.createBlock(p.id,'other68');await api.createBlock(p.id,'other child68',b.id);return 1})()" >/dev/null
+api "navigateTo('Fold68 page')" >/dev/null; sleep 2
+vis68() { ev "[...document.querySelectorAll('.block-list > .block')].map(b=>b.querySelector('.block-content')?.innerText.trim()).join('|')" | tr -d '"'; }
+pid68() { ev "[...document.querySelectorAll('.block-list > .block')].find(b=>b.querySelector('.block-content')?.innerText.trim()==='$1')?.dataset.blockId" | tr -d '"'; }
+P68=$(pid68 parent68)
+clickarrow68() { ev "(()=>{const b=document.querySelector('[data-block-id=\"$P68\"]');const t=b?.querySelector(':scope > .block-collapse');if(!t)return 'no toggle';const r=t.getBoundingClientRect();const top=document.elementFromPoint(r.left+r.width/2,r.top+r.height/2);const hit=top?.closest('.block-collapse')===t?'toggle':((top?.getAttribute?.('class')||top?.tagName)+'@'+Math.round(r.left)+','+Math.round(r.top));top?.dispatchEvent(new MouseEvent('mousedown',{bubbles:true}));top?.dispatchEvent(new MouseEvent('mouseup',{bubbles:true}));top?.dispatchEvent(new MouseEvent('click',{bubbles:true}));return hit})()" | tr -d '"'; }
+
+step "The collapse arrow is the element on top at its own centre, and clicking it folds the block"
+R=$(clickarrow68); sleep 0.6
+V=$(vis68); Z=$(ev "!!document.querySelector('.breadcrumb-bar')" | tr -d '"')
+[[ "$R" == "toggle" ]] && pass "Nothing covers the arrow" || fail "Arrow covered" "on top: $R"
+[[ "$V" == "parent68|other68|other child68" && "$Z" == "false" ]] && pass "Click folded the block (no zoom)" || fail "Click on the arrow" "visible=$V zoomed=$Z"
+
+step "A folded block looks folded: ringed bullet, arrow stays visible, hidden-block count"
+R=$(ev "(()=>{const b=document.querySelector('[data-block-id=\"$P68\"]');const t=b.querySelector(':scope > .block-collapse');return [b.classList.contains('is-collapsed'),getComputedStyle(t).opacity,getComputedStyle(b,'::before').boxShadow!=='none',getComputedStyle(b).getPropertyValue('--collapsed-label').trim()].join(',')})()" | tr -d '"')
+IFS=, read -r C68 O68 RING68 L68 <<< "$R"
+[[ "$C68" == "true" && "$RING68" == "true" ]] && pass "Bullet has a ring (is-collapsed)" || fail "Collapsed state invisible" "$R"
+awk "BEGIN{exit !($O68 >= 0.5)}" 2>/dev/null && pass "Arrow visible without hovering (opacity $O68)" || fail "Arrow hidden when folded" "opacity $O68"
+[[ "$L68" == *"3"* ]] && pass "Shows how many blocks are hidden ($L68)" || fail "No hidden count" "$L68"
+ss "68-collapsed"
+
+step "Clicking the arrow again unfolds it"
+R=$(clickarrow68); sleep 0.6
+V=$(vis68)
+[[ "$V" == "parent68|child68|grandchild68|second child68|other68|other child68" ]] && pass "Unfolded" || fail "Expand by click" "$V"
+
+step "Ctrl+Up folds the block I'm editing, Ctrl+Down unfolds it"
+api "pressKeyInBlock(0, 'ArrowUp', {ctrl:true})" >/dev/null; sleep 0.6
+V1=$(vis68)
+api "pressKeyInBlock(0, 'ArrowDown', {ctrl:true})" >/dev/null; sleep 0.6
+V2=$(vis68)
+[[ "$V1" == "parent68|other68|other child68" ]] && pass "Ctrl+Up folded" || fail "Ctrl+Up" "$V1"
+[[ "$V2" == "parent68|child68|grandchild68|second child68|other68|other child68" ]] && pass "Ctrl+Down unfolded" || fail "Ctrl+Down" "$V2"
+
+step "The block menu has Collapse / Expand"
+menu68() { ev "(()=>{document.querySelector('[data-block-id=\"$P68\"] .block-content')?.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true,clientX:300,clientY:200}));return 1})()" >/dev/null; sleep 0.4; }
+menu68
+R=$(ev "(()=>{const i=document.querySelector('.block-context-menu [data-action=collapse]');const t=i?.innerText||'none';i?.click();return t})()" | tr -d '"'); sleep 0.6
+V=$(vis68)
+[[ "$R" == "Collapse"* && "$V" == "parent68|other68|other child68" ]] && pass "Menu → Collapse folds it" || fail "Menu collapse" "item=$R visible=$V"
+menu68
+R=$(ev "(()=>{const i=document.querySelector('.block-context-menu [data-action=collapse]');const t=i?.innerText||'none';i?.click();return t})()" | tr -d '"'); sleep 0.6
+V=$(vis68)
+[[ "$R" == "Expand"* && "$V" == *"grandchild68"* ]] && pass "Menu → Expand unfolds it" || fail "Menu expand" "item=$R visible=$V"
+
+step "Collapse all / Expand all for the page"
+ev "document.querySelector('[data-testid=collapse-all]')?.click()" >/dev/null; sleep 0.6
+V1=$(vis68)
+ev "document.querySelector('[data-testid=collapse-all]')?.click()" >/dev/null; sleep 0.6
+V2=$(vis68)
+[[ "$V1" == "parent68|other68" ]] && pass "Collapse all leaves only the top level" || fail "Collapse all" "$V1"
+[[ "$V2" == "parent68|child68|grandchild68|second child68|other68|other child68" ]] && pass "Expand all shows everything again" || fail "Expand all" "$V2"
+
+# ═══════════════════════════════════════════════
 close_app
 
 # ═══════════════════════════════════════════════
