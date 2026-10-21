@@ -1,6 +1,6 @@
 import { Extension } from "@tiptap/react";
 import { ReactRenderer } from "@tiptap/react";
-import Suggestion, { type SuggestionOptions, type SuggestionProps } from "@tiptap/suggestion";
+import Suggestion, { exitSuggestion, type SuggestionOptions, type SuggestionProps } from "@tiptap/suggestion";
 import { PluginKey } from "@tiptap/pm/state";
 import tippy, { type Instance as TippyInstance } from "tippy.js";
 import { SlashMenu, type SlashMenuItem } from "./SlashMenu";
@@ -46,6 +46,7 @@ const COMMANDS: SlashMenuItem[] = [
   {
     title: "Heading 1",
     description: "large heading",
+    aliases: ["h1", "title"],
     command: ({ editor, range }) => {
       const text = getTextBeforeSlash(editor, range);
       (editor.storage as any).slashCallbacks?.command(`# ${text}`);
@@ -54,6 +55,7 @@ const COMMANDS: SlashMenuItem[] = [
   {
     title: "Heading 2",
     description: "medium heading",
+    aliases: ["h2", "subtitle"],
     command: ({ editor, range }) => {
       const text = getTextBeforeSlash(editor, range);
       (editor.storage as any).slashCallbacks?.command(`## ${text}`);
@@ -62,6 +64,7 @@ const COMMANDS: SlashMenuItem[] = [
   {
     title: "Heading 3",
     description: "small heading",
+    aliases: ["h3"],
     command: ({ editor, range }) => {
       const text = getTextBeforeSlash(editor, range);
       (editor.storage as any).slashCallbacks?.command(`### ${text}`);
@@ -70,14 +73,25 @@ const COMMANDS: SlashMenuItem[] = [
   {
     title: "Bullet List",
     description: "list bullet unordered",
+    aliases: ["ul", "bullets", "unordered"],
     command: ({ editor, range }) => {
       editor.chain().focus().deleteRange(range).toggleBulletList().run();
       (editor.storage as any).slashCallbacks?.save();
     },
   },
   {
+    title: "Numbered List",
+    description: "list numbered ordered 1. 2. 3.",
+    aliases: ["ol", "ordered", "numbers", "1."],
+    command: ({ editor, range }) => {
+      editor.chain().focus().deleteRange(range).toggleOrderedList().run();
+      (editor.storage as any).slashCallbacks?.save();
+    },
+  },
+  {
     title: "Todo List",
     description: "task checkbox todo",
+    aliases: ["todo", "task", "checkbox", "checklist", "[]"],
     command: ({ editor, range }) => {
       editor.chain().focus().deleteRange(range).toggleTaskList().run();
       (editor.storage as any).slashCallbacks?.save();
@@ -86,6 +100,7 @@ const COMMANDS: SlashMenuItem[] = [
   {
     title: "Code Block",
     description: "code snippet",
+    aliases: ["code", "codeblock", "```", "pre", "snippet"],
     command: ({ editor, range }) => {
       editor.chain().focus().deleteRange(range).toggleCodeBlock().run();
       (editor.storage as any).slashCallbacks?.save();
@@ -94,6 +109,7 @@ const COMMANDS: SlashMenuItem[] = [
   {
     title: "Quote",
     description: "blockquote",
+    aliases: ["blockquote", ">"],
     command: ({ editor, range }) => {
       editor.chain().focus().deleteRange(range).toggleBlockquote().run();
       (editor.storage as any).slashCallbacks?.save();
@@ -102,6 +118,7 @@ const COMMANDS: SlashMenuItem[] = [
   {
     title: "Divider",
     description: "horizontal line separator",
+    aliases: ["hr", "divider", "---", "line", "separator", "rule"],
     command: ({ editor, range }) => {
       (editor.storage as any).slashCallbacks?.command("---");
     },
@@ -111,6 +128,7 @@ const COMMANDS: SlashMenuItem[] = [
     // sync path renders as a TipTap table — so what's on screen is what's stored.
     title: "Table",
     description: "table grid rows columns 3x3",
+    aliases: ["grid"],
     command: ({ editor, range }) => {
       const text = getTextBeforeSlash(editor, range);
       const table = emptyTableMarkdown(3, 2);
@@ -120,6 +138,7 @@ const COMMANDS: SlashMenuItem[] = [
   {
     title: "Flashcard",
     description: "flashcard card srs review spaced repetition question answer",
+    aliases: ["card", "srs"],
     command: ({ editor, range }) => {
       editor.chain().focus().deleteRange(range).run();
       const cb = (editor.storage as any).slashCallbacks;
@@ -130,6 +149,7 @@ const COMMANDS: SlashMenuItem[] = [
   {
     title: "Whiteboard",
     description: "drawing canvas sketch",
+    aliases: ["draw", "canvas", "sketch"],
     command: ({ editor, range }) => {
       const wbId = generateWhiteboardId();
       (editor.storage as any).slashCallbacks?.command(`{{whiteboard:${wbId}}}`);
@@ -155,6 +175,44 @@ const COMMANDS: SlashMenuItem[] = [
   })),
 ];
 
+const norm = (s: string) => s.toLowerCase().replace(/\s+/g, "");
+/** True when the letters of `q` appear in `text` in order. */
+const subsequence = (q: string, text: string) => {
+  let i = 0;
+  for (const ch of text) if (ch === q[i] && ++i === q.length) return true;
+  return q.length === 0;
+};
+
+/**
+ * The commands for a `/query`, best match first: an alias or the whole title
+ * (exact), then a title / alias prefix, the start of a title word, a word of
+ * the description, a substring, and last the letters in order (fuzzy).
+ * Ties keep the menu's order.
+ */
+export function filterSlashCommands(query: string, items: SlashMenuItem[] = COMMANDS): SlashMenuItem[] {
+  const q = norm(query);
+  if (!q) return items;
+  const ql = query.trim().toLowerCase();
+  const score = (item: SlashMenuItem): number => {
+    const title = norm(item.title);
+    const aliases = (item.aliases ?? []).map(norm);
+    const words = item.title.toLowerCase().split(/[\s:]+/).filter(Boolean);
+    if (title === q || aliases.includes(q)) return 100;
+    if (title.startsWith(q)) return 80;
+    if (aliases.some(a => a.startsWith(q))) return 70;
+    if (words.some(w => w.startsWith(ql))) return 60;
+    if (item.description.toLowerCase().split(/\s+/).some(w => w.startsWith(ql))) return 40;
+    if (title.includes(q) || norm(item.description).includes(q)) return 30;
+    if (q.length >= 2 && subsequence(q, title)) return 10;
+    return 0;
+  };
+  return items
+    .map((item, i) => ({ item, i, s: score(item) }))
+    .filter(x => x.s > 0)
+    .sort((a, b) => b.s - a.s || a.i - b.i)
+    .map(x => x.item);
+}
+
 export const SlashCommands = Extension.create({
   name: "slashCommands",
 
@@ -166,19 +224,15 @@ export const SlashCommands = Extension.create({
         command: ({ editor, range, props }: { editor: any; range: any; props: any }) => {
           props.command({ editor, range });
         },
-        items: ({ query }: { query: string }) => {
-          const q = query.toLowerCase();
-          return COMMANDS.filter((item) =>
-            item.title.toLowerCase().includes(q) ||
-            item.description.toLowerCase().includes(q)
-          );
-        },
+        items: ({ query }: { query: string }) => filterSlashCommands(query),
         render: () => {
           let reactRenderer: ReactRenderer;
           let popup: TippyInstance[];
+          let items: unknown[] = [];
 
           return {
             onStart: (props: SuggestionProps) => {
+              items = props.items;
               reactRenderer = new ReactRenderer(SlashMenu, {
                 props,
                 editor: props.editor,
@@ -198,6 +252,7 @@ export const SlashCommands = Extension.create({
             },
 
             onUpdate(props: SuggestionProps) {
+              items = props.items;
               reactRenderer?.updateProps(props);
 
               if (!props.clientRect) return;
@@ -207,9 +262,14 @@ export const SlashCommands = Extension.create({
               });
             },
 
-            onKeyDown(props: { event: KeyboardEvent }) {
+            onKeyDown(props: { event: KeyboardEvent; view: any }) {
               if (props.event.key === "Escape") {
                 popup?.[0]?.hide();
+                return true;
+              }
+              // "No results": Enter just closes the menu; the typed text stays.
+              if (props.event.key === "Enter" && items.length === 0) {
+                exitSuggestion(props.view, slashPluginKey);
                 return true;
               }
               return (reactRenderer?.ref as any)?.onKeyDown?.(props) ?? false;

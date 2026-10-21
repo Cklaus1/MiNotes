@@ -184,9 +184,10 @@
 /* Horizontal rule */
 .block-content .ProseMirror hr {
   border: none;
-  border-top: 2px solid var(--text-muted);
+  /* Not var(--text-muted): that variable is a self-referencing cycle in
+     styles.css (resolves to nothing), which made the divider invisible. */
+  border-top: 2px solid var(--border);
   margin: 0.8em 0;
-  opacity: 0.5;
 }
 
 /* Wiki link node */

@@ -3779,6 +3779,49 @@ for w in write71 draft71 ship71; do
 done
 
 # ═══════════════════════════════════════════════
+journey "72. The / menu finds what I mean"
+# Exact-substring matching found nothing for /h2 or /codeblock; Enter on "No
+# results" left odd text; the divider was invisible; no numbered list.
+# ═══════════════════════════════════════════════
+A72="const api=await import('/src/lib/api.ts');"
+ev "(async()=>{$A72 const p=await api.createPage('Slash72 page');await api.createBlock(p.id,'');await api.createBlock(p.id,'---');await api.createBlock(p.id,'after72');return 1})()" >/dev/null
+api "navigateTo('Slash72 page')" >/dev/null; sleep 2
+# slash72 <query> -> titles shown in the menu
+slash72() {
+  api "focusBlock(0)" >/dev/null; sleep 0.3
+  ev "(async()=>{for(const ch of '/$1'){document.execCommand('insertText',false,ch);await new Promise(r=>setTimeout(r,25))}return 1})()" >/dev/null; sleep 0.6
+  ev "(document.querySelector('.slash-menu')?[...document.querySelectorAll('.slash-menu-item-title')].map(e=>e.textContent).join(',')||document.querySelector('.slash-menu').innerText:'closed')" | tr -d '"'
+}
+clear72() { api "focusBlock(0)" >/dev/null; sleep 0.3; ev "(()=>{document.execCommand('selectAll');document.execCommand('delete');return 1})()" >/dev/null; sleep 0.4; }
+
+step "/h2, /codeblock, /hr, /ol find their commands first"
+for q in "h2:Heading 2" "codeblock:Code Block" "hr:Divider" "ol:Numbered List" "todo:Todo List"; do
+  R=$(slash72 "${q%%:*}"); clear72
+  [[ "${R%%,*}" == "${q#*:}" ]] && pass "/${q%%:*} → ${q#*:}" || fail "/${q%%:*}" "menu: ${R:0:80}"
+done
+
+step "Enter on \"No results\" just closes the menu — no split, the text stays"
+N0=$(api "getBlockCount()" | tr -d '"')
+R=$(slash72 zzqx)
+api "pressKeyInBlock(0, 'Enter', {focus:false})" >/dev/null; sleep 0.6
+OPEN=$(ev "!!document.querySelector('.slash-menu')" | tr -d '"')
+N1=$(api "getBlockCount()" | tr -d '"'); C=$(api "getLiveBlockContent(0)" | tr -d '"')
+[[ "$R" == *"No results"* && "$OPEN" == "false" && "$N1" == "$N0" && "$C" == "/zzqx" ]] && pass "Menu closed, still one block reading /zzqx" || fail "Enter on No results" "menu=$R open=$OPEN blocks $N0→$N1 content=$C"
+clear72
+
+step "Numbered list from the menu"
+slash72 numbered >/dev/null
+ev "[...document.querySelectorAll('.slash-menu-item')].find(e=>e.querySelector('.slash-menu-item-title')?.textContent==='Numbered List')?.click()" >/dev/null; sleep 1
+C=$(api "getLiveBlockContent(0)" | tr -d '"'); OL=$(ev "!!document.querySelectorAll('.block-list > .block')[0].querySelector('ol')" | tr -d '"')
+[[ "$OL" == "true" && "$C" == 1.* ]] && pass "The block became a numbered list ($C)" || fail "/numbered" "ol=$OL content=$C"
+
+step "A divider (---) is visible"
+R=$(ev "(()=>{const hr=document.querySelector('.block-list .ProseMirror hr');if(!hr)return 'no hr';const cs=getComputedStyle(hr);const r=hr.getBoundingClientRect();return cs.borderTopStyle+'|'+cs.borderTopWidth+'|'+Math.round(r.width)})()" | tr -d '"')
+IFS='|' read -r ST72 W72 X72 <<< "$R"
+[[ "$ST72" != "none" && "$W72" != "0px" && "$X72" -gt 100 ]] 2>/dev/null && pass "Divider drawn ($R)" || fail "Invisible divider" "$R"
+ss "72-slash"
+
+# ═══════════════════════════════════════════════
 close_app
 
 # ═══════════════════════════════════════════════
