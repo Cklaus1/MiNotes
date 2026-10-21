@@ -41,7 +41,7 @@ echo "════════════════════════�
 echo "  MiNotes Desktop Journeys (real app, real backend)"
 echo "═══════════════════════════════════════════════"
 
-rm -rf "$STATE"/{persist,devA,devB,nbook,outside,xnb,zip8,barrier10,trust10,rimg,img10,remote.git,enc13,enc13-tmp,enc13-keychain,enc14a,enc14b,enc14c,enc14-tmp,remote14.git,w1,w1-files} "$STATE/results.tsv"
+rm -rf "$STATE"/{persist,devA,devB,nbook,outside,xnb,zip8,barrier10,trust10,rimg,img10,remote.git,enc13,enc13-tmp,enc13-keychain,enc14a,enc14b,enc14c,enc14-tmp,remote14.git,w1,w1-files,w2} "$STATE/results.tsv"
 if [[ -z "$DESKTOP_NO_BUILD" ]]; then
   "$DC" up --webdriver --profile persist >/dev/null || { echo "build/launch failed"; exit 1; }
 else
@@ -1290,6 +1290,98 @@ is "Cancel: the trash still holds $N15 items" "$(ev "(async()=>{$A15 return Stri
 rclick15 "document.querySelector('[data-testid=empty-trash]')"; sleep 0.8
 "$DC" key Escape; sleep 0.8
 is "Escape closes the dialog and deletes nothing" "$(dialog15)|$(ev "(async()=>{$A15 return String((await api.listTrash()).length)})()")" "none|$N15"
+
+# ═══════════════════════════════════════════════
+journey "D16. The outline under a real mouse, keyboard and clipboard (UX review Wave 2)"
+# Bugs only real input showed: the collapse arrow was covered (a click zoomed in,
+# C-11), a real drag left the outline scrambled until a reload (C-13), markdown
+# pasted from the X clipboard lost its structure and a typed ```lang + Enter
+# saved escaped backticks (C-6). xdotool clicks, drags, keys and xclip; WebDriver
+# only sets up and reads back.
+# ═══════════════════════════════════════════════
+A16="const api=await import('/src/lib/api.ts');"
+X16="localhost:${DESKTOP_CHECK_DISPLAY:-97}"
+xy16() { ev "(()=>{const e=$1;if(!e)return '';const r=e.getBoundingClientRect();return Math.round(r.left+($2))+' '+Math.round(r.top+($3))})()"; }
+blk16() { echo "[...document.querySelectorAll('.block-list > .block')].find(b=>b.querySelector('.block-content')?.innerText.trim()==='$1')"; }
+shown16() { ev "[...document.querySelectorAll('.block-list > .block')].map(b=>b.querySelector('.block-content')?.innerText.trim()+'@'+(b.dataset.depth||0)).join('|')"; }
+stored16() { ev "(async()=>{$A16 const t=await api.getPageTree('$1');const d=new Map();for(const b of t.blocks)d.set(b.id,b.parent_id?d.get(b.parent_id)+1:0);return t.blocks.map(b=>b.content.replace(/\\n/g,'⏎')+'@'+d.get(b.id)).join('|')})()"; }
+# rdrag16 "<x1> <y1>" "<x2> <y2>": press, move in steps, release (real X input)
+rdrag16() {
+  local a=($1) b=($2)
+  DISPLAY="$X16" xdotool mousemove "${a[0]}" "${a[1]}" sleep 0.2 mousedown 1 sleep 0.2
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    DISPLAY="$X16" xdotool mousemove $(( a[0] + (b[0]-a[0])*i/10 )) $(( a[1] + (b[1]-a[1])*i/10 )) sleep 0.06
+  done
+  DISPLAY="$X16" xdotool sleep 0.3 mouseup 1
+}
+device w2 || true
+ev "(async()=>{$A16 const p=await api.createPage('Fold16');const a=await api.createBlock(p.id,'parent16');const c=await api.createBlock(p.id,'child16',a.id);await api.createBlock(p.id,'grandchild16',c.id);await api.createBlock(p.id,'other16');return 1})()" >/dev/null
+api "navigateTo('Fold16')" >/dev/null; waitfor "window.__MINOTES__.getCurrentPage()==='Fold16'"; sleep 1
+ev "document.activeElement?.blur()" >/dev/null; sleep 0.5
+
+step "I click the collapse arrow with the mouse: the block folds (it used to zoom in)"
+P16=$(xy16 "$(blk16 parent16)" "10" "12")
+DISPLAY="$X16" xdotool mousemove $P16 sleep 0.4
+XY=$(xy16 "$(blk16 parent16)?.querySelector(':scope > .block-collapse')" "r.width/2" "r.height/2")
+"$DC" click $XY >/dev/null; sleep 1
+is "Children hidden, not zoomed" "$(shown16)|$(ev "String(!!document.querySelector('.breadcrumb-bar'))")" "parent16@0|other16@0|false"
+is "…and it looks folded (+2 hidden)" "$(ev "(()=>{const b=$(blk16 parent16);return b.classList.contains('is-collapsed')+' '+getComputedStyle(b).getPropertyValue('--collapsed-label').trim()})()")" 'true +2'
+"$DC" shot "d16-collapsed" >/dev/null
+"$DC" click $XY >/dev/null; sleep 1
+is "A second click unfolds it" "$(shown16)" "parent16@0|child16@1|grandchild16@2|other16@0"
+
+step "Ctrl+Up / Ctrl+Down with real keys fold and unfold the block I'm in"
+api "focusBlock(0)" >/dev/null; sleep 0.5
+"$DC" key ctrl+Up; sleep 0.8; F1=$(shown16)
+"$DC" key ctrl+Down; sleep 0.8; F2=$(shown16)
+is "Ctrl+Up folded, Ctrl+Down unfolded" "$F1 / $F2" "parent16@0|other16@0 / parent16@0|child16@1|grandchild16@2|other16@0"
+ev "document.activeElement?.blur()" >/dev/null; sleep 0.5
+
+step "I drag a block by its handle with the real mouse: the outline is right at once"
+ev "(async()=>{$A16 const p=await api.createPage('Drag16');const a=await api.createBlock(p.id,'A16');await api.createBlock(p.id,'a1 16',a.id);await api.createBlock(p.id,'a2 16',a.id);const b=await api.createBlock(p.id,'B16');await api.createBlock(p.id,'b1 16',b.id);await api.createBlock(p.id,'C16');return 1})()" >/dev/null
+api "navigateTo('Drag16')" >/dev/null; waitfor "window.__MINOTES__.getCurrentPage()==='Drag16'"; sleep 1
+ev "document.activeElement?.blur()" >/dev/null; sleep 0.5
+DISPLAY="$X16" xdotool mousemove $(xy16 "$(blk16 A16)" "40" "12") sleep 0.4
+FROM=$(xy16 "$(blk16 A16)?.querySelector(':scope > .block-drag-handle')" "r.width/2" "r.height/2")
+TO=$(xy16 "$(blk16 'b1 16')" "20" "r.height-4")
+rdrag16 "$FROM" "$TO"; sleep 1
+S16=$(shown16)
+is "A16 (with a1, a2) now follows B16's subtree, rendered in order" "$S16" "B16@0|b1 16@1|A16@0|a1 16@1|a2 16@1|C16@0"
+sleep 1; is "…and that is what was stored" "$(stored16 Drag16)" "$S16"
+"$DC" shot "d16-after-drag" >/dev/null
+
+step "Dragging with the pointer moved right drops the block as a child"
+FROM=$(xy16 "$(blk16 C16)?.querySelector(':scope > .block-drag-handle')" "r.width/2" "r.height/2")
+DISPLAY="$X16" xdotool mousemove $(xy16 "$(blk16 C16)" "40" "12") sleep 0.4
+TO=$(xy16 "$(blk16 B16)" "120" "r.height-4")
+rdrag16 "$FROM" "$TO"; sleep 1
+S16=$(shown16)
+is "C16 became B16's first child" "$S16" "B16@0|C16@1|b1 16@1|A16@0|a1 16@1|a2 16@1"
+sleep 1; is "…stored the same" "$(stored16 Drag16)" "$S16"
+
+step "I copy markdown (X clipboard) and press Ctrl+V in an empty block"
+ev "(async()=>{$A16 const p=await api.createPage('Paste16');await api.createBlock(p.id,'');return 1})()" >/dev/null
+api "navigateTo('Paste16')" >/dev/null; waitfor "window.__MINOTES__.getCurrentPage()==='Paste16'"; sleep 1
+mkdir -p "$STATE/w1-files"
+printf '# Plan16\n- one\n  - one.a\n1. two\n   1. two.1\nNotes\n    indented child\n```python\nprint(1)\n```\n' > "$STATE/w1-files/paste16.md"
+DISPLAY="$X16" xclip -quiet -selection clipboard -t UTF8_STRING -i "$STATE/w1-files/paste16.md" >/dev/null 2>&1 &
+XCLIP16=$!
+sleep 0.5
+api "focusBlock(0)" >/dev/null; sleep 0.5
+"$DC" key ctrl+v
+waitfor "(async()=>{$A16 return (await api.getPageTree('Paste16')).blocks.length>=8})()" 15
+kill "$XCLIP16" 2>/dev/null; wait "$XCLIP16" 2>/dev/null
+sleep 1
+is "Pasted as an outline (heading, nested blocks, a code block)" "$(stored16 Paste16)" '# Plan16@0|one@0|one.a@1|two@0|two.1@1|Notes@0|indented child@1|```python⏎print(1)⏎```@0'
+"$DC" shot "d16-pasted-markdown" >/dev/null
+
+step "I type \`\`\`python and Enter with real keys: a code block, not escaped backticks"
+ev "(async()=>{$A16 const p=await api.createPage('Fence16');await api.createBlock(p.id,'');return 1})()" >/dev/null
+api "navigateTo('Fence16')" >/dev/null; waitfor "window.__MINOTES__.getCurrentPage()==='Fence16'"; sleep 1
+api "focusBlock(0)" >/dev/null; sleep 0.5
+"$DC" type '```python'; sleep 0.3; "$DC" key Return; sleep 0.5; "$DC" type 'print(16)'; sleep 0.3
+ev "document.activeElement?.blur()" >/dev/null; sleep 1.5
+is "Stored as a python fence" "$(stored16 Fence16)" '```python⏎print(16)⏎```@0'
 
 # ═══════════════════════════════════════════════
 echo ""
