@@ -118,23 +118,24 @@ Average **5.2 / 10** across 72 features. Nothing scores 10; the best is 9
 
 | Feature | Score | Verdict |
 |---|---|---|
-| Settings panel | 5 | Changes apply instantly; 2,700 px scroll, unreadable dropdowns, misleading "AI Assistant" section |
+| Settings panel | 5 | Changes apply instantly; 2,700 px scroll, unreadable dropdowns, misleading "AI Assistant" section — **Fixed** (`abcc76d`: "Smart suggestions", says nothing is sent, "AI provider…" row) |
 | Markdown copy status / Rebuild / Open folder | 7 | Clear, live status; paths cut off; Open folder gives no feedback |
 | Outside edits of the markdown copy | 9 | Live update with Undo; deleted file → Trash with Restore |
-| Git sync end to end | 4 | Robust engine, but **no way to set a remote in the app**, no "Sync now", duplicate pages on first join |
-| Conflict handling | 5 | Both versions kept; whole-page copy, no compare view; toast shows a literal `<device>` |
-| Mass-deletion hold | 8 | Clear Review / Trash / Keep banner |
-| Copied-folder trust banner | 7 | Clear and safe; Settings doesn't show sync is paused |
-| Sync error states | 3 | A missing remote shows only a silent grey "Offline" |
-| Import (Obsidian, Evernote) | 8 | Excellent preview, report and undo; undo has no confirmation |
-| AI setup | 7 | Very good privacy wording; hard to find (not in Settings), controls unstyled |
-| Ask panel | 7 | Streamed answer with clickable citations; slow to report a dead server; no Retry |
+| Git sync end to end | 4 | Robust engine, but **no way to set a remote in the app**, no "Sync now", duplicate pages on first join — **Fixed**: duplicates (`29f6908`, C-9), "Sync now" in Settings and the palette + status chip (`6721a80`, `abcc76d`); the remote field is Wave 4 |
+| Conflict handling | 5 | Both versions kept; whole-page copy, no compare view; toast shows a literal `<device>` — **Fixed** (`6721a80`: the toast names the page, the device and the copy, with Open; copies leave the TODO count alone); compare view is Wave 4 |
+| Mass-deletion hold | 8 | Clear Review / Trash / Keep banner; "25 pages (of 36)" next to a sidebar "Pages (35)" — **Fixed** (`46f87ba`: counts pages like the sidebar, journal days and projects named apart) |
+| Copied-folder trust banner | 7 | Clear and safe; Settings doesn't show sync is paused — **Fixed** (`6721a80`: "Paused — waiting for your OK" with "Sync it here"; the other computer's "Last synced" is not shown) |
+| Sync error states | 3 | A missing remote shows only a silent grey "Offline" — **Fixed** (`6721a80`: offline vs remote-not-found vs auth; chip tooltip, click → error, Retry; error in Settings; "Last synced" only after a push) |
+| Import (Obsidian, Evernote) | 8 | Excellent preview, report and undo; undo has no confirmation — **Fixed** (`93911f8`: confirm with the page count and the edited pages it keeps) |
+| AI setup | 7 | Very good privacy wording; hard to find (not in Settings), controls unstyled — **Fixed** (findability, `abcc76d`: Settings row, palette "Ask AI" / "AI Settings", shortcuts listed); styling is Wave 3 |
+| Ask panel | 7 | Streamed answer with clickable citations; slow to report a dead server; no Retry — **Fixed** (`abcc76d`: 2 s connect timeout for a server on this computer, "isn't running", Retry) |
 | Privacy / remote images (settings view) | 6 | Works; Wikimedia images always fail (no User-Agent sent) |
 | Security / encryption (settings view) | 4 | Clear dialogs, but confirmations are broken (see C-1 below) |
 | CSS snippets | 5 | Live apply, strips `url()`; delete without confirm |
 | SQL Query panel | 6 | Presets and read-only guard; rows not clickable |
-| Plugins | 1 | Only an unsafe-loader stub; the real plugin manager is never shown |
-| Onboarding / help | 6 | Good Getting Started page; Ask/Import shortcuts missing from lists |
+| Plugins | 1 | Only an unsafe-loader stub; the real plugin manager is never shown — **Fixed** (stub hidden: `bbcc1a1`, development builds only); the plugin system is its own spec |
+| Onboarding / help | 6 | Good Getting Started page; Ask/Import shortcuts missing from lists — **Fixed** (`abcc76d`) |
+| Sync & version history dialog | — | (found in Wave 2) Local page snapshots called "Sync"; "Synced" and "Pending" counted the same pages — **Fixed** (`3c75d46`: "Page versions", non-overlapping counters) |
 
 ## 3. The bugs that matter most
 
@@ -150,7 +151,7 @@ Ranked by harm. **D** = data loss or corruption, **S** = safety/security, **B** 
 | C-6 | D | **Pasted markdown is mangled** (escaped headings, flattened nesting, indented lines → code); typed ```` ```lang ```` + Enter saves escaped text | paste / input rules | M |
 | C-7 | D | **Fixed** (`01ddbfa`: "N blocks deleted · Undo" toast; confirm before deleting every block) — **Ctrl+A → Backspace outside the editor deletes the whole page** with no confirmation or toast (Ctrl+Z restores it, nothing says so) | multi-select | S |
 | C-8 | D | **The TODO badge writes a real "All TODOs" page** of raw markup that pollutes the page list, every page's backlinks and search | `App.tsx` ~950 | M |
-| C-9 | D | **Git sync: joining from a fresh device duplicates the onboarding page**, and copies multiply ("Getting Started (2) (2)") | sync import | M |
+| C-9 | D | **Fixed** (`29f6908`: the seeded onboarding page is recorded and, while untouched, gives way to a pulled page of the same title; an empty local journal gives way too; numbering is idempotent; the mirror state follows a file the pull gave to another page) — **Git sync: joining from a fresh device duplicates the onboarding page**, and copies multiply ("Getting Started (2) (2)") | sync import | M |
 | C-10 | B | **Subfolders can never be expanded** — pages in nested projects are unreachable from the sidebar | `Sidebar.tsx` ~1283 | S |
 | C-11 | B | **Collapse can't be done with the mouse** — the toggle is covered by the drag handle and zoom trigger | block controls CSS | S |
 | C-12 | B | **Partly fixed** (`9e370f7`: `((uuid))` now parses into a block-ref chip; the chip shows the uuid, not the referenced text, and the transclusion box still repeats it) — **Block references render as raw `((uuid))` after any reload** | markdown → node parse | S/M |
@@ -158,7 +159,7 @@ Ranked by harm. **D** = data loss or corruption, **S** = safety/security, **B** 
 | C-14 | B | **PDF highlights can't be created** — no pdf.js text layer | `PdfViewer.tsx` | M |
 | C-15 | B | **Page "Export as HTML" saves silently into the app's working directory** (found later as `Project Alpha.html` in the repo root) with no dialog or message; whiteboard export writes to Downloads with no dialog | `exportPage.ts`, `Whiteboard.tsx` | S |
 | C-16 | B | **Kanban colour picker can't be clicked** (backdrop z-index 99 above picker 50) | `styles.css` | S |
-| C-17 | B | **Git sync can't be set up in the app** — no remote field, no "Sync now", "Last synced" shown with no remote, a missing remote is a silent "Offline" | Settings / sync | M |
+| C-17 | B | **Partly fixed** (`6721a80`, `abcc76d`: "Sync now", status chip, "Last synced" only after a push, a missing remote is an error with Retry; the remote field / join wizard is Wave 4) — **Git sync can't be set up in the app** — no remote field, no "Sync now", "Last synced" shown with no remote, a missing remote is a silent "Offline" | Settings / sync | M |
 | C-18 | B | **Mind map radial layout overlaps nodes** | `blocksToFlow.ts` | M |
 | C-19 | B | **Graph zoom drifts away from the cursor** (sign error) and **dragging a node opens its page** | `GraphView.tsx` ~461 | S |
 
@@ -178,6 +179,24 @@ notebook-folder and `.zip` path fallbacks and the Evernote import path (Wave 3);
 none of them relies on a `confirm` result. Journeys added: browser 66–67 and
 65 (recovery key), desktop D15 (real X-clipboard paste, real typing, the app's
 confirm dialog).
+
+**Wave 2 notes — settings, sync, AI, import (2026-10-21).** Root cause of
+C-9: each device seeds its own "Getting Started" (different ids); the join
+imported the other one as "(2)", the title went back to the first device in
+the file's frontmatter, and when the two pages swapped names the mirror state
+still tied the old path to the old page, so every sync made a new "(n)" copy
+(an outside-edit import of the renamed file); numbering also re-suffixed
+("(2) (2)"). Fixed in core with tests that failed before
+(`test_fresh_device_join_keeps_one_getting_started`, `…_keeps_the_edited_…`,
+`test_same_title_pages_from_two_devices_get_one_number_and_converge`: before,
+`Getting Started (2) (2)` and `Ideas (2) (2)`). Two devices' own same-titled
+pages (both edited) still both stay — "Ideas" and "Ideas (2)", the same on both
+devices and stable; merging or naming them by device is an opportunity, not
+done. The Ask "timeout" was this environment dropping packets to closed
+loopback ports (curl times out too); on most machines a refused connection is
+immediate — the 2 s loopback connect timeout covers both. Not done here
+(Wave 4): a remote field / join wizard, a conflict compare view; the chip's
+details popover doesn't scroll Settings to its Sync section.
 
 ## 4. Patterns behind the scores
 
