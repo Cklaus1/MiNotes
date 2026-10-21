@@ -41,7 +41,7 @@ echo "════════════════════════�
 echo "  MiNotes Desktop Journeys (real app, real backend)"
 echo "═══════════════════════════════════════════════"
 
-rm -rf "$STATE"/{persist,devA,devB,nbook,outside,xnb,zip8,barrier10,trust10,rimg,img10,remote.git,enc13,enc13-tmp,enc13-keychain,enc14a,enc14b,enc14c,enc14-tmp,remote14.git,w1,w1-files,w2,j17a,j17b,t17,remote17.git,remote17.git.moved,w18} "$STATE/results.tsv"
+rm -rf "$STATE"/{persist,devA,devB,nbook,outside,xnb,zip8,barrier10,trust10,rimg,img10,remote.git,enc13,enc13-tmp,enc13-keychain,enc14a,enc14b,enc14c,enc14-tmp,remote14.git,w1,w1-files,w2,j17a,j17b,t17,remote17.git,remote17.git.moved,w18,w19} "$STATE/results.tsv"
 if [[ -z "$DESKTOP_NO_BUILD" ]]; then
   "$DC" up --webdriver --profile persist >/dev/null || { echo "build/launch failed"; exit 1; }
 else
@@ -1628,6 +1628,86 @@ rclick18 "document.querySelector('[data-testid=manage-notebooks-dialog] [data-no
 waitfor "!document.querySelector('[data-testid=manage-notebooks-dialog]')" 15; sleep 2
 T18=$(wintitle18)
 [[ "$T18" == *" — Aardvark18 — MiNotes" ]] && pass "Open switched notebooks; the window title follows ($T18)" || fail "Window title after Open" "$T18"
+
+# ═══════════════════════════════════════════════
+journey "D19. One UI system under real input (UX review Wave 3)"
+# Real keys and mouse (xdotool): Ctrl+N asks in the app (no GTK prompt), Esc
+# closes only the topmost layer, the app's tooltip never covers an open menu,
+# a notebook switch shows progress at once and ends with a toast, form
+# controls are drawn by the app, the sidebar collapses with its shortcut.
+# ═══════════════════════════════════════════════
+A19="const api=await import('/src/lib/api.ts');"
+X19="localhost:${DESKTOP_CHECK_DISPLAY:-97}"
+xy19() { ev "(()=>{const e=$1;if(!e)return '';const r=e.getBoundingClientRect();return Math.round(r.left+r.width/2)+' '+Math.round(r.top+r.height/2)})()"; }
+rclick19() { local xy; xy=$(xy19 "$1"); [[ -n "$xy" ]] && "$DC" click $xy >/dev/null; }
+gtkdialogs19() { DISPLAY="$X19" timeout 5 xdotool search --name 'JavaScript' 2>/dev/null | wc -l; }
+device w19 || true
+api "navigateTo('Getting Started')" >/dev/null; waitfor "window.__MINOTES__.getCurrentPage()==='Getting Started'" 10
+S19=$(date +%s)
+
+step "Ctrl+N (real key) opens the New page field — no native prompt; typing + Enter creates the page"
+rclick19 "document.querySelector('.main-header h2, .main-header')"; sleep 0.3
+"$DC" key ctrl+n; sleep 0.8
+is "No GTK 'JavaScript' dialog window" "$(gtkdialogs19)" "0"
+is "The in-app field has the focus" "$(ev "document.activeElement?.getAttribute('data-testid')||''")" "new-page-field"
+"$DC" type "Real19 $S19"; "$DC" key Return; sleep 1.5
+is "The page is in the database" "$(db w19 "select count(*) from pages where title='Real19 $S19'")" "1"
+"$DC" shot "d19-ctrl-n" >/dev/null
+
+step "Esc (real key) closes only the topmost layer: Settings over the graph, then the graph"
+"$DC" key Escape; sleep 0.3
+"$DC" key ctrl+g; waitfor "!!document.querySelector('.graph-view')" 10
+"$DC" key ctrl+comma; waitfor "!!document.querySelector('.settings-slide-panel')" 10
+"$DC" key Escape; sleep 0.6
+is "First Esc: Settings closed, graph open" "$(ev "!!document.querySelector('.settings-slide-panel')+'|'+!!document.querySelector('.graph-view')")" "false|true"
+"$DC" key Escape; sleep 0.6
+is "Second Esc: the graph closed" "$(ev "!!document.querySelector('.graph-view')")" "false"
+
+step "The app's tooltip shows on a real hover and never over the page menu once it is open"
+api "navigateTo('Real19 $S19')" >/dev/null; waitfor "window.__MINOTES__.getCurrentPage()==='Real19 $S19'" 10; sleep 0.5
+XY=$(xy19 "document.querySelector('.sidebar .page-item.active .page-more-btn, .sidebar .page-more-btn')")
+DISPLAY="$X19" xdotool mousemove 400 400
+sleep 0.3; DISPLAY="$X19" xdotool mousemove $XY; sleep 1.2
+is "Hover: the app's tooltip names the action" "$(ev "document.querySelector('.app-tooltip.visible')?.textContent||'none'")" "Page actions (Shift+F10)"
+is "…and no title is left on it or its row (the platform would draw its own)" "$(ev "(()=>{let n=document.querySelector('.sidebar .page-item.active .page-more-btn, .sidebar .page-more-btn');while(n&&n!==document.body){if(n.hasAttribute('title'))return 'title on '+n.className;n=n.parentElement}return 'none'})()")" "none"
+"$DC" shot "d19-tooltip" >/dev/null
+"$DC" click $XY >/dev/null; sleep 0.6
+DISPLAY="$X19" xdotool mousemove_relative 1 0; sleep 1.2
+is "Menu open: no tooltip" "$(ev "!!document.querySelector('.sidebar-context-menu')+'|'+(document.querySelector('.app-tooltip.visible')?.textContent||'none')")" "true|none"
+"$DC" shot "d19-menu-no-tooltip" >/dev/null
+"$DC" key Escape; sleep 0.4
+is "Esc closed the menu" "$(ev "!!document.querySelector('.sidebar-context-menu')")" "false"
+
+step "Opening another notebook from the switcher (real clicks): busy at once, a toast when done"
+HOME19=$(ev "(async()=>{$A19 return (await api.getNotebookSession()).key})()")
+OTHER19=$(ev "(async()=>{$A19 const n=await api.createNotebook('Other19');return n.key})()")
+ev "window.dispatchEvent(new Event('minotes-notebooks-changed'))" >/dev/null; sleep 0.8
+ev "(()=>{window.__busy19=null;const t0={v:0};document.addEventListener('pointerdown',()=>{t0.v=performance.now()},true);const mo=new MutationObserver(()=>{if(window.__busy19===null&&document.querySelector('[data-testid=busy]'))window.__busy19=Math.round(performance.now()-t0.v)});mo.observe(document.body,{childList:true,subtree:true});return 1})()" >/dev/null
+rclick19 "document.querySelector('[data-testid=notebook-switcher]')"; sleep 0.6
+rclick19 "[...document.querySelectorAll('.nb-menu [role=menuitem], .nb-menu button')].find(b=>b.textContent.includes('Other19'))"
+waitfor "(document.querySelector('[data-testid=notebook-switcher]')?.innerText||'').includes('Other19')" 20
+B19=$(ev "String(window.__busy19)")
+[[ "$B19" =~ ^[0-9]+$ && "$B19" -lt 100 ]] && pass "Busy pill $B19 ms after the click" || fail "Busy state on switch" "$B19"
+waitfor "[...document.querySelectorAll('.minotes-toast')].some(t=>t.textContent.includes('Opened “Other19”'))" 10 \
+  && pass "Toast: Opened “Other19”" || fail "Switch toast" "$(ev "[...document.querySelectorAll('.minotes-toast')].map(t=>t.textContent).join(' ¦ ')")"
+is "No busy state left" "$(ev "!!document.querySelector('[data-testid=busy]')")" "false"
+ev "window.__MINOTES__.switchNotebook('$HOME19')" >/dev/null; waitfor "!document.querySelector('[data-testid=busy]')" 20; sleep 1
+
+step "Form controls are the app's own in WebKitGTK (dark theme): the Theme select and a checkbox"
+"$DC" key ctrl+comma; waitfor "!!document.querySelector('.settings-slide-panel')" 10
+R=$(ev "(()=>{const s=document.querySelector('.settings-slide-panel select');const cs=getComputedStyle(s);const root=getComputedStyle(document.documentElement);return cs.webkitAppearance+'|'+(cs.color.replace(/\\s/g,'')!=='rgb(0,0,0)')+'|'+(cs.backgroundColor!=='rgb(255,255,255)')})()")
+is "Select: appearance none, theme colours" "$R" "none|true|true"
+"$DC" shot "d19-settings-select" >/dev/null
+"$DC" key Escape; sleep 0.4
+
+step "Ctrl+Shift+\\ (real key) hides the sidebar; it stays hidden after a restart; again shows it"
+"$DC" key ctrl+shift+backslash; sleep 0.6
+is "Hidden" "$(ev "document.querySelector('.sidebar').getClientRects().length")" "0"
+"$DC" restart >/dev/null; waitfor "window.__MINOTES__ && !!window.__MINOTES__.navigateTo" 30; sleep 1
+is "Still hidden after a restart (remembered on this device)" "$(ev "document.querySelector('.sidebar')?.getClientRects().length")" "0"
+"$DC" shot "d19-sidebar-hidden" >/dev/null
+"$DC" key ctrl+shift+backslash; sleep 0.6
+is "Shown again" "$(ev "document.querySelector('.sidebar').getClientRects().length>0")" "true"
 
 # ═══════════════════════════════════════════════
 echo ""

@@ -4616,6 +4616,58 @@ ss "85-esc-topmost"
 reset85
 
 # ═══════════════════════════════════════════════
+journey "86. Ctrl+N asks for the title in the app — no native prompt (UX Wave 3)"
+# ═══════════════════════════════════════════════
+api "closePanel()" >/dev/null; press "Escape"; sleep 0.3
+api "navigateTo('Project Alpha')" >/dev/null; sleep 1.5
+# Any native prompt() is recorded instead of blocking the run.
+ev "(()=>{window.__prompted86=0;window.prompt=function(){window.__prompted86++;return null};document.activeElement?.blur?.();return 1})()" >/dev/null
+S86=$(date +%s)
+
+step "Ctrl+N opens the sidebar's New page field, focused"
+press "Control+n"; sleep 0.6
+R=$(ev "(()=>{const f=document.querySelector('[data-testid=new-page-field]');return (window.__prompted86||0)+'|'+!!f+'|'+(document.activeElement===f)})()" | tr -d '"')
+[[ "$R" == "0|true|true" ]] && pass "In-app field, focused, no native prompt ($R)" || fail "Ctrl+N field" "$R"
+
+step "Typing a title and Enter creates the page"
+ev "(()=>{const i=document.querySelector('[data-testid=new-page-field]');const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;set.call(i,'Ctrl N page $S86');i.dispatchEvent(new Event('input',{bubbles:true}));return 1})()" >/dev/null; sleep 0.2
+press "Enter"; sleep 1.5
+R=$(ev "(async()=>{const api=await import('/src/lib/api.ts');const ps=await api.listPages(100000);return ps.some(p=>p.title==='Ctrl N page $S86')})()" | tr -d '"')
+[[ "$R" == "true" ]] && pass "Page created from the field" || fail "Create from the Ctrl+N field" "$R"
+ss "86-ctrl-n-field"
+
+step "The palette's New Page command uses the same field"
+api "openSearch()" >/dev/null; sleep 0.5
+ev "(()=>{const i=document.querySelector('.command-palette-input');const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;set.call(i,'>new page');i.dispatchEvent(new Event('input',{bubbles:true}));return 1})()" >/dev/null; sleep 0.4
+press "Enter"; sleep 0.6
+R=$(ev "(()=>{const f=document.querySelector('[data-testid=new-page-field]');return (window.__prompted86||0)+'|'+!!f+'|'+!!document.querySelector('.command-palette')})()" | tr -d '"')
+[[ "$R" == "0|true|false" ]] && pass "Palette → in-app field ($R)" || fail "Palette New Page" "$R"
+press "Escape"; sleep 0.3
+
+# ═══════════════════════════════════════════════
+journey "87. Opening another notebook shows progress at once and says when it's done (UX Wave 3)"
+# Switches took 5–10 s with no feedback on big notebooks.
+# ═══════════════════════════════════════════════
+A87="const api=await import('/src/lib/api.ts');"
+api "closePanel()" >/dev/null; press "Escape"; sleep 0.3
+S87=$(date +%s)
+HOME87=$(ev "(async()=>{$A87 return (await api.getNotebookSession()).key})()" | tr -d '"')
+OTHER87=$(ev "(async()=>{$A87 const n=await api.createNotebook('Progress87 $S87');return n.key})()" | tr -d '"')
+
+step "Within 100 ms of the switch a busy pill names the notebook, and input is held"
+R=$(ev "(async()=>{const n=await import('/src/lib/notebooks.ts');const t0=performance.now();let seen=null,label='',shield=false;const obs=new MutationObserver(()=>{const b=document.querySelector('[data-testid=busy]');if(b&&seen===null){seen=performance.now()-t0;shield=getComputedStyle(b).pointerEvents!=='none'}if(b)label=document.querySelector('[data-testid=busy-label]')?.textContent||label});obs.observe(document.body,{childList:true,subtree:true,characterData:true});const p=n.switchNotebook('$OTHER87');await p;obs.disconnect();return (seen!==null&&seen<100)+'|'+label+'|'+shield+'|'+!!document.querySelector('[data-testid=busy]')})()" | tr -d '"')
+[[ "$R" == "true|Opening “Progress87 $S87”…|true|false" ]] && pass "Busy pill at once, named, gone when done ($R)" || fail "Switch progress" "$R"
+
+step "A toast says which notebook opened"
+R=$(ev "[...document.querySelectorAll('.minotes-toast')].map(t=>t.textContent).join(' ¦ ')" | tr -d '"')
+[[ "$R" == *"Opened “Progress87 $S87”"* ]] && pass "Toast: Opened “Progress87 …”" || fail "Completion toast" "$R"
+ss "87-switch-done"
+
+step "Keys pressed during the switch don't reach the editor"
+R=$(ev "(async()=>{const n=await import('/src/lib/notebooks.ts');let res='never guarded';const obs=new MutationObserver(()=>{if(res!=='never guarded'||!document.querySelector('.busy-shield.guarded'))return;const ev=new KeyboardEvent('keydown',{key:'x',bubbles:true,cancelable:true});document.dispatchEvent(ev);res=String(ev.defaultPrevented)});obs.observe(document.body,{subtree:true,attributes:true,childList:true});await n.switchNotebook('$HOME87');obs.disconnect();return res})()" | tr -d '"')
+[[ "$R" == "true" ]] && pass "Held while busy" || fail "Key guard during a switch" "$R"
+
+# ═══════════════════════════════════════════════
 journey "88. Tooltips are the app's own and never cover an open menu (UX Wave 3)"
 # ═══════════════════════════════════════════════
 api "closePanel()" >/dev/null; press "Escape"; sleep 0.3
@@ -4656,35 +4708,6 @@ R="$(ev "!!document.querySelector('.nb-menu')" | tr -d '"')|$(tip88)"
 unhover88 ".nb-switcher-btn"; press "Escape"; sleep 0.3
 
 # ═══════════════════════════════════════════════
-journey "86. Ctrl+N asks for the title in the app — no native prompt (UX Wave 3)"
-# ═══════════════════════════════════════════════
-api "closePanel()" >/dev/null; press "Escape"; sleep 0.3
-api "navigateTo('Project Alpha')" >/dev/null; sleep 1.5
-# Any native prompt() is recorded instead of blocking the run.
-ev "(()=>{window.__prompted86=0;window.prompt=function(){window.__prompted86++;return null};document.activeElement?.blur?.();return 1})()" >/dev/null
-S86=$(date +%s)
-
-step "Ctrl+N opens the sidebar's New page field, focused"
-press "Control+n"; sleep 0.6
-R=$(ev "(()=>{const f=document.querySelector('[data-testid=new-page-field]');return (window.__prompted86||0)+'|'+!!f+'|'+(document.activeElement===f)})()" | tr -d '"')
-[[ "$R" == "0|true|true" ]] && pass "In-app field, focused, no native prompt ($R)" || fail "Ctrl+N field" "$R"
-
-step "Typing a title and Enter creates the page"
-ev "(()=>{const i=document.querySelector('[data-testid=new-page-field]');const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;set.call(i,'Ctrl N page $S86');i.dispatchEvent(new Event('input',{bubbles:true}));return 1})()" >/dev/null; sleep 0.2
-press "Enter"; sleep 1.5
-R=$(ev "(async()=>{const api=await import('/src/lib/api.ts');const ps=await api.listPages(100000);return ps.some(p=>p.title==='Ctrl N page $S86')})()" | tr -d '"')
-[[ "$R" == "true" ]] && pass "Page created from the field" || fail "Create from the Ctrl+N field" "$R"
-ss "86-ctrl-n-field"
-
-step "The palette's New Page command uses the same field"
-api "openSearch()" >/dev/null; sleep 0.5
-ev "(()=>{const i=document.querySelector('.command-palette-input');const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;set.call(i,'>new page');i.dispatchEvent(new Event('input',{bubbles:true}));return 1})()" >/dev/null; sleep 0.4
-press "Enter"; sleep 0.6
-R=$(ev "(()=>{const f=document.querySelector('[data-testid=new-page-field]');return (window.__prompted86||0)+'|'+!!f+'|'+!!document.querySelector('.command-palette')})()" | tr -d '"')
-[[ "$R" == "0|true|false" ]] && pass "Palette → in-app field ($R)" || fail "Palette New Page" "$R"
-press "Escape"; sleep 0.3
-
-# ═══════════════════════════════════════════════
 journey "89. Link suggestions and [[ find a page in a notebook with more than 100 pages (U-6)"
 # The app filtered the first 100–200 pages (by position) in the frontend.
 # ═══════════════════════════════════════════════
@@ -4711,29 +4734,6 @@ R=$(ev "(async()=>{$A89 const r=await api.findPagesByTitle('zephyr$S89',8);retur
 step "Renaming another page to its title is refused before the backend is asked"
 R=$(ev "(async()=>{const m=await import('/src/lib/pageNames.ts');$A89 const p=(await api.listPages(1000000)).find(x=>x.title==='Notes89 $S89');return await m.pageTitleConflict('Zephyr$S89 Turbine',p.id)})()" | tr -d '"')
 [[ "$R" == *"already exists"* ]] && pass "Clash found: $R" || fail "Rename clash check in a big notebook" "$R"
-
-# ═══════════════════════════════════════════════
-journey "87. Opening another notebook shows progress at once and says when it's done (UX Wave 3)"
-# Switches took 5–10 s with no feedback on big notebooks.
-# ═══════════════════════════════════════════════
-A87="const api=await import('/src/lib/api.ts');"
-api "closePanel()" >/dev/null; press "Escape"; sleep 0.3
-S87=$(date +%s)
-HOME87=$(ev "(async()=>{$A87 return (await api.getNotebookSession()).key})()" | tr -d '"')
-OTHER87=$(ev "(async()=>{$A87 const n=await api.createNotebook('Progress87 $S87');return n.key})()" | tr -d '"')
-
-step "Within 100 ms of the switch a busy pill names the notebook, and input is held"
-R=$(ev "(async()=>{const n=await import('/src/lib/notebooks.ts');const t0=performance.now();let seen=null,label='',shield=false;const obs=new MutationObserver(()=>{const b=document.querySelector('[data-testid=busy]');if(b&&seen===null){seen=performance.now()-t0;shield=getComputedStyle(b).pointerEvents!=='none'}if(b)label=document.querySelector('[data-testid=busy-label]')?.textContent||label});obs.observe(document.body,{childList:true,subtree:true,characterData:true});const p=n.switchNotebook('$OTHER87');await p;obs.disconnect();return (seen!==null&&seen<100)+'|'+label+'|'+shield+'|'+!!document.querySelector('[data-testid=busy]')})()" | tr -d '"')
-[[ "$R" == "true|Opening “Progress87 $S87”…|true|false" ]] && pass "Busy pill at once, named, gone when done ($R)" || fail "Switch progress" "$R"
-
-step "A toast says which notebook opened"
-R=$(ev "[...document.querySelectorAll('.minotes-toast')].map(t=>t.textContent).join(' ¦ ')" | tr -d '"')
-[[ "$R" == *"Opened “Progress87 $S87”"* ]] && pass "Toast: Opened “Progress87 …”" || fail "Completion toast" "$R"
-ss "87-switch-done"
-
-step "Keys pressed during the switch don't reach the editor"
-R=$(ev "(async()=>{const n=await import('/src/lib/notebooks.ts');let res='never guarded';const obs=new MutationObserver(()=>{if(res!=='never guarded'||!document.querySelector('.busy-shield.guarded'))return;const ev=new KeyboardEvent('keydown',{key:'x',bubbles:true,cancelable:true});document.dispatchEvent(ev);res=String(ev.defaultPrevented)});obs.observe(document.body,{subtree:true,attributes:true,childList:true});await n.switchNotebook('$HOME87');obs.disconnect();return res})()" | tr -d '"')
-[[ "$R" == "true" ]] && pass "Held while busy" || fail "Key guard during a switch" "$R"
 
 # ═══════════════════════════════════════════════
 journey "90. The sidebar collapses, is remembered, and is a drawer in a narrow window (UX Wave 3)"
