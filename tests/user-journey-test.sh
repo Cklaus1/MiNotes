@@ -2197,7 +2197,7 @@ step "Backspace at start merges with links, tags and bold intact"
 sleep 0.5
 ev "window.__MINOTES__.mergeWithPrevious(3)" > /dev/null; sleep 1
 R=$(api "getBlockContent(2)")
-[[ "$R" == '"prev block\n[[A Page]] #tag **b**"' ]] && pass "Merge keeps [[link]] #tag **bold**" || fail "Merge lost content" "$R"
+[[ "$R" == '"prev block[[A Page]] #tag **b**"' ]] && pass "Merge keeps [[link]] #tag **bold**, on one line" || fail "Merge lost content" "$R"
 
 step "A second Enter while the first is still being saved splits too, in order"
 IDX=$(ev "window.__MINOTES__.getBlocks().findIndex(b=>b.content==='alpha beta gamma')" | tr -d '"')
@@ -3839,6 +3839,360 @@ ev "document.activeElement?.blur()" >/dev/null; press "Control+w"; sleep 1.5
 R=$(ev "document.querySelector('[data-testid=canvas-page-context]')?.textContent||''" | tr -d '"')
 [[ "$R" == "New board · added to “Hub68” when you draw" ]] && pass "Ctrl+W says where the new board goes ($R)" || fail "Ctrl+W context" "$R"
 press "Escape"; sleep 0.8
+
+# ═══════════════════════════════════════════════
+journey "69. I fold a long outline with the mouse and the keyboard (UX review C-11)"
+# The collapse arrow used to sit under the drag handle and the zoom trigger, so a
+# click zoomed in; a collapsed block looked like a leaf. Clicks here go to
+# whatever element is really on top at the arrow's centre (elementFromPoint).
+# ═══════════════════════════════════════════════
+A69="const api=await import('/src/lib/api.ts');"
+ev "(async()=>{$A69 const p=await api.createPage('Fold69 page');const a=await api.createBlock(p.id,'parent69');const c=await api.createBlock(p.id,'child69',a.id);await api.createBlock(p.id,'grandchild69',c.id);await api.createBlock(p.id,'second child69',a.id);const b=await api.createBlock(p.id,'other69');await api.createBlock(p.id,'other child69',b.id);return 1})()" >/dev/null
+api "navigateTo('Fold69 page')" >/dev/null; sleep 2
+vis69() { ev "[...document.querySelectorAll('.block-list > .block')].map(b=>b.querySelector('.block-content')?.innerText.trim()).join('|')" | tr -d '"'; }
+pid69() { ev "[...document.querySelectorAll('.block-list > .block')].find(b=>b.querySelector('.block-content')?.innerText.trim()==='$1')?.dataset.blockId" | tr -d '"'; }
+P69=$(pid69 parent69)
+clickarrow69() { ev "(()=>{const b=document.querySelector('[data-block-id=\"$P69\"]');const t=b?.querySelector(':scope > .block-collapse');if(!t)return 'no toggle';const r=t.getBoundingClientRect();const top=document.elementFromPoint(r.left+r.width/2,r.top+r.height/2);const hit=top?.closest('.block-collapse')===t?'toggle':((top?.getAttribute?.('class')||top?.tagName)+'@'+Math.round(r.left)+','+Math.round(r.top));top?.dispatchEvent(new MouseEvent('mousedown',{bubbles:true}));top?.dispatchEvent(new MouseEvent('mouseup',{bubbles:true}));top?.dispatchEvent(new MouseEvent('click',{bubbles:true}));return hit})()" | tr -d '"'; }
+
+step "The collapse arrow is the element on top at its own centre, and clicking it folds the block"
+R=$(clickarrow69); sleep 0.6
+V=$(vis69); Z=$(ev "!!document.querySelector('.breadcrumb-bar')" | tr -d '"')
+[[ "$R" == "toggle" ]] && pass "Nothing covers the arrow" || fail "Arrow covered" "on top: $R"
+[[ "$V" == "parent69|other69|other child69" && "$Z" == "false" ]] && pass "Click folded the block (no zoom)" || fail "Click on the arrow" "visible=$V zoomed=$Z"
+
+step "A folded block looks folded: ringed bullet, arrow stays visible, hidden-block count"
+R=$(ev "(()=>{const b=document.querySelector('[data-block-id=\"$P69\"]');const t=b.querySelector(':scope > .block-collapse');return [b.classList.contains('is-collapsed'),getComputedStyle(t).opacity,getComputedStyle(b,'::before').boxShadow!=='none',getComputedStyle(b).getPropertyValue('--collapsed-label').trim()].join(',')})()" | tr -d '"')
+IFS=, read -r C69 O69 RING69 L69 <<< "$R"
+[[ "$C69" == "true" && "$RING69" == "true" ]] && pass "Bullet has a ring (is-collapsed)" || fail "Collapsed state invisible" "$R"
+awk "BEGIN{exit !($O69 >= 0.5)}" 2>/dev/null && pass "Arrow visible without hovering (opacity $O69)" || fail "Arrow hidden when folded" "opacity $O69"
+[[ "$L69" == *"3"* ]] && pass "Shows how many blocks are hidden ($L69)" || fail "No hidden count" "$L69"
+ss "69-collapsed"
+
+step "Clicking the arrow again unfolds it"
+R=$(clickarrow69); sleep 0.6
+V=$(vis69)
+[[ "$V" == "parent69|child69|grandchild69|second child69|other69|other child69" ]] && pass "Unfolded" || fail "Expand by click" "$V"
+
+step "Ctrl+Up folds the block I'm editing, Ctrl+Down unfolds it"
+api "pressKeyInBlock(0, 'ArrowUp', {ctrl:true})" >/dev/null; sleep 0.6
+V1=$(vis69)
+api "pressKeyInBlock(0, 'ArrowDown', {ctrl:true})" >/dev/null; sleep 0.6
+V2=$(vis69)
+[[ "$V1" == "parent69|other69|other child69" ]] && pass "Ctrl+Up folded" || fail "Ctrl+Up" "$V1"
+[[ "$V2" == "parent69|child69|grandchild69|second child69|other69|other child69" ]] && pass "Ctrl+Down unfolded" || fail "Ctrl+Down" "$V2"
+
+step "The block menu has Collapse / Expand"
+menu69() { ev "(()=>{document.querySelector('[data-block-id=\"$P69\"] .block-content')?.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true,clientX:300,clientY:200}));return 1})()" >/dev/null; sleep 0.4; }
+menu69
+R=$(ev "(()=>{const i=document.querySelector('.block-context-menu [data-action=collapse]');const t=i?.innerText||'none';i?.click();return t})()" | tr -d '"'); sleep 0.6
+V=$(vis69)
+[[ "$R" == "Collapse"* && "$V" == "parent69|other69|other child69" ]] && pass "Menu → Collapse folds it" || fail "Menu collapse" "item=$R visible=$V"
+menu69
+R=$(ev "(()=>{const i=document.querySelector('.block-context-menu [data-action=collapse]');const t=i?.innerText||'none';i?.click();return t})()" | tr -d '"'); sleep 0.6
+V=$(vis69)
+[[ "$R" == "Expand"* && "$V" == *"grandchild69"* ]] && pass "Menu → Expand unfolds it" || fail "Menu expand" "item=$R visible=$V"
+
+step "Collapse all / Expand all for the page"
+ev "document.querySelector('[data-testid=collapse-all]')?.click()" >/dev/null; sleep 0.6
+V1=$(vis69)
+ev "document.querySelector('[data-testid=collapse-all]')?.click()" >/dev/null; sleep 0.6
+V2=$(vis69)
+[[ "$V1" == "parent69|other69" ]] && pass "Collapse all leaves only the top level" || fail "Collapse all" "$V1"
+[[ "$V2" == "parent69|child69|grandchild69|second child69|other69|other child69" ]] && pass "Expand all shows everything again" || fail "Expand all" "$V2"
+
+# ═══════════════════════════════════════════════
+journey "70. I drag blocks around and the outline stays right (UX review C-13)"
+# After a drop the list was sorted by position across parents (positions are
+# per parent), so the outline rendered scrambled until a reload. HTML5 drag
+# events are dispatched on the real handle / target elements.
+# ═══════════════════════════════════════════════
+A70="const api=await import('/src/lib/api.ts');"
+ev "(async()=>{$A70 const p=await api.createPage('Drag70 page');const a=await api.createBlock(p.id,'A70');await api.createBlock(p.id,'a1 69',a.id);await api.createBlock(p.id,'a2 69',a.id);const b=await api.createBlock(p.id,'B70');await api.createBlock(p.id,'b1 69',b.id);await api.createBlock(p.id,'C70');return 1})()" >/dev/null
+api "navigateTo('Drag70 page')" >/dev/null; sleep 2
+# shown outline: text@depth, in DOM order
+shown70() { ev "[...document.querySelectorAll('.block-list > .block')].map(b=>b.querySelector('.block-content')?.innerText.trim()+'@'+(b.dataset.depth||0)).join('|')" | tr -d '"'; }
+# stored outline (the backend's outline order), same format
+stored70() { ev "(async()=>{$A70 const t=await api.getPageTree('Drag70 page');const d=new Map();for(const b of t.blocks)d.set(b.id,b.parent_id?d.get(b.parent_id)+1:0);return t.blocks.map(b=>b.content+'@'+d.get(b.id)).join('|')})()" | tr -d '"'; }
+# drag70 <dragged text> <target text> <above|below|child>
+drag70() { ev "(async()=>{const tick=()=>new Promise(r=>setTimeout(r,60));const blk=t=>[...document.querySelectorAll('.block-list > .block')].find(b=>b.querySelector('.block-content')?.innerText.trim()===t);const src=blk('$1'),dst=blk('$2');if(!src||!dst)return 'missing';window.__dragImage70='';const orig=DataTransfer.prototype.setDragImage;DataTransfer.prototype.setDragImage=function(el,x,y){window.__dragImage70=el?.textContent||'';try{orig.call(this,el,x,y)}catch{}};const dt=new DataTransfer();const h=src.querySelector(':scope > .block-drag-handle');const r=dst.getBoundingClientRect();const x=('$3'==='child')?r.left+90:r.left+30;const y=('$3'==='above')?r.top+3:r.bottom-3;h.dispatchEvent(new DragEvent('dragstart',{bubbles:true,cancelable:true,dataTransfer:dt}));dst.dispatchEvent(new DragEvent('dragenter',{bubbles:true,cancelable:true,dataTransfer:dt,clientX:x,clientY:y}));dst.dispatchEvent(new DragEvent('dragover',{bubbles:true,cancelable:true,dataTransfer:dt,clientX:x,clientY:y}));await tick();const cls=dst.className;dst.dispatchEvent(new DragEvent('drop',{bubbles:true,cancelable:true,dataTransfer:dt,clientX:x,clientY:y}));h.dispatchEvent(new DragEvent('dragend',{bubbles:true,dataTransfer:dt}));DataTransfer.prototype.setDragImage=orig;return cls})()" | tr -d '"'; }
+
+step "Dragging a parent below a sibling moves its whole subtree, and the outline renders in order at once"
+R=$(drag70 A70 C70 below); sleep 0.4
+S=$(shown70)
+[[ "$S" == "B70@0|b1 69@1|C70@0|A70@0|a1 69@1|a2 69@1" ]] && pass "Rendered outline right after the drop" || fail "Scrambled outline after drop" "$S"
+sleep 1; T=$(stored70)
+[[ "$T" == "$S" ]] && pass "Rendered outline = stored outline" || fail "Rendered ≠ stored" "shown=$S stored=$T"
+ss "70-after-drop"
+
+step "The drag image is the block's text, not a blank square"
+D=$(ev "window.__dragImage70||''" | tr -d '"')
+[[ "$D" == *"A70"* ]] && pass "Drag image shows \"$D\"" || fail "No text drag image" "$D"
+
+step "Dropping with the pointer moved right makes the block a child"
+R=$(drag70 C70 B70 child); sleep 0.4
+[[ "$R" == *"drop-child"* ]] && pass "The drop line shows it will nest (drop-child)" || fail "No child drop indicator" "$R"
+S=$(shown70)
+[[ "$S" == "B70@0|C70@1|b1 69@1|A70@0|a1 69@1|a2 69@1" ]] && pass "C70 is now B70's first child" || fail "Drop as child" "$S"
+sleep 1; T=$(stored70)
+[[ "$T" == "$S" ]] && pass "…and that is what was stored" || fail "Child drop stored" "shown=$S stored=$T"
+
+step "Dragging a child above a top-level block outdents it there"
+R=$(drag70 "a2 69" B70 above); sleep 0.4
+S=$(shown70)
+[[ "$S" == "a2 69@0|B70@0|C70@1|b1 69@1|A70@0|a1 69@1" ]] && pass "a2 moved above B70 at the top level" || fail "Drag child to top" "$S"
+sleep 1; T=$(stored70)
+[[ "$T" == "$S" ]] && pass "…stored the same" || fail "Stored after outdent-drag" "shown=$S stored=$T"
+
+step "A block can't be dropped into its own subtree"
+R=$(drag70 B70 "b1 69" child); sleep 0.6
+S=$(shown70)
+[[ "$S" == "a2 69@0|B70@0|C70@1|b1 69@1|A70@0|a1 69@1" ]] && pass "Nothing changed" || fail "Dropped into own subtree" "$S"
+
+step "Dropping just below a parent whose children are showing makes it the first child (where the line is)"
+R=$(drag70 "a2 69" A70 below); sleep 0.4
+S=$(shown70)
+[[ "$R" == *"drop-child"* && "$S" == "B70@0|C70@1|b1 69@1|A70@0|a2 69@1|a1 69@1" ]] && pass "a2 is A70's first child" || fail "Drop below an expanded parent" "indicator=$R shown=$S"
+
+# ═══════════════════════════════════════════════
+journey "71. Enter then Backspace puts my block back exactly as it was"
+# Backspace at the start of a block merged with a "\n" and put the caret at
+# the end, so split→merge wasn't reversible (UX review: split / merge).
+# ═══════════════════════════════════════════════
+A71="const api=await import('/src/lib/api.ts');"
+ev "(async()=>{$A71 const p=await api.createPage('Merge71 page');await api.createBlock(p.id,'first71');await api.createBlock(p.id,'Second block');await api.createBlock(p.id,'Hello World');await api.createBlock(p.id,'**bold** and [[Merge71 page]] text');return 1})()" >/dev/null
+api "navigateTo('Merge71 page')" >/dev/null; sleep 2
+idx71() { ev "window.__MINOTES__.getBlocks().findIndex(b=>b.content===\`$1\`)" | tr -d '"'; }
+# split71 <content> <offset> -> merged content | caret | focused index | block count before/after
+split71() {
+  local i; i=$(idx71 "$1"); local n0; n0=$(api "getBlockCount()" | tr -d '"')
+  api "splitBlockAt($i, $2)" >/dev/null; sleep 0.8
+  local mid; mid=$(api "getBlockContent($((i+1)))" | tr -d '"')
+  api "mergeWithPrevious($((i+1)))" >/dev/null; sleep 0.8
+  echo "$(api "getBlockContent($i)" | tr -d '"')#$(api "getCaretInBlock($i)" | tr -d '"')#$(api "getFocusedBlockIndex()" | tr -d '"')#$i#$n0/$(api "getBlockCount()" | tr -d '"')#$mid"
+}
+
+step "Split in the middle of a word, then Backspace: same text, caret at the join"
+R=$(split71 "Second block" 5)
+IFS='#' read -r C71 K71 F71 I71 N71 M71 <<< "$R"
+[[ "$M71" == "d block" ]] && pass "Enter split it (\"Secon\" / \"d block\")" || fail "Split" "$R"
+[[ "$C71" == "Second block" ]] && pass "Merged back to \"Second block\" (no line break)" || fail "Merge text" "$C71"
+[[ "$K71" == "6" && "$F71" == "$I71" ]] && pass "Caret at the join (after \"Secon\")" || fail "Caret after merge" "caret=$K71 focused=$F71 want block $I71 pos 6"
+[[ "${N71%/*}" == "${N71#*/}" ]] && pass "Same number of blocks as before ($N71)" || fail "Block count" "$N71"
+
+step "Split at a space, then Backspace: the space comes back"
+R=$(split71 "Hello World" 6)
+IFS='#' read -r C71 K71 F71 I71 N71 M71 <<< "$R"
+[[ "$C71" == "Hello World" ]] && pass "\"Hello World\" again" || fail "Merge at a space" "$C71 (split: $M71)"
+
+step "Formatting and links survive the round trip"
+R=$(split71 "**bold** and [[Merge71 page]] text" 9)
+IFS='#' read -r C71 K71 F71 I71 N71 M71 <<< "$R"
+[[ "$C71" == "**bold** and [[Merge71 page]] text" ]] && pass "Formatting intact" || fail "Formatted merge" "$C71 (split: $M71)"
+sleep 1
+R=$(ev "(async()=>{$A71 const t=await api.getPageTree('Merge71 page');return t.blocks.map(b=>b.content).join('|')})()" | tr -d '"')
+[[ "$R" == "first71|Second block|Hello World|**bold** and [[Merge71 page]] text" ]] && pass "Stored as before" || fail "Stored after split/merge" "$R"
+
+# ═══════════════════════════════════════════════
+journey "72. Done tasks look done, and badges don't crowd the text"
+# DONE wasn't struck through or dimmed; the badge touched the following text.
+# ═══════════════════════════════════════════════
+A72="const api=await import('/src/lib/api.ts');"
+ev "(async()=>{$A72 const p=await api.createPage('Done72 page');await api.createBlock(p.id,'TODO write72');await api.createBlock(p.id,'DOING draft72');await api.createBlock(p.id,'DONE ship72');return 1})()" >/dev/null
+api "navigateTo('Done72 page')" >/dev/null; sleep 2
+ev "document.activeElement?.blur()" >/dev/null; sleep 0.5
+# look72 <text> -> struck|opacity-or-color-dimmed|gap px between badge and the text
+look72() { ev "(()=>{const b=[...document.querySelectorAll('.block-list > .block')].find(x=>x.querySelector('.block-content')?.textContent.includes('$1'));if(!b)return 'missing';const pm=b.querySelector('.block-content .ProseMirror');const cs=getComputedStyle(pm);const dim=cs.color!==getComputedStyle(document.querySelector('.block-list > .block:not(.todo-done) .ProseMirror')).color;let struck=false;const dec=e=>{for(;e&&e!==b;e=e.parentElement){if((getComputedStyle(e).textDecorationLine||'').includes('line-through'))return true}return false};const badge=b.querySelector(':scope > .todo-badge');const w=document.createTreeWalker(pm,NodeFilter.SHOW_TEXT);let n,gap='none';while((n=w.nextNode())){const i=n.data.indexOf('$1');if(i>=0){struck=dec(n.parentElement);const r=document.createRange();r.setStart(n,i);r.setEnd(n,i+1);gap=Math.round(r.getBoundingClientRect().left-badge.getBoundingClientRect().right);break}}return struck+'|'+dim+'|'+gap})()" | tr -d '"'; }
+
+step "A DONE block is struck through and dimmed; TODO and DOING aren't"
+R=$(look72 ship72); IFS='|' read -r S72 D72 G72 <<< "$R"
+[[ "$S72" == "true" && "$D72" == "true" ]] && pass "DONE: struck through and dimmed" || fail "DONE styling" "$R"
+R=$(look72 write72); IFS='|' read -r S72b D72b G72b <<< "$R"
+[[ "$S72b" == "false" ]] && pass "TODO: not struck through" || fail "TODO struck through" "$R"
+ss "72-todo-done"
+
+step "There is breathing room between each badge and the text after it"
+for w in write72 draft72 ship72; do
+  R=$(look72 $w); G=${R##*|}
+  [[ "$G" =~ ^[0-9]+$ && "$G" -ge 6 ]] && pass "$w: ${G}px after the badge" || fail "Badge crowds the text ($w)" "$R"
+done
+
+# ═══════════════════════════════════════════════
+journey "73. The / menu finds what I mean"
+# Exact-substring matching found nothing for /h2 or /codeblock; Enter on "No
+# results" left odd text; the divider was invisible; no numbered list.
+# ═══════════════════════════════════════════════
+A73="const api=await import('/src/lib/api.ts');"
+ev "(async()=>{$A73 const p=await api.createPage('Slash73 page');await api.createBlock(p.id,'');await api.createBlock(p.id,'---');await api.createBlock(p.id,'after73');return 1})()" >/dev/null
+api "navigateTo('Slash73 page')" >/dev/null; sleep 2
+# slash73 <query> -> titles shown in the menu
+slash73() {
+  api "focusBlock(0)" >/dev/null; sleep 0.3
+  ev "(async()=>{for(const ch of '/$1'){document.execCommand('insertText',false,ch);await new Promise(r=>setTimeout(r,25))}return 1})()" >/dev/null; sleep 0.6
+  ev "(document.querySelector('.slash-menu')?[...document.querySelectorAll('.slash-menu-item-title')].map(e=>e.textContent).join(',')||document.querySelector('.slash-menu').innerText:'closed')" | tr -d '"'
+}
+clear73() { api "focusBlock(0)" >/dev/null; sleep 0.3; ev "(()=>{document.execCommand('selectAll');document.execCommand('delete');return 1})()" >/dev/null; sleep 0.4; }
+
+step "/h2, /codeblock, /hr, /ol find their commands first"
+for q in "h2:Heading 2" "codeblock:Code Block" "hr:Divider" "ol:Numbered List" "todo:Todo List"; do
+  R=$(slash73 "${q%%:*}"); clear73
+  [[ "${R%%,*}" == "${q#*:}" ]] && pass "/${q%%:*} → ${q#*:}" || fail "/${q%%:*}" "menu: ${R:0:80}"
+done
+
+step "Enter on \"No results\" just closes the menu — no split, the text stays"
+N0=$(api "getBlockCount()" | tr -d '"')
+R=$(slash73 zzqx)
+api "pressKeyInBlock(0, 'Enter', {focus:false})" >/dev/null; sleep 0.6
+OPEN=$(ev "!!document.querySelector('.slash-menu')" | tr -d '"')
+N1=$(api "getBlockCount()" | tr -d '"'); C=$(api "getLiveBlockContent(0)" | tr -d '"')
+[[ "$R" == *"No results"* && "$OPEN" == "false" && "$N1" == "$N0" && "$C" == "/zzqx" ]] && pass "Menu closed, still one block reading /zzqx" || fail "Enter on No results" "menu=$R open=$OPEN blocks $N0→$N1 content=$C"
+clear73
+
+step "Numbered list from the menu"
+slash73 numbered >/dev/null
+ev "[...document.querySelectorAll('.slash-menu-item')].find(e=>e.querySelector('.slash-menu-item-title')?.textContent==='Numbered List')?.click()" >/dev/null; sleep 1
+C=$(api "getLiveBlockContent(0)" | tr -d '"'); OL=$(ev "!!document.querySelectorAll('.block-list > .block')[0].querySelector('ol')" | tr -d '"')
+[[ "$OL" == "true" && "$C" == 1.* ]] && pass "The block became a numbered list ($C)" || fail "/numbered" "ol=$OL content=$C"
+
+step "A divider (---) is visible"
+R=$(ev "(()=>{const hr=document.querySelector('.block-list .ProseMirror hr');if(!hr)return 'no hr';const cs=getComputedStyle(hr);const r=hr.getBoundingClientRect();return cs.borderTopStyle+'|'+cs.borderTopWidth+'|'+Math.round(r.width)})()" | tr -d '"')
+IFS='|' read -r ST73 W73 X73 <<< "$R"
+[[ "$ST73" != "none" && "$W73" != "0px" && "$X73" -gt 100 ]] 2>/dev/null && pass "Divider drawn ($R)" || fail "Invisible divider" "$R"
+ss "73-slash"
+
+# ═══════════════════════════════════════════════
+journey "74. Suggestions never push the page I'm reading"
+# The "AI suggested links" bar appeared above the blocks ~250 ms after a page
+# opened (and on most pages), shifting everything down.
+# ═══════════════════════════════════════════════
+A74="const api=await import('/src/lib/api.ts');"
+ev "(async()=>{$A74 await api.createPage('Kestrel74 Engine');const p=await api.createPage('Shift74 page');await api.createBlock(p.id,'We tuned the Kestrel74 Engine today #perf74');await api.createBlock(p.id,'second74');return 1})()" >/dev/null
+api "navigateTo('Getting Started')" >/dev/null; sleep 1.5
+
+step "The blocks don't move down after the page opens (block list top; blocks have a 4px fade-in)"
+R=$(ev "(async()=>{window.__MINOTES__.navigateTo('Shift74 page');const top=()=>{const b=[...document.querySelectorAll('.block-list > .block')].find(x=>x.textContent.includes('Kestrel74'));return b?Math.round(b.parentElement.getBoundingClientRect().top):null};let t0=null;for(let i=0;i<40&&t0===null;i++){await new Promise(r=>setTimeout(r,25));t0=top()}await new Promise(r=>setTimeout(r,1500));return t0+'|'+top()})()" | tr -d '"')
+[[ -n "${R%%|*}" && "${R%%|*}" == "${R##*|}" ]] && pass "First block stayed at y=${R%%|*}" || fail "Content shifted after opening" "$R"
+
+step "The suggestions are still offered, below the blocks"
+R=$(ev "(()=>{const chip=[...document.querySelectorAll('.ai-link-chip')].find(c=>c.textContent.includes('Kestrel74'));const tag=[...document.querySelectorAll('.ai-tag-chip')].find(c=>c.textContent.includes('perf74'));const last=[...document.querySelectorAll('.block-list > .block')].pop();if(!chip||!tag||!last)return 'missing chip='+!!chip+' tag='+!!tag;const below=e=>e.getBoundingClientRect().top>=last.getBoundingClientRect().bottom;return below(chip)+'|'+below(tag)})()" | tr -d '"')
+[[ "$R" == "true|true" ]] && pass "Link and tag suggestions sit below the last block" || fail "Suggestions placement" "$R"
+ss "74-suggestions"
+
+step "With link suggestions turned off in Settings, there are none"
+ev "(async()=>{const s=await import('/src/lib/settings.ts');const cur=s.getSettings().ai;s.updateSettings({ai:{...cur,linkSuggestions:false}});window.dispatchEvent(new CustomEvent('minotes-settings-changed',{detail:s.getSettings()}));return 1})()" >/dev/null; sleep 1
+N=$(ev "document.querySelectorAll('.ai-link-chip').length" | tr -d '"')
+ev "(async()=>{const s=await import('/src/lib/settings.ts');const cur=s.getSettings().ai;s.updateSettings({ai:{...cur,linkSuggestions:true}});window.dispatchEvent(new CustomEvent('minotes-settings-changed',{detail:s.getSettings()}));return 1})()" >/dev/null
+[[ "$N" == "0" ]] && pass "No link suggestions when the setting is off" || fail "Setting off still suggests" "$N chips"
+
+# ═══════════════════════════════════════════════
+journey "75. Backlinks read like my notes and take me to the exact block"
+# Rows showed raw markdown ([[…]], **…**, {{todo:…}}), a click only opened the
+# page, and the panel went stale after a rename.
+# ═══════════════════════════════════════════════
+A75="const api=await import('/src/lib/api.ts');"
+ev "(async()=>{$A75 await api.createPage('Target75');const p=await api.createPage('Source75');for(let i=0;i<25;i++)await api.createBlock(p.id,'filler75 '+i);await api.createBlock(p.id,'TODO call about [[Target75]] with **bold75**');return 1})()" >/dev/null
+api "navigateTo('Target75')" >/dev/null; sleep 2
+row75() { ev "(()=>{const r=[...document.querySelectorAll('.backlink-item')].find(e=>e.textContent.includes('$1'));return r?r.innerText.replace(/\\s+/g,' ').trim():'none'})()" | tr -d '"'; }
+
+step "A backlink row is rich text: no [[ ]], ** or raw markers"
+R=$(row75 bold75)
+B=$(ev "!![...document.querySelectorAll('.backlink-item')].find(e=>e.textContent.includes('bold75'))?.querySelector('strong, .wiki-link')" | tr -d '"')
+[[ "$R" != "none" && "$R" != *"[["* && "$R" != *"**"* && "$R" != *"{{"* && "$B" == "true" ]] && pass "Row reads: $R" || fail "Raw markdown in backlinks" "$R (rich=$B)"
+ss "75-backlinks"
+
+step "Clicking the row opens the page AT that block and highlights it"
+ev "[...document.querySelectorAll('.backlink-item')].find(e=>e.textContent.includes('bold75'))?.click()" >/dev/null
+R=""; for _ in $(seq 1 20); do sleep 0.15; R=$(ev "(()=>{const b=document.querySelector('.block-ref-highlight');return (window.__MINOTES__.getCurrentPage?.()||'')+'|'+(b?b.textContent.includes('bold75'):false)})()" | tr -d '"'); [[ "$R" == *"|true" ]] && break; done
+[[ "$R" == "Source75|true" ]] && pass "Opened Source75 with the referencing block highlighted" || fail "Backlink click" "$R"
+sleep 0.6
+V=$(ev "(()=>{const b=[...document.querySelectorAll('.block-list > .block')].find(x=>x.textContent.includes('bold75'));if(!b)return 'none';const r=b.getBoundingClientRect();return r.top>=0&&r.bottom<=innerHeight})()" | tr -d '"')
+[[ "$V" == "true" ]] && pass "…and scrolled into view" || fail "Referencing block not in view" "$V"
+
+step "After renaming the page, the backlinks show the new name"
+api "navigateTo('Target75')" >/dev/null; sleep 1.5
+ev "document.querySelector('.main-header h2')?.click()" >/dev/null; sleep 0.4
+ev "(()=>{const i=document.querySelector('.page-title-input');const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;set.call(i,'Target75 renamed');i.dispatchEvent(new Event('input',{bubbles:true}));i.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));return 1})()" >/dev/null; sleep 2
+R=$(row75 bold75)
+[[ "$R" == *"Target75 renamed"* ]] && pass "Backlink row updated: $R" || fail "Backlinks stale after rename" "$R"
+
+# ═══════════════════════════════════════════════
+journey "76. A block reference shows the referenced text, and an embed shows the block (UX review C-12)"
+# ((uuid)) chips showed the uuid, every plain reference also got a
+# "TRANSCLUDED BLOCK" box repeating it, and nothing updated until a reload.
+# Now: ((uuid)) = one inline chip with the live text; {{embed ((uuid))}} = the card.
+# ═══════════════════════════════════════════════
+A76="const api=await import('/src/lib/api.ts');"
+ev "(async()=>{$A76 const o=await api.createPage('Other76 page');const s=await api.createBlock(o.id,'Source text 75 with **bold**');const p=await api.createPage('Ref76 page');await api.createBlock(p.id,'see ((' + s.id + ')) here');await api.createBlock(p.id,'{{embed ((' + s.id + '))}}');await api.createBlock(p.id,'local76 source');await api.createBlock(p.id,'');window.__S76=s.id;return 1})()" >/dev/null
+api "navigateTo('Ref76 page')" >/dev/null; sleep 2
+ev "document.activeElement?.blur()" >/dev/null; sleep 0.5
+chip76() { ev "(()=>{const b=[...document.querySelectorAll('.block-list > .block')].find(x=>x.textContent.includes('$1'));const c=b?.querySelector('.block-content .block-ref');return c?c.textContent:'none'})()" | tr -d '"'; }
+card76() { ev "(()=>{const b=[...document.querySelectorAll('.block-list > .block')][$1];return [...(b?.querySelectorAll('.block-transclusion')||[])].map(t=>t.innerText.replace(/\\s+/g,' ').trim()).join('|')||'none'})()" | tr -d '"'; }
+
+step "A plain ((ref)) is one chip with the referenced text — no uuid, no box"
+R=$(chip76 "here"); C=$(card76 0)
+[[ "$R" == "Source text 75 with bold" ]] && pass "Chip reads \"$R\"" || fail "Chip text" "$R"
+[[ "$C" == "none" ]] && pass "No transclusion box under a plain reference" || fail "Box repeats the reference" "$C"
+
+step "{{embed ((ref))}} shows the referenced block as a card, with its page"
+C=$(card76 1)
+[[ "$C" == *"Source text 75 with bold"* && "${C,,}" == *"other76 page"* ]] && pass "Embed card: $C" || fail "Embed card" "$C"
+ss "76-block-refs"
+
+step "Editing the source updates the chip and the card without a reload"
+ev "(async()=>{$A76 const p=await api.getPageTree('Ref76 page');const loc=p.blocks.find(b=>b.content==='local76 source');await api.updateBlock(p.blocks[0].id,'see (('+loc.id+')) here');window.__L76=loc.id;return 1})()" >/dev/null
+api "navigateTo('Other76 page')" >/dev/null; sleep 1; api "navigateTo('Ref76 page')" >/dev/null; sleep 2
+ev "document.activeElement?.blur()" >/dev/null; sleep 0.3
+I76=$(ev "window.__MINOTES__.getBlocks().findIndex(b=>b.content==='local76 source')" | tr -d '"')
+api "setBlockContent($I76, 'local76 changed')" >/dev/null; sleep 1
+R=$(chip76 "here")
+[[ "$R" == "local76 changed" ]] && pass "Chip followed the edit: \"$R\"" || fail "Chip stale after the source changed" "$R"
+
+step "The (( picker shows which page each block is on"
+api "focusBlock(3)" >/dev/null; sleep 0.3
+ev "(async()=>{for(const ch of '((Source text 75'){document.execCommand('insertText',false,ch);await new Promise(r=>setTimeout(r,20))}return 1})()" >/dev/null; sleep 1.2
+R=$(ev "[...document.querySelectorAll('.slash-menu-item')].map(i=>i.innerText.replace(/\\s+/g,' ')).join('|')" | tr -d '"')
+api "pressKeyInBlock(3, 'Escape', {focus:false})" >/dev/null
+[[ "$R" == *"Source text 75"*"Other76 page"* ]] && pass "Picker: $R" || fail "Picker without page names" "$R"
+
+# ═══════════════════════════════════════════════
+journey "77. Pasted markdown keeps its structure, and a typed code fence makes a code block (UX review C-6)"
+# Pasted markdown came out with escaped headings, flattened nesting and
+# indented lines turned into code; ```python + Enter saved escaped backticks.
+# (Browser mode pastes a synthetic DataTransfer; desktop D16 uses the real X clipboard.)
+# ═══════════════════════════════════════════════
+A77="const api=await import('/src/lib/api.ts');"
+ev "(async()=>{$A77 for(const t of ['Paste77 page','Plain77 page','Fence77 page']){const p=await api.createPage(t);await api.createBlock(p.id,'')}return 1})()" >/dev/null
+# paste77 <block index> <text (JS string literal)>
+paste77() { ev "(()=>{const el=document.querySelectorAll('.block-list > .block')[$1]?.querySelector('.ProseMirror');if(!el)return 'no editor';el.focus();const dt=new DataTransfer();dt.setData('text/plain',$2);el.dispatchEvent(new ClipboardEvent('paste',{clipboardData:dt,bubbles:true,cancelable:true}));return 'ok'})()" | tr -d '"'; }
+tree77() { ev "(async()=>{$A77 const t=await api.getPageTree('$1');const d=new Map();for(const b of t.blocks)d.set(b.id,b.parent_id?d.get(b.parent_id)+1:0);return t.blocks.map(b=>'  '.repeat(d.get(b.id))+b.content.replace(/\\n/g,'⏎')).join('|')})()" | tr -d '"'; }
+shown77() { ev "window.__MINOTES__.getBlockTree().map(b=>'  '.repeat(b.depth)+b.content.replace(/\\n/g,'⏎')).join('|')" | tr -d '"'; }
+MD77='"# Plan\n- one\n  - one.a\n    - one.a.i\n* two\n1. three\n   1. three.1\nNotes\n    indented child\n```python\ndef f():\n    return 1\n```"'
+WANT77="# Plan|one|  one.a|    one.a.i|two|three|  three.1|Notes|  indented child|\`\`\`python⏎def f():⏎    return 1⏎\`\`\`"
+
+step "Markdown pasted into an empty block becomes headings, nested blocks and a code block"
+api "navigateTo('Paste77 page')" >/dev/null; sleep 1.5
+R=$(paste77 0 "$MD77"); sleep 2.5
+T=$(tree77 'Paste77 page'); S=$(shown77)
+[[ "$T" == "$WANT77" ]] && pass "Stored as an outline: $T" || fail "Pasted markdown structure" "got $T"
+[[ "$S" == "$WANT77" ]] && pass "Shown the same way" || fail "Shown after paste" "$S"
+R=$(ev "(()=>{const bs=[...document.querySelectorAll('.block-list > .block')];return [!!bs[0]?.querySelector('h1'),!!bs.find(b=>b.querySelector('pre code'))].join('|')})()" | tr -d '"')
+[[ "$R" == "true|true" ]] && pass "The heading is a heading, the fence a code block" || fail "Heading / code rendering" "$R"
+ss "77-paste-structure"
+
+step "Plain multi-line text still becomes one block per line"
+api "navigateTo('Plain77 page')" >/dev/null; sleep 1.5
+paste77 0 '"alpha line\nbeta line\ngamma line"' >/dev/null; sleep 2
+T=$(tree77 'Plain77 page')
+[[ "$T" == "alpha line|beta line|gamma line" ]] && pass "Three blocks: $T" || fail "Plain paste" "$T"
+
+step "Typing \`\`\`python then Enter makes a Python code block"
+api "navigateTo('Fence77 page')" >/dev/null; sleep 1.5
+api "focusBlock(0)" >/dev/null; sleep 0.3
+ev "(async()=>{for(const ch of '\`\`\`python'){document.execCommand('insertText',false,ch);await new Promise(r=>setTimeout(r,20))}return 1})()" >/dev/null; sleep 0.3
+api "pressKeyInBlock(0, 'Enter', {focus:false})" >/dev/null; sleep 0.4
+ev "(()=>{document.execCommand('insertText',false,'print(1)');return 1})()" >/dev/null; sleep 0.3
+ev "document.activeElement?.blur()" >/dev/null; sleep 1.5
+T=$(tree77 'Fence77 page')
+[[ "$T" == "\`\`\`python⏎print(1)⏎\`\`\`" ]] && pass "Stored as a python fence, one block" || fail "Typed fence" "$T"
 
 # ═══════════════════════════════════════════════
 close_app

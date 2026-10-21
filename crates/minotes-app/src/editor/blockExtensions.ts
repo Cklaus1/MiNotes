@@ -25,6 +25,7 @@ import { SlashCommands } from "./slashCommands";
 import { PageLinkSuggestion } from "./PageLinkSuggestion";
 import { BlockRefSuggestion } from "./BlockRefSuggestion";
 import { TaskListInputRule } from "./taskListInputRule";
+import { TodoKeyword } from "./todoKeyword";
 // ── Import / attachments ──
 import { displaySrc } from "../lib/attachments";
 // ── End import ──
@@ -194,6 +195,7 @@ export function createBlockExtensions(cb: BlockExtensionCallbacks) {
     BlockRefNode.configure({ onBlockRefClick: cb.onBlockRefClick }),
     TagNode.configure({ onTagClick: cb.onTagClick }),
     TaskListInputRule,
+    TodoKeyword,
     SlashCommands,
     PageLinkSuggestion,
     BlockRefSuggestion,

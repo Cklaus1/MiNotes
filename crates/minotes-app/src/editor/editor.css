@@ -184,9 +184,10 @@
 /* Horizontal rule */
 .block-content .ProseMirror hr {
   border: none;
-  border-top: 2px solid var(--text-muted);
+  /* Not var(--text-muted): that variable is a self-referencing cycle in
+     styles.css (resolves to nothing), which made the divider invisible. */
+  border-top: 2px solid var(--border);
   margin: 0.8em 0;
-  opacity: 0.5;
 }
 
 /* Wiki link node */
@@ -215,6 +216,22 @@
 
 .block-content .ProseMirror .block-ref:hover {
   background: rgba(137, 180, 250, 0.2);
+}
+
+/* {{embed ((uuid))}}: a small marker in the text; the block itself is the card below. */
+.block-content .ProseMirror .block-embed-chip {
+  font-style: normal;
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  padding: 1px 6px;
+}
+
+/* A reference to a block that no longer exists. */
+.block-content .ProseMirror .block-ref.block-ref-missing {
+  color: var(--text-secondary);
+  background: rgba(243, 139, 168, 0.12);
+  text-decoration: line-through;
 }
 
 /* Syntax highlighting (lowlight / highlight.js compatible tokens). Theme

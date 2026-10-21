@@ -10,6 +10,7 @@ import { attachmentHash, encodeName, isImage, openAttachment, storeFile } from "
 import { showToast } from "../lib/toast";
 import { errorMessage } from "../lib/errors";
 import { blobImageToFile, hasBlobImage, pastedFiles, withoutBlobImages } from "./pastedFiles";
+import { fenceToCodeBlock, parsePastedMarkdown, type PastedBlock } from "./pasteMarkdown";
 // ── End import ──
 
 
@@ -29,7 +30,8 @@ interface UseBlockEditorOptions {
   onSave: (markdown: string) => void;
   onPageLinkClick: (title: string, shiftKey?: boolean) => void;
   onBlockRefClick?: (blockId: string) => void;
-  onEnter?: (contentAfterCursor: string, savedContent?: string) => void;
+  /** `boundarySpace`: the cut was at a space (trimmed from both halves). */
+  onEnter?: (contentAfterCursor: string, savedContent?: string, boundarySpace?: boolean) => void;
   /** Checked BEFORE the editor mutates anything on Enter. Returning false makes the
    *  Enter a no-op (e.g. a previous split is still being persisted). */
   canEnter?: () => boolean;
@@ -38,6 +40,9 @@ interface UseBlockEditorOptions {
   onArrowDown?: () => void;
   onToggleTodo?: () => void;
   onPasteMultiline?: (lines: string[]) => void;
+  /** Pasted markdown with structure (C-6): the block tree to create. `intoEmpty`:
+   *  this block is empty, so the first pasted block replaces it. */
+  onPasteBlocks?: (blocks: PastedBlock[], intoEmpty: boolean) => void;
   onIndent?: () => void;
   onOutdent?: () => void;
   /** Escape (no menu open): leave editing. */
@@ -46,6 +51,8 @@ interface UseBlockEditorOptions {
   onTagClick?: (tag: string) => void;
   /** `/flashcard`: make this block a flashcard. */
   onMakeFlashcard?: () => void;
+  /** Ctrl+Up folds this block's children, Ctrl+Down unfolds them. */
+  onSetCollapsed?: (collapsed: boolean) => void;
 }
 
 export function useBlockEditor({
@@ -60,12 +67,14 @@ export function useBlockEditor({
   onArrowDown,
   onToggleTodo,
   onPasteMultiline,
+  onPasteBlocks,
   onIndent,
   onOutdent,
   onEscape,
   onSlashCommand,
   onTagClick,
   onMakeFlashcard,
+  onSetCollapsed,
 }: UseBlockEditorOptions) {
   const onSaveRef = useRef(onSave);
   // NOT a mirror of the `content` prop — this tracks the last markdown the editor
@@ -83,12 +92,14 @@ export function useBlockEditor({
   const onArrowDownRef = useRef(onArrowDown);
   const onToggleTodoRef = useRef(onToggleTodo);
   const onPasteMultilineRef = useRef(onPasteMultiline);
+  const onPasteBlocksRef = useRef(onPasteBlocks);
   const onIndentRef = useRef(onIndent);
   const onOutdentRef = useRef(onOutdent);
   const onEscapeRef = useRef(onEscape);
   const onSlashCommandRef = useRef(onSlashCommand);
   const onTagClickRef = useRef(onTagClick);
   const onMakeFlashcardRef = useRef(onMakeFlashcard);
+  const onSetCollapsedRef = useRef(onSetCollapsed);
   const editorInstanceRef = useRef<any>(null);
   const skipSyncRef = useRef(false);
   const slashActiveRef = useRef(false);
@@ -109,12 +120,14 @@ export function useBlockEditor({
   onArrowDownRef.current = onArrowDown;
   onToggleTodoRef.current = onToggleTodo;
   onPasteMultilineRef.current = onPasteMultiline;
+  onPasteBlocksRef.current = onPasteBlocks;
   onIndentRef.current = onIndent;
   onOutdentRef.current = onOutdent;
   onEscapeRef.current = onEscape;
   onSlashCommandRef.current = onSlashCommand;
   onTagClickRef.current = onTagClick;
   onMakeFlashcardRef.current = onMakeFlashcard;
+  onSetCollapsedRef.current = onSetCollapsed;
 
   // Slash callbacks are set per-editor instance after creation (see useEffect below)
 
@@ -222,6 +235,10 @@ export function useBlockEditor({
 
     const afterMarkdown = from < docEnd ? withoutBlobImages(serializeDoc(state.doc.cut(from)).trim()) : "";
     const savedContent = serializeDoc(state.doc.cut(0, from)).trim();
+    // Whitespace at the cut is trimmed from both halves (stored markdown can't
+    // keep it): tell the merge, so Backspace can put it back (split→merge).
+    const around = state.doc.textBetween(Math.max(0, from - 1), Math.min(state.doc.content.size, from + 1), "\n", "\0");
+    const boundarySpace = / /.test(around);
 
     // Delete text after cursor from the editor (our own edit; saved right below).
     if (from < docEnd) {
@@ -230,7 +247,7 @@ export function useBlockEditor({
 
     commitSave(savedContent);
     // Pass both saved content and after-cursor so PageView can update local state
-    onEnterRef.current(afterMarkdown, savedContent);
+    onEnterRef.current(afterMarkdown, savedContent, boundarySpace && !!afterMarkdown && !!savedContent);
     return true;
   };
 
@@ -274,6 +291,14 @@ export function useBlockEditor({
             return true;
           }
           return false;
+        }
+
+        // Ctrl+Up / Ctrl+Down — fold / unfold this block's children (C-11).
+        if ((event.key === "ArrowUp" || event.key === "ArrowDown") && (event.ctrlKey || event.metaKey) &&
+            !event.shiftKey && !event.altKey && onSetCollapsedRef.current && !suggestionMenuOpen(view.state)) {
+          event.preventDefault();
+          onSetCollapsedRef.current(event.key === "ArrowUp");
+          return true;
         }
 
         // Ctrl+Enter — cycle TODO state
@@ -324,6 +349,13 @@ export function useBlockEditor({
           }
           if (isInsideSpecialNode) {
             return false; // Let TipTap handle Enter natively (new list item, etc.)
+          }
+
+          // A line that is just ```lang: make it a code block (C-6), don't split.
+          const ed = editorInstanceRef.current;
+          if (ed && fenceToCodeBlock(ed)) {
+            event.preventDefault();
+            return true;
           }
 
           event.preventDefault();
@@ -496,6 +528,18 @@ export function useBlockEditor({
         const lines = text.split('\n').filter(l => l.trim());
         if (lines.length <= 1) {
           return false; // Single line, let default handle
+        }
+
+        // Markdown with structure (headings, nested lists, indented lines, fences):
+        // the matching block tree (C-6) instead of one flat, escaped block per line.
+        const outline = onPasteBlocksRef.current ? parsePastedMarkdown(text) : null;
+        if (outline && outline.length > 0) {
+          event.preventDefault();
+          let atoms = false;
+          view.state.doc.descendants((n: any) => { if (n.isAtom || (n.isLeaf && !n.isText && n.type.name !== "hardBreak")) atoms = true; return !atoms; });
+          const intoEmpty = view.state.doc.textContent.trim() === "" && !atoms;
+          onPasteBlocksRef.current!(outline, intoEmpty);
+          return true;
         }
 
         // Check if it looks like a code block

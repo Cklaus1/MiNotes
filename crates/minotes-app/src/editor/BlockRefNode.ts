@@ -1,5 +1,14 @@
 import { Node, mergeAttributes, InputRule } from "@tiptap/core";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
+import { hydrateBlockRefs } from "../lib/blockRefs";
+
+/**
+ * `((uuid))` — a block reference: one inline chip showing the referenced
+ * block's text (lib/blockRefs.ts keeps it current).
+ * `{{embed ((uuid))}}` — a block embed: a small "Embedded block" chip in the
+ * text, and BlockItem shows the referenced block as a card under the block.
+ * Only the uuid is stored; the chip text is never part of the markdown.
+ */
 
 export interface BlockRefOptions {
   onBlockRefClick: (blockId: string) => void;
@@ -24,10 +33,17 @@ export const BlockRefNode = Node.create<BlockRefOptions>({
         parseHTML: (el) => el.getAttribute("data-block-id"),
         renderHTML: (attrs) => ({ "data-block-id": attrs.blockId }),
       },
+      // A label known at insert time (the (( picker); never parsed from text —
+      // markdown only carries the uuid, so a parsed chip's text is the uuid.
       content: {
         default: "",
-        parseHTML: (el) => el.textContent ?? "",
+        parseHTML: () => "",
         renderHTML: () => ({}),
+      },
+      embed: {
+        default: false,
+        parseHTML: (el) => el.hasAttribute("data-embed"),
+        renderHTML: (attrs) => (attrs.embed ? { "data-embed": "" } : {}),
       },
     };
   },
@@ -37,14 +53,39 @@ export const BlockRefNode = Node.create<BlockRefOptions>({
   },
 
   renderHTML({ node, HTMLAttributes }) {
+    if (node.attrs.embed) {
+      return [
+        "span",
+        mergeAttributes(HTMLAttributes, { "data-block-ref": "", class: "block-ref block-embed-chip" }),
+        "Embedded block",
+      ];
+    }
     return [
       "span",
       mergeAttributes(HTMLAttributes, {
         "data-block-ref": "",
         class: "block-ref",
       }),
-      node.attrs.content || node.attrs.blockId,
+      // Filled with the referenced text by lib/blockRefs (hydrateBlockRefs).
+      node.attrs.content || "…",
     ];
+  },
+
+  // The chip's text is set from outside ProseMirror (lib/blockRefs), so the
+  // view must not treat that as an edit to reconcile.
+  addNodeView() {
+    return ({ node, HTMLAttributes }) => {
+      const dom = document.createElement("span");
+      const attrs = mergeAttributes(HTMLAttributes, {
+        "data-block-ref": "",
+        class: node.attrs.embed ? "block-ref block-embed-chip" : "block-ref",
+      });
+      for (const [k, v] of Object.entries(attrs)) if (v !== null && v !== undefined && v !== false) dom.setAttribute(k, String(v));
+      dom.textContent = node.attrs.embed ? "Embedded block" : (node.attrs.content || "…");
+      dom.contentEditable = "false";
+      if (!node.attrs.embed) queueMicrotask(() => { if (dom.isConnected) hydrateBlockRefs(dom.parentElement ?? dom); });
+      return { dom, ignoreMutation: () => true };
+    };
   },
 
   addInputRules() {
@@ -97,7 +138,7 @@ export const BlockRefNode = Node.create<BlockRefOptions>({
     return {
       markdown: {
         serialize(state: any, node: any) {
-          state.write(`((${node.attrs.blockId}))`);
+          state.write(node.attrs.embed ? `{{embed ((${node.attrs.blockId}))}}` : `((${node.attrs.blockId}))`);
         },
         parse: {
           setup(markdownit: any) {
@@ -109,6 +150,23 @@ export const BlockRefNode = Node.create<BlockRefOptions>({
               markdownit.__minotesParenText = true;
               markdownit.inline.ruler.at("text", textUntilParen);
             }
+            // {{embed ((uuid))}}: a block embed (checked before the plain ref).
+            markdownit.inline.ruler.after(
+              "wiki_link",
+              "block_embed",
+              (state: any, silent: boolean) => {
+                const m = /^\{\{embed \(\(([0-9a-fA-F-]{8,36})\)\)\}\}/.exec(state.src.slice(state.pos, state.pos + 60));
+                if (!m) return false;
+                if (!silent) {
+                  const token = state.push("block_ref", "", 0);
+                  token.content = m[1];
+                  token.meta = { embed: true };
+                  token.markup = m[0];
+                }
+                state.pos += m[0].length;
+                return true;
+              }
+            );
             // Add block_ref inline rule
             markdownit.inline.ruler.after(
               "wiki_link",
@@ -157,7 +215,8 @@ export const BlockRefNode = Node.create<BlockRefOptions>({
                 .replace(/</g, "&lt;")
                 .replace(/>/g, "&gt;")
                 .replace(/"/g, "&quot;");
-              return `<span data-block-ref data-block-id="${escaped}" class="block-ref">${escaped}</span>`;
+              const embed = tokens[idx].meta?.embed ? " data-embed" : "";
+              return `<span data-block-ref${embed} data-block-id="${escaped}" class="block-ref">${escaped}</span>`;
             };
           },
         },

@@ -4,7 +4,8 @@ import Suggestion, { type SuggestionOptions, type SuggestionProps } from "@tipta
 import { PluginKey } from "@tiptap/pm/state";
 import tippy, { type Instance as TippyInstance } from "tippy.js";
 import { BlockRefMenu } from "./BlockRefMenu";
-import { search } from "../lib/api";
+import { getBlocks, search } from "../lib/api";
+import { primeBlockRef, refLabel } from "../lib/blockRefs";
 
 /** Exported so the editor can tell whether this menu is open (e.g. Escape closes it). */
 export const blockRefPluginKey = new PluginKey("blockRefSuggestion");
@@ -22,11 +23,11 @@ export const BlockRefSuggestion = Extension.create({
         allow: ({ state, range }: { state: any; range: { from: number; to: number } }) =>
           !state.doc.textBetween(range.from, range.to, " ", " ").includes("))"),
         command: ({ editor, range, props }: { editor: any; range: any; props: any }) => {
-          const contentPreview = props.content
-            ? props.content.length > 40
-              ? props.content.slice(0, 40) + "..."
-              : props.content
-            : props.id.slice(0, 8) + "...";
+          // The chip shows the block's text (lib/blockRefs); we already know it.
+          if (props.pageTitle !== undefined) {
+            primeBlockRef({ id: props.id, content: props.content ?? "", pageTitle: props.pageTitle, pageId: props.pageId ?? "" });
+          }
+          const contentPreview = refLabel(props.content ?? "");
 
           editor
             .chain()
@@ -45,10 +46,16 @@ export const BlockRefSuggestion = Extension.create({
           if (!query || query.length < 1) return [];
           try {
             const blocks = await search(query, 10);
+            // Which page each block is on (one call for all of them).
+            const pages = new Map<string, { title: string; pageId: string }>();
+            try {
+              for (const b of await getBlocks(blocks.map((b: any) => b.id))) pages.set(b.id, { title: b.page_title, pageId: b.page_id });
+            } catch {}
             return blocks.map((b: any) => ({
               id: b.id,
               content: b.content,
-              pageTitle: b.page_id ? undefined : undefined,
+              pageTitle: pages.get(b.id)?.title,
+              pageId: pages.get(b.id)?.pageId ?? b.page_id,
             }));
           } catch {
             return [];

@@ -50,6 +50,8 @@ export interface MiNotesTestApi {
   pressKeyInBlock: (blockIndex: number, key: string, mods?: { shift?: boolean; ctrl?: boolean; alt?: boolean; focus?: boolean }) => boolean;
   /** Visible blocks with depth and parent index. */
   getBlockTree: () => Array<{ index: number; content: string; depth: number; parentIndex: number; id: string; position: number }>;
+  /** Caret (editor doc position) in block N while it has focus, else null. */
+  getCaretInBlock: (blockIndex: number) => number | null;
   /** Index of the visible block whose editor has focus, -1 if none. */
   getFocusedBlockIndex: () => number;
   /** Indices of selected (highlighted, not editing) blocks. */

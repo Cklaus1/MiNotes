@@ -6,7 +6,12 @@ import { setPendingReveal, takePendingReveal } from "../lib/pendingReveal";
 import { getSettings } from "../lib/settings";
 import { localDateKey } from "../lib/dates";
 import BlockItem from "./BlockItem";
-import type { BlockItemHandle, FocusPosition } from "./BlockItem";
+import type { BlockItemHandle, DropPosition, FocusPosition } from "./BlockItem";
+import { applyDrop, dropPlacement, effectiveDrop, outlineOrder } from "../lib/blockTree";
+import { mergeMarkdown } from "../editor/mergeBlocks";
+import type { PastedBlock } from "../editor/pasteMarkdown";
+import { noteBlockContent, refreshShownBlockRefs } from "../lib/blockRefs";
+import { caretAfterMarkdown } from "../editor/staticRender";
 import BacklinksPanel from "./BacklinksPanel";
 import UnlinkedRefsPanel from "./UnlinkedRefsPanel";
 import LinkPreview from "./LinkPreview";
@@ -41,32 +46,6 @@ let tempIdCounter = 0;
 const TEMP_PREFIX = "tmp-";
 const newTempId = () => `${TEMP_PREFIX}${Date.now().toString(36)}-${++tempIdCounter}`;
 const isTempId = (id: string) => id.startsWith(TEMP_PREFIX);
-
-/** Depth-first outline order (siblings by position) — the order the list renders in. */
-function outlineOrder(list: Block[]): Block[] {
-  const ids = new Set(list.map(b => b.id));
-  const kids = new Map<string, Block[]>();
-  for (const b of list) {
-    const key = b.parent_id && ids.has(b.parent_id) ? b.parent_id : "__root__";
-    const arr = kids.get(key) ?? [];
-    arr.push(b);
-    kids.set(key, arr);
-  }
-  const out: Block[] = [];
-  const seen = new Set<string>();
-  const walk = (key: string) => {
-    for (const b of (kids.get(key) ?? []).slice().sort((x, y) => x.position - y.position)) {
-      if (seen.has(b.id)) continue;
-      seen.add(b.id);
-      out.push(b);
-      walk(b.id);
-    }
-  };
-  walk("__root__");
-  // Anything unreachable (cycles) keeps its place at the end rather than vanishing.
-  for (const b of list) if (!seen.has(b.id)) out.push(b);
-  return out;
-}
 
 const propError = (e: unknown) => String((e as any)?.message ?? e);
 
@@ -194,6 +173,9 @@ export default function PageView({
       return merged;
     });
   }, [pageTree]);
+  // A (re)loaded tree may come with blocks changed elsewhere (another page, the
+  // CLI, sync): re-read what the ((refs)) and embeds on screen show.
+  useEffect(() => { refreshShownBlockRefs(); }, [pageTree]);
   const [pageProps, setPageProps] = useState<Property[]>([]);
   const [zoomedBlockId, setZoomedBlockId] = useState<string | null>(null);
   const [showProps, setShowProps] = useState(false);
@@ -582,6 +564,7 @@ export default function PageView({
   // still in flight saves once it exists (in order, through the op queue).
   const handleBlockUpdate = (id: string, content: string) => {
     markEdited(id, content);
+    noteBlockContent(rid(id), content); // ((refs)) to this block follow the edit
     setLocalBlocks(prev => prev.map(b => b.id === id ? { ...b, content } : b));
     if (isTempId(id) && !idMapRef.current.has(id)) {
       enqueue(async () => { await onUpdateBlockRef.current(rid(id), content); });
@@ -598,7 +581,7 @@ export default function PageView({
   // lands in it at any typing speed; the backend create runs in the op queue and
   // its real id replaces the temporary one when it returns.
   const canEnter = useCallback(() => true, []);
-  const handleEnter = (blockId: string, contentAfterCursor: string, savedContent?: string) => {
+  const handleEnter = (blockId: string, contentAfterCursor: string, savedContent?: string, boundarySpace?: boolean) => {
     if (savedContent !== undefined) markEdited(blockId, savedContent);
     const current = localBlocksRef.current;
     const idx = current.findIndex(b => b.id === blockId);
@@ -620,6 +603,8 @@ export default function PageView({
     }
 
     const tempId = newTempId();
+    // Backspace at the start of the new block undoes this split exactly.
+    lastSplitRef.current = { first: blockId, second: tempId, space: !!boundarySpace };
     const now = new Date().toISOString();
     const temp: Block = {
       id: tempId, page_id: page.id, parent_id: parentId, position, content: contentAfterCursor,
@@ -678,6 +663,9 @@ export default function PageView({
     });
   };
 
+  /** The last Enter split (blocks may still carry temp ids): its merge restores a trimmed space. */
+  const lastSplitRef = useRef<{ first: string; second: string; space: boolean } | null>(null);
+
   /** The backend created `tempId` as `realId`: swap ids everywhere, keep local state. */
   const resolveTempId = (tempId: string, realId: string) => {
     idMapRef.current.set(tempId, realId);
@@ -710,7 +698,12 @@ export default function PageView({
     // Capture now: block objects can be shared with the backend layer (the mock
     // returns its stored objects) and get mutated by the updateBlock below.
     const prevOldContent = prevBlock.content;
-    const mergedContent = prevOldContent + (content ? "\n" + content : "");
+    // One line, like before the split (no "\n"); the caret goes to the join.
+    const split = lastSplitRef.current;
+    const undoesSplit = !!split && rid(split.first) === rid(prevBlock.id) && rid(split.second) === rid(blockId);
+    const mergedContent = mergeMarkdown(prevOldContent, content, { space: undoesSplit && split!.space });
+    lastSplitRef.current = null;
+    const joinCaret = caretAfterMarkdown(prevOldContent);
     // deleteBlock cascades, so the merged block's children must be re-homed onto
     // the absorbing block first or they'd be deleted with it. Keep their visual
     // order: if prevBlock is the merged block's parent, slot them where the merged
@@ -749,14 +742,14 @@ export default function PageView({
     markEdited(prevBlock.id, mergedContent);
     pendingDeletesRef.current.set(blockId, Date.now());
     const moves = new Map(movedChildren.map(m => [m.id, m]));
-    setLocalBlocks(prev => prev
+    setLocalBlocks(prev => outlineOrder(prev
       .map(b => {
         if (b.id === prevBlock.id) return { ...b, content: mergedContent };
         const m = moves.get(b.id);
         return m ? { ...b, parent_id: m.toParentId, position: m.toPosition } : b;
       })
-      .filter(b => b.id !== blockId));
-    setFocusBlockId(prevBlock.id);
+      .filter(b => b.id !== blockId)));
+    focusBlockAt(prevBlock.id, joinCaret);
     await enqueue(async () => {
       try {
         // The editor text (`content`) may be newer than the last saved block content.
@@ -808,6 +801,46 @@ export default function PageView({
       }
       return last;
     });
+    onRefreshPage();
+    if (lastId) setFocusBlockId(lastId);
+  };
+
+  // C-6: pasted markdown with structure becomes a block tree after the block it
+  // was pasted into. Into an empty block, the first pasted block takes its place
+  // (content + children). Created in order through the op queue, then refreshed.
+  const handlePasteBlocks = async (blockId: string, items: PastedBlock[], intoEmpty: boolean) => {
+    const current = localBlocksRef.current;
+    const block = current.find(b => b.id === blockId);
+    if (!block || items.length === 0) return;
+    const parentId = block.parent_id ?? undefined;
+    const [first, ...rest] = intoEmpty ? items : [null, ...items];
+    if (first) handleBlockUpdate(blockId, first.content);
+    const siblings = intoEmpty ? rest : items;
+    const positions = positionsAfter(current, block, siblings.length);
+    const createTree = async (nodes: PastedBlock[], parent: string): Promise<void> => {
+      for (const n of nodes) {
+        const created = await api.createBlock(page.id, n.content, parent);
+        if (n.children.length) await createTree(n.children, created.id);
+      }
+    };
+    let lastId: string | null = null;
+    try {
+      lastId = await enqueue(async () => {
+        const realParent = parentId ? rid(parentId) : undefined;
+        if (first?.children.length) await createTree(first.children, rid(blockId));
+        let last: string | null = first ? rid(blockId) : null;
+        for (let i = 0; i < siblings.length; i++) {
+          let created = await api.createBlock(page.id, siblings[i]!.content, realParent);
+          if (positions) created = await api.reorderBlock(created.id, realParent, positions[i]);
+          if (siblings[i]!.children.length) await createTree(siblings[i]!.children, created.id);
+          last = created.id;
+        }
+        return last;
+      });
+    } catch (e) {
+      console.error("structured paste failed:", e);
+      showToast(`Paste incomplete: ${errorMessage(e)}`);
+    }
     onRefreshPage();
     if (lastId) setFocusBlockId(lastId);
   };
@@ -875,20 +908,6 @@ export default function PageView({
     onRefreshPage();
   };
 
-  // UX-002: Toggle block collapse
-  const handleToggleCollapse = async (blockId: string) => {
-    const block = blocks.find(b => b.id === blockId);
-    if (!block) return;
-    // Toggle collapsed state via update — we use the content as-is but toggle collapsed
-    // Since updateBlock only updates content, we use reparentBlock-style direct approach
-    // Actually the collapsed field isn't exposed via updateBlock. We'll use a direct approach.
-    // For now, just use updateBlock which preserves collapsed. We need to add a toggle command.
-    // Workaround: use the block's current content to update it (no-op on content) but we can't
-    // toggle collapsed this way. Let's just manage it client-side for now.
-    // Actually, let's just track collapsed state locally since the backend blocks don't get modified.
-    // We'll do this with local state.
-  };
-
   // Track collapsed blocks locally, persisted to localStorage per page
   const [collapsedBlocks, setCollapsedBlocks] = useState<Set<string>>(() => {
     try {
@@ -928,76 +947,75 @@ export default function PageView({
     };
   }, [page.id]);
 
-  const toggleCollapse = (blockId: string) => {
-    // Start from the stored entry (kept in step with every toggle): the mind map
-    // may have changed it since we read it. Computed outside the state updater —
-    // updaters must be pure (StrictMode runs them twice).
-    const key = "minotes-collapsed-" + page.id;
-    let prev = collapsedBlocksRef.current;
-    try {
-      const stored = localStorage.getItem(key);
-      if (stored) prev = new Set(JSON.parse(stored) as string[]);
-    } catch {}
-    const next = new Set(prev);
-    if (next.has(blockId)) next.delete(blockId); else next.add(blockId);
-    try { localStorage.setItem(key, JSON.stringify([...next])); } catch {}
+  /** Write the page's folded set (shared with the mind map through localStorage). */
+  const writeCollapsed = (next: Set<string>) => {
+    try { localStorage.setItem("minotes-collapsed-" + page.id, JSON.stringify([...next])); } catch {}
     collapsedBlocksRef.current = next;
     setCollapsedBlocks(next);
   };
-
-  // Drag-to-reorder blocks
-  const handleDragReorder = useCallback(async (draggedBlockId: string, targetBlockId: string, position: "above" | "below") => {
-    const target = blocks.find(b => b.id === targetBlockId);
-    if (!target) return;
-
-    const siblings = blocks
-      .filter(b => (b.parent_id ?? null) === (target.parent_id ?? null))
-      .sort((a, b) => a.position - b.position);
-    const targetSibIdx = siblings.findIndex(b => b.id === targetBlockId);
-
-    let newPos: number;
-    let needsRenormalize = false;
-    if (position === "above") {
-      const prev = targetSibIdx > 0 ? siblings[targetSibIdx - 1].position : 0;
-      newPos = (prev + target.position) / 2;
-      if (target.position - prev < 0.001) needsRenormalize = true;
-    } else {
-      const next = targetSibIdx < siblings.length - 1 ? siblings[targetSibIdx + 1].position : target.position + 1;
-      newPos = (target.position + next) / 2;
-      if (next - target.position < 0.001) needsRenormalize = true;
-    }
-
-    if (needsRenormalize) {
-      // Precision exhausted — renormalize all sibling positions to integers
-      const ordered = siblings.filter(b => b.id !== draggedBlockId);
-      const insertIdx = position === "above"
-        ? ordered.findIndex(b => b.id === targetBlockId)
-        : ordered.findIndex(b => b.id === targetBlockId) + 1;
-      ordered.splice(insertIdx, 0, { id: draggedBlockId } as (typeof siblings)[0]);
-      newPos = insertIdx + 1;
-      // Persist renormalized positions for all other siblings
-      for (let i = 0; i < ordered.length; i++) {
-        if (ordered[i].id !== draggedBlockId) {
-          api.reorderBlock(ordered[i].id, target.parent_id ?? undefined, i + 1).catch(() => {});
-        }
-      }
-    }
-
-    // Optimistic update — update position and re-sort
-    setLocalBlocks(prev =>
-      prev
-        .map(b => b.id === draggedBlockId ? { ...b, parent_id: target.parent_id, position: newPos } : b)
-        .sort((a, b) => a.position - b.position)
-    );
-
-    // Persist — reorderBlock handles null parent_id for root-level blocks
+  /** The stored folded set: the mind map may have changed it since we read it. */
+  const readCollapsed = (): Set<string> => {
+    let prev = collapsedBlocksRef.current;
     try {
-      await api.reorderBlock(draggedBlockId, target.parent_id ?? undefined, newPos);
+      const stored = localStorage.getItem("minotes-collapsed-" + page.id);
+      if (stored) prev = new Set(JSON.parse(stored) as string[]);
+    } catch {}
+    return new Set(prev);
+  };
+  // Computed outside the state updater — updaters must be pure (StrictMode runs them twice).
+  const toggleCollapse = (blockId: string) => {
+    const next = readCollapsed();
+    if (next.has(blockId)) next.delete(blockId); else next.add(blockId);
+    writeCollapsed(next);
+  };
+  /** Fold (true) or unfold (false) one block. Only blocks with children fold. */
+  const setCollapsed = (blockId: string, want: boolean) => {
+    const next = readCollapsed();
+    if (want && !localBlocksRef.current.some(b => b.parent_id === blockId)) return;
+    if (want === next.has(blockId)) return;
+    if (want) next.add(blockId); else next.delete(blockId);
+    writeCollapsed(next);
+  };
+  /** Fold / unfold every block with children (page header, block menu). */
+  const setAllCollapsed = (want: boolean) => {
+    const parents = new Set(localBlocksRef.current.map(b => b.parent_id).filter((x): x is string => !!x));
+    writeCollapsed(want ? parents : new Set());
+  };
+  const setCollapsedRef = useRef(setCollapsed);
+  setCollapsedRef.current = setCollapsed;
+  const setCollapsedLive = useCallback((id: string, want: boolean) => setCollapsedRef.current(id, want), []);
+  const setAllCollapsedRef = useRef(setAllCollapsed);
+  setAllCollapsedRef.current = setAllCollapsed;
+  const setAllCollapsedLive = useCallback((want: boolean) => setAllCollapsedRef.current(want), []);
+  const toggleCollapseRef = useRef(toggleCollapse);
+  toggleCollapseRef.current = toggleCollapse;
+  const toggleCollapseLive = useCallback((id: string) => toggleCollapseRef.current(id), []);
+
+  // Drag-to-reorder blocks (C-13). The dragged block keeps its subtree, and the
+  // list is rebuilt in outline order: positions are per parent, so the old plain
+  // position sort rendered the outline scrambled until a reload.
+  const handleDragReorder = async (draggedBlockId: string, targetBlockId: string, dropped: DropPosition) => {
+    const current = localBlocksRef.current;
+    const where = effectiveDrop(current, targetBlockId, dropped, collapsedBlocksRef.current);
+    const target = current.find(b => b.id === targetBlockId);
+    if (!target || !current.some(b => b.id === draggedBlockId)) return;
+    const next = applyDrop(current, draggedBlockId, targetBlockId, where);
+    if (!next) return; // onto itself / into its own subtree
+    const plan = dropPlacement(current, draggedBlockId, target, where);
+    if (where === "child" && collapsedBlocksRef.current.has(target.id)) setCollapsed(target.id, false);
+    flushSync(() => setLocalBlocks(next));
+    try {
+      await enqueue(async () => {
+        const parent = plan.parentId ? rid(plan.parentId) : undefined;
+        for (const [id, pos] of plan.renumber) await api.reorderBlock(rid(id), parent, pos);
+        await api.reorderBlock(rid(draggedBlockId), parent, plan.position);
+      });
     } catch (e) {
       console.error("reorder_block failed:", e);
-      onRefreshPage(); // Revert optimistic update on failure
+      showToast("Could not move the block");
     }
-  }, [blocks, onRefreshPage]);
+    onRefreshPage(); // the stored order wins
+  };
 
   // Build block tree structure for computing depth and children info
   const blockTreeInfo = useMemo(() => {
@@ -1026,8 +1044,21 @@ export default function PageView({
       computeDepth(rootId, 0);
     }
 
+    const descendants = new Map<string, number>();
+    const countDescendants = (id: string): number => {
+      const known = descendants.get(id);
+      if (known !== undefined) return known;
+      descendants.set(id, 0); // cycle guard
+      let n = 0;
+      for (const c of childrenMap.get(id) ?? []) n += 1 + countDescendants(c);
+      descendants.set(id, n);
+      return n;
+    };
+
     return {
       getDepth: (id: string) => depthMap.get(id) ?? 0,
+      /** Every block below this one (what folding it hides). */
+      descendantCount: countDescendants,
       hasChildren: (id: string) => (childrenMap.get(id) ?? []).length > 0,
       isLastSibling: (id: string) => {
         const pid = parentMap.get(id);
@@ -1219,6 +1250,7 @@ export default function PageView({
         const block = filteredVisibleBlocks[blockIndex];
         if (!block) return false;
         onUpdateBlock(block.id, markdown);
+        noteBlockContent(block.id, markdown); // as handleBlockUpdate (an editor save) does
         setLocalBlocks(prev => prev.map(b => b.id === block.id ? { ...b, content: markdown } : b));
         return true;
       },
@@ -1263,6 +1295,11 @@ export default function PageView({
         id: b.id, position: b.position,
       })),
       // Index of the visible block whose editor has focus (-1: none).
+      // Caret (editor doc position) in block N while it has focus, else null.
+      getCaretInBlock: (blockIndex: number) => {
+        const block = filteredVisibleBlocks[blockIndex];
+        return block ? blockRefs.current.get(block.id)?.getCaret() ?? null : null;
+      },
       getFocusedBlockIndex: () => {
         const id = (document.activeElement as HTMLElement | null)?.closest?.('.ProseMirror')
           ?.closest('[data-block-id]')?.getAttribute('data-block-id');
@@ -1411,7 +1448,7 @@ export default function PageView({
   const dragReorderRef = useRef(handleDragReorder);
   dragReorderRef.current = handleDragReorder;
   const handleDragReorderLive = useCallback(
-    (dragged: string, target: string, pos: "above" | "below") => dragReorderRef.current(dragged, target, pos), []);
+    (dragged: string, target: string, pos: DropPosition) => dragReorderRef.current(dragged, target, pos), []);
 
   // UX-013: Block ref click handler — navigate to the block's page
   // Read through a ref: BlockItem (memoized) keeps the first callback it got.
@@ -1577,6 +1614,12 @@ export default function PageView({
         setSelectedBlockIds(new Set());
         setSelectionAnchor(null);
       }
+      // Ctrl+Up / Ctrl+Down fold / unfold the selected blocks (C-11).
+      if ((e.key === "ArrowUp" || e.key === "ArrowDown") && (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey) {
+        e.preventDefault();
+        for (const id of selectedBlockIds) setCollapsedRef.current(id, e.key === "ArrowUp");
+        return;
+      }
       // Keyboard navigation of the selection (e.g. after Escape left a block):
       // arrows move it (Shift extends), Enter edits the selected block.
       if ((e.key === "ArrowUp" || e.key === "ArrowDown") && !e.altKey && !e.ctrlKey && !e.metaKey) {
@@ -1680,6 +1723,8 @@ export default function PageView({
   const [editingTitle, setEditingTitle] = useState(false);
   const [showToc, setShowToc] = useState(false);
   const hasHeadings = blocks.some(b => /^#{1,4}\s+/.test(b.content));
+  const hasNesting = blocks.some(b => !!b.parent_id);
+  const anyCollapsed = blocks.some(b => collapsedBlocks.has(b.id) && blocks.some(c => c.parent_id === b.id));
   const [titleDraft, setTitleDraft] = useState(page.title);
   const titleInputRef = useRef<HTMLInputElement>(null);
 
@@ -1722,11 +1767,16 @@ export default function PageView({
       onArrowUp={handleArrowUp}
       onArrowDown={handleArrowDown}
       onPasteMultiline={handlePasteMultiline}
+      onPasteBlocks={handlePasteBlocks}
       onIndent={handleIndent}
       onOutdent={handleOutdent}
       onEscape={handleEscape}
       onDuplicate={handleDuplicate}
-      onToggleCollapse={toggleCollapse}
+      onToggleCollapse={toggleCollapseLive}
+      onSetCollapsed={setCollapsedLive}
+      onSetAllCollapsed={setAllCollapsedLive}
+      collapsed={collapsedBlocks.has(block.id)}
+      hiddenCount={collapsedBlocks.has(block.id) ? blockTreeInfo.descendantCount(block.id) : 0}
       onZoomIn={() => zoomTo(block.id, block.id)}
       hasChildren={blockTreeInfo.hasChildren(block.id)}
       isLastSibling={(() => {
@@ -1750,7 +1800,7 @@ export default function PageView({
       onDragReorder={handleDragReorderLive}
     />
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  )), [filteredVisibleBlocks, renderLimit, selectedBlockIds, blockTreeInfo]);
+  )), [filteredVisibleBlocks, renderLimit, selectedBlockIds, blockTreeInfo, collapsedBlocks]);
 
   return (
     <div className="page-view-wrapper">
@@ -1801,6 +1851,21 @@ export default function PageView({
           </button>
         )}
         {!hasHeadings && <span style={{ marginLeft: "auto" }} />}
+        {hasNesting && (
+          <button
+            className="prop-toggle-btn collapse-all-btn"
+            data-testid="collapse-all"
+            onClick={() => setAllCollapsed(!anyCollapsed)}
+            title={anyCollapsed ? "Expand all blocks" : "Collapse all blocks"}
+            aria-label={anyCollapsed ? "Expand all" : "Collapse all"}
+          >
+            <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
+              {anyCollapsed
+                ? <path d="M3.5 3l3.5 3.5L10.5 3M3.5 7.5L7 11l3.5-3.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                : <path d="M3.5 6.5L7 3l3.5 3.5M3.5 11L7 7.5l3.5 3.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />}
+            </svg>
+          </button>
+        )}
         {saveIndicator?.visible && (
           <span className="save-indicator" style={{
             fontSize: 12,
@@ -1968,78 +2033,78 @@ export default function PageView({
         </div>
       )}
 
-      {/* AI: Suggested Tags */}
-      {suggestedTags.length > 0 && (
-        <div className="ai-panel">
-          <div className="ai-panel-header">
-            <h4>AI Suggested Tags</h4>
-            <button className="ai-close" onClick={() => setSuggestedTags([])} title="Dismiss">x</button>
-          </div>
-          <div className="ai-tag-list">
-            {suggestedTags
-              .filter((t) => !dismissedTags.has(t))
-              .map((tag) => (
-                <span key={tag} className="ai-tag-chip">
-                  #{tag}
-                  <span className="ai-tag-accept" onClick={() => {
-                    // Add as page property
-                    const existing = pageProps.find((p) => p.key === "tags");
-                    const currentTags = existing?.value ? existing.value.split(",").map((s) => s.trim()).filter(Boolean) : [];
-                    const newTags = [...new Set([...currentTags, tag])].join(",");
-                    const before = pageProps;
-                    api.setProperty(page.id, "page", "tags", newTags).catch((e) => {
-                      setPageProps(before);
-                      showToast(`Tag not added: ${propError(e)}`);
-                    });
-                    setPageProps((prev) => {
-                      const filtered = prev.filter((p) => p.key !== "tags");
-                      return [...filtered, { id: "", entity_type: "page", key: "tags", value: newTags, entity_id: page.id, value_type: "string", created_at: "", updated_at: "" }];
-                    });
-                    setDismissedTags((prev) => new Set([...prev, tag]));
-                  }}>+</span>
-                  <span className="ai-tag-dismiss" onClick={() => setDismissedTags((prev) => new Set([...prev, tag]))}>x</span>
-                </span>
-              ))}
-          </div>
-        </div>
-      )}
-
-      {/* AI: Suggested Links */}
-      {suggestedLinks.length > 0 && (
-        <div className="ai-panel">
-          <div className="ai-panel-header">
-            <h4>AI Suggested Links</h4>
-            <button className="ai-close" onClick={() => setSuggestedLinks([])} title="Dismiss">x</button>
-          </div>
-          <div className="ai-link-list">
-            {suggestedLinks.map((s) => (
-              <span key={s.pageId} className="ai-link-chip" title={`Suggested because it ${s.reason}`}>
-                [[{s.title}]]
-                <span className="ai-link-insert" title="Insert link" onClick={async () => {
-                  // Bug #28: "+" should INSERT the wiki-link into this page, not
-                  // navigate away. Append a block containing the link, then dismiss.
-                  try {
-                    await api.createBlock(page.id, `[[${s.title}]]`);
-                    onRefreshPage();
-                  } catch {
-                    showToast("Failed to insert link");
-                  }
-                  setDismissedLinks((prev) => new Set([...prev, s.title]));
-                }}>+</span>
-                <span className="ai-link-dismiss" onClick={() => setDismissedLinks((prev) => new Set([...prev, s.title]))}>x</span>
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
-
       <div className="content view-content markdown-source-view">
         <div className={`block-list ${getSettingsCached().fullTreeMode ? 'tree-mode' : ''}`}>
           {blockListItems}
 
           {!zoomedBlockId && (
             <>
-              <BacklinksPanel pageId={page.id} onPageClick={onPageLinkClick} />
+              {/* AI: Suggested Tags — below the blocks, so they never push the page down */}
+              {suggestedTags.length > 0 && (
+                <div className="ai-panel">
+                  <div className="ai-panel-header">
+                    <h4>AI Suggested Tags</h4>
+                    <button className="ai-close" onClick={() => setSuggestedTags([])} title="Dismiss">x</button>
+                  </div>
+                  <div className="ai-tag-list">
+                    {suggestedTags
+                      .filter((t) => !dismissedTags.has(t))
+                      .map((tag) => (
+                        <span key={tag} className="ai-tag-chip">
+                          #{tag}
+                          <span className="ai-tag-accept" onClick={() => {
+                            // Add as page property
+                            const existing = pageProps.find((p) => p.key === "tags");
+                            const currentTags = existing?.value ? existing.value.split(",").map((s) => s.trim()).filter(Boolean) : [];
+                            const newTags = [...new Set([...currentTags, tag])].join(",");
+                            const before = pageProps;
+                            api.setProperty(page.id, "page", "tags", newTags).catch((e) => {
+                              setPageProps(before);
+                              showToast(`Tag not added: ${propError(e)}`);
+                            });
+                            setPageProps((prev) => {
+                              const filtered = prev.filter((p) => p.key !== "tags");
+                              return [...filtered, { id: "", entity_type: "page", key: "tags", value: newTags, entity_id: page.id, value_type: "string", created_at: "", updated_at: "" }];
+                            });
+                            setDismissedTags((prev) => new Set([...prev, tag]));
+                          }}>+</span>
+                          <span className="ai-tag-dismiss" onClick={() => setDismissedTags((prev) => new Set([...prev, tag]))}>x</span>
+                        </span>
+                      ))}
+                  </div>
+                </div>
+              )}
+
+              {/* AI: Suggested Links */}
+              {suggestedLinks.length > 0 && (
+                <div className="ai-panel">
+                  <div className="ai-panel-header">
+                    <h4>AI Suggested Links</h4>
+                    <button className="ai-close" onClick={() => setSuggestedLinks([])} title="Dismiss">x</button>
+                  </div>
+                  <div className="ai-link-list">
+                    {suggestedLinks.map((s) => (
+                      <span key={s.pageId} className="ai-link-chip" title={`Suggested because it ${s.reason}`}>
+                        [[{s.title}]]
+                        <span className="ai-link-insert" title="Insert link" onClick={async () => {
+                          // Bug #28: "+" should INSERT the wiki-link into this page, not
+                          // navigate away. Append a block containing the link, then dismiss.
+                          try {
+                            await api.createBlock(page.id, `[[${s.title}]]`);
+                            onRefreshPage();
+                          } catch {
+                            showToast("Failed to insert link");
+                          }
+                          setDismissedLinks((prev) => new Set([...prev, s.title]));
+                        }}>+</span>
+                        <span className="ai-link-dismiss" onClick={() => setDismissedLinks((prev) => new Set([...prev, s.title]))}>x</span>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <BacklinksPanel pageId={page.id} refreshKey={page.title} onPageClick={onPageLinkClick} onBlockClick={handleBlockRefClick} />
               <UnlinkedRefsPanel pageId={page.id} pageTitle={page.title} onPageClick={onPageLinkClick} />
             </>
           )}

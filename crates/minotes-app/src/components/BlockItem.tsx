@@ -6,6 +6,7 @@ import { Selection, TextSelection } from "@tiptap/pm/state";
 import type { Block, Property, OgMetadata } from "../lib/api";
 import * as api from "../lib/api";
 import { useBlockEditor } from "../editor";
+import type { PastedBlock } from "../editor/pasteMarkdown";
 import { getSettingsCached } from "../lib/cachedSettings";
 import { loadBlockProperties } from "../lib/blockProperties";
 import { claimEditor, forgetEditor, requestEditorSweep, type EditorOwner } from "../lib/editorActivation";
@@ -20,6 +21,7 @@ import { runTableAction, isInTable, type TableAction } from "../editor/tables";
 import { useIsFlashcard, makeFlashcard, removeFlashcard, FLASHCARD_HINT } from "../lib/cards";
 import { showToast } from "../lib/toast";
 import { isRemoteSrc } from "../lib/remoteImages";
+import { getBlockRef, hydrateBlockRefs, requestBlockRefs, subscribeBlockRefs } from "../lib/blockRefs";
 import "../editor/editor.css";
 
 // Lazy-load CM6 editor — only downloaded when obsidianEditorEnabled
@@ -102,6 +104,7 @@ function StaticBlockContent({ content, onPageLinkClick, onBlockRefClick, onToggl
   useLayoutEffect(() => {
     ref.current?.replaceChildren(renderBlockStatic(content));
     if (content.includes("::")) hydrateNotebookLinks(ref.current);
+    if (content.includes("((") && ref.current) hydrateBlockRefs(ref.current);
   }, [content]);
   const handleClick = (e: React.MouseEvent) => {
     const t = e.target as HTMLElement;
@@ -150,6 +153,38 @@ function StaticBlockContent({ content, onPageLinkClick, onBlockRefClick, onToggl
   );
 }
 
+const EMBED_RE = /\{\{embed \(\(([0-9a-fA-F-]{36})\)\)\}\}/g;
+
+/** One `{{embed ((uuid))}}`: the referenced block, rendered, with its page; live (lib/blockRefs). */
+function EmbedCard({ blockId, onOpen }: { blockId: string; onOpen?: (blockId: string) => void }) {
+  const [, bump] = useState(0);
+  useEffect(() => {
+    const off = subscribeBlockRefs(() => bump(n => n + 1));
+    requestBlockRefs([blockId]);
+    bump(n => n + 1); // it may have arrived between the first render and now
+    return off;
+  }, [blockId]);
+  const ref = getBlockRef(blockId);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const content = ref?.content;
+  useLayoutEffect(() => {
+    if (!bodyRef.current) return;
+    if (content === undefined) { bodyRef.current.replaceChildren(); return; }
+    bodyRef.current.replaceChildren(renderBlockStatic(content));
+    if (content.includes("((")) hydrateBlockRefs(bodyRef.current);
+  }, [content]);
+  return (
+    <div className={`block-transclusion${ref === null ? " is-missing" : ""}`} data-embed-id={blockId} onClick={() => ref && onOpen?.(blockId)}>
+      <span className="block-transclusion-label">
+        {ref === undefined ? "Loading…" : ref === null ? "Embedded block no longer exists" : ref.pageTitle}
+      </span>
+      <div className="block-content block-transclusion-content">
+        <div ref={bodyRef} className={`${staticRootClass()} block-static`} translate="no" />
+      </div>
+    </div>
+  );
+}
+
 interface Props {
   block: Block;
   depth?: number;
@@ -164,27 +199,65 @@ interface Props {
   onDelete: (id: string) => void;
   onPageLinkClick: (title: string, shiftKey?: boolean) => void;
   onBlockRefClick?: (blockId: string) => void;
-  onEnter?: (blockId: string, contentAfterCursor: string, savedContent?: string) => void;
+  onEnter?: (blockId: string, contentAfterCursor: string, savedContent?: string, boundarySpace?: boolean) => void;
   canEnter?: () => boolean;
   onBackspaceAtStart?: (blockId: string, content: string) => void;
   onArrowUp?: (blockId: string) => void;
   onArrowDown?: (blockId: string) => void;
   onPasteMultiline?: (blockId: string, lines: string[]) => void;
+  onPasteBlocks?: (blockId: string, blocks: PastedBlock[], intoEmpty: boolean) => void;
   onIndent?: (blockId: string) => void;
   onOutdent?: (blockId: string) => void;
   onEscape?: (blockId: string) => void;
   onDuplicate?: (blockId: string) => void;
   onToggleCollapse?: (blockId: string) => void;
+  /** Fold (true) / unfold (false) this block: Ctrl+Up / Ctrl+Down, the block menu. */
+  onSetCollapsed?: (blockId: string, collapsed: boolean) => void;
+  /** Fold / unfold every block of the page (block menu). */
+  onSetAllCollapsed?: (collapsed: boolean) => void;
+  /** This block's children are hidden (C-11: shown by a ringed bullet + count). */
+  collapsed?: boolean;
+  /** How many blocks the fold hides (all descendants). */
+  hiddenCount?: number;
   onZoomIn?: () => void;
   onShiftClick?: (blockId: string) => void;
   onOpenWhiteboard?: (whiteboardId: string) => void;
-  onDragReorder?: (draggedBlockId: string, targetBlockId: string, position: "above" | "below") => void;
+  onDragReorder?: (draggedBlockId: string, targetBlockId: string, position: DropPosition) => void;
+}
+
+/** The block being dragged by its handle (set on dragstart, cleared on drop/dragend). */
+const draggingBlock: { id: string | null } = { id: null };
+
+/** Where a dragged block lands relative to the block under the pointer. */
+export type DropPosition = "above" | "below" | "child";
+
+/** Pointer this far right of the block's left edge (bullet + text start) drops as a child. */
+const CHILD_DROP_OFFSET = 56;
+
+/** `childrenShown`: below this block on screen is its first child, so "below" nests. */
+function dropPositionAt(el: HTMLElement, clientX: number, clientY: number, childrenShown = false): DropPosition {
+  const rect = el.getBoundingClientRect();
+  if (clientY < rect.top + rect.height / 2) return "above";
+  return childrenShown || clientX > rect.left + CHILD_DROP_OFFSET ? "child" : "below";
+}
+
+/** A drag image showing the block's text (WebKitGTK otherwise shows a blank square). */
+function setBlockDragImage(e: React.DragEvent, blockEl: HTMLElement | null) {
+  if (!blockEl || typeof e.dataTransfer.setDragImage !== "function") return;
+  const text = (blockEl.querySelector(".block-content") as HTMLElement | null)?.innerText.trim() ?? "";
+  const ghost = document.createElement("div");
+  ghost.className = "block-drag-ghost";
+  ghost.textContent = (text.split("\n")[0] || "(empty block)").slice(0, 80);
+  document.body.appendChild(ghost);
+  try { e.dataTransfer.setDragImage(ghost, 10, 12); } catch {}
+  setTimeout(() => ghost.remove(), 0);
 }
 
 const BlockItem = forwardRef<BlockItemHandle, Props>(({
   block, depth = 0, hasChildren = false, isLastSibling = false, isOnActivePath = false, onFocusBlock, onBlurBlock, dataBlockId, selected = false, onUpdate, onDelete, onPageLinkClick,
-  onBlockRefClick, onEnter, canEnter, onBackspaceAtStart, onArrowUp, onArrowDown, onPasteMultiline,
-  onIndent, onOutdent, onEscape, onDuplicate, onToggleCollapse, onZoomIn, onShiftClick, onOpenWhiteboard, onDragReorder,
+  onBlockRefClick, onEnter, canEnter, onBackspaceAtStart, onArrowUp, onArrowDown, onPasteMultiline, onPasteBlocks,
+  onIndent, onOutdent, onEscape, onDuplicate, onToggleCollapse, onSetCollapsed, onSetAllCollapsed, collapsed = false, hiddenCount = 0,
+  onZoomIn, onShiftClick, onOpenWhiteboard, onDragReorder,
 }, ref) => {
   const settings = getSettingsCached();
   const [editorMode, setEditorMode] = useState<"minotes" | "obsidian">(
@@ -197,8 +270,9 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
   const [editingProp, setEditingProp] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
-  const [dropPosition, setDropPosition] = useState<"above" | "below" | null>(null);
+  const [dropPosition, setDropPosition] = useState<DropPosition | null>(null);
   const isCard = useIsFlashcard(block.id);
+  const isDone = block.content.startsWith("DONE ") || block.content === "{{todo:done}}";
   // Set when the context menu was opened on a table cell (shows table items).
   const [menuInTable, setMenuInTable] = useState(false);
 
@@ -227,16 +301,9 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
   const linkPreviewMatch = block.content.match(/^\{\{link-preview:(https?:\/\/[^}]+)\}\}$/);
   const linkPreviewUrl = linkPreviewMatch ? linkPreviewMatch[1] : null;
 
-  // Feature 9: Block Transclusion state
-  const [transcludedBlocks, setTranscludedBlocks] = useState<Map<string, Block>>(new Map());
-  const blockRefPattern = /\(\(([0-9a-fA-F-]{8,36})\)\)/g;
-  const blockRefIds: string[] = [];
-  let refMatch: RegExpExecArray | null;
-  const contentForRefs = block.content;
-  const refRegex = new RegExp(blockRefPattern.source, "g");
-  while ((refMatch = refRegex.exec(contentForRefs)) !== null) {
-    blockRefIds.push(refMatch[1]);
-  }
+  // Block embeds ({{embed ((uuid))}}) show the referenced block as a card; a plain
+  // ((uuid)) is only an inline chip (C-12: it used to get a card too).
+  const embedIds = [...new Set([...block.content.matchAll(EMBED_RE)].map(m => m[1]))];
 
   // Live-markdown reader, filled in once the editor hook has run (below). Ctrl+Enter
   // must cycle based on what the user sees NOW, not the last-saved block.content prop
@@ -312,16 +379,18 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
     },
     onPageLinkClick,
     onBlockRefClick,
-    onEnter: onEnter ? (contentAfterCursor, savedContent) => onEnter(block.id, contentAfterCursor, savedContent) : undefined,
+    onEnter: onEnter ? (contentAfterCursor, savedContent, boundarySpace) => onEnter(block.id, contentAfterCursor, savedContent, boundarySpace) : undefined,
     canEnter,
     onBackspaceAtStart: onBackspaceAtStart ? (content) => onBackspaceAtStart(block.id, content) : undefined,
     onArrowUp: onArrowUp ? () => onArrowUp(block.id) : undefined,
     onArrowDown: onArrowDown ? () => onArrowDown(block.id) : undefined,
     onToggleTodo: () => handleToggleTodo(),
     onPasteMultiline: onPasteMultiline ? (lines) => onPasteMultiline(block.id, lines) : undefined,
+    onPasteBlocks: onPasteBlocks ? (blocks, intoEmpty) => onPasteBlocks(block.id, blocks, intoEmpty) : undefined,
     onIndent: onIndent ? () => onIndent(block.id) : undefined,
     onOutdent: onOutdent ? () => onOutdent(block.id) : undefined,
     onEscape: onEscape ? () => onEscape(block.id) : undefined,
+    onSetCollapsed: onSetCollapsed ? (c) => onSetCollapsed(block.id, c) : undefined,
     onMakeFlashcard: () => { void setFlashcard(true); },
     onSlashCommand: (newMarkdown: string) => {
       // Save to backend + update local state (triggers re-render → setContent)
@@ -518,24 +587,6 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
     return () => { cancelled = true; };
   }, [linkPreviewUrl]);
 
-  // Feature 9: Fetch transcluded block content
-  const blockRefKey = blockRefIds.join(",");
-  useEffect(() => {
-    if (blockRefIds.length === 0) { setTranscludedBlocks(new Map()); return; }
-    let cancelled = false;
-    const fetchAll = async () => {
-      const entries = new Map<string, Block>();
-      try {
-        // One call for every referenced block (unknown ids are skipped).
-        for (const b of await api.getBlocks(blockRefIds)) entries.set(b.id, b);
-      } catch {}
-      // Drop stale results: the content changed (or we unmounted) mid-fetch.
-      if (!cancelled) setTranscludedBlocks(entries);
-    };
-    fetchAll();
-    return () => { cancelled = true; };
-  }, [blockRefKey]);
-
   // Listen for settings changes
   useEffect(() => {
     const handler = (e: Event) => {
@@ -622,9 +673,12 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
   return (
     <div
       ref={rootRef}
-      className={`block${selected ? " selected" : ""}${isCard ? " is-flashcard" : ""}${dropPosition === "above" ? " drop-above" : ""}${dropPosition === "below" ? " drop-below" : ""}`}
+      className={`block${selected ? " selected" : ""}${isCard ? " is-flashcard" : ""}${isDone ? " todo-done" : ""}${collapsed && hasChildren ? " is-collapsed" : ""}${dropPosition ? ` drop-${dropPosition}` : ""}`}
       data-depth={depth > 0 ? String(depth) : undefined}
-      style={depth > 0 ? ({ "--depth": depth } as React.CSSProperties) : undefined}
+      style={depth > 0 || (collapsed && hasChildren) ? ({
+        ...(depth > 0 ? { "--depth": depth } : {}),
+        ...(collapsed && hasChildren ? { "--collapsed-label": `"+${hiddenCount}"` } : {}),
+      } as React.CSSProperties) : undefined}
       data-tree-last={isLastSibling ? "true" : undefined}
       data-active-path={isOnActivePath ? "true" : undefined}
       data-block-id={dataBlockId ?? block.id}
@@ -639,19 +693,29 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
         }
       }}
       onDragOver={(e) => {
-        if (!onDragReorder) return;
+        // Only block drags (not files / text). WebKitGTK doesn't list custom
+        // types like text/block-id in dataTransfer.types: use our own marker.
+        if (!onDragReorder || !draggingBlock.id) return;
         e.preventDefault();
         e.stopPropagation();
-        const rect = e.currentTarget.getBoundingClientRect();
-        setDropPosition(e.clientY < rect.top + rect.height / 2 ? "above" : "below");
+        e.dataTransfer.dropEffect = "move";
+        const pos = dropPositionAt(e.currentTarget, e.clientX, e.clientY, hasChildren && !collapsed);
+        if (pos !== dropPosition) setDropPosition(pos);
       }}
-      onDragLeave={() => setDropPosition(null)}
+      onDragLeave={(e) => {
+        // Moving onto a child element of this block isn't leaving it.
+        if (e.relatedTarget instanceof Node && e.currentTarget.contains(e.relatedTarget)) return;
+        setDropPosition(null);
+      }}
       onDrop={(e) => {
         e.preventDefault();
         e.stopPropagation();
-        const draggedId = e.dataTransfer.getData("text/block-id");
-        if (draggedId && draggedId !== block.id && dropPosition && onDragReorder) {
-          onDragReorder(draggedId, block.id, dropPosition);
+        const draggedId = e.dataTransfer.getData("text/block-id") || draggingBlock.id;
+        draggingBlock.id = null;
+        // From the drop point itself: the dragover state may not have rendered yet.
+        const pos = e.clientX || e.clientY ? dropPositionAt(e.currentTarget, e.clientX, e.clientY, hasChildren && !collapsed) : dropPosition;
+        if (draggedId && draggedId !== block.id && pos && onDragReorder) {
+          onDragReorder(draggedId, block.id, pos);
         }
         setDropPosition(null);
       }}
@@ -663,18 +727,24 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
           draggable
           onDragStart={(e) => {
             e.dataTransfer.setData("text/block-id", block.id);
+            draggingBlock.id = block.id;
             e.dataTransfer.effectAllowed = "move";
-            (e.currentTarget.closest(".block") as HTMLElement)?.classList.add("dragging");
+            const el = e.currentTarget.closest(".block") as HTMLElement | null;
+            setBlockDragImage(e, el);
+            el?.classList.add("dragging");
           }}
           onDragEnd={(e) => {
             (e.currentTarget.closest(".block") as HTMLElement)?.classList.remove("dragging");
+            // After a drop elsewhere (or a cancelled drag) no block is being dragged.
+            setTimeout(() => { draggingBlock.id = null; }, 0);
           }}
           title="Drag to reorder"
         >
           ⠿
         </div>
       )}
-      {/* Zoom trigger on bullet for blocks with children */}
+      {/* Zoom trigger on the bullet (blocks with children). The collapse arrow
+          sits in its own column left of it, so neither covers the other (C-11). */}
       {hasChildren && onZoomIn && (
         <div
           className="block-zoom-trigger"
@@ -682,14 +752,17 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
           title="Zoom into this block"
         />
       )}
-      {/* Collapse toggle for blocks with children */}
       {hasChildren && onToggleCollapse && (
         <button
           className="block-collapse"
-          onClick={() => onToggleCollapse(block.id)}
-          title={block.collapsed ? "Expand" : "Collapse"}
+          onClick={(e) => { e.stopPropagation(); onToggleCollapse(block.id); }}
+          title={collapsed ? `Expand (${hiddenCount} hidden · Ctrl+Down)` : "Collapse (Ctrl+Up)"}
+          aria-label={collapsed ? "Expand" : "Collapse"}
+          aria-expanded={!collapsed}
         >
-          {block.collapsed ? "\u25B6" : "\u25BC"}
+          <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
+            <path d="M3 1.5 L7 5 L3 8.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
         </button>
       )}
 
@@ -811,19 +884,10 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
         );
       })()}
 
-      {/* Feature 9: Block Transclusion — show referenced blocks inline */}
-      {blockRefIds.length > 0 && transcludedBlocks.size > 0 && (
+      {/* Block embeds: the referenced blocks as cards under this block */}
+      {embedIds.length > 0 && (
         <div className="block-transclusions">
-          {blockRefIds.map((bid) => {
-            const tb = transcludedBlocks.get(bid);
-            if (!tb) return null;
-            return (
-              <div key={bid} className="block-transclusion" onClick={() => onBlockRefClick?.(bid)}>
-                <span className="block-transclusion-label">Transcluded block</span>
-                <div className="block-transclusion-content">{tb.content}</div>
-              </div>
-            );
-          })}
+          {embedIds.map((bid) => <EmbedCard key={bid} blockId={bid} onOpen={onBlockRefClick} />)}
         </div>
       )}
 
@@ -919,6 +983,9 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
           onDuplicate={onDuplicate ?? (() => {})}
           onCopyRef={() => {}}
           onToggleTodo={() => handleToggleTodo()}
+          collapsed={hasChildren && onSetCollapsed ? collapsed : undefined}
+          onSetCollapsed={onSetCollapsed ? (c) => onSetCollapsed(block.id, c) : undefined}
+          onSetAllCollapsed={onSetAllCollapsed}
           isFlashcard={isCard}
           onToggleFlashcard={() => { void setFlashcard(!isCard); }}
           onTableAction={menuInTable ? (action) => { handleTableAction(action); } : undefined}
@@ -942,6 +1009,8 @@ export default React.memo(BlockItem, (prev, next) => {
     prev.selected === next.selected &&
     prev.hasChildren === next.hasChildren &&
     prev.isLastSibling === next.isLastSibling &&
+    prev.collapsed === next.collapsed &&
+    prev.hiddenCount === next.hiddenCount &&
     !!prev.onDragReorder === !!next.onDragReorder
   );
 });

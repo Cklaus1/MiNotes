@@ -11,6 +11,8 @@ import type { Range } from "@tiptap/core";
 export interface SlashMenuItem {
   title: string;
   description: string;
+  /** Exact short names (`/h2`, `/hr`, `/ol`…) that match this command first. */
+  aliases?: string[];
   command: (props: { editor: Editor; range: Range }) => void;
 }
 

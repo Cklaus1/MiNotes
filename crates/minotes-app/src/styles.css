@@ -685,13 +685,32 @@ body {
   color: #1e1e2e;
 }
 
+/* Room between a badge and the text after it (editor/todoKeyword.ts wraps the
+   keyword the badge covers). */
+.block-content .ProseMirror .todo-kw {
+  padding-right: 6px;
+}
+
+/* A finished task reads as finished: dimmed, its text (not the keyword under
+   the badge) struck through. */
+.block.todo-done > .block-content .ProseMirror {
+  color: var(--text-secondary);
+  opacity: 0.7;
+}
+.block-content .ProseMirror .todo-done-text {
+  text-decoration: line-through;
+  text-decoration-color: var(--text-secondary);
+}
+
 /* Placeholder handled by TipTap Placeholder extension (showOnlyCurrent: true) */
 
-/* Drag handle — visible on hover */
+/* ── Block gutter (C-11) ──
+   Three controls left of the text, each in its own column so none covers
+   another:  [drag ⠿ -30..-16] [collapse › -16..0] [bullet / zoom 0..14] text */
 .block-drag-handle {
   position: absolute;
-  left: -14px;
-  top: 6px;
+  left: -30px;
+  top: 4px;
   width: 14px;
   height: 20px;
   cursor: grab;
@@ -723,42 +742,113 @@ body {
   opacity: 0.4;
 }
 
+/* Drop indicators: drawn, not bordered, so the outline doesn't shift by 2px. */
 .block.drop-above {
-  border-top: 2px solid var(--accent);
+  box-shadow: inset 0 2px 0 var(--accent);
 }
 
 .block.drop-below {
-  border-bottom: 2px solid var(--accent);
+  box-shadow: inset 0 -2px 0 var(--accent);
 }
 
-/* Collapse toggle for parent blocks */
+/* Drop as a child: the line starts at the child indent. */
+.block.drop-child {
+  background-image: linear-gradient(var(--accent), var(--accent));
+  background-size: calc(100% - 36px) 2px;
+  background-position: 36px 100%;
+  background-repeat: no-repeat;
+}
+
+/* Drag image: the block's text (WebKitGTK showed a blank square). Rendered
+   off-screen only for the moment setDragImage copies it. */
+.block-drag-ghost {
+  position: fixed;
+  top: -1000px;
+  left: -1000px;
+  max-width: 360px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  border: 1px solid var(--accent);
+  font-size: 13px;
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+/* Collapse toggle for parent blocks: left of the bullet, above everything else. */
 .block-collapse {
   position: absolute;
-  left: -4px;
-  top: 10px;
+  left: -16px;
+  top: 5px;
   width: 16px;
-  height: 16px;
+  height: 18px;
   background: none;
   border: none;
   color: var(--text-muted);
-  font-size: 10px;
   cursor: pointer;
   padding: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 2px;
+  border-radius: 3px;
   opacity: 0;
-  transition: opacity 0.1s;
+  transition: opacity 0.1s, transform 0.12s;
+  transform: rotate(90deg);
+  z-index: 4;
 }
 
-.block:hover .block-collapse {
-  opacity: 1;
+.block:hover > .block-collapse,
+.block-collapse:focus-visible {
+  opacity: 0.8;
 }
 
 .block-collapse:hover {
   background: var(--bg-surface);
   color: var(--text-primary);
+  opacity: 1;
+}
+
+/* A folded block: the arrow points right and stays visible, the bullet gets a
+   ring, and the text is followed by how many blocks are hidden. */
+.block.is-collapsed > .block-collapse {
+  transform: none;
+  opacity: 0.7;
+}
+
+.block.is-collapsed::before {
+  background: var(--text-secondary);
+  box-shadow: 0 0 0 3px rgba(166, 173, 200, 0.28);
+}
+
+.block.is-collapsed > .block-content .ProseMirror > :last-child::after {
+  content: var(--collapsed-label);
+  display: inline-block;
+  margin-left: 8px;
+  padding: 0 6px;
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 500;
+  font-style: normal;
+  line-height: 16px;
+  vertical-align: 1px;
+  color: var(--text-secondary);
+  background: var(--bg-surface);
+  pointer-events: none;
+  user-select: none;
+}
+
+[data-theme="light"] .block.is-collapsed::before {
+  box-shadow: 0 0 0 3px rgba(76, 79, 105, 0.18);
+}
+
+.collapse-all-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 /* Wiki links in content */
@@ -969,6 +1059,50 @@ body {
 
 .backlink-item:hover {
   color: var(--accent);
+}
+
+/* Rich backlink rows: page name over the referencing block, rendered like a block. */
+.backlinks .backlink-item {
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+.backlinks .backlink-item:hover {
+  color: inherit;
+  background: rgba(137, 180, 250, 0.08);
+}
+.backlink-page {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  margin-bottom: 2px;
+}
+.backlink-content {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-primary);
+  pointer-events: none; /* the row is the link */
+}
+/* No badge element in a row: the keyword itself is drawn as the badge. */
+.backlink-content .ProseMirror .todo-kw {
+  display: inline-block;
+  padding: 0 5px;
+  margin-right: 2px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 16px;
+  vertical-align: 1px;
+  color: #1e1e2e;
+  background: #f9e2af;
+}
+.backlink-content .ProseMirror .todo-kw-doing { background: #89b4fa; }
+.backlink-content .ProseMirror .todo-kw-done { background: #a6e3a1; }
+.backlink-content > :first-child { margin-top: 0; }
+.backlink-content > :last-child { margin-bottom: 0; }
+.backlink-content h1, .backlink-content h2, .backlink-content h3, .backlink-content h4 {
+  font-size: 14px;
+  margin: 0;
 }
 
 /* Folders */
@@ -3902,9 +4036,9 @@ body.theme-light { /* matches our light theme */ }
 .block-zoom-trigger {
   position: absolute;
   left: 0;
-  top: 8px;
-  width: 20px;
-  height: 20px;
+  top: 5px;
+  width: 14px;
+  height: 18px;
   cursor: zoom-in;
   z-index: 3;
   border-radius: 4px;
@@ -6082,6 +6216,19 @@ img.img-broken {
   background: var(--bg-secondary);
 }
 
+/* Page suggestions sit below the blocks (they used to appear above them a
+   moment after the page opened and push it down). */
+.block-list > .ai-panel {
+  margin: 20px 0 0 16px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+}
+.block-list > .ai-panel + .ai-panel {
+  margin-top: 8px;
+}
+
 .ai-panel-header {
   display: flex;
   align-items: center;
@@ -6464,3 +6611,10 @@ body:has(.pdf-viewer) .content { overflow: hidden; }
 .canvas-draw-chooser-title { font-size: 16px; font-weight: 600; color: var(--text-primary); }
 .canvas-draw-chooser-list { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
 .canvas-draw-chooser-hint { font-size: 12px; color: var(--text-muted); max-width: 420px; }
+.block-context-menu-shortcut {
+  float: right;
+  margin-left: 16px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  opacity: 0.7;
+}

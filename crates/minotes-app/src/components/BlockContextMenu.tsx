@@ -15,6 +15,10 @@ interface Props {
   onToggleFlashcard?: () => void;
   /** Present when the menu was opened on a table cell. */
   onTableAction?: (action: TableAction) => void;
+  /** Set when the block has children: whether they're folded. */
+  collapsed?: boolean;
+  onSetCollapsed?: (collapsed: boolean) => void;
+  onSetAllCollapsed?: (collapsed: boolean) => void;
 }
 
 export default function BlockContextMenu({
@@ -30,6 +34,9 @@ export default function BlockContextMenu({
   isFlashcard = false,
   onToggleFlashcard,
   onTableAction,
+  collapsed,
+  onSetCollapsed,
+  onSetAllCollapsed,
 }: Props) {
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -111,8 +118,38 @@ export default function BlockContextMenu({
           <div className="block-context-menu-sep" />
         </>
       )}
+      {collapsed !== undefined && onSetCollapsed && (
+        <button
+          className="block-context-menu-item"
+          data-action="collapse"
+          onClick={() => { onSetCollapsed(!collapsed); onClose(); }}
+        >
+          {collapsed ? "Expand" : "Collapse"}
+          <span className="block-context-menu-shortcut">{collapsed ? "Ctrl+Down" : "Ctrl+Up"}</span>
+        </button>
+      )}
+      {onSetAllCollapsed && (
+        <>
+          <button className="block-context-menu-item" data-action="collapse-all" onClick={() => { onSetAllCollapsed(true); onClose(); }}>
+            Collapse all
+          </button>
+          <button className="block-context-menu-item" data-action="expand-all" onClick={() => { onSetAllCollapsed(false); onClose(); }}>
+            Expand all
+          </button>
+        </>
+      )}
+      {(onSetAllCollapsed || (collapsed !== undefined && onSetCollapsed)) && <div className="block-context-menu-sep" />}
       <button className="block-context-menu-item" onClick={handleCopyRef}>
         Copy block reference
+        <span className="block-context-menu-shortcut">((…))</span>
+      </button>
+      <button
+        className="block-context-menu-item"
+        data-action="copy-embed"
+        onClick={() => { navigator.clipboard.writeText(`{{embed ((${blockId}))}}`); onClose(); }}
+      >
+        Copy block embed
+        <span className="block-context-menu-shortcut">{"{{embed}}"}</span>
       </button>
       <button className="block-context-menu-item" onClick={handleCopyContent}>
         Copy content
