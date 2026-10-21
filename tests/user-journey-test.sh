@@ -3599,6 +3599,43 @@ ev "[...document.querySelectorAll('.kanban-wiki-link')].find(b=>b.textContent===
 R=$(ev "!!document.querySelector('.kanban-container')+'|'+(window.__MINOTES__.getCurrentPage()||'')" | tr -d '"')
 [[ "$R" == "false|"*"Getting Started"* ]] && pass "Chip opened Getting Started (board closed)" || fail "Wiki chip" "$R"
 
+step "Graph: wheel zoom keeps the node under the cursor (C-19)"
+ev "(async()=>{$A66 const hub=await api.createPage('Hub66');for(let i=0;i<30;i++){const p=await api.createPage('Spoke66 page number '+i);await api.createBlock(p.id,'about [[Hub66]] and [[Spoke66 page number '+((i+1)%30)+']]')}return 1})()" >/dev/null
+api "navigateTo('$P66')" >/dev/null; sleep 1
+ev "[...document.querySelectorAll('.stats-mode-btn')].find(b=>b.textContent.includes('Graph'))?.click()" >/dev/null
+for _ in $(seq 1 20); do N=$(ev "document.querySelector('.graph-view canvas')?.dataset.nodes||0" | tr -d '"'); [[ "$N" -ge 30 ]] 2>/dev/null && break; sleep 0.5; done
+G66="document.querySelector('.graph-view canvas').__minotesGraph"
+WHEEL66="(id,dy,n)=>{const c=document.querySelector('.graph-view canvas');const g=c.__minotesGraph;const a=g.nodes().find(x=>x.id===id);for(let i=0;i<n;i++)c.dispatchEvent(new WheelEvent('wheel',{deltaY:dy,clientX:a.x,clientY:a.y,bubbles:true,cancelable:true}));const b=g.nodes().find(x=>x.id===id);return Math.round(Math.hypot(b.x-a.x,b.y-a.y))+':'+c.dataset.zoom}"
+# An off-centre node: the old formula drifted most there.
+NODE66=$(ev "(()=>{const c=document.querySelector('.graph-view canvas');const r=c.getBoundingClientRect();const ns=$G66.nodes().filter(n=>n.x>r.left+20&&n.x<r.right-20&&n.y>r.top+20&&n.y<r.bottom-20);ns.sort((a,b)=>Math.hypot(b.x-(r.left+r.width/2),b.y-(r.top+r.height/2))-Math.hypot(a.x-(r.left+r.width/2),a.y-(r.top+r.height/2)));return ns[0]?.id||''})()" | tr -d '"')
+R1=$(ev "($WHEEL66)('$NODE66',-100,5)" | tr -d '"'); R2=$(ev "($WHEEL66)('$NODE66',100,8)" | tr -d '"')
+[[ -n "$NODE66" && "${R1%%:*}" -le 10 && "${R2%%:*}" -le 10 ]] 2>/dev/null && pass "Node stays under the cursor: in ×5 moved ${R1%%:*} px, out ×8 moved ${R2%%:*} px" || fail "Zoom drifts off the cursor" "node=$NODE66 in=$R1 out=$R2"
+
+step "Graph: dragging a node moves it and does not open the page; a click opens it"
+MOUSE66="(id,dx)=>{const c=document.querySelector('.graph-view canvas');const n=c.__minotesGraph.nodes().find(x=>x.id===id);const o={bubbles:true,cancelable:true,button:0};c.dispatchEvent(new MouseEvent('mousedown',{...o,clientX:n.x,clientY:n.y}));for(let i=1;i<=5;i++)window.dispatchEvent(new MouseEvent('mousemove',{...o,clientX:n.x+dx*i/5,clientY:n.y}));window.dispatchEvent(new MouseEvent('mouseup',{...o,clientX:n.x+dx,clientY:n.y}));c.dispatchEvent(new MouseEvent('click',{...o,clientX:n.x+dx,clientY:n.y}));return n.title}"
+T66=$(ev "($MOUSE66)('$NODE66',60)" | tr -d '"'); sleep 1
+R=$(ev "!!document.querySelector('.graph-view')+'|'+window.__MINOTES__.getCurrentPage()" | tr -d '"')
+[[ "$R" == "true|"* && "$R" != *"$T66"* ]] && pass "Dragged '$T66' 60 px: the graph stays open" || fail "Drag opened the page" "$R (node $T66)"
+T66=$(ev "($MOUSE66)('$NODE66',2)" | tr -d '"'); sleep 1.5
+R=$(ev "!!document.querySelector('.graph-view')+'|'+window.__MINOTES__.getCurrentPage()" | tr -d '"')
+[[ "$R" == "false|"*"$T66"* ]] && pass "A click (2 px wobble) opens '$T66'" || fail "Click didn't open the page" "$R (node $T66)"
+
+step "Graph: labels never pile up, and the canvas follows the light theme"
+ev "[...document.querySelectorAll('.stats-mode-btn')].find(b=>b.textContent.includes('Graph'))?.click()" >/dev/null
+for _ in $(seq 1 20); do N=$(ev "document.querySelector('.graph-view canvas')?.dataset.nodes||0" | tr -d '"'); [[ "$N" -ge 30 ]] 2>/dev/null && break; sleep 0.5; done
+OVL66="(()=>{const L=$G66.labels();let o=0;for(let i=0;i<L.length;i++)for(let j=i+1;j<L.length;j++){const a=L[i],b=L[j];if(a.x<b.x+b.w&&b.x<a.x+a.w&&a.y<b.y+b.h&&b.y<a.y+a.h)o++}return L.length+':'+o+':'+$G66.nodes().length})()"
+ZOOMOUT66="(()=>{const c=document.querySelector('.graph-view canvas');const r=c.getBoundingClientRect();for(let i=0;i<6;i++)c.dispatchEvent(new WheelEvent('wheel',{deltaY:100,clientX:r.left+r.width/2,clientY:r.top+r.height/2,bubbles:true,cancelable:true}));return c.dataset.zoom})()"
+R1=$(ev "$OVL66" | tr -d '"'); ev "$ZOOMOUT66" >/dev/null; sleep 0.3; R2=$(ev "$OVL66" | tr -d '"')
+IFS=: read -r L1 O1 N1 <<< "$R1"; IFS=: read -r L2 O2 N2 <<< "$R2"
+[[ "$O1" == "0" && "$O2" == "0" && "$L1" -ge 1 && "$L2" -ge 1 && "$L2" -lt "$N2" ]] 2>/dev/null && pass "No overlapping labels (fit: $L1 of $N1 labelled; zoomed out: $L2 of $N2)" || fail "Labels overlap" "fit=$R1 out=$R2"
+TH66=$(ev "localStorage.getItem('minotes-theme')||'dark'" | tr -d '"')
+ev "(async()=>{const t=await import('/src/lib/theme.ts');t.setTheme('light');return 1})()" >/dev/null; sleep 0.5
+R=$(ev "(()=>{const c=document.querySelector('.graph-view canvas');const p=c.getContext('2d').getImageData(3,3,1,1).data;return $G66.colors().bg+'|'+p[0]+','+p[1]+','+p[2]})()" | tr -d '"')
+ss "66-graph-light"
+ev "(async()=>{const t=await import('/src/lib/theme.ts');t.setTheme('$TH66');return 1})()" >/dev/null; sleep 0.3
+[[ "$R" == "#eff1f5|239,241,245" ]] && pass "Light theme: the graph canvas is light ($R)" || fail "Graph canvas ignores the theme" "$R"
+press "Escape"; sleep 0.5
+
 # ═══════════════════════════════════════════════
 close_app
 
