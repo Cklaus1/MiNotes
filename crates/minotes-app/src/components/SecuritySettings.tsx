@@ -6,7 +6,7 @@ import { lockNow, refreshLockState, LOCK_CHANGED } from "../lib/encryption";
 import { NOTEBOOKS_CHANGED, NOTEBOOK_SWITCHED, notebooksChanged, useCapabilities } from "../lib/notebooks";
 import { passphraseProblem } from "../lib/passphrase";
 import { updateSettings, useSettings } from "../lib/settings";
-import { EncryptNotebookDialog, PassphraseFields, RecoveryKeyPanel } from "./EncryptionDialogs";
+import { EncryptNotebookDialog, PassphraseFields, RecoveryKeyModal } from "./EncryptionDialogs";
 import Modal from "./Modal";
 
 type Dialog = null | "encrypt" | "change" | "recovery" | "rotate" | "decrypt";
@@ -42,10 +42,9 @@ function PassphraseAction({ title, intro, button, danger, onRun, onClose }: {
   };
   if (key) {
     return (
-      <Modal title={title} onClose={() => { if (window.confirm("Close without confirming you saved the new recovery key?")) onClose(); }}>
-        <RecoveryKeyPanel notebook={name} recoveryKey={key} onDone={onClose} />
+      <RecoveryKeyModal title={title} notebook={name} recoveryKey={key} onDone={onClose} onClose={onClose}>
         <p className="nb-hint">The previous recovery key no longer works.</p>
-      </Modal>
+      </RecoveryKeyModal>
     );
   }
   return (

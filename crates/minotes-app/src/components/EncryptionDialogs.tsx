@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import * as api from "../lib/api";
 import { errorMessage } from "../lib/errors";
 import { showToast } from "../lib/toast";
@@ -6,6 +6,7 @@ import { MIN_STRENGTH, STRENGTH_LABELS, passphraseProblem, passphraseStrength } 
 import { recoveryKeyFileText, unlock, refreshLockState, resetNotebookCaches } from "../lib/encryption";
 import { notebooksChanged, switchNotebook } from "../lib/notebooks";
 import Modal from "./Modal";
+import { confirmDialog } from "../lib/confirm";
 import "./encryption.css";
 
 /** "Wrong passphrase" for WRONG_PASSPHRASE errors, else the message itself. */
@@ -72,13 +73,18 @@ export function PassphraseFields({ value, confirm, onChange, onConfirm, label = 
 
 /** Shown once after creating / encrypting / recovering: the recovery key, with
  *  Copy / Save to file / Print and a required "I have saved it" checkbox. */
-export function RecoveryKeyPanel({ notebook, recoveryKey, onDone, doneLabel = "Continue" }: {
+export function RecoveryKeyPanel({ notebook, recoveryKey, onDone, doneLabel = "Continue", saved: savedProp, onSavedChange }: {
   notebook: string;
   recoveryKey: string;
   onDone: () => void;
   doneLabel?: string;
+  /** Controlled "I have saved" state (RecoveryKeyModal needs it); internal otherwise. */
+  saved?: boolean;
+  onSavedChange?: (saved: boolean) => void;
 }) {
-  const [saved, setSaved] = useState(false);
+  const [savedState, setSavedState] = useState(false);
+  const saved = savedProp ?? savedState;
+  const setSaved = (v: boolean) => { setSavedState(v); onSavedChange?.(v); };
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(recoveryKey);
@@ -135,6 +141,40 @@ export function RecoveryKeyPanel({ notebook, recoveryKey, onDone, doneLabel = "C
         </button>
       </div>
     </div>
+  );
+}
+
+/**
+ * A dialog showing a just-made recovery key. Until "I have saved my recovery key"
+ * is ticked, Escape and a click outside do nothing and the × asks first (the key
+ * is shown only once); `onClose` runs when it is closed without "done".
+ */
+export function RecoveryKeyModal({ title, notebook, recoveryKey, onDone, onClose, doneLabel, testId, children }: {
+  title: string;
+  notebook: string;
+  recoveryKey: string;
+  onDone: () => void;
+  onClose: () => void;
+  doneLabel?: string;
+  testId?: string;
+  children?: ReactNode;
+}) {
+  const [saved, setSaved] = useState(false);
+  const close = async () => {
+    if (saved || await confirmDialog({
+      title: "Close without saving the recovery key?",
+      message: "It is shown only now. Without it, a forgotten passphrase means this notebook can't be opened.",
+      confirmLabel: "Close anyway",
+      cancelLabel: "Back to the key",
+      danger: true,
+    })) onClose();
+  };
+  return (
+    <Modal title={title} onClose={close} dismissable={saved} testId={testId}>
+      <RecoveryKeyPanel notebook={notebook} recoveryKey={recoveryKey} onDone={onDone} doneLabel={doneLabel}
+        saved={saved} onSavedChange={setSaved} />
+      {children}
+    </Modal>
   );
 }
 
@@ -426,9 +466,8 @@ export function EncryptNotebookDialog({ session, onClose }: { session: api.Noteb
 
   if (recovery) {
     return (
-      <Modal title={`“${session.name}” is encrypted`} onClose={() => { if (window.confirm("Close without confirming you saved the recovery key?")) onClose(); }} testId="encrypt-notebook-dialog">
-        <RecoveryKeyPanel notebook={session.name} recoveryKey={recovery} onDone={() => { refreshLockState(); onClose(); }} />
-      </Modal>
+      <RecoveryKeyModal title={`“${session.name}” is encrypted`} notebook={session.name} recoveryKey={recovery}
+        onDone={() => { refreshLockState(); onClose(); }} onClose={onClose} testId="encrypt-notebook-dialog" />
     );
   }
   return (

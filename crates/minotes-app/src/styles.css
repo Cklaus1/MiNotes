@@ -1217,12 +1217,13 @@ body {
   border-radius: 4px;
 }
 
-/* Delete confirmation dialog */
+/* The app's confirmation dialog (components/ConfirmHost.tsx, lib/confirm.ts) —
+   above every other dialog and panel. */
 .confirm-backdrop {
   position: fixed;
   inset: 0;
   background: rgba(0, 0, 0, 0.5);
-  z-index: 9999;
+  z-index: 10050;
 }
 
 .confirm-dialog {
@@ -1230,12 +1231,13 @@ body {
   top: 50%;
   left: 50%;
   transform: translate(-50%, -50%);
-  background: var(--background-secondary, #313244);
+  background: var(--bg-secondary);
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 20px 24px;
-  z-index: 10000;
+  z-index: 10051;
   min-width: 300px;
+  max-width: min(480px, calc(100vw - 32px));
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
 }
 
@@ -1248,8 +1250,10 @@ body {
 
 .confirm-dialog-text {
   font-size: 13px;
-  color: var(--text-muted);
+  color: var(--text-secondary, var(--text-muted));
   margin: 0 0 16px 0;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
 }
 
 .confirm-dialog-actions {

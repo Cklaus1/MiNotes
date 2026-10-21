@@ -9,7 +9,7 @@ import {
   useCapabilities,
 } from "../lib/notebooks";
 import { passphraseProblem } from "../lib/passphrase";
-import { PassphraseFields, RecoveryKeyPanel } from "./EncryptionDialogs";
+import { PassphraseFields, RecoveryKeyModal } from "./EncryptionDialogs";
 
 /** Same check as minotes-core notebook::validate_name. */
 function nameProblem(name: string, existing: string[]): string | null {
@@ -117,13 +117,15 @@ export function NewNotebookDialog({ existingNames, onClose }: { existingNames: s
 
   if (created) {
     return (
-      <Modal
+      <RecoveryKeyModal
         title={`“${created.nb.name}” is ready`}
-        onClose={() => { if (window.confirm("Close without confirming you saved the recovery key?")) openCreated(); }}
+        notebook={created.nb.name}
+        recoveryKey={created.key}
+        onDone={openCreated}
+        onClose={openCreated}
+        doneLabel="Open the notebook"
         testId="new-notebook-dialog"
-      >
-        <RecoveryKeyPanel notebook={created.nb.name} recoveryKey={created.key} onDone={openCreated} doneLabel="Open the notebook" />
-      </Modal>
+      />
     );
   }
 

@@ -3,6 +3,7 @@ import { useEscapeToClose } from "../lib/escapeStack";
 import type { CssSnippet } from "../lib/api";
 import * as api from "../lib/api";
 import { reloadSnippets } from "../lib/cssLoader";
+import { confirmDialog } from "../lib/confirm";
 
 interface Props {
   open: boolean;
@@ -88,7 +89,7 @@ export default function CssSnippetManager({ open, onClose }: Props) {
   };
 
   const handleDelete = async (name: string) => {
-    if (!confirm(`Delete snippet "${name}"?`)) return;
+    if (!(await confirmDialog({ title: `Delete snippet “${name}”?`, message: "Its CSS is removed. This can't be undone.", confirmLabel: "Delete", danger: true }))) return;
     try {
       await api.deleteCssSnippet(name);
       await reloadSnippets();

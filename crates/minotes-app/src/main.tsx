@@ -1,5 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
+// First: lib/confirm's key listener must be registered before any other window listener.
+import ConfirmHost from "./components/ConfirmHost";
 import App from "./App";
 import LockGate from "./components/LockGate";
 import "./styles.css";
@@ -67,6 +69,7 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
       <LockGate>
         <App />
       </LockGate>
+      <ConfirmHost />
     </ErrorBoundary>
   </React.StrictMode>
 );

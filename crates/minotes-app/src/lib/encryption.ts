@@ -13,6 +13,7 @@ import { clearWhiteboardCache } from "./whiteboardUtils";
 import { clearPrefetchedProperties } from "./blockProperties";
 import { undoStack } from "./undoStack";
 import { errorMessage } from "./errors";
+import { confirmDialog } from "./confirm";
 
 /** The open notebook was locked or unlocked (detail: the new NotebookSession, if known). */
 export const LOCK_CHANGED = "minotes-lock-changed";
@@ -90,9 +91,12 @@ export async function confirmPlaintextExport(): Promise<boolean> {
     return true;
   }
   if (!s?.encrypted || exportConfirmed.has(s.key)) return true;
-  const ok = window.confirm(
-    `“${s.name}” is encrypted. This export writes an unencrypted file that anyone with access to it can read. Continue?`,
-  );
+  const ok = await confirmDialog({
+    title: `“${s.name}” is encrypted`,
+    message: "This export writes an unencrypted file that anyone with access to it can read.",
+    confirmLabel: "Export unencrypted",
+    danger: true,
+  });
   if (ok) exportConfirmed.add(s.key);
   return ok;
 }

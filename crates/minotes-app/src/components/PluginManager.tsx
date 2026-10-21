@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import * as api from "../lib/api";
+import { confirmDialog } from "../lib/confirm";
 
 interface Props {
   open: boolean;
@@ -42,7 +43,12 @@ export default function PluginManager({ open, onClose }: Props) {
   };
 
   const uninstall = async (name: string) => {
-    if (!confirm(`Uninstall plugin "${name}"? This will remove all its data.`)) return;
+    if (!(await confirmDialog({
+      title: `Uninstall plugin “${name}”?`,
+      message: "This removes the plugin and all its data.",
+      confirmLabel: "Uninstall",
+      danger: true,
+    }))) return;
     try {
       await api.uninstallPlugin(name);
       await refresh();

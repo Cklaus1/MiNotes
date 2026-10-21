@@ -4,6 +4,7 @@ import { autoScrollForElements } from "@atlaskit/pragmatic-drag-and-drop-auto-sc
 import { extractClosestEdge } from "@atlaskit/pragmatic-drag-and-drop-hitbox/closest-edge";
 import type { Block } from "../../lib/api";
 import * as api from "../../lib/api";
+import { confirmDialog } from "../../lib/confirm";
 import { extractLabel, extractTaskLabel } from "../mindmap/blocksToFlow";
 import KanbanColumn from "./KanbanColumn";
 import { buildKanbanModel, UNSORTED_ID, UNSORTED_TITLE } from "./kanbanModel";
@@ -206,12 +207,12 @@ export default function KanbanView({ pageId, pageTitle, blocks, onRefreshPage }:
     }).catch(() => {});
   }, [blocks, onRefreshPage, showToast]);
 
-  const handleDeleteColumn = useCallback((column: Block, cardCount: number) => {
+  const handleDeleteColumn = useCallback(async (column: Block, cardCount: number) => {
     const title = extractLabel(column.content);
     const msg = cardCount > 0
       ? `Delete column "${title}" and its ${cardCount} card${cardCount !== 1 ? "s" : ""}?`
       : `Delete empty column "${title}"?`;
-    if (!confirm(msg)) return;
+    if (!(await confirmDialog({ message: msg, confirmLabel: "Delete", danger: true }))) return;
     api.deleteBlock(column.id).then(() => {
       onRefreshPage();
       showToast(`Deleted column "${title}"`);
