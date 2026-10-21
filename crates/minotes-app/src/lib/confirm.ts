@@ -65,6 +65,11 @@ export function answerConfirm(id: number, ok: boolean): void {
   notify();
 }
 
+/** "1 page" / "3 pages": counts in confirmation messages. */
+export function plural(n: number, one: string, many = `${one}s`): string {
+  return `${n} ${n === 1 ? one : many}`;
+}
+
 /** True while a confirmation dialog is showing. */
 export function isConfirmOpen(): boolean {
   return queue.length > 0;

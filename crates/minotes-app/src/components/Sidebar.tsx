@@ -12,6 +12,7 @@ import { useEscapeToClose } from "../lib/escapeStack";
 import { folderNameConflict } from "../lib/folderNames";
 import { errorMessage } from "../lib/errors";
 import { pageTitleConflict } from "../lib/pageNames";
+import { confirmDialog, plural } from "../lib/confirm";
 function formatJournalDate(dateStr: string): string {
   try {
     const [y, m, d] = dateStr.split("-").map(Number);
@@ -650,8 +651,8 @@ export default function Sidebar({
           {showTrash && trashItems.length > 0 && (
             <div className="sidebar-trash-list">
               {trashItems.map(item => (
-                <div key={item.id} className="page-item sidebar-trash-item">
-                  <span>
+                <div key={item.id} className="page-item sidebar-trash-item" data-testid="trash-item">
+                  <span className="sidebar-trash-title" title={displayTitle({ title: item.title })}>
                     {item.item_type === "folder" ? "\uD83D\uDCC1" : ""} {displayTitle({ title: item.title })}
                     {item.item_type === "folder" && item.page_count > 0 && (
                       <span className="folder-count"> ({item.page_count})</span>
@@ -661,6 +662,7 @@ export default function Sidebar({
                     <button
                       className="sidebar-trash-action-btn"
                       title="Restore"
+                      aria-label={`Restore ${displayTitle({ title: item.title })}`}
                       onClick={async e => {
                         e.stopPropagation();
                         await api.restoreFromTrash(item.id, item.item_type);
@@ -670,8 +672,20 @@ export default function Sidebar({
                     <button
                       className="sidebar-trash-action-btn danger"
                       title="Delete permanently"
+                      aria-label={`Delete ${displayTitle({ title: item.title })} permanently`}
+                      data-testid="trash-delete"
                       onClick={async e => {
                         e.stopPropagation();
+                        const name = displayTitle({ title: item.title });
+                        const what = item.item_type === "folder"
+                          ? `The project and the ${plural(item.page_count, "page")} in it are deleted for good.`
+                          : "The page and all its blocks are deleted for good.";
+                        if (!(await confirmDialog({
+                          title: `Delete “${name}” permanently?`,
+                          message: `${what} This can't be undone.`,
+                          confirmLabel: "Delete permanently",
+                          danger: true,
+                        }))) return;
                         await api.permanentlyDelete(item.id, item.item_type);
                         loadTree();
                       }}
@@ -680,15 +694,26 @@ export default function Sidebar({
                 </div>
               ))}
               {trashItems.length > 1 && (
-                <div
-                  className="page-item sidebar-more-pages"
+                <button
+                  type="button"
+                  className="page-item sidebar-more-pages sidebar-empty-trash"
+                  data-testid="empty-trash"
                   onClick={async () => {
+                    const pages = trashItems.reduce((n, t) => n + (t.item_type === "folder" ? t.page_count : 1), 0);
+                    const projects = trashItems.filter(t => t.item_type === "folder").length;
+                    const parts = [plural(pages, "page"), projects ? plural(projects, "project") : ""].filter(Boolean).join(" and ");
+                    if (!(await confirmDialog({
+                      title: `Empty the trash?`,
+                      message: `${parts} in the trash ${pages + projects === 1 ? "is" : "are"} deleted for good. This can't be undone.`,
+                      confirmLabel: `Delete ${plural(trashItems.length, "item")}`,
+                      danger: true,
+                    }))) return;
                     await api.emptyTrash();
                     loadTree();
                   }}
                 >
                   Empty trash
-                </div>
+                </button>
               )}
             </div>
           )}

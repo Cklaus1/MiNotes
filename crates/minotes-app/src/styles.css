@@ -5731,15 +5731,37 @@ img.img-broken {
   opacity: 0.7;
 }
 
+/* A long title shrinks (ellipsis), never the buttons: the ✕ used to be pushed
+   out of the sidebar's view. */
+.sidebar-trash-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .sidebar-trash-actions {
   display: flex;
+  flex: 0 0 auto;
   gap: 4px;
+  margin-left: 6px;
   opacity: 0;
   transition: opacity 0.15s;
 }
 
-.sidebar-trash-item:hover .sidebar-trash-actions {
+.sidebar-trash-item:hover .sidebar-trash-actions,
+.sidebar-trash-item:focus-within .sidebar-trash-actions {
   opacity: 1;
+}
+
+.sidebar-empty-trash {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  font: inherit;
 }
 
 .sidebar-trash-action-btn {

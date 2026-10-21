@@ -3443,6 +3443,16 @@ for _ in $(seq 1 30); do sleep 0.5; RK65=$(ev "document.querySelector('[data-tes
 R=$(ev "document.querySelector('[data-testid=recovery-done]')?.disabled" | tr -d '"')
 [[ "$R" == "true" ]] && pass "Can't continue before ticking 'I have saved my recovery key'" || fail "Saved checkbox" "$R"
 ss "65-recovery-key"
+# The key is shown once: a stray Escape or click outside must not lose it (C-1).
+ev "(()=>{document.activeElement?.blur?.();window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));const b=document.querySelector('.nb-modal-backdrop');b?.dispatchEvent(new MouseEvent('mousedown',{bubbles:true}));return 1})()" >/dev/null; sleep 0.4
+R=$(ev "!!document.querySelector('[data-testid=recovery-key]')" | tr -d '"')
+[[ "$R" == "true" ]] && pass "Escape / a click outside don't close the recovery key before it's saved" || fail "Recovery key closed by Escape/backdrop" "$R"
+ev "document.querySelector('[data-testid=new-notebook-dialog] .settings-close-btn')?.click()" >/dev/null; sleep 0.4
+R=$(ev "(document.querySelector('[data-testid=confirm-dialog]')?.innerText||'none')" | tr -d '"')
+[[ "$R" == *"recovery key"* ]] && pass "× asks first (the app's own dialog)" || fail "No confirmation on ×" "$R"
+click65 "[data-testid=confirm-cancel]" >/dev/null; sleep 0.3
+R=$(ev "!!document.querySelector('[data-testid=recovery-key]')&&!document.querySelector('[data-testid=confirm-dialog]')" | tr -d '"')
+[[ "$R" == "true" ]] && pass "Cancel keeps the recovery key on screen" || fail "Cancel closed the key" "$R"
 click65 "[data-testid=recovery-saved]" >/dev/null; sleep 0.2
 click65 "[data-testid=recovery-done]" >/dev/null
 for _ in $(seq 1 20); do sleep 0.5; R=$(ev "document.querySelector('[data-testid=notebook-switcher]')?.innerText||''" | tr -d '"'); [[ "$R" == *"$NB65"* ]] && break; done
@@ -3505,6 +3515,56 @@ ss "65-security-settings"
 api "closePanel()" >/dev/null; press "Escape"; sleep 0.5
 [[ -n "$HOME65" ]] && ev "(async()=>{const n=await import('/src/lib/notebooks.ts');await n.switchNotebook('$HOME65');return 1})()" >/dev/null
 sleep 1
+
+# ═══════════════════════════════════════════════
+journey "66. Nothing is deleted for good without asking me (UX review C-1, C-5)"
+# Permanent deletes ask in the app's own dialog (window.confirm auto-accepts in the
+# desktop app), Cancel/Escape really cancel, and the trash ✕ is always reachable.
+# ═══════════════════════════════════════════════
+A66="const api=await import('/src/lib/api.ts');"
+LONG66="Trash66 a page with a really very long title that would push the buttons out of the sidebar"
+dlg66() { ev "(document.querySelector('[data-testid=confirm-dialog]')?.innerText||'none')" | tr -d '"'; }
+wait66() { for _ in $(seq 1 20); do [[ "$(ev "$1" | tr -d '"')" == "true" ]] && return 0; sleep 0.3; done; return 1; }
+api "closePanel()" >/dev/null; press "Escape"; sleep 0.3
+ev "(async()=>{$A66 for(const t of ['$LONG66','Trash66 second']){const p=await api.createPage(t);await api.createBlock(p.id,'x');await api.trashPage(p.id)}window.dispatchEvent(new Event('minotes-sidebar-refresh'));return 1})()" >/dev/null; sleep 1
+
+step "Trash → ✕ on one item asks, and Cancel keeps it"
+ev "(()=>{const t=[...document.querySelectorAll('.sidebar-system-item')].find(e=>e.textContent.includes('Trash'));if(t&&!document.querySelector('.sidebar-trash-list'))t.click();return 1})()" >/dev/null
+wait66 "!!document.querySelector('[data-testid=trash-item]')" || true
+R=$(ev "(()=>{const it=[...document.querySelectorAll('[data-testid=trash-item]')].find(e=>e.textContent.includes('really very long'));if(!it)return 'no item';const x=it.querySelector('[data-testid=trash-delete]').getBoundingClientRect();const s=(it.closest('.sidebar')||document.querySelector('.sidebar')).getBoundingClientRect();return x.width>0&&x.left>=s.left&&x.right<=s.right?'visible':'clipped '+Math.round(x.right)+'>'+Math.round(s.right)})()" | tr -d '"')
+[[ "$R" == "visible" ]] && pass "The ✕ of a long-titled item is fully inside the sidebar" || fail "✕ clipped" "$R"
+ev "[...document.querySelectorAll('[data-testid=trash-item]')].find(e=>e.textContent.includes('really very long'))?.querySelector('[data-testid=trash-delete]').click()" >/dev/null; sleep 0.4
+R=$(dlg66)
+[[ "$R" == *"permanently"* && "$R" == *"can't be undone"* ]] && pass "Delete permanently asks first" || fail "No confirmation for ✕" "$R"
+ss "66-trash-confirm"
+ev "document.querySelector('[data-testid=confirm-cancel]')?.click()" >/dev/null; sleep 0.5
+R=$(ev "(async()=>{$A66 return (await api.listTrash()).filter(t=>t.title.startsWith('Trash66')).length})()" | tr -d '"')
+[[ "$R" == "2" && "$(dlg66)" == "none" ]] && pass "Cancel: the page is still in the trash" || fail "Cancel deleted it" "$R in trash"
+
+step "Empty trash asks with the count; Escape cancels; OK empties"
+ev "document.querySelector('[data-testid=empty-trash]')?.click()" >/dev/null; sleep 0.4
+R=$(dlg66)
+N66=$(ev "(async()=>{$A66 return (await api.listTrash()).length})()" | tr -d '"')
+[[ "$R" == *"Empty the trash"* && "$R" == *"Delete $N66 items"* ]] && pass "Empty trash asks: \"Delete $N66 items\"" || fail "Empty trash confirmation" "$R (trash: $N66)"
+press "Escape"; sleep 0.4
+R=$(ev "(async()=>{$A66 return (await api.listTrash()).length})()" | tr -d '"')
+[[ "$R" == "$N66" && "$(dlg66)" == "none" ]] && pass "Escape: nothing deleted" || fail "Escape emptied the trash" "$R of $N66"
+ev "document.querySelector('[data-testid=empty-trash]')?.click()" >/dev/null; sleep 0.4
+ev "document.querySelector('[data-testid=confirm-ok]')?.click()" >/dev/null
+wait66 "(async()=>{$A66 return (await api.listTrash()).length===0})()" && pass "OK: the trash is empty" || fail "Empty trash after OK" "$(ev "(async()=>{$A66 return (await api.listTrash()).length})()")"
+
+step "Deleting a CSS snippet asks; Cancel keeps it"
+ev "(async()=>{$A66 try{await api.deleteCssSnippet('snippet66')}catch{} await api.addCssSnippet('snippet66','.x66{color:red}');return 1})()" >/dev/null
+api "openSettings()" >/dev/null; sleep 0.8
+ev "[...document.querySelectorAll('.settings-slide-panel button')].find(b=>b.textContent.includes('CSS snippets'))?.click()" >/dev/null; sleep 0.8
+ev "[...document.querySelectorAll('button[title=\"Delete snippet\"]')].find(b=>b.parentElement.textContent.includes('snippet66'))?.click()" >/dev/null; sleep 0.4
+R=$(dlg66)
+[[ "$R" == *"snippet66"* ]] && pass "Delete snippet asks first" || fail "No confirmation for snippet delete" "$R"
+ev "document.querySelector('[data-testid=confirm-cancel]')?.click()" >/dev/null; sleep 0.4
+R=$(ev "(async()=>{$A66 return (await api.listCssSnippets()).some(s=>s.name==='snippet66')})()" | tr -d '"')
+[[ "$R" == "true" ]] && pass "Cancel: the snippet is still there" || fail "Snippet deleted on Cancel" "$R"
+ev "(async()=>{$A66 await api.deleteCssSnippet('snippet66');return 1})()" >/dev/null
+press "Escape"; sleep 0.3; api "closePanel()" >/dev/null
 
 # ═══════════════════════════════════════════════
 close_app
