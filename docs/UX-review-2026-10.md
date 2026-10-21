@@ -102,17 +102,17 @@ Average **5.2 / 10** across 72 features. Nothing scores 10; the best is 9
 
 | Feature | Score | Verdict |
 |---|---|---|
-| Graph view | 4 | Fast (0.4 s at 200 nodes), but zoom drifts off the cursor, dragging opens the page, labels pile up |
-| Mind map | 6 | Horizontal/vertical good, re-parenting and SVG/PNG export work; radial layout broken; markdown export drops links |
-| Kanban | 5 | Looks good; **colour picker can't be clicked**; tiny drop zones; Esc closes the board |
-| Whiteboard | 6 | Tools, undo, zoom and persistence work; light canvas in dark theme; export skips the save dialog |
-| Switching canvas modes | 7 | Returns to the same board; Draw tab with no board is a dead end |
-| PDF viewer | 3 | Renders and zooms; **highlights impossible** (no text layer); opening = typing a path into `prompt()` |
-| Link preview cards | 6 | Real metadata; no loading/failure state; URL shown twice on failure |
+| Graph view | 4 | Fast (0.4 s at 200 nodes), but zoom drifts off the cursor, dragging opens the page, labels pile up. **Fixed** (`c91ae6a`): zoom anchored at the cursor, 4 px drag threshold, collision-culled labels by link count + hover neighbourhood, theme colours |
+| Mind map | 6 | Horizontal/vertical good, re-parenting and SVG/PNG export work; radial layout broken; markdown export drops links. **Fixed** (`5117060`): leaf-weighted radial layout with no overlaps, export keeps links/headings, title once, refit on resize |
+| Kanban | 5 | Looks good; **colour picker can't be clicked**; tiny drop zones; Esc closes the board. **Fixed** (`6f3a0fd`): picker clickable, colour synced as a block property, whole-column drop target, Esc closes the topmost popover, wiki chips open pages |
+| Whiteboard | 6 | Tools, undo, zoom and persistence work; light canvas in dark theme; export skips the save dialog. **Fixed** (`ccb7fb4`, `d6cde77`): follows the theme, zoom % and undo/redo buttons, keyboard focus, save dialog + SVG export |
+| Switching canvas modes | 7 | Returns to the same board; Draw tab with no board is a dead end. **Fixed** (`ccb7fb4`): Draw tab offers this page's board or a new one; no stale board on another page |
+| PDF viewer | 3 | Renders and zooms; **highlights impossible** (no text layer); opening = typing a path into `prompt()`. **Fixed** (`c0af3c1`): text layer + highlights, native picker with recent PDFs, file name, disabled controls on errors |
+| Link preview cards | 6 | Real metadata; no loading/failure state; URL shown twice on failure. **Fixed** (`02556ad`): loading / loaded / "Preview unavailable · open link" with the domain; User-Agent sent |
 | Remote images | 8 | Clear placeholders and bar; Never/Ask/Always work |
 | Pasted images (attachments) | 2 | **Real image paste saved as a `blob:` URL — gone after restart** |
-| Export flows | 3 | Mind map export good; page "Export as HTML" saves silently to the working directory; whiteboard writes straight to Downloads |
-| Narrow window / light theme (views) | 5 | Graph stays dark in light theme; mind map and whiteboard don't refit |
+| Export flows | 3 | Mind map export good; page "Export as HTML" saves silently to the working directory; whiteboard writes straight to Downloads. **Fixed** (`d6cde77`): every export through the save dialog with a toast naming the file |
+| Narrow window / light theme (views) | 5 | Graph stays dark in light theme; mind map and whiteboard don't refit. **Fixed** (`c91ae6a`, `5117060`, `ccb7fb4`): graph and whiteboard follow the theme, the mind map refits on resize (the whiteboard keeps its camera, Fit/F refits) |
 
 ### Settings, sync, AI, import, power features
 
@@ -155,16 +155,17 @@ Ranked by harm. **D** = data loss or corruption, **S** = safety/security, **B** 
 | C-11 | B | **Collapse can't be done with the mouse** — the toggle is covered by the drag handle and zoom trigger | block controls CSS | S |
 | C-12 | B | **Block references render as raw `((uuid))` after any reload** | markdown → node parse | S/M |
 | C-13 | B | **After a drag, the outline renders scrambled** until reload (data is correct; positions sorted without outline order) | `PageView` `localBlocks` | S |
-| C-14 | B | **PDF highlights can't be created** — no pdf.js text layer | `PdfViewer.tsx` | M |
-| C-15 | B | **Page "Export as HTML" saves silently into the app's working directory** (found later as `Project Alpha.html` in the repo root) with no dialog or message; whiteboard export writes to Downloads with no dialog | `exportPage.ts`, `Whiteboard.tsx` | S |
-| C-16 | B | **Kanban colour picker can't be clicked** (backdrop z-index 99 above picker 50) | `styles.css` | S |
+| C-14 | B | **PDF highlights can't be created** — no pdf.js text layer. **Fixed** in `c0af3c1` (text layer; Ctrl+P native picker + recent PDFs) | `PdfViewer.tsx` | M |
+| C-15 | B | **Page "Export as HTML" saves silently into the app's working directory** (found later as `Project Alpha.html` in the repo root) with no dialog or message; whiteboard export writes to Downloads with no dialog. **Fixed** in `d6cde77` (save dialog + toast for every export; `save_png_to_downloads` removed) | `exportPage.ts`, `Whiteboard.tsx` | S |
+| C-16 | B | **Kanban colour picker can't be clicked** (backdrop z-index 99 above picker 50). **Fixed** in `6f3a0fd` | `styles.css` | S |
 | C-17 | B | **Git sync can't be set up in the app** — no remote field, no "Sync now", "Last synced" shown with no remote, a missing remote is a silent "Offline" | Settings / sync | M |
-| C-18 | B | **Mind map radial layout overlaps nodes** | `blocksToFlow.ts` | M |
-| C-19 | B | **Graph zoom drifts away from the cursor** (sign error) and **dragging a node opens its page** | `GraphView.tsx` ~461 | S |
+| C-18 | B | **Mind map radial layout overlaps nodes**. **Fixed** in `5117060` | `blocksToFlow.ts` | M |
+| C-19 | B | **Graph zoom drifts away from the cursor** (sign error) and **dragging a node opens its page**. **Fixed** in `c91ae6a` | `GraphView.tsx` ~461 | S |
 
 Also worth fixing soon: link previews and remote images send no User-Agent
-(Wikipedia/Wikimedia answer 403); Kanban Esc closes the whole board; the
-whiteboard overlay lets typing reach the hidden page underneath; Manage
+(Wikipedia/Wikimedia answer 403) (**fixed** in `02556ad`); Kanban Esc closes the
+whole board (**fixed** in `6f3a0fd`); the whiteboard overlay lets typing reach
+the hidden page underneath (**fixed** in `ccb7fb4`); Manage
 notebooks re-sorts rows after a rename; split→merge isn't reversible.
 
 ## 4. Patterns behind the scores
