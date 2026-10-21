@@ -304,9 +304,8 @@ export default function App() {
       }
 
       // Other dates: soft-create (check if exists first)
-      const allPages = await api.listPages(200);
+      const existing = await api.findJournalPage(d);
       if (token !== navTokenRef.current) return;
-      const existing = allPages.find(p => p.is_journal && p.journal_date === d);
       if (existing) {
         const tree = await api.getPageTree(existing.id);
         if (token !== navTokenRef.current) return;

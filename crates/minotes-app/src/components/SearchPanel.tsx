@@ -143,7 +143,7 @@ export default function SearchPanel({
       setSelectedIndex(0);
       setOthers(null);
       setAllNotebooks(getSettings().searchAllNotebooks);
-      api.listPages(1000).then(setPages).catch(() => {});
+      api.listPages(1000000).then(setPages).catch(() => {}); // every page, not the first N
       setVisibleIds(null);
       api.getFolderTree().then(tree => {
         const ids = new Set<string>(tree.root_pages.map(p => p.id));

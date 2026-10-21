@@ -823,6 +823,57 @@ const handlers: Record<string, (args: any) => any> = {
       .slice(0, limit ?? 100);
   },
 
+  // core repo/page_titles.rs: queries over every live page (UX review U-6).
+  find_pages_by_title: ({ query, limit }: { query: string; limit?: number }) => {
+    const q = query.trim().toLowerCase();
+    const live = Array.from(pages.values()).filter(p => !pageHidden(p.id));
+    if (!q) return live.sort((a, b) => b.updated_at.localeCompare(a.updated_at)).slice(0, limit ?? 20);
+    const terms = q.split(/\s+/);
+    const words = (t: string) => t.split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+    return live
+      .map(p => {
+        const t = p.title.toLowerCase();
+        if (!terms.every(w => t.includes(w))) return null;
+        const rank = t === q ? 0 : t.startsWith(q) ? 1
+          : words(t).some(w => w.startsWith(terms[0])) && t.includes(q) ? 2 : t.includes(q) ? 3 : 4;
+        return { rank, p };
+      })
+      .filter((x): x is { rank: number; p: Page } => x !== null)
+      .sort((a, b) => a.rank - b.rank || [...a.p.title].length - [...b.p.title].length || b.p.updated_at.localeCompare(a.p.updated_at))
+      .slice(0, limit ?? 20)
+      .map(x => x.p);
+  },
+
+  title_in_use: ({ title, excludeId }: { title: string; excludeId?: string | null }) => {
+    const p = pageByTitle(title.trim());
+    return !!p && p.id !== excludeId && !trash.has(p.id);
+  },
+
+  find_journal_page: ({ date }: { date: string }) => {
+    const p = findJournal(date);
+    return p && !pageHidden(p.id) ? p : null;
+  },
+
+  list_journal_pages: ({ limit }: { limit?: number }) =>
+    Array.from(pages.values())
+      .filter(p => p.is_journal && !pageHidden(p.id))
+      .sort((a, b) => (b.journal_date ?? "").localeCompare(a.journal_date ?? ""))
+      .slice(0, limit ?? 20),
+
+  link_candidates: ({ text, excludeId, limit }: { text: string; excludeId?: string | null; limit?: number }) => {
+    const lower = text.toLowerCase();
+    const words = (t: string) => t.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+    const textWords = new Set(words(text).filter(w => [...w].length >= 4));
+    return Array.from(pages.values())
+      .filter(p => p.id !== excludeId && !pageHidden(p.id))
+      .filter(p => {
+        const t = p.title.trim().toLowerCase();
+        return ([...t].length >= 3 && lower.includes(t)) || words(t).some(w => textWords.has(w));
+      })
+      .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
+      .slice(0, limit ?? 500);
+  },
+
   get_page_tree: ({ titleOrId }: { titleOrId: string }) => {
     const page = findPage(titleOrId);
     if (page) return { page, blocks: getPageBlocks(page.id) };

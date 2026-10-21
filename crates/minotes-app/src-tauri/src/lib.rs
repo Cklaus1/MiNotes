@@ -141,6 +141,42 @@ fn list_pages(state: State<'_, AppState>, limit: Option<i64>) -> Result<Vec<Page
     db.list_pages(limit).map_err(|e| e.to_string())
 }
 
+// Page-title queries over every page, whatever the notebook's size (UX review
+// U-6; core `repo/page_titles.rs`). Never filter `list_pages(N)` for these.
+
+#[tauri::command]
+fn find_pages_by_title(state: State<'_, AppState>, query: String, limit: Option<usize>) -> Result<Vec<Page>, String> {
+    let db = state.db_guard()?;
+    db.find_pages_by_title(&query, limit.unwrap_or(20)).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn title_in_use(state: State<'_, AppState>, title: String, exclude_id: Option<String>) -> Result<bool, String> {
+    let db = state.db_guard()?;
+    let exclude = exclude_id.and_then(|s| uuid::Uuid::parse_str(&s).ok());
+    db.title_in_use(&title, exclude.as_ref()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn find_journal_page(state: State<'_, AppState>, date: String) -> Result<Option<Page>, String> {
+    let db = state.db_guard()?;
+    let d = chrono::NaiveDate::parse_from_str(&date, "%Y-%m-%d").map_err(|e| format!("Bad date {date}: {e}"))?;
+    db.find_journal_page(d).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_journal_pages(state: State<'_, AppState>, limit: Option<usize>) -> Result<Vec<Page>, String> {
+    let db = state.db_guard()?;
+    db.list_journal_pages(limit.unwrap_or(20)).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn link_candidates(state: State<'_, AppState>, text: String, exclude_id: Option<String>, limit: Option<usize>) -> Result<Vec<Page>, String> {
+    let db = state.db_guard()?;
+    let exclude = exclude_id.and_then(|s| uuid::Uuid::parse_str(&s).ok());
+    db.link_candidates(&text, exclude.as_ref(), limit.unwrap_or(500)).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn get_page_tree(state: State<'_, AppState>, title_or_id: String) -> Result<PageTree, String> {
     let db = state.db_guard()?;
@@ -1619,6 +1655,11 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             list_pages,
+            find_pages_by_title,
+            title_in_use,
+            find_journal_page,
+            list_journal_pages,
+            link_candidates,
             get_page_tree,
             create_page,
             delete_page,

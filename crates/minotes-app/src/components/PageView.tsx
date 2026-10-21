@@ -235,9 +235,10 @@ export default function PageView({
     // its title is mentioned here or it shares distinctive keywords — never just
     // because it exists.
     let cancelled = false;
-    const timer = setTimeout(() => api.listPages(100).then((allPages: api.Page[]) => {
+    // Candidates come from every page (api.linkCandidates), not the first 100.
+    const timer = setTimeout(() => api.linkCandidates(pageText, page.id).then((candidates: api.Page[]) => {
       if (cancelled) return;
-      setSuggestedLinks(suggestLinks(pageText, page.id, allPages, dismissedLinks));
+      setSuggestedLinks(suggestLinks(pageText, page.id, candidates, dismissedLinks));
     }).catch(() => {}), 250);
     return () => { cancelled = true; clearTimeout(timer); };
   }, [pageText, page.id, dismissedLinks, linkSuggestionsEnabled]);

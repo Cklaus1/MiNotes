@@ -4683,6 +4683,34 @@ R=$(ev "(()=>{const f=document.querySelector('[data-testid=new-page-field]');ret
 press "Escape"; sleep 0.3
 
 # ═══════════════════════════════════════════════
+journey "89. Link suggestions and [[ find a page in a notebook with more than 100 pages (U-6)"
+# The app filtered the first 100–200 pages (by position) in the frontend.
+# ═══════════════════════════════════════════════
+A89="const api=await import('/src/lib/api.ts');"
+api "closePanel()" >/dev/null; press "Escape"; sleep 0.3
+S89=$(date +%s)
+R=$(ev "(async()=>{$A89 const n=(await api.listPages(1000000)).length;for(let i=n;i<130;i++)await api.createPage('Filler89 '+i+' $S89');await api.createPage('Zephyr$S89 Turbine');const p=await api.createPage('Notes89 $S89');await api.createBlock(p.id,'We serviced the Zephyr$S89 Turbine today');return (await api.listPages(1000000)).length})()" | tr -d '"')
+[[ "$R" -gt 120 ]] 2>/dev/null && pass "Notebook has $R pages" || fail "Seeding 120+ pages" "$R"
+
+step "The new page is past the first 100 the old code looked at"
+R=$(ev "(async()=>{$A89 return (await api.listPages(100)).some(p=>p.title==='Zephyr$S89 Turbine')})()" | tr -d '"')
+[[ "$R" == "false" ]] && pass "Not in listPages(100) — the old window" || fail "Precondition: page outside the first 100" "$R"
+
+step "Link suggestions on a page that mentions it offer it"
+api "navigateTo('Notes89 $S89')" >/dev/null; sleep 2.5
+R=$(ev "!![...document.querySelectorAll('.ai-link-chip')].find(c=>c.textContent.includes('Zephyr$S89'))" | tr -d '"')
+[[ "$R" == "true" ]] && pass "Suggested link to the 120th+ page" || fail "Link suggestion in a big notebook" "$R"
+ss "89-big-notebook-suggestion"
+
+step "[[ autocomplete's page lookup finds it, best match first"
+R=$(ev "(async()=>{$A89 const r=await api.findPagesByTitle('zephyr$S89',8);return r.map(p=>p.title).join('|')})()" | tr -d '"')
+[[ "$R" == "Zephyr$S89 Turbine"* ]] && pass "findPagesByTitle: $R" || fail "Title search in a big notebook" "$R"
+
+step "Renaming another page to its title is refused before the backend is asked"
+R=$(ev "(async()=>{const m=await import('/src/lib/pageNames.ts');$A89 const p=(await api.listPages(1000000)).find(x=>x.title==='Notes89 $S89');return await m.pageTitleConflict('Zephyr$S89 Turbine',p.id)})()" | tr -d '"')
+[[ "$R" == *"already exists"* ]] && pass "Clash found: $R" || fail "Rename clash check in a big notebook" "$R"
+
+# ═══════════════════════════════════════════════
 close_app
 
 # ═══════════════════════════════════════════════

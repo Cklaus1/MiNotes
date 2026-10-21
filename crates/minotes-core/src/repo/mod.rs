@@ -11,6 +11,7 @@ pub mod graph;
 pub mod legacy_notebooks;
 pub mod links;
 pub mod pages;
+pub mod page_titles;
 pub mod properties;
 pub mod schemas;
 pub mod sync;

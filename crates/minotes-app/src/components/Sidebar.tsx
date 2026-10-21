@@ -190,9 +190,9 @@ export default function Sidebar({
     try {
       const tree = await api.getFolderTree();
       setTreeData(tree);
-      const pages = await api.listPages(200);
-      // Filter journals: only show ones with actual content
-      const journalPages = pages.filter(p => p.is_journal).slice(0, 20);
+      // Recent journals, newest first, whatever the notebook's size; only the
+      // ones with actual content are shown.
+      const journalPages = await api.listJournalPages(20);
       const withContent: typeof journalPages = [];
       for (const jp of journalPages) {
         try {

@@ -20,7 +20,7 @@ export default function AllPagesView({ onPageClick, onClose }: Props) {
   const loadData = useCallback(async () => {
     try {
       const [allPages, tree] = await Promise.all([
-        api.listPages(500),
+        api.listPages(1000000), // every page (All Pages is the full list)
         api.getFolderTree(),
       ]);
       setPages(allPages.filter(p => !p.is_journal));

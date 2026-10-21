@@ -119,6 +119,24 @@ export interface GraphStats {
 export const listPages = (limit?: number) =>
   invoke<Page[]>("list_pages", { limit: limit ?? 100 });
 
+// Page-title queries over EVERY page (core repo/page_titles.rs) — use these, never
+// `listPages(N)` + a filter, which misses pages past the first N (UX review U-6).
+/** Pages whose title contains `query` (case-insensitive), best match first. */
+export const findPagesByTitle = (query: string, limit = 20) =>
+  invoke<Page[]>("find_pages_by_title", { query, limit });
+/** Does a page other than `excludeId` hold exactly this title? (rename clash check) */
+export const titleInUse = (title: string, excludeId?: string) =>
+  invoke<boolean>("title_in_use", { title, excludeId: excludeId ?? null });
+/** The journal page for a date (YYYY-MM-DD) if it exists — never creates it. */
+export const findJournalPage = (date: string) =>
+  invoke<Page | null>("find_journal_page", { date });
+/** Journal pages, newest first. */
+export const listJournalPages = (limit = 20) =>
+  invoke<Page[]>("list_journal_pages", { limit });
+/** Candidates for suggested links from a page's text (scored by lib/linkSuggestions.ts). */
+export const linkCandidates = (text: string, excludeId?: string, limit = 500) =>
+  invoke<Page[]>("link_candidates", { text, excludeId: excludeId ?? null, limit });
+
 export const getPageTree = (titleOrId: string) =>
   invoke<PageTree>("get_page_tree", { titleOrId });
 

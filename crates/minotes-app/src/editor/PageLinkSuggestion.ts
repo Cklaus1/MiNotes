@@ -4,7 +4,7 @@ import Suggestion, { type SuggestionOptions, type SuggestionProps } from "@tipta
 import { PluginKey } from "@tiptap/pm/state";
 import tippy, { type Instance as TippyInstance } from "tippy.js";
 import { PageLinkMenu } from "./PageLinkMenu";
-import { listPages, createPage, listNotebooks, getCurrentNotebook, listNotebookPages } from "../lib/api";
+import { findPagesByTitle, createPage, listNotebooks, getCurrentNotebook, listNotebookPages } from "../lib/api";
 import { splitNotebookLink, NOTEBOOK_SEP } from "../lib/crossNotebook";
 
 /** Exported so the editor can tell whether this menu is open (e.g. Escape closes it). */
@@ -74,15 +74,12 @@ export const PageLinkSuggestion = Extension.create({
           }
           try {
             const [pages, notebooks, current] = await Promise.all([
-              listPages(100),
+              findPagesByTitle(query, 8), // every page, best match first
               listNotebooks().catch(() => []),
               getCurrentNotebook().catch(() => ""),
             ]);
             const q = query.toLowerCase();
-            const local = pages
-              .filter((p: any) => p.title.toLowerCase().includes(q))
-              .slice(0, 8)
-              .map((p: any) => ({ id: p.id, title: p.title }));
+            const local = pages.map((p) => ({ id: p.id, title: p.title }));
             // Other notebooks, offered as `Name::` (after the local pages, so
             // Enter still picks the best page).
             const nbs = notebooks
