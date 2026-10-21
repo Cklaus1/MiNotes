@@ -48,6 +48,9 @@ cd crates/minotes-app && npx vite --port 1420
 # TypeScript check (must run from crates/minotes-app/)
 cd crates/minotes-app && npx tsc --noEmit
 
+# Frontend unit tests (vitest + jsdom: editor markdown round trip, confirm dialog, source lints)
+cd crates/minotes-app && npm test
+
 # Vite production build
 cd crates/minotes-app && npx vite build
 
@@ -88,7 +91,7 @@ cargo run -p minotes-cli -- notebook list                     # notebook create|
 
 ## CI (GitHub Actions, `.github/workflows/`)
 
-- **`ci.yml`** — every push to `main` and every PR (superseded runs cancelled): `rust` (`cargo check -p minotes-app -p minotes-cli`, `cargo test --workspace`, both `--locked`), `frontend` (`npm ci`, `tsc --noEmit`, `vite build`), `journeys` (vite on :1591 + `JOURNEY_URL=http://localhost:1591 bash tests/user-journey-test.sh` in headless Chrome via `agent-browser@0.22.1`; screenshots + logs uploaded on failure), `audit` (`cargo audit`, `npm audit --omit=dev --audit-level=high`).
+- **`ci.yml`** — every push to `main` and every PR (superseded runs cancelled): `rust` (`cargo check -p minotes-app -p minotes-cli`, `cargo test --workspace`, both `--locked`), `frontend` (`npm ci`, `tsc --noEmit`, `npm test`, `vite build`), `journeys` (vite on :1591 + `JOURNEY_URL=http://localhost:1591 bash tests/user-journey-test.sh` in headless Chrome via `agent-browser@0.22.1`; screenshots + logs uploaded on failure), `audit` (`cargo audit`, `npm audit --omit=dev --audit-level=high`).
 - **`nightly.yml`** — 03:17 UTC daily + manual: builds the debug app, then `tests/desktop-journey-test.sh` and `JOURNEY_BACKEND=desktop DESKTOP_NO_BUILD=1 bash tests/user-journey-test.sh` on Xvfb (tauri-driver + WebKitWebDriver); shots, logs and `results.tsv` uploaded on failure.
 - **`release-android.yml`** — manual or `v*` tag: debug APK for x86_64 + aarch64 (NDK 27.0.12077973, JDK 17), uploaded as an artifact. No signing secrets.
 - Rules: `permissions: contents: read`, no secrets, `pull_request` only (never `pull_request_target`), third-party actions pinned to full commit SHAs (bump the SHA and its `# vX` comment together). Lint workflow edits with `actionlint`.

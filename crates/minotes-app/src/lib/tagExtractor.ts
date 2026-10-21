@@ -3,6 +3,19 @@
  * No external dependencies — pure TypeScript.
  */
 
+/** A tag name (after the `#`): starts with a letter, then word chars / hyphens /
+ *  underscores, with optional nested `/parts`. Shared with the editor's TagNode. */
+export const TAG_NAME = "[a-zA-Z][a-zA-Z0-9_-]*(?:\\/[a-zA-Z0-9][a-zA-Z0-9_-]*)*";
+
+/** Looks like a CSS hex color? Exclude 6/8-digit pure-hex always (virtually never
+ *  a tag), and 3/4-digit only when it contains a digit (e.g. #f0f) — pure-letter
+ *  shorts like #fff/#cafe/#beef stay, since those are plausibly real tags. */
+export function isHexColorTag(t: string): boolean {
+  if (/^[0-9a-f]{6}$/i.test(t) || /^[0-9a-f]{8}$/i.test(t)) return true;
+  if (/^[0-9a-f]{3,4}$/i.test(t) && /[0-9]/.test(t)) return true;
+  return false;
+}
+
 export interface TagResult {
   tags: string[];
   confidence: number;
@@ -25,19 +38,11 @@ export function extractTagsFromBlock(content: string): string[] {
   //    by ':' or '/' as in `color:#fff` or a URL `...#section`), starts with a
   //    LETTER (so `#123` issue refs and `#2bug` are excluded), and allows
   //    word chars / hyphens / underscores / nested slashes.
-  const tagRegex = /(^|\s)#([a-zA-Z][a-zA-Z0-9_-]*(?:\/[a-zA-Z0-9][a-zA-Z0-9_-]*)*)/g;
-  // Looks like a CSS hex color? Exclude 6/8-digit pure-hex always (virtually never
-  // a tag), and 3/4-digit only when it contains a digit (e.g. #f0f) — pure-letter
-  // shorts like #fff/#cafe/#beef stay, since those are plausibly real tags.
-  const isHexColor = (t: string) => {
-    if (/^[0-9a-f]{6}$/i.test(t) || /^[0-9a-f]{8}$/i.test(t)) return true;
-    if (/^[0-9a-f]{3,4}$/i.test(t) && /[0-9]/.test(t)) return true;
-    return false;
-  };
+  const tagRegex = new RegExp(`(^|\\s)#(${TAG_NAME})`, "g");
   let match;
   while ((match = tagRegex.exec(withoutCode)) !== null) {
     const tag = match[2].toLowerCase();
-    if (isHexColor(tag)) continue; // skip hex colors
+    if (isHexColorTag(tag)) continue; // skip hex colors
     tags.add(tag);
   }
 
