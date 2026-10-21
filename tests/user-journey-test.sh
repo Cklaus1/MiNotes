@@ -3660,6 +3660,40 @@ R=$(ev "(()=>{const s=(window.__x66?.saves||[]).filter(x=>/\\.md\$/.test(x.name)
 [[ "$R" == "true,true,1,true,true" ]] && pass "Outline: links, headings, TODO and nesting kept; title once" || fail "Markdown export" "$R"
 press "Escape"; sleep 0.5; press "Escape"; sleep 0.5
 
+step "PDF: text can be selected and a selection becomes a highlight (C-14)"
+# The same one-page fixture as desktop.sh fixture-pdf ("Desktop check" in Helvetica).
+if [[ "$BACKEND" == "desktop" ]]; then
+  PDF66=$("$DC" fixture-pdf | tail -1)
+else
+  PDF66=$(ev "(()=>{const objs=['<< /Type /Catalog /Pages 2 0 R >>','<< /Type /Pages /Kids [3 0 R] /Count 1 >>','<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>','<< /Length 77 >>\nstream\n0 0 1 rg 20 20 80 80 re f\nBT /F1 24 Tf 120 100 Td (Desktop check) Tj ET\nendstream','<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>'];let s='%PDF-1.4\n';const offs=[];objs.forEach((o,i)=>{offs.push(s.length);s+=(i+1)+' 0 obj\n'+o+'\nendobj\n'});const x=s.length;s+='xref\n0 '+(objs.length+1)+'\n0000000000 65535 f \n'+offs.map(o=>String(o).padStart(10,'0')+' 00000 n \n').join('');s+='trailer\n<< /Size '+(objs.length+1)+' /Root 1 0 R >>\nstartxref\n'+x+'\n%%EOF\n';return URL.createObjectURL(new Blob([s],{type:'application/pdf'}))})()" | tr -d '"')
+fi
+api "openPdf('$PDF66')" >/dev/null
+for _ in $(seq 1 20); do R=$(ev "document.querySelector('.pdf-text-layer')?.dataset.ready||''" | tr -d '"'); [[ "$R" == "1" ]] && break; sleep 0.5; done
+R=$(ev "(()=>{const s=[...document.querySelectorAll('.pdf-text-layer span')].find(x=>x.textContent.includes('Desktop check'));if(!s)return 'no text span';const r=s.getBoundingClientRect(),c=document.querySelector('.pdf-canvas').getBoundingClientRect();const top=document.elementFromPoint(r.left+r.width/2,r.top+r.height/2);return [getComputedStyle(s).userSelect!=='none',top===s,r.width>40,r.left>c.left,r.right<c.right].join(',')})()" | tr -d '"')
+[[ "$R" == "true,true,true,true,true" ]] && pass "Selectable text over the page: the span is on top, inside the page" || fail "No PDF text layer" "$R"
+NAME66=$(ev "document.querySelector('[data-testid=pdf-file-name]')?.textContent||''" | tr -d '"')
+if [[ "$BACKEND" == "desktop" ]]; then [[ "$NAME66" == "desktop-check.pdf" ]] && pass "The toolbar shows the file name" || fail "No file name" "$NAME66"; fi
+R=$(ev "(async()=>{const s=[...document.querySelectorAll('.pdf-text-layer span')].find(x=>x.textContent.includes('Desktop check'));const rg=document.createRange();rg.selectNodeContents(s);const sel=getSelection();sel.removeAllRanges();sel.addRange(rg);const b=s.getBoundingClientRect();s.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,clientX:b.right,clientY:b.bottom}));await new Promise(r=>setTimeout(r,1500));$A66 const h=(await api.getHighlights('$PDF66'))[0];const c=document.querySelector('.pdf-canvas').getBoundingClientRect();const k=parseFloat(document.querySelector('.pdf-zoom-label').textContent)/100;const onText=!!h&&Math.abs(c.top+h.y*k-b.top)<6&&Math.abs(c.left+h.x*k-b.left)<6;return document.querySelectorAll('.pdf-highlight-item').length+'|'+(document.querySelector('.pdf-highlight-item .pdf-highlight-text')?.textContent||'')+'|'+onText})()" | tr -d '"')
+[[ "$R" == "1|Desktop check|true" ]] && pass "Selecting 'Desktop check' created a highlight on the text (sidebar: 1)" || fail "Highlight not created" "$R"
+ss "66-pdf-highlight"
+ev "document.querySelector('.pdf-close-btn')?.click()" >/dev/null; sleep 0.5
+
+step "PDF: a missing file shows the error card with the controls disabled"
+api "openPdf('/no/such/missing66.pdf')" >/dev/null; sleep 2
+R=$(ev "!!document.querySelector('.pdf-load-error')+'|'+[...document.querySelectorAll('.pdf-toolbar button:not(.pdf-close-btn), .pdf-page-input')].every(b=>b.disabled)+'|'+(document.querySelector('[data-testid=pdf-file-name]')?.textContent||'')" | tr -d '"')
+[[ "$R" == "true|true|missing66.pdf" ]] && pass "Error card; page/zoom/colour controls disabled; file name shown" || fail "PDF error state" "$R"
+ev "document.querySelector('.pdf-close-btn')?.click()" >/dev/null; sleep 0.5
+
+step "PDF: Ctrl+P offers the recent PDFs (no prompt())"
+ev "(async()=>{$A66 const r=JSON.parse((await api.getUiState('recent-pdfs'))||'[]');if(!r.length)await api.setUiState('recent-pdfs',JSON.stringify(['/home/someone/Papers/recent66.pdf']));return 1})()" >/dev/null
+ev "document.activeElement?.blur()" >/dev/null; press "Control+p"; sleep 1
+R=$(ev "(()=>{const d=document.querySelector('[data-testid=open-pdf-dialog]');return d?(!!d.querySelector('.pdf-open-choose')+'|'+d.querySelectorAll('.pdf-open-recent-item').length):'no dialog'})()" | tr -d '"')
+[[ "$R" == "true|"[1-9]* ]] && pass "Ctrl+P: 'Choose a PDF file…' + recent PDFs ($R)" || fail "Ctrl+P dialog" "$R"
+ss "66-pdf-open-dialog"
+press "Escape"; sleep 0.5
+R=$(ev "!!document.querySelector('[data-testid=open-pdf-dialog]')" | tr -d '"')
+[[ "$R" == "false" ]] && pass "Esc closes it" || fail "Ctrl+P dialog stays" "$R"
+
 # ═══════════════════════════════════════════════
 close_app
 

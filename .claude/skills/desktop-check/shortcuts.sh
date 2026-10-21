@@ -79,7 +79,8 @@ for ctx in neutral editor; do
   t "Ctrl+Q" Control+q ctrl+q $ctx "SQL Query Panel (palette hint)" "" 'window.__MINOTES__.isPanelOpen("query")'
   t "Ctrl+R" Control+r ctrl+r $ctx "Flashcard Review (palette hint)" "" 'window.__MINOTES__.isPanelOpen("review")'
   t "Ctrl+Shift+T" Control+Shift+T ctrl+shift+t $ctx "Toggle Theme (palette hint)" "" '(document.documentElement.className + "|" + document.body.className + "|" + (document.documentElement.dataset.theme || "")) !== window.__b.theme' '"$D" press Control+Shift+T'
-  t "Ctrl+P" Control+p ctrl+p $ctx "(undocumented) open PDF by path" "" 'window.__sig.dialogs.some(d => /PDF/.test(d.msg))'
+  # A recent PDF first, so Ctrl+P shows the in-app list instead of the native picker.
+  t "Ctrl+P" Control+p ctrl+p $ctx "(undocumented) open a PDF" "ev \"(async()=>{await window.__MINOTES__.modules['/src/lib/api.ts'].setUiState('recent-pdfs', JSON.stringify(['/tmp/x.pdf'])); return 1})()\"" 'document.querySelector("[data-testid=open-pdf-dialog]")'
   t "Ctrl+1" Control+1 ctrl+1 $ctx "(undocumented) open pinned page #1" "ev \"(async()=>{const api=window.__MINOTES__.modules['/src/lib/api.ts']; const p=(await api.listPages(1000)).find(x=>x.title==='Research Notes'); try{await api.addFavorite(p.id)}catch(e){} return 1})()\"" 'window.__MINOTES__.getCurrentPage() === "Research Notes"'
 done
 # Undo / redo

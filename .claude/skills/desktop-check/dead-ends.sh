@@ -142,8 +142,11 @@ probe "Kanban (Ctrl+Shift+K)"              neutral no  'press Control+Shift+K 1.
 probe "Whiteboard / Draw (Ctrl+W)"         neutral no  'press Control+w 2' '(document.querySelector(".canvas-mode-btn.active")?.innerText || "").includes("Draw") ? document.querySelector(".canvas-layer") : null'
 probe "Whiteboard, a drawing tool armed"   neutral no  'press Control+w 2; rclick "window.__sig.byText(\".canvas-layer button\", \"Box\")" 0.5' '(document.querySelector(".canvas-mode-btn.active")?.innerText || "").includes("Draw") ? document.querySelector(".canvas-layer") : null'
 probe "All pages (sidebar button)"         neutral no  'rclick "window.__sig.byText(\".stats-mode-btn\", \"Pages\")" 1.2' '(document.querySelector(".canvas-mode-btn.active")?.innerText || "").includes("Pages") ? document.querySelector(".canvas-layer") : null'
-probe "PDF viewer (Ctrl+P)"                neutral no  "answer '$PDF'; press Control+p 2.5" 'document.querySelector(".pdf-viewer")'
-probe "PDF viewer, missing file"           neutral no  "answer '/no/such.pdf'; press Control+p 2.5" 'document.querySelector(".pdf-viewer")'
+# Ctrl+P opens the native file picker (or a recent-PDFs list), which a probe
+# can't drive: open the viewer through the test API instead.
+probe "PDF viewer"                         neutral no  "ev \"(window.__MINOTES__.openPdf('$PDF'), 1)\" >/dev/null; sleep 2.5" 'document.querySelector(".pdf-viewer")'
+probe "PDF viewer, missing file"           neutral no  "ev \"(window.__MINOTES__.openPdf('/no/such.pdf'), 1)\" >/dev/null; sleep 2.5" 'document.querySelector(".pdf-viewer")'
+probe "Open a PDF (Ctrl+P, recent PDFs)"   neutral yes "ev \"(async()=>{await window.__MINOTES__.modules['/src/lib/api.ts'].setUiState('recent-pdfs', JSON.stringify(['$PDF'])); return 1})()\" >/dev/null; press Control+p 1" 'document.querySelector("[data-testid=open-pdf-dialog]")'
 probe "Block context menu (right-click)"   editor  yes 'rrclick "document.querySelectorAll(\".block .ProseMirror\")[1]"' 'document.querySelector(".block-context-menu")'
 probe "Sidebar page menu (right-click)"    neutral yes "rrclick '$PAGE_ROW'" 'document.querySelector(".sidebar-context-menu-item")?.parentElement'
 probe "Sidebar page menu (⋮ button)"       neutral yes "rhover '$PAGE_ROW'; rclick '$PAGE_ROW.querySelector(\".page-more-btn\")'" 'document.querySelector(".sidebar-context-menu-item")?.parentElement'

@@ -18,10 +18,12 @@ import { countPendingTodos, parseTodoLine } from "./todoExtractor";
 import type {
   Page, Block, PageTree, Link, GraphStats, Property,
   FolderTreeRoot, QueryResult, GraphData, RestoreBlock, Card, BlockWithPage,
-  Template, CssSnippet,
+  Template, CssSnippet, Highlight as PdfHighlight,
 } from "./api";
 
 // ── In-memory store ──
+
+const mockHighlights: PdfHighlight[] = [];
 
 const now = new Date().toISOString();
 const today = localDateKey();
@@ -1414,11 +1416,28 @@ const handlers: Record<string, (args: any) => any> = {
     if (paras.length === 0 && content.trim()) createBlock(page.id, content.trim());
     return page;
   },
-  create_highlight: notInBrowser("create_highlight"),
-  get_highlights: () => [],
-  update_highlight_note: notInBrowser("update_highlight_note"),
-  delete_highlight: () => false,
-  search_highlights: () => [],
+  // PDF highlights, in memory (like the backend's pdf_highlights table).
+  create_highlight: (a: { pdfPath: string; pageNum: number; x: number; y: number; width: number; height: number; color: string; text?: string; note?: string }) => {
+    const now = new Date().toISOString();
+    const h: PdfHighlight = { id: crypto.randomUUID(), pdf_path: a.pdfPath, page_num: a.pageNum, x: a.x, y: a.y, width: a.width, height: a.height, color: a.color, text: a.text, note: a.note, created_at: now, updated_at: now };
+    mockHighlights.push(h);
+    return h;
+  },
+  get_highlights: ({ pdfPath }: { pdfPath: string }) => mockHighlights.filter(h => h.pdf_path === pdfPath),
+  update_highlight_note: ({ id, note }: { id: string; note: string }) => {
+    const h = mockHighlights.find(x => x.id === id);
+    if (!h) throw new Error("Highlight not found");
+    h.note = note;
+    h.updated_at = new Date().toISOString();
+    return h;
+  },
+  delete_highlight: ({ id }: { id: string }) => {
+    const i = mockHighlights.findIndex(x => x.id === id);
+    if (i >= 0) mockHighlights.splice(i, 1);
+    return i >= 0;
+  },
+  search_highlights: ({ query }: { query: string }) =>
+    mockHighlights.filter(h => `${h.text ?? ""} ${h.note ?? ""}`.toLowerCase().includes(query.toLowerCase())),
   get_sync_status: () => ({ total_pages: 0, synced_pages: 0, pending_changes: 0 }),
   sync_page: notInBrowser("sync_page"),
   get_version_history: () => [],

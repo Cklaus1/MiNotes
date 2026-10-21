@@ -2939,6 +2939,8 @@ body {
 .pdf-canvas-wrapper {
   position: relative;
   display: inline-block;
+  /* As tall as the page, not the viewer (the text layer is laid over it). */
+  align-self: flex-start;
 }
 
 .pdf-canvas {
@@ -2946,12 +2948,88 @@ body {
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.3);
 }
 
+/* Highlights are painted here; the text layer above takes the mouse. */
 .pdf-overlay {
   position: absolute;
   top: 0;
   left: 0;
-  cursor: crosshair;
+  pointer-events: none;
 }
+
+/* pdf.js text layer (from pdfjs-dist/web/pdf_viewer.css, trimmed): transparent
+   text laid exactly over the rendered page so it can be selected. */
+.pdf-text-layer.textLayer {
+  position: absolute;
+  inset: 0;
+  overflow: clip;
+  opacity: 1;
+  line-height: 1;
+  text-align: initial;
+  -webkit-text-size-adjust: none;
+  text-size-adjust: none;
+  forced-color-adjust: none;
+  transform-origin: 0 0;
+  z-index: 1;
+  /* pdf.js sizes the layer with round(down, …, var(--scale-round-x/y)). */
+  --scale-round-x: 1px;
+  --scale-round-y: 1px;
+  --min-font-size: 1;
+  --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size));
+  --min-font-size-inv: calc(1 / var(--min-font-size));
+}
+.pdf-text-layer.textLayer :is(span, br) {
+  color: transparent;
+  position: absolute;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0% 0%;
+}
+.pdf-text-layer.textLayer > :not(.markedContent),
+.pdf-text-layer.textLayer .markedContent span:not(.markedContent) {
+  z-index: 1;
+  --font-height: 0;
+  font-size: calc(var(--text-scale-factor) * var(--font-height));
+  --scale-x: 1;
+  --rotate: 0deg;
+  transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv));
+}
+.pdf-text-layer.textLayer .markedContent { display: contents; }
+.pdf-text-layer.textLayer span[role="img"] { user-select: none; cursor: default; }
+.pdf-text-layer.textLayer ::selection { background: rgba(0, 90, 255, 0.3); }
+.pdf-text-layer.textLayer br::selection { background: transparent; }
+.pdf-text-layer.textLayer .endOfContent {
+  display: block;
+  position: absolute;
+  inset: 100% 0 0;
+  z-index: 0;
+  cursor: default;
+  user-select: none;
+}
+.pdf-text-layer.textLayer.selecting .endOfContent { top: 0; }
+
+.pdf-file-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pdf-color-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+
+/* Ctrl+P: recent PDFs */
+.pdf-open-choose { width: 100%; margin-bottom: 14px; }
+.pdf-open-recent-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); margin-bottom: 6px; }
+.pdf-open-recent { list-style: none; display: flex; flex-direction: column; gap: 2px; max-height: 300px; overflow-y: auto; }
+.pdf-open-recent-item {
+  display: flex; flex-direction: column; align-items: flex-start; width: 100%;
+  padding: 6px 8px; border: none; border-radius: 6px; background: transparent;
+  color: var(--text-primary); cursor: pointer; text-align: left; font: inherit;
+}
+.pdf-open-recent-item:hover, .pdf-open-recent-item:focus-visible { background: var(--bg-surface); }
+.pdf-open-recent-name { font-size: 13px; font-weight: 500; }
+.pdf-open-recent-path { font-size: 11px; color: var(--text-muted); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .pdf-sidebar {
   width: 280px;

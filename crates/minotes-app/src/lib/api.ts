@@ -693,6 +693,12 @@ export const pickZipNative = (title: string) =>
     options: { directory: false, multiple: false, title, filters: [{ name: "MiNotes notebook (.zip)", extensions: ["zip"] }] },
   });
 
+/** Native file picker (Tauri dialog plugin; `dialog:allow-open`). Null when cancelled. */
+export const pickFileNative = (title: string, filters: { name: string; extensions: string[] }[]) =>
+  invoke<string | null>("plugin:dialog|open", {
+    options: { directory: false, multiple: false, title, filters },
+  });
+
 /** Native folder picker (Tauri dialog plugin). Null when cancelled. */
 export const pickFolderNative = (title: string, defaultPath?: string) =>
   invoke<string | null>("plugin:dialog|open", {

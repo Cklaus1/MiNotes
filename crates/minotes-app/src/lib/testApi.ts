@@ -18,6 +18,8 @@ export interface MiNotesTestApi {
   openSearch: () => boolean;
   openSettings: () => boolean;
   closePanel: () => boolean;
+  /** Open the PDF viewer on a path (desktop) or URL (browser) — no file picker. */
+  openPdf: (path: string) => boolean;
   refreshSidebar: () => boolean;
   createPage: (title: string) => Promise<boolean>;
   createBlockInCurrentPage: (content: string) => Promise<boolean>;

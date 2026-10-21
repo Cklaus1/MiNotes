@@ -12,6 +12,8 @@ import { addRecentPage } from "./lib/recentFiles";
 import { errorMessage, saveErrorMessage } from "./lib/errors";
 import SyncPanel from "./components/SyncPanel";
 import PdfViewer from "./components/PdfViewer";
+import OpenPdfDialog from "./components/OpenPdfDialog";
+import { getRecentPdfs, pickPdf } from "./lib/pdfFiles";
 import MobileNav from "./components/MobileNav";
 import ObsidianPluginBrowser from "./components/ObsidianPluginBrowser";
 import CssSnippetManager from "./components/CssSnippetManager";
@@ -65,6 +67,22 @@ export default function App() {
   const [canvasMode, setCanvasMode] = useState<CanvasModeType | null>(null);
   const [whiteboardId, setWhiteboardId] = useState<string | null>(null);
   const [pdfViewerPath, setPdfViewerPath] = useState<string | null>(null);
+  // Ctrl+P with PDFs opened before: pick from the recent ones or choose a file.
+  const [pdfChooser, setPdfChooser] = useState<string[] | null>(null);
+  const choosePdf = useCallback(async () => {
+    setPdfChooser(null);
+    try {
+      const path = await pickPdf();
+      if (path) setPdfViewerPath(path);
+    } catch (err) {
+      showToast(`Couldn't open the file picker: ${errorMessage(err)}`);
+    }
+  }, []);
+  const openPdfFlow = useCallback(async () => {
+    const recent = await getRecentPdfs();
+    if (recent.length > 0) setPdfChooser(recent);
+    else void choosePdf();
+  }, [choosePdf]);
   const [refreshKey, setRefreshKey] = useState(0);
   const [mobileTab, setMobileTab] = useState("pages");
   const [lastError, setLastError] = useState<string | null>(null);
@@ -719,6 +737,10 @@ export default function App() {
         setOpenPanel("settings");
         return true;
       },
+      openPdf: (path: string) => {
+        setPdfViewerPath(path);
+        return true;
+      },
       closePanel: () => {
         setOpenPanel(null);
         setCanvasMode(null);
@@ -850,11 +872,10 @@ export default function App() {
           .then(() => showToast(`Copied "${title}" to the clipboard`))
           .catch(err => showToast(`Couldn't copy the page: ${errorMessage(err)}`));
       }
-      // Cmd/Ctrl+P — open PDF
+      // Cmd/Ctrl+P — open a PDF (native file picker; recent PDFs first if any)
       if (key === "p" && plain && appChord) {
         e.preventDefault();
-        const path = prompt("PDF file path:");
-        if (path?.trim()) setPdfViewerPath(path.trim());
+        void openPdfFlow();
       }
       // Ctrl+Shift+T — toggle theme
       if (key === "t" && e.shiftKey && !e.altKey) {
@@ -887,7 +908,7 @@ export default function App() {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [openJournal, createPage, activePage, whiteboardId, canvasMode, openNewWhiteboard, openPage, refresh]);
+  }, [openJournal, createPage, activePage, whiteboardId, canvasMode, openNewWhiteboard, openPage, refresh, openPdfFlow]);
 
   // UX-009: Journal as default landing + UX-017: Onboarding tutorial on first launch
   useEffect(() => {
@@ -984,6 +1005,14 @@ export default function App() {
             <div style={{ background: "#f38ba8", color: "#1e1e2e", padding: "8px 16px", fontSize: 13, fontWeight: 600 }}>
               {lastError}
             </div>
+          )}
+          {pdfChooser && (
+            <OpenPdfDialog
+              recent={pdfChooser}
+              onOpen={(p) => { setPdfChooser(null); setPdfViewerPath(p); }}
+              onChoose={() => void choosePdf()}
+              onClose={() => setPdfChooser(null)}
+            />
           )}
           {pdfViewerPath && (
             <PdfViewer
