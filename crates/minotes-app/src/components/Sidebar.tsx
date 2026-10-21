@@ -35,20 +35,43 @@ function displayIcon(page: { icon?: string }): string {
   return page.icon ?? "";
 }
 
-// localStorage helpers for expanded project state
+// Which projects are open, at any depth: ids in localStorage. lib/notebooks.ts
+// swaps this key per notebook (folder ids differ between notebooks).
 const EXPANDED_STORAGE_KEY = "minotes-expanded-projects";
-const MAX_EXPANDED = 2;
 
 function loadExpandedIds(): string[] {
   try {
     const raw = localStorage.getItem(EXPANDED_STORAGE_KEY);
-    if (raw) return JSON.parse(raw);
+    const ids = raw ? JSON.parse(raw) : [];
+    return Array.isArray(ids) ? ids.filter((x): x is string => typeof x === "string") : [];
   } catch { /* ignore */ }
   return [];
 }
 
 function saveExpandedIds(ids: string[]): void {
-  localStorage.setItem(EXPANDED_STORAGE_KEY, JSON.stringify(ids));
+  try { localStorage.setItem(EXPANDED_STORAGE_KEY, JSON.stringify(ids)); } catch { /* storage unavailable */ }
+}
+
+/** Every project in the tree, depth-first, with its depth (for "Move to…"). */
+interface FolderEntry { folder: FolderTree; depth: number; parentId: string | null }
+function flattenFolders(folders: FolderTree[], depth = 0, parentId: string | null = null, out: FolderEntry[] = []): FolderEntry[] {
+  for (const f of folders) {
+    out.push({ folder: f, depth, parentId });
+    flattenFolders(f.children ?? [], depth + 1, f.id, out);
+  }
+  return out;
+}
+
+/** Pages in a project including all of its subprojects. */
+function pagesInSubtree(f: FolderTree): number {
+  return f.pages.length + (f.children ?? []).reduce((n, c) => n + pagesInSubtree(c), 0);
+}
+
+/** Ids of a project and everything below it (a project can't move into these). */
+function subtreeIds(f: FolderTree, out = new Set<string>()): Set<string> {
+  out.add(f.id);
+  for (const c of f.children ?? []) subtreeIds(c, out);
+  return out;
 }
 
 interface Props {
@@ -109,7 +132,7 @@ export default function Sidebar({
     return () => window.removeEventListener("minotes-settings-changed", handler);
   }, []);
 
-  // Phase 3a: Track expanded project IDs (max 2), persisted
+  // Open projects at any depth (no limit), persisted per notebook.
   const [expandedProjectIds, setExpandedProjectIds] = useState<string[]>(() => loadExpandedIds());
   // Phase 2d: Collapse/expand all toggle — stores IDs that were open before collapse-all
   const [allCollapsed, setAllCollapsed] = useState(false);
@@ -135,25 +158,12 @@ export default function Sidebar({
     return () => window.removeEventListener(NOTEBOOK_SWITCHED, onSwitch);
   }, []);
 
-  const toggleProjectExpanded = useCallback((folderId: string, shiftKey: boolean) => {
-    setExpandedProjectIds(prev => {
-      if (prev.includes(folderId)) {
-        // Collapse this project
-        return prev.filter(id => id !== folderId);
-      }
-      // Expanding
-      if (shiftKey) {
-        // Shift+click: force open without collapsing others
-        if (prev.includes(folderId)) return prev;
-        return [...prev, folderId];
-      }
-      // Normal expand: cap at MAX_EXPANDED, auto-collapse oldest
-      const next = [...prev, folderId];
-      if (next.length > MAX_EXPANDED) {
-        return next.slice(next.length - MAX_EXPANDED);
-      }
-      return next;
-    });
+  const toggleProjectExpanded = useCallback((folderId: string) => {
+    setExpandedProjectIds(prev => prev.includes(folderId) ? prev.filter(id => id !== folderId) : [...prev, folderId]);
+    setAllCollapsed(false);
+  }, []);
+  const expandProject = useCallback((folderId: string) => {
+    setExpandedProjectIds(prev => prev.includes(folderId) ? prev : [...prev, folderId]);
     setAllCollapsed(false);
   }, []);
 
@@ -261,12 +271,7 @@ export default function Sidebar({
       setNewFolderName("");
       setFolderCreateError(null);
       setShowFolderCreate(false);
-      // Auto-expand the new project
-      setExpandedProjectIds(prev => {
-        const next = [...prev, folder.id];
-        if (next.length > MAX_EXPANDED) return next.slice(next.length - MAX_EXPANDED);
-        return next;
-      });
+      expandProject(folder.id);
       loadTree();
     } finally {
       creatingRef.current = false;
@@ -315,6 +320,7 @@ export default function Sidebar({
 
   // Projects: first 5 visible, rest overflow
   const allProjects = treeData?.folders ?? [];
+  const folderList = flattenFolders(allProjects);
   const visibleProjects = allProjects.slice(0, 5);
   const overflowProjects = allProjects.slice(5);
 
@@ -418,7 +424,7 @@ export default function Sidebar({
                       onPageClick={onPageClick}
                       onDeletePage={onDeletePage}
                       onRefresh={loadTree}
-                      allFolders={allProjects}
+                      folderList={folderList}
                       isPinned={true}
                       pinnedSiblings={favorites}
                     />
@@ -524,12 +530,13 @@ export default function Sidebar({
                 folder={folder}
                 activePage={activePage}
                 depth={0}
-                isExpanded={expandedProjectIds.includes(folder.id)}
-                onToggleExpanded={(shiftKey) => toggleProjectExpanded(folder.id, shiftKey)}
+                expandedIds={expandedProjectIds}
+                onToggle={toggleProjectExpanded}
+                onExpand={expandProject}
                 onPageClick={onPageClick}
                 onDeletePage={onDeletePage}
                 onRefresh={loadTree}
-                allFolders={allProjects}
+                folderList={folderList}
                 pinnedIds={pinnedIds}
                 onFolderSettings={onFolderSettings}
               />
@@ -544,12 +551,13 @@ export default function Sidebar({
                     folder={folder}
                     activePage={activePage}
                     depth={0}
-                    isExpanded={expandedProjectIds.includes(folder.id)}
-                    onToggleExpanded={(shiftKey) => toggleProjectExpanded(folder.id, shiftKey)}
+                    expandedIds={expandedProjectIds}
+                    onToggle={toggleProjectExpanded}
+                    onExpand={expandProject}
                     onPageClick={onPageClick}
                     onDeletePage={onDeletePage}
                     onRefresh={loadTree}
-                    allFolders={allProjects}
+                    folderList={folderList}
                     pinnedIds={pinnedIds}
                     onFolderSettings={onFolderSettings}
                   />
@@ -581,8 +589,9 @@ export default function Sidebar({
                     onPageClick={onPageClick}
                     onDeletePage={onDeletePage}
                     onRefresh={loadTree}
-                    allFolders={allProjects}
+                    folderList={folderList}
                     isPinned={false}
+                    pinnedPage={pinnedIds.has(page.id)}
                   />
                 ))}
               </div>
@@ -754,7 +763,7 @@ export default function Sidebar({
 
 // Draggable page item — drag to move between folders, auto-sorted by last edited
 function DraggablePage({
-  page, activePage, depth, onPageClick, onDeletePage, onRefresh, allFolders, isPinned, pinnedSiblings,
+  page, activePage, depth, onPageClick, onDeletePage, onRefresh, folderList, isPinned, pinnedPage, pinnedSiblings,
 }: {
   page: Page;
   activePage: Page | null;
@@ -762,8 +771,11 @@ function DraggablePage({
   onPageClick: (id: string) => void;
   onDeletePage: (id: string, title?: string) => void;
   onRefresh: () => void;
-  allFolders?: FolderTree[];
+  folderList?: FolderEntry[];
+  /** This row is in the Pinned section (drag-to-reorder, drag out unpins). */
   isPinned?: boolean;
+  /** The page is pinned (shown in Pinned too); only changes the menu's Pin/Unpin. */
+  pinnedPage?: boolean;
   pinnedSiblings?: Page[];  // pass favorites array for pinned reorder
 }) {
   const mouseStart = useRef<{ x: number; y: number } | null>(null);
@@ -792,7 +804,7 @@ function DraggablePage({
   };
 
   const folderName = (id: string | undefined | null) =>
-    id ? (allFolders?.find(f => f.id === id)?.name ?? "project") : null;
+    id ? (folderList?.find(f => f.folder.id === id)?.folder.name ?? "project") : null;
 
   const handleMoveToFolder = async (folderId: string | undefined) => {
     const fromFolder = page.folder_id ?? undefined;
@@ -843,7 +855,7 @@ function DraggablePage({
   };
 
   const handleTogglePin = async () => {
-    if (isPinned) {
+    if (isPinned || pinnedPage) {
       await api.removeFavorite(page.id);
     } else {
       await api.addFavorite(page.id);
@@ -1017,28 +1029,14 @@ function DraggablePage({
             className="sidebar-context-menu-item"
             onClick={() => setShowMoveSubmenu(v => !v)}
           >
-            &#128194; Move to... {showMoveSubmenu ? "\u25B4" : "\u25BE"}
+            &#128194; Move to… {showMoveSubmenu ? "\u25B4" : "\u25BE"}
           </button>
-          {showMoveSubmenu && allFolders && (
-            <div className="sidebar-context-submenu">
-              {page.folder_id && (
-                <button
-                  className="sidebar-context-menu-item"
-                  onClick={() => handleMoveToFolder(undefined)}
-                >
-                  (No project)
-                </button>
-              )}
-              {allFolders.filter(f => f.id !== page.folder_id).map(f => (
-                <button
-                  key={f.id}
-                  className="sidebar-context-menu-item"
-                  onClick={() => handleMoveToFolder(f.id)}
-                >
-                  {f.icon ?? "\uD83D\uDCC1"} {f.name}
-                </button>
-              ))}
-            </div>
+          {showMoveSubmenu && folderList && (
+            <MoveTargets
+              entries={folderList}
+              currentParent={page.folder_id ?? null}
+              onPick={id => handleMoveToFolder(id ?? undefined)}
+            />
           )}
           <button
             className="sidebar-context-menu-item"
@@ -1056,7 +1054,7 @@ function DraggablePage({
             className="sidebar-context-menu-item"
             onClick={handleTogglePin}
           >
-            {isPinned ? "\uD83D\uDDD9 Unpin" : "\uD83D\uDCCC Pin"}
+            {isPinned || pinnedPage ? "\uD83D\uDDD9 Unpin" : "\uD83D\uDCCC Pin"}
           </button>
           <div className="sidebar-context-menu-sep" />
           <button
@@ -1080,42 +1078,94 @@ function DraggablePage({
   );
 }
 
-// Recursive folder component with drop target
+/**
+ * "Move to…" targets: Top level, then every project in the tree, indented by
+ * depth. `exclude` hides projects that can't be picked (a project and its own
+ * subprojects, when moving a project); the current place is shown disabled.
+ */
+function MoveTargets({ entries, currentParent, exclude, onPick }: {
+  entries: FolderEntry[];
+  currentParent: string | null;
+  exclude?: Set<string>;
+  onPick: (folderId: string | null) => void;
+}) {
+  return (
+    <div className="sidebar-context-submenu" role="group" aria-label="Move to">
+      <button
+        className="sidebar-context-menu-item"
+        disabled={currentParent === null}
+        title={currentParent === null ? "Already at the top level" : "Out of every project"}
+        onClick={() => onPick(null)}
+      >
+        &#8679; Top level
+      </button>
+      {entries.filter(e => !exclude?.has(e.folder.id)).map(e => (
+        <button
+          key={e.folder.id}
+          className="sidebar-context-menu-item"
+          style={{ paddingLeft: 12 + e.depth * 14 }}
+          disabled={e.folder.id === currentParent}
+          title={e.folder.id === currentParent ? "It is already here" : undefined}
+          onClick={() => onPick(e.folder.id)}
+        >
+          {e.folder.icon ?? "📁"} {e.folder.name}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// Recursive project row with its subprojects and pages; drop target for pages.
 function FolderItem({
-  folder, activePage, depth, isExpanded, onToggleExpanded, onPageClick, onDeletePage, onRefresh, allFolders, pinnedIds, onFolderSettings,
+  folder, activePage, depth, expandedIds, onToggle, onExpand, onPageClick, onDeletePage, onRefresh, folderList, pinnedIds, onFolderSettings,
 }: {
   folder: FolderTree;
   activePage: Page | null;
   depth: number;
-  isExpanded: boolean;
-  onToggleExpanded: (shiftKey: boolean) => void;
+  /** Open projects, at any depth. */
+  expandedIds: string[];
+  onToggle: (folderId: string) => void;
+  onExpand: (folderId: string) => void;
   onPageClick: (id: string) => void;
   onDeletePage: (id: string, title?: string) => void;
   onRefresh: () => void;
-  allFolders?: FolderTree[];
+  folderList: FolderEntry[];
   pinnedIds?: Set<string>;
   onFolderSettings?: (folderId: string) => void;
 }) {
+  const isExpanded = expandedIds.includes(folder.id);
   const [dragOver, setDragOver] = useState(false);
   const [showAllPages, setShowAllPages] = useState(false);
   const [showInlineCreate, setShowInlineCreate] = useState(false);
   const [inlineTitle, setInlineTitle] = useState("");
   const [folderMenu, setFolderMenu] = useState<{ x: number; y: number } | null>(null);
+  const [showMoveSubmenu, setShowMoveSubmenu] = useState(false);
   const [renamingFolder, setRenamingFolder] = useState(false);
   const [folderRenameValue, setFolderRenameValue] = useState(folder.name);
   const [folderError, setFolderError] = useState<string | null>(null);
   const [inlineError, setInlineError] = useState<string | null>(null);
+  const [showSubCreate, setShowSubCreate] = useState(false);
+  const [subName, setSubName] = useState("");
+  const [subError, setSubError] = useState<string | null>(null);
 
   const PAGE_CAP = 8;
   const sortedPages = [...folder.pages]
     .filter(p => !pinnedIds?.has(p.id))
     .sort((a, b) => (b.updated_at ?? "").localeCompare(a.updated_at ?? ""));
-  const totalPages = sortedPages.length;
+  const ownPages = sortedPages.length;
+  // The count includes pages in subprojects: what opening the project leads to.
+  const totalPages = pagesInSubtree(folder);
+  const countTitle = totalPages === ownPages
+    ? plural(totalPages, "page")
+    : `${plural(totalPages, "page")}: ${ownPages} here, ${totalPages - ownPages} in subprojects`;
   const displayedPages = showAllPages ? sortedPages : sortedPages.slice(0, PAGE_CAP);
-  const hiddenCount = totalPages - PAGE_CAP;
+  const hiddenCount = ownPages - PAGE_CAP;
+  const parentId = folder.parent_id ?? null;
+
+  const closeFolderMenu = () => { setFolderMenu(null); setShowMoveSubmenu(false); };
 
   const handleTrashFolder = async () => {
-    setFolderMenu(null);
+    closeFolderMenu();
     const count = await api.trashFolder(folder.id);
     onRefresh();
     showUndoToast(`"${folder.name}" deleted (${count} pages)`, async () => {
@@ -1128,7 +1178,7 @@ function FolderItem({
     if (!renamingFolder) return; // guard against double-fire
     const trimmed = folderRenameValue.trim();
     if (!trimmed || trimmed === folder.name) { setRenamingFolder(false); setFolderError(null); return; }
-    const conflict = await folderNameConflict(trimmed, folder.parent_id ?? null, folder.id);
+    const conflict = await folderNameConflict(trimmed, parentId, folder.id);
     if (conflict) { setFolderError(conflict); return; }
     setRenamingFolder(false);
     setFolderError(null);
@@ -1138,6 +1188,31 @@ function FolderItem({
       showToast(`Couldn't rename project: ${errorMessage(e)}`);
     }
     onRefresh();
+  };
+
+  const nameOf = (id: string | null) =>
+    id ? (folderList.find(f => f.folder.id === id)?.folder.name ?? "project") : "the top level";
+
+  const handleMoveFolder = async (target: string | null) => {
+    closeFolderMenu();
+    if (target === parentId) return;
+    const conflict = await folderNameConflict(folder.name, target, folder.id);
+    if (conflict) {
+      showToast(`Can't move "${folder.name}" to ${nameOf(target)}: ${conflict.charAt(0).toLowerCase()}${conflict.slice(1)} there`);
+      return;
+    }
+    try {
+      await api.moveFolder(folder.id, target ?? undefined);
+    } catch (e) {
+      showToast(`Couldn't move "${folder.name}": ${errorMessage(e)}`);
+      return;
+    }
+    if (target) onExpand(target); // show where it went
+    onRefresh();
+    showUndoToast(`Moved "${folder.name}" to ${nameOf(target)}`, async () => {
+      await api.moveFolder(folder.id, parentId ?? undefined).catch(() => {});
+      onRefresh();
+    }, 8000);
   };
 
   const handleDrop = async (e: React.DragEvent) => {
@@ -1166,6 +1241,7 @@ function FolderItem({
       setInlineTitle("");
       setInlineError(null);
       setShowInlineCreate(false);
+      onExpand(folder.id);
       onRefresh();
       onPageClick(page.id);
     } catch (e) {
@@ -1175,23 +1251,62 @@ function FolderItem({
     }
   };
 
+  const handleSubCreate = async () => {
+    const name = subName.trim();
+    if (!name) { setShowSubCreate(false); setSubName(""); setSubError(null); return; }
+    if (inlineBusy.current) return;
+    inlineBusy.current = true;
+    try {
+      const conflict = await folderNameConflict(name, folder.id);
+      if (conflict) { setSubError(conflict); return; }
+      await api.createFolder(name, folder.id);
+      setSubName("");
+      setSubError(null);
+      setShowSubCreate(false);
+      onExpand(folder.id);
+      onRefresh();
+    } catch (e) {
+      setSubError(`Couldn't create project: ${errorMessage(e)}`);
+    } finally {
+      inlineBusy.current = false;
+    }
+  };
+
+  const childPad = 32 + depth * 16;
 
   return (
     <>
       <div
         className={`folder-item ${dragOver ? "drop-target" : ""}`}
         style={{ paddingLeft: 16 + depth * 16 }}
-        onClick={(e) => { if (!renamingFolder) onToggleExpanded(e.shiftKey); }}
+        data-folder-id={folder.id}
+        role="button"
+        tabIndex={renamingFolder ? -1 : 0}
+        aria-expanded={isExpanded}
+        onClick={() => { if (!renamingFolder) onToggle(folder.id); }}
+        onKeyDown={e => {
+          if (renamingFolder || e.target !== e.currentTarget) return;
+          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onToggle(folder.id); }
+          else if (e.key === "ArrowRight" && !isExpanded) { e.preventDefault(); onToggle(folder.id); }
+          else if (e.key === "ArrowLeft" && isExpanded) { e.preventDefault(); onToggle(folder.id); }
+          else if (e.key === "ContextMenu" || (e.key === "F10" && e.shiftKey)) {
+            e.preventDefault();
+            const r = e.currentTarget.getBoundingClientRect();
+            setShowMoveSubmenu(false);
+            setFolderMenu({ x: r.left + 24, y: r.bottom + 2 });
+          }
+        }}
         onContextMenu={e => {
           e.preventDefault();
           e.stopPropagation();
+          setShowMoveSubmenu(false);
           setFolderMenu({ x: e.clientX, y: e.clientY });
         }}
         onDragOver={e => { e.preventDefault(); e.stopPropagation(); setDragOver(true); }}
         onDragLeave={() => setDragOver(false)}
         onDrop={handleDrop}
       >
-        <span className="folder-toggle">{isExpanded ? "\u25BC" : "\u25B6"}</span>
+        <span className="folder-toggle" aria-hidden>{isExpanded ? "▼" : "▶"}</span>
         {renamingFolder ? (
           <input
             className="sidebar-rename-input"
@@ -1210,24 +1325,23 @@ function FolderItem({
             autoFocus
           />
         ) : (
-          <span style={folder.color ? { color: folder.color } : undefined}>{folder.icon ?? "\uD83D\uDCC1"} {folder.name}</span>
+          <span className="folder-name" style={folder.color ? { color: folder.color } : undefined}>{folder.icon ?? "📁"} {folder.name}</span>
         )}
-        {!isExpanded && totalPages > 0 && (
-          <span className="folder-count folder-count-hover">{totalPages}</span>
-        )}
-        {isExpanded && (
-          <span className="folder-count">{totalPages}</span>
+        {totalPages > 0 && (
+          <span className={`folder-count${isExpanded ? "" : " folder-count-hover"}`} title={countTitle}>{totalPages}</span>
         )}
         <button
           className="page-more-btn"
           onClick={(e) => {
             e.stopPropagation();
             const rect = e.currentTarget.getBoundingClientRect();
+            setShowMoveSubmenu(false);
             setFolderMenu({ x: rect.left, y: rect.bottom + 2 });
           }}
           title="Project actions"
           aria-label={`Actions for project ${folder.name}`}
           aria-haspopup="menu"
+          tabIndex={-1}
         >&#8942;</button>
       </div>
       {renamingFolder && folderError && (
@@ -1235,25 +1349,46 @@ function FolderItem({
           {folderError}
         </div>
       )}
-      {/* Folder context menu — rendered via portal */}
+      {/* Project context menu — rendered via portal */}
       {folderMenu && (
-        <ContextMenuPortal x={folderMenu.x} y={folderMenu.y} onClose={() => setFolderMenu(null)}>
+        <ContextMenuPortal x={folderMenu.x} y={folderMenu.y} onClose={closeFolderMenu}>
           <button
             className="sidebar-context-menu-item"
-            onClick={() => { setFolderMenu(null); setShowInlineCreate(true); }}
+            onClick={() => { closeFolderMenu(); onExpand(folder.id); setShowInlineCreate(true); }}
           >
-            &#128196; New Page
+            &#128196; New page
           </button>
           <button
             className="sidebar-context-menu-item"
-            onClick={() => { setFolderMenu(null); setFolderRenameValue(folder.name); setRenamingFolder(true); }}
+            onClick={() => { closeFolderMenu(); onExpand(folder.id); setShowSubCreate(true); }}
+          >
+            &#128193; New sub-project
+          </button>
+          <button
+            className="sidebar-context-menu-item"
+            onClick={() => { closeFolderMenu(); setFolderRenameValue(folder.name); setRenamingFolder(true); }}
           >
             &#9998; Rename
           </button>
           <button
             className="sidebar-context-menu-item"
+            onClick={() => setShowMoveSubmenu(v => !v)}
+            aria-expanded={showMoveSubmenu}
+          >
+            &#128194; Move to… {showMoveSubmenu ? "▴" : "▾"}
+          </button>
+          {showMoveSubmenu && (
+            <MoveTargets
+              entries={folderList}
+              currentParent={parentId}
+              exclude={subtreeIds(folder)}
+              onPick={handleMoveFolder}
+            />
+          )}
+          <button
+            className="sidebar-context-menu-item"
             onClick={async () => {
-              setFolderMenu(null);
+              closeFolderMenu();
               const count = await api.archiveFolder(folder.id);
               onRefresh();
               showUndoToast(`"${folder.name}" archived (${count} pages)`, async () => {
@@ -1274,15 +1409,33 @@ function FolderItem({
           <div className="sidebar-context-menu-sep" />
           <button
             className="sidebar-context-menu-item"
-            onClick={() => { setFolderMenu(null); onFolderSettings?.(folder.id); }}
+            onClick={() => { closeFolderMenu(); onFolderSettings?.(folder.id); }}
           >
             &#9881; Settings...
           </button>
         </ContextMenuPortal>
       )}
-      {/* Phase 2c: inline create input */}
+      {showSubCreate && (
+        <div className="sidebar-actions" style={{ padding: `2px 16px 2px ${childPad}px` }}>
+          <input
+            className="search-input"
+            placeholder="Sub-project name..."
+            value={subName}
+            onChange={e => { setSubName(e.target.value); setSubError(null); }}
+            onKeyDown={e => {
+              if (e.key === "Enter") handleSubCreate();
+              if (e.key === "Escape") { e.preventDefault(); setShowSubCreate(false); setSubName(""); setSubError(null); }
+            }}
+            onBlur={() => { if (!subError) handleSubCreate(); }}
+            aria-label={`New sub-project in ${folder.name}`}
+            aria-invalid={!!subError}
+            autoFocus
+          />
+          {subError && <div className="inline-field-error" role="alert">{subError}</div>}
+        </div>
+      )}
       {showInlineCreate && (
-        <div className="sidebar-actions" style={{ padding: "2px 16px 2px " + (32 + depth * 16) + "px" }}>
+        <div className="sidebar-actions" style={{ padding: `2px 16px 2px ${childPad}px` }}>
           <input
             className="search-input"
             placeholder="Page title..."
@@ -1299,7 +1452,7 @@ function FolderItem({
           {inlineError && <div className="inline-field-error" role="alert">{inlineError}</div>}
         </div>
       )}
-      {/* Phase 4: animated expand/collapse */}
+      {/* Animated expand/collapse; subprojects first, then pages */}
       <div className={`folder-children ${isExpanded ? "folder-children-expanded" : ""}`}>
         <div className="folder-children-inner">
           {folder.children.map(child => (
@@ -1308,13 +1461,15 @@ function FolderItem({
               folder={child}
               activePage={activePage}
               depth={depth + 1}
-              isExpanded={false}
-              onToggleExpanded={() => {}}
+              expandedIds={expandedIds}
+              onToggle={onToggle}
+              onExpand={onExpand}
               onPageClick={onPageClick}
               onDeletePage={onDeletePage}
               onRefresh={onRefresh}
-              allFolders={allFolders}
+              folderList={folderList}
               pinnedIds={pinnedIds}
+              onFolderSettings={onFolderSettings}
             />
           ))}
           {displayedPages.map(page => (
@@ -1326,10 +1481,10 @@ function FolderItem({
               onPageClick={onPageClick}
               onDeletePage={onDeletePage}
               onRefresh={onRefresh}
-              allFolders={allFolders}
+              folderList={folderList}
+              pinnedPage={pinnedIds?.has(page.id)}
             />
           ))}
-          {/* Phase 3b: ...+N more link */}
           {!showAllPages && hiddenCount > 0 && (
             <div
               className="page-item sidebar-more-pages"

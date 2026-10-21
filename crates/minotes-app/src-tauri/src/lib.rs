@@ -486,6 +486,20 @@ fn delete_folder(state: State<'_, AppState>, id: String) -> Result<bool, String>
     db.delete_folder(&uuid, "user").map_err(|e| e.to_string())
 }
 
+/// Move a project into another project (`parent_id`), or to the top level (None).
+/// Moving it into itself or one of its own subprojects is refused.
+#[tauri::command]
+fn move_folder(state: State<'_, AppState>, id: String, parent_id: Option<String>) -> Result<Folder, String> {
+    let db = state.db_guard()?;
+    let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+    let parent = parent_id
+        .as_deref()
+        .map(uuid::Uuid::parse_str)
+        .transpose()
+        .map_err(|e| e.to_string())?;
+    db.move_folder(&uuid, parent.as_ref(), "user").map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn update_folder_appearance(state: State<'_, AppState>, id: String, icon: Option<String>, color: Option<String>) -> Result<Folder, String> {
     let db = state.db_guard()?;
@@ -1647,6 +1661,7 @@ pub fn run() {
             move_page_to_folder,
             reorder_page,
             delete_folder,
+            move_folder,
             rename_folder,
             update_folder_appearance,
             set_property,

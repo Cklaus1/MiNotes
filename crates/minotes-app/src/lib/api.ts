@@ -353,6 +353,10 @@ export const reorderPage = (id: string, newPosition: number) =>
 export const deleteFolder = (id: string) =>
   invoke<boolean>("delete_folder", { id });
 
+/** Move a project into `parentId` (undefined: the top level). */
+export const moveFolder = (id: string, parentId?: string) =>
+  invoke<Folder>("move_folder", { id, parentId: parentId ?? null });
+
 export const renameFolder = (id: string, newName: string) =>
   invoke<Folder>("rename_folder", { id, newName });
 

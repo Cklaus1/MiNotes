@@ -1084,6 +1084,17 @@ const handlers: Record<string, (args: any) => any> = {
     dropFolders(folderSubtree(id));
     return true;
   },
+  // core move_folder: refuses a cycle; the folder goes to the end of its new parent.
+  move_folder: ({ id, parentId }: { id: string; parentId?: string | null }) => {
+    const f = folders.get(id) ?? fail(`Not found: Folder ${id}`);
+    if (parentId && folderSubtree(id).has(parentId)) fail("Invalid input: Cannot move a folder into itself or one of its subfolders");
+    if (parentId && !folders.has(parentId)) fail("Database error: FOREIGN KEY constraint failed");
+    const siblings = Array.from(folders.values()).filter(x => (x.parent_id ?? null) === (parentId ?? null));
+    if (parentId) f.parent_id = parentId; else delete f.parent_id;
+    f.position = Math.max(0, ...siblings.map(x => x.position)) + 1;
+    f.updated_at = ts();
+    return f;
+  },
   rename_folder: ({ id, newName }: { id: string; newName: string }) => {
     const name = normalizeFolderName(newName);
     const f = folders.get(id) ?? fail(`Not found: Folder ${id}`);

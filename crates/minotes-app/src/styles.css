@@ -1172,6 +1172,13 @@ body {
   color: var(--text-primary);
 }
 
+.sidebar-context-menu-item:disabled {
+  color: var(--text-muted);
+  cursor: default;
+  background: none;
+  opacity: 0.6;
+}
+
 .sidebar-context-menu-item.danger {
   color: #f38ba8;
 }

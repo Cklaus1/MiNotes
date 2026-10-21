@@ -3608,6 +3608,67 @@ T=$(ev "[...document.querySelectorAll('.minotes-toast-undo')].map(t=>t.innerText
 [[ "$D" == "none" && "$T" == *"1 block deleted"* ]] && pass "No dialog; toast \"1 block deleted · Undo\"" || fail "Partial delete" "dialog=$D toast=$T"
 
 # ═══════════════════════════════════════════════
+journey "68. Projects inside projects open, move and nest (UX review C-10)"
+# Subfolders used to be drawn with a dead toggle, so pages in a nested project
+# were unreachable, and only 2 projects could be open at once.
+# ═══════════════════════════════════════════════
+A68="const api=await import('/src/lib/api.ts');"
+wait68() { for _ in $(seq 1 20); do [[ "$(ev "$1" | tr -d '"')" == "true" ]] && return 0; sleep 0.3; done; return 1; }
+# Is this sidebar row shown (every project around it open)?
+shown68() { ev "(()=>{const e=$1;if(!e)return 'missing';let p=e.parentElement;while(p){if(p.classList&&p.classList.contains('folder-children')&&!p.classList.contains('folder-children-expanded'))return 'hidden';p=p.parentElement}return 'shown'})()" | tr -d '"'; }
+frow68() { echo "[...document.querySelectorAll('.folder-item')].find(e=>e.textContent.includes('$1'))"; }
+prow68() { echo "[...document.querySelectorAll('.sidebar .page-item')].find(e=>e.textContent.includes('$1'))"; }
+menu68() { ev "(()=>{const r=$1;if(!r)return 'none';r.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true,clientX:100,clientY:200}));return 1})()" >/dev/null; sleep 0.4; }
+item68() { ev "[...document.querySelectorAll('.sidebar-context-menu-item')].find(b=>b.textContent.includes('$1'))?.click()" >/dev/null; sleep 0.4; }
+api "closePanel()" >/dev/null; press "Escape"; sleep 0.3
+IDS68=$(ev "(async()=>{$A68 const o=await api.createFolder('Outer68');const i=await api.createFolder('Inner68',o.id);const d=await api.createFolder('Deep68',i.id);await api.createFolder('Other68a');const b=await api.createFolder('Other68b');const p1=await api.createPage('Page68 deep');await api.movePageToFolder(p1.id,d.id);const p2=await api.createPage('Page68 inner');await api.movePageToFolder(p2.id,i.id);const p3=await api.createPage('Page68 outer');await api.movePageToFolder(p3.id,o.id);window.dispatchEvent(new Event('minotes-sidebar-refresh'));return [o.id,i.id,d.id,b.id,p2.id].join(',')})()" | tr -d '"')
+IFS=, read -r OUT68 INN68 DEEP68 OTHB68 PIN68 <<<"$IDS68"
+wait68 "!!($(frow68 Outer68))" || true
+
+step "Clicking Outer68 → Inner68 → Deep68 opens each level down to the nested page"
+for f in Outer68 Inner68 Deep68; do ev "$(frow68 $f)?.click()" >/dev/null; sleep 0.4; done
+R=$(shown68 "$(prow68 'Page68 deep')")
+[[ "$R" == "shown" ]] && pass "The page two projects deep is reachable" || fail "Nested page not reachable" "$R"
+R=$(ev "($(frow68 Inner68))?.getAttribute('aria-expanded')" | tr -d '"')
+[[ "$R" == "true" ]] && pass "The subproject says it is expanded" || fail "Subproject expanded state" "$R"
+ss "68-nested-open"
+
+step "Opening two more projects doesn't close the first (no 2-project limit)"
+ev "$(frow68 Other68a)?.click()" >/dev/null; sleep 0.3
+ev "$(frow68 Other68b)?.click()" >/dev/null; sleep 0.3
+R=$(shown68 "$(prow68 'Page68 deep')")
+[[ "$R" == "shown" ]] && pass "Outer68 stays open with two more projects open" || fail "Opening other projects closed Outer68" "$R"
+R=$(ev "(()=>{try{const a=JSON.parse(localStorage.getItem('minotes-expanded-projects')||'[]');return ['$OUT68','$INN68','$DEEP68'].every(i=>a.includes(i))}catch(e){return false}})()" | tr -d '"')
+[[ "$R" == "true" ]] && pass "Open projects are remembered at every depth" || fail "Expanded state not persisted" "$R"
+
+step "A project's count includes its nested pages"
+R=$(ev "($(frow68 Outer68))?.querySelector('.folder-count')?.textContent?.trim()" | tr -d '"')
+[[ "$R" == "3" ]] && pass "Outer68 shows 3 (1 own + 2 nested)" || fail "Parent count" "$R"
+
+step "Move to… lists the whole tree and Top level; moving into Deep68 works"
+menu68 "$(prow68 'Page68 inner')"; item68 "Move to"
+R=$(ev "[...document.querySelectorAll('.sidebar-context-submenu .sidebar-context-menu-item')].map(b=>b.textContent.trim()+(b.disabled?' (here)':'')).join('|')" | tr -d '"')
+[[ "$R" == *"Top level"* && "$R" == *"Deep68"* && "$R" == *"Outer68"* && "$R" == *"Inner68 (here)"* ]] && pass "Move to…: Top level + nested projects ($R)" || fail "Move to… list" "$R"
+ev "[...document.querySelectorAll('.sidebar-context-submenu .sidebar-context-menu-item')].find(b=>b.textContent.includes('Deep68'))?.click()" >/dev/null; sleep 0.8
+R=$(ev "(async()=>{$A68 const t=await api.getFolderTree();const f=(l)=>{for(const x of l){if(x.id==='$DEEP68')return x;const y=f(x.children||[]);if(y)return y}};return f(t.folders).pages.map(p=>p.title).sort().join(',')})()" | tr -d '"')
+[[ "$R" == "Page68 deep,Page68 inner" ]] && pass "Moved into the nested project" || fail "Move into Deep68" "$R"
+
+step "A project can be moved into another project"
+menu68 "$(frow68 Other68b)"; item68 "Move to"
+ev "[...document.querySelectorAll('.sidebar-context-submenu .sidebar-context-menu-item')].find(b=>b.textContent.trim().endsWith('Outer68'))?.click()" >/dev/null; sleep 0.8
+R=$(ev "(async()=>{$A68 const t=await api.getFolderTree();const o=t.folders.find(f=>f.id==='$OUT68');return (o?o.children:[]).map(c=>c.name).sort().join(',')+'|'+t.folders.some(f=>f.id==='$OTHB68')})()" | tr -d '"')
+[[ "$R" == "Inner68,Other68b|false" ]] && pass "Other68b now lives in Outer68" || fail "Move project into project" "$R"
+
+step "New sub-project from the project menu"
+menu68 "$(frow68 Outer68)"; item68 "New sub-project"
+ev "(()=>{const i=document.querySelector('input[aria-label=\"New sub-project in Outer68\"]');if(!i)return 'no input';const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;set.call(i,'Sub68');i.dispatchEvent(new Event('input',{bubbles:true}));i.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));return 'ok'})()" >/dev/null; sleep 0.8
+R=$(ev "(async()=>{$A68 const t=await api.getFolderTree();const o=t.folders.find(f=>f.id==='$OUT68');return (o?o.children:[]).map(c=>c.name).sort().join(',')})()" | tr -d '"')
+[[ "$R" == "Inner68,Other68b,Sub68" ]] && pass "Sub68 created inside Outer68" || fail "New sub-project" "$R"
+R=$(shown68 "$(frow68 Sub68)")
+[[ "$R" == "shown" ]] && pass "…and shown under it" || fail "Sub-project not shown" "$R"
+
+
+# ═══════════════════════════════════════════════
 close_app
 
 # ═══════════════════════════════════════════════
