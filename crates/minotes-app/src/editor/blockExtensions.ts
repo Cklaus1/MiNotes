@@ -7,7 +7,7 @@ import StarterKit from "@tiptap/starter-kit";
 import { HardBreak } from "@tiptap/extension-hard-break";
 import TaskList from "@tiptap/extension-task-list";
 import TaskItem from "@tiptap/extension-task-item";
-import Highlight from "@tiptap/extension-highlight";
+import { HighlightMark } from "./HighlightMark";
 import Typography from "@tiptap/extension-typography";
 import Placeholder from "@tiptap/extension-placeholder";
 import CodeBlockLowlight from "@tiptap/extension-code-block-lowlight";
@@ -115,7 +115,7 @@ export function createBlockExtensions(cb: BlockExtensionCallbacks) {
         ];
       },
     }).configure({ nested: true }),
-    Highlight,
+    HighlightMark,
     // ── Import / attachments: `attachment:<hash>/<name>` srcs are served by the
     // attachment protocol; the stored markdown keeps the reference. ──
     Image.extend({

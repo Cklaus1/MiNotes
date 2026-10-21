@@ -64,6 +64,9 @@ describe("markdown → doc → markdown is identical", () => {
     ["italic", "a *italic* b", ["mark:italic"]],
     ["inline code", "a `code` b", ["mark:code"]],
     ["strike", "a ~~strike~~ b", ["mark:strike"]],
+    ["highlight", "a ==highlight== b", ["mark:highlight"]],
+    ["bold inside highlight", "==there **hi**==", ["mark:highlight", "mark:bold"]],
+    ["all marks together", "**b** *i* `c` ~~s~~ ==h==", ["mark:bold", "mark:italic", "mark:code", "mark:strike", "mark:highlight"]],
     ["link", "see [the site](https://example.com) now", ["mark:link"]],
     ["wiki link", "go to [[Project Alpha]] now", ["wikiLink"]],
     ["tag", "x #urgent done", ["tag"]],
@@ -110,6 +113,20 @@ describe("what the user types serializes correctly", () => {
     typeText("# Heading");
     expect(md()).toBe("# Heading");
     expect(kinds()).not.toContain("tag");
+  });
+
+  test("typing '==hi==' makes a highlight that saves as ==hi== (C-4)", () => {
+    typeText("say ==hi== ");
+    expect(kinds()).toContain("mark:highlight");
+    expect(md()).toBe("say ==hi==");
+  });
+
+  test("the highlight command saves as ==…== (C-4)", () => {
+    load("make this bright");
+    // select "this"
+    ed.commands.setTextSelection({ from: 6, to: 10 });
+    ed.commands.toggleHighlight();
+    expect(md()).toBe("make ==this== bright");
   });
 
   test("typing [[Page]] makes a wiki link", () => {
