@@ -111,7 +111,7 @@ Average **5.2 / 10** across 72 features. Nothing scores 10; the best is 9
 | Link preview cards | 6 | Real metadata; no loading/failure state; URL shown twice on failure |
 | Remote images | 8 | Clear placeholders and bar; Never/Ask/Always work |
 | Pasted images (attachments) | 2 | **Real image paste saved as a `blob:` URL — gone after restart** |
-| Export flows | 3 | Mind map export good; page "Export as HTML" does nothing; whiteboard writes straight to Downloads |
+| Export flows | 3 | Mind map export good; page "Export as HTML" saves silently to the working directory; whiteboard writes straight to Downloads |
 | Narrow window / light theme (views) | 5 | Graph stays dark in light theme; mind map and whiteboard don't refit |
 
 ### Settings, sync, AI, import, power features
@@ -156,7 +156,7 @@ Ranked by harm. **D** = data loss or corruption, **S** = safety/security, **B** 
 | C-12 | B | **Block references render as raw `((uuid))` after any reload** | markdown → node parse | S/M |
 | C-13 | B | **After a drag, the outline renders scrambled** until reload (data is correct; positions sorted without outline order) | `PageView` `localBlocks` | S |
 | C-14 | B | **PDF highlights can't be created** — no pdf.js text layer | `PdfViewer.tsx` | M |
-| C-15 | B | **Page "Export as HTML" does nothing**; whiteboard export writes to Downloads with no dialog | `exportPage.ts`, `Whiteboard.tsx` | S |
+| C-15 | B | **Page "Export as HTML" saves silently into the app's working directory** (found later as `Project Alpha.html` in the repo root) with no dialog or message; whiteboard export writes to Downloads with no dialog | `exportPage.ts`, `Whiteboard.tsx` | S |
 | C-16 | B | **Kanban colour picker can't be clicked** (backdrop z-index 99 above picker 50) | `styles.css` | S |
 | C-17 | B | **Git sync can't be set up in the app** — no remote field, no "Sync now", "Last synced" shown with no remote, a missing remote is a silent "Offline" | Settings / sync | M |
 | C-18 | B | **Mind map radial layout overlaps nodes** | `blocksToFlow.ts` | M |
