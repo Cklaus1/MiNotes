@@ -11,7 +11,11 @@ export default function Modal({ title, onClose, children, wide, testId, dismissa
 }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); if (dismissable) onClose(); }
+      if (e.key !== "Escape") return;
+      // A field inside that handles Escape itself (an inline rename: Escape
+      // cancels the rename, not the whole dialog) is left to do so.
+      if ((e.target as HTMLElement | null)?.closest?.("[data-escape-local]")) return;
+      e.preventDefault(); e.stopPropagation(); if (dismissable) onClose();
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);

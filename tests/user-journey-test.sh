@@ -3777,6 +3777,54 @@ ev "(()=>{const c=document.querySelector('.sidebar-journal-row .sidebar-section-
 api "openJournal()" >/dev/null; sleep 1
 
 # ═══════════════════════════════════════════════
+journey "71. Manage notebooks stays in order while I work in it"
+# Renaming re-sorted the rows, so the next click hit another notebook; errors
+# stayed after a success; disabled buttons looked enabled.
+# ═══════════════════════════════════════════════
+A71="const api=await import('/src/lib/api.ts');"
+setv71() { ev "(()=>{const i=document.querySelector('$1');if(!i)return 'no input';const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;set.call(i,'$2');i.dispatchEvent(new Event('input',{bubbles:true}));return 'ok'})()" >/dev/null; }
+order71() { ev "[...document.querySelectorAll('[data-testid=manage-notebooks-dialog] .nb-manage-row')].map(r=>r.dataset.notebookKey).join(',')" | tr -d '"'; }
+rename71() { # <key> <new name>
+  ev "[...document.querySelectorAll('[data-testid=manage-notebooks-dialog] [data-notebook-key=\"$1\"] button')].find(b=>b.textContent.trim()==='Rename')?.click()" >/dev/null; sleep 0.3
+  setv71 "[data-testid=manage-notebooks-dialog] [data-notebook-key=\"$1\"] input" "$2"
+  ev "document.querySelector('[data-testid=manage-notebooks-dialog] [data-notebook-key=\"$1\"] input')?.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}))" >/dev/null; sleep 0.8
+}
+api "closePanel()" >/dev/null; press "Escape"; sleep 0.3
+S71=$(date +%s)
+HOME71=$(ev "(async()=>{$A71 return (await api.getNotebookSession()).key})()" | tr -d '"')
+ZED71=$(ev "(async()=>{$A71 await api.createNotebook('Mid71 $S71');const z=await api.createNotebook('Zed71 $S71');window.dispatchEvent(new Event('minotes-notebooks-changed'));return z.key})()" | tr -d '"'); sleep 0.5
+ev "window.dispatchEvent(new CustomEvent('minotes-open-notebook-dialog',{detail:'manage'}))" >/dev/null; sleep 0.8
+BEFORE71=$(order71)
+
+step "Renaming Zed71 to Aaa71 keeps every row where it was"
+rename71 "$ZED71" "Aaa71 $S71"
+AFTER71=$(order71)
+NAME71=$(ev "document.querySelector('[data-testid=manage-notebooks-dialog] [data-notebook-key=\"$ZED71\"] .nb-manage-name')?.textContent||''" | tr -d '"')
+[[ -n "$BEFORE71" && "$AFTER71" == "$BEFORE71" && "$NAME71" == "Aaa71 $S71"* ]] && pass "Order unchanged after rename ($NAME71)" || fail "Rows re-sorted" "before=$BEFORE71 after=$AFTER71 name=$NAME71"
+ss "71-manage-after-rename"
+
+step "A failed rename shows why; cancelling it or the next success clears it"
+err71() { ev "document.querySelector('[data-testid=manage-notebooks-dialog] [role=alert]')?.textContent||''" | tr -d '"'; }
+rename71 "$ZED71" "Mid71 $S71"
+E1=$(err71)
+ev "document.querySelector('[data-testid=manage-notebooks-dialog] [data-notebook-key=\"$ZED71\"] input')?.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}))" >/dev/null; sleep 0.3
+E2=$(err71)
+D2=$(ev "!!document.querySelector('[data-testid=manage-notebooks-dialog]')" | tr -d '"')
+[[ "$D2" == "true" ]] && pass "Escape in the rename field cancels the rename, not the dialog" || fail "Escape in rename closed Manage notebooks" "$D2"
+rename71 "$ZED71" "Bbb71 $S71"
+E3=$(err71)
+[[ "$E1" == *"already"* && -z "$E2" && -z "$E3" ]] && pass "Error shown ($E1), then cleared" || fail "Stale error" "e1=$E1 after-escape=$E2 after-success=$E3"
+
+step "Each other notebook has Open; Delete is a quiet secondary button"
+R=$(ev "(()=>{const r=document.querySelector('[data-testid=manage-notebooks-dialog] [data-notebook-key=\"$ZED71\"]');const d=r?.querySelector('[data-testid=delete-notebook]');return !!r?.querySelector('[data-testid=open-notebook]')+'|'+(d?d.classList.contains('btn-danger'):'none')})()" | tr -d '"')
+[[ "$R" == "true|false" ]] && pass "Open button; Delete not red" || fail "Row actions" "$R"
+ev "document.querySelector('[data-testid=manage-notebooks-dialog] [data-notebook-key=\"$ZED71\"] [data-testid=open-notebook]')?.click()" >/dev/null; sleep 1.5
+R=$(ev "(async()=>{$A71 return (await api.getNotebookSession()).key})()" | tr -d '"')
+[[ "$R" == "$ZED71" ]] && pass "Open switches to that notebook" || fail "Open from Manage" "$R"
+ev "(async()=>{const n=await import('/src/lib/notebooks.ts');await n.switchNotebook('$HOME71');return 1})()" >/dev/null; sleep 1.5
+press "Escape"; sleep 0.3
+
+# ═══════════════════════════════════════════════
 close_app
 
 # ═══════════════════════════════════════════════

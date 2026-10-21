@@ -248,23 +248,41 @@ export function ManageNotebooksDialog({ notebooks, session, onClose, onMove, onL
   const [newName, setNewName] = useState("");
   const [deleting, setDeleting] = useState<api.NotebookInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [opening, setOpening] = useState<string | null>(null);
   const renameRef = useRef<HTMLInputElement>(null);
+  // Escape cancels a rename; the input's blur (as it goes away) must not commit it.
+  const renameCancelled = useRef(false);
   const caps = useCapabilities();
 
+  // Rows keep the order they had when the dialog opened: the list is re-read
+  // after every change (sorted by name), and a rename must never move a row
+  // under the pointer — the next click would hit another notebook.
+  const order = useRef<string[]>(notebooks.map(n => n.key));
+  for (const nb of notebooks) if (!order.current.includes(nb.key)) order.current.push(nb.key);
+  const rows = [...notebooks].sort((a, b) => order.current.indexOf(a.key) - order.current.indexOf(b.key));
+
   const startRename = (nb: api.NotebookInfo) => {
+    renameCancelled.current = false;
     setRenaming(nb.key);
     setNewName(nb.name);
     setError(null);
     setTimeout(() => renameRef.current?.select(), 0);
   };
+  const cancelRename = () => {
+    renameCancelled.current = true;
+    setRenaming(null);
+    setError(null);
+  };
   const commitRename = async (nb: api.NotebookInfo) => {
+    if (renameCancelled.current) return;
     const n = newName.trim();
-    if (!n || n === nb.name) { setRenaming(null); return; }
+    if (!n || n === nb.name) { setRenaming(null); setError(null); return; }
     const problem = nameProblem(n, notebooks.filter(x => x.key !== nb.key).map(x => x.name));
     if (problem) { setError(problem); return; }
     try {
       await api.renameNotebook(nb.key, n);
       setRenaming(null);
+      setError(null);
       notebooksChanged();
     } catch (e) {
       setError(errorMessage(e));
@@ -273,40 +291,65 @@ export function ManageNotebooksDialog({ notebooks, session, onClose, onMove, onL
   const forget = async (nb: api.NotebookInfo) => {
     try {
       await api.forgetNotebook(nb.key);
+      setError(null);
       notebooksChanged();
     } catch (e) {
       setError(errorMessage(e));
+    }
+  };
+  const open = async (nb: api.NotebookInfo) => {
+    if (opening) return;
+    setOpening(nb.key);
+    setError(null);
+    try {
+      await switchNotebook(nb.key);
+      showToast(`Opened notebook “${nb.name}”`);
+      onClose();
+    } catch (e) {
+      setError(`Couldn't open “${nb.name}”: ${errorMessage(e)}`);
+    } finally {
+      setOpening(null);
     }
   };
 
   return (
     <Modal title="Manage notebooks" onClose={onClose} wide testId="manage-notebooks-dialog">
       {deleting ? (
-        <DeleteConfirm nb={deleting} onCancel={() => setDeleting(null)} onDeleted={() => { setDeleting(null); notebooksChanged(); }} />
+        <DeleteConfirm nb={deleting} onCancel={() => setDeleting(null)} onDeleted={() => { setDeleting(null); setError(null); notebooksChanged(); }} />
       ) : (
         <>
           <ul className="nb-manage-list">
-            {notebooks.map(nb => {
+            {rows.map(nb => {
               const current = nb.key === session.key;
               return (
-                <li key={nb.key} className={`nb-manage-row${nb.available ? "" : " unavailable"}`} data-notebook-key={nb.key}>
+                <li key={nb.key} className={`nb-manage-row${nb.available ? "" : " unavailable"}${current ? " current" : ""}`} data-notebook-key={nb.key}>
                   <div className="nb-manage-main">
                     {renaming === nb.key ? (
                       <input
                         ref={renameRef}
                         className="search-input nb-rename-input"
                         value={newName}
-                        onChange={e => setNewName(e.target.value)}
+                        onChange={e => { setNewName(e.target.value); setError(null); }}
                         onKeyDown={e => {
                           if (e.key === "Enter") commitRename(nb);
-                          if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setRenaming(null); }
+                          if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); cancelRename(); }
                         }}
                         onBlur={() => commitRename(nb)}
                         aria-label={`New name for ${nb.name}`}
+                        aria-invalid={!!error}
+                        data-escape-local
                       />
                     ) : (
                       <span className="nb-manage-name">
                         {nb.name}
+                        {nb.encrypted && (
+                          <span
+                            className="nb-lock-badge"
+                            title={nb.locked ? "Encrypted — locked" : "Encrypted"}
+                            aria-label={nb.locked ? "Encrypted, locked" : "Encrypted"}
+                            data-testid="notebook-row-lock"
+                          >🔒</span>
+                        )}
                         {current && <span className="nb-badge">open</span>}
                         {!nb.available && <span className="nb-badge warn">unavailable</span>}
                       </span>
@@ -319,7 +362,18 @@ export function ManageNotebooksDialog({ notebooks, session, onClose, onMove, onL
                   <div className="nb-manage-actions">
                     {nb.available ? (
                       <>
-                        <button className="btn btn-sm" onClick={() => startRename(nb)}>Rename</button>
+                        {!current && (
+                          <button
+                            className="btn btn-sm"
+                            onClick={() => open(nb)}
+                            disabled={!!opening}
+                            title={nb.locked ? `Open “${nb.name}” (asks for its passphrase)` : `Switch to “${nb.name}”`}
+                            data-testid="open-notebook"
+                          >
+                            {opening === nb.key ? "Opening…" : "Open"}
+                          </button>
+                        )}
+                        <button className="btn btn-sm" onClick={() => startRename(nb)} data-testid="rename-notebook">Rename</button>
                         {caps.notebook_zip && (
                           <button
                             className="btn btn-sm"
@@ -334,7 +388,7 @@ export function ManageNotebooksDialog({ notebooks, session, onClose, onMove, onL
                           <button className="btn btn-sm" onClick={onMove} data-testid="move-notebook-open">Move to a folder…</button>
                         )}
                         <button
-                          className="btn btn-sm btn-danger"
+                          className="btn btn-sm nb-delete-btn"
                           disabled={current}
                           title={current ? "This notebook is open — switch to another notebook first" : `Delete ${nb.name}`}
                           onClick={() => { setError(null); setDeleting(nb); }}
