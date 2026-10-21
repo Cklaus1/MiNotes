@@ -8,6 +8,8 @@ import { createBlockExtensions } from "./blockExtensions";
 // ── Import / attachments ──
 import { attachmentHash, encodeName, isImage, openAttachment, storeFile } from "../lib/attachments";
 import { showToast } from "../lib/toast";
+import { errorMessage } from "../lib/errors";
+import { blobImageToFile, hasBlobImage, pastedFiles, withoutBlobImages } from "./pastedFiles";
 // ── End import ──
 
 
@@ -136,8 +138,67 @@ export function useBlockEditor({
     return serializer.serialize(node) as string;
   };
 
+  // ── Never store a `blob:` image (C-2): it only lives as long as the page. An
+  // image that arrives as one (WebKitGTK's pasted HTML, a drop) is stored as an
+  // attachment right away; until then saves leave it out. ──
+  const adoptingRef = useRef(false);
+  const adoptBlobImages = async () => {
+    const ed = editorInstanceRef.current;
+    if (!ed || ed.isDestroyed || adoptingRef.current) return;
+    const srcs = new Set<string>();
+    ed.state.doc.descendants((n: any) => {
+      if (n.type.name === "image" && String(n.attrs.src ?? "").startsWith("blob:")) srcs.add(n.attrs.src);
+    });
+    if (srcs.size === 0) return;
+    adoptingRef.current = true;
+    const stored: string[] = [];
+    try {
+      for (const src of srcs) {
+        let ref: string | null = null;
+        let name = "";
+        try {
+          const att = await storeFile(await blobImageToFile(src));
+          ref = `attachment:${att.hash}/${encodeName(att.name)}`;
+          name = att.name;
+        } catch (e) {
+          showToast(`Couldn't keep a pasted image (${errorMessage(e)}) — it was removed. Paste it again.`);
+        }
+        const cur = editorInstanceRef.current;
+        if (!cur || cur.isDestroyed) {
+          // The block closed meanwhile (its saves left the image out): add it back at the end.
+          if (ref) stored.push(`![${name.replace(/[[\]]/g, "_")}](${ref})`);
+          continue;
+        }
+        const tr = cur.state.tr;
+        cur.state.doc.descendants((n: any, pos: number) => {
+          if (n.type.name !== "image" || n.attrs.src !== src) return;
+          const at = tr.mapping.map(pos);
+          if (ref) tr.setNodeMarkup(at, undefined, { ...n.attrs, src: ref, alt: n.attrs.alt || name });
+          else tr.delete(at, tr.mapping.map(pos + n.nodeSize));
+        });
+        if (tr.docChanged) cur.view.dispatch(tr);
+      }
+    } finally {
+      adoptingRef.current = false;
+    }
+    const cur = editorInstanceRef.current;
+    if (cur && !cur.isDestroyed) commitSave(getMarkdown());
+    else if (stored.length) {
+      const md = [contentRef.current.trim(), ...stored].filter(Boolean).join("\n");
+      contentRef.current = md;
+      onSaveRef.current(md);
+    }
+  };
+  /** What may be stored: never a `blob:` image (starts storing it as an attachment). */
+  const storable = (markdown: string): string => {
+    if (!hasBlobImage(markdown)) return markdown;
+    void adoptBlobImages();
+    return withoutBlobImages(markdown);
+  };
+
   /** Record a save we performed ourselves: marks it as the last-produced markdown. */
-  const commitSave = (markdown: string) => {
+  const commitSave = (raw: string) => {
+    const markdown = storable(raw);
     contentRef.current = markdown;
     dirtyRef.current = false;
     skipSyncRef.current = true;
@@ -159,7 +220,7 @@ export function useBlockEditor({
     const from = state.selection.from;
     const docEnd = state.doc.content.size - 1;
 
-    const afterMarkdown = from < docEnd ? serializeDoc(state.doc.cut(from)).trim() : "";
+    const afterMarkdown = from < docEnd ? withoutBlobImages(serializeDoc(state.doc.cut(from)).trim()) : "";
     const savedContent = serializeDoc(state.doc.cut(0, from)).trim();
 
     // Delete text after cursor from the editor (our own edit; saved right below).
@@ -372,9 +433,9 @@ export function useBlockEditor({
       handlePaste(view, event) {
         // A pasted image or file is stored as an attachment (in the notebook,
         // by content hash) and referenced from the block — not inlined as data.
-        const files = event.clipboardData?.files;
-        if (files && files.length > 0) {
-          const list = Array.from(files);
+        // WebKitGTK puts a pasted image in clipboardData.items, not .files (C-2).
+        const list = pastedFiles(event.clipboardData);
+        if (list.length > 0) {
           event.preventDefault();
           (async () => {
             for (const file of list) {
@@ -461,6 +522,14 @@ export function useBlockEditor({
       // Only genuine document edits count, never our own external-sync setContent.
       if (transaction.docChanged && !applyingExternalRef.current && !transaction.getMeta("preventUpdate")) {
         dirtyRef.current = true;
+      }
+      if (transaction.docChanged && !adoptingRef.current) {
+        let blob = false;
+        transaction.doc.descendants((n: any) => {
+          if (n.type.name === "image" && String(n.attrs.src ?? "").startsWith("blob:")) blob = true;
+          return !blob;
+        });
+        if (blob) void adoptBlobImages();
       }
     },
     onBlur() {
@@ -556,7 +625,7 @@ export function useBlockEditor({
       const ed = editorInstanceRef.current;
       if (!ed || !dirtyRef.current) return;
       try {
-        const markdown = ((ed.storage as any).markdown?.getMarkdown() ?? "").trim();
+        const markdown = withoutBlobImages(((ed.storage as any).markdown?.getMarkdown() ?? "").trim());
         if (markdown !== contentRef.current.trim()) {
           contentRef.current = markdown;
           onSaveRef.current(markdown);
