@@ -6294,6 +6294,67 @@ img.img-broken {
   gap: 6px;
   cursor: pointer;
 }
+/* A checkbox whose unchecked state is visible in both themes (the native one
+   drew nothing readable in the dark theme). */
+.command-palette-scope input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  border: 1.5px solid var(--text-secondary);
+  border-radius: 3px;
+  background: var(--bg-primary);
+  display: inline-grid;
+  place-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.command-palette-scope input[type="checkbox"]::after {
+  content: "";
+  width: 7px;
+  height: 4px;
+  border-left: 2px solid var(--bg-primary);
+  border-bottom: 2px solid var(--bg-primary);
+  transform: translateY(-1px) rotate(-45deg);
+  visibility: hidden;
+}
+.command-palette-scope input[type="checkbox"]:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.command-palette-scope input[type="checkbox"]:checked::after {
+  visibility: visible;
+}
+.command-palette-scope input[type="checkbox"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+/* Block results: plain text, then the page they are on. */
+.command-palette-block {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.command-palette-block .result-content {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.command-palette-block-page {
+  color: var(--text-muted);
+  font-size: 11px;
+  white-space: nowrap;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 0;
+}
+.command-palette-state {
+  align-self: center;
+}
 .command-palette-scope-note {
   font-style: italic;
 }

@@ -3,6 +3,9 @@ import * as api from "../lib/api";
 import { getRecentPages } from "../lib/recentFiles";
 import { getSettings, updateSettings } from "../lib/settings";
 import { openInNotebook } from "../lib/crossNotebook";
+import { setPendingReveal } from "../lib/pendingReveal";
+import { blockPlainText } from "../lib/plainText";
+import "./tasks.css";
 
 function formatTitle(title: string, isJournal?: boolean, journalDate?: string): string {
   const dateStr = journalDate ?? (title.startsWith("Journal/") ? title.slice(8) : null);
@@ -57,7 +60,7 @@ function flattenOthers(r: api.CrossSearch | null): OtherHit[] {
       out.push({ key: `${nb.notebook_key}:p:${p.id}`, notebookKey: nb.notebook_key, notebookName: nb.notebook_name, pageId: p.id, text: formatTitle(p.title, p.is_journal), pageTitle: p.title });
     }
     for (const b of nb.blocks) {
-      out.push({ key: `${nb.notebook_key}:b:${b.block.id}`, notebookKey: nb.notebook_key, notebookName: nb.notebook_name, pageId: b.block.page_id, blockId: b.block.id, text: b.block.content.slice(0, 80), pageTitle: b.page_title });
+      out.push({ key: `${nb.notebook_key}:b:${b.block.id}`, notebookKey: nb.notebook_key, notebookName: nb.notebook_name, pageId: b.block.page_id, blockId: b.block.id, text: blockPlainText(b.block.content).text || "(empty block)", pageTitle: formatTitle(b.page_title) });
     }
   }
   return out;
@@ -80,6 +83,8 @@ export default function SearchPanel({
   // on a half-finished search never creates a page instead of opening a result.
   const [searchedQuery, setSearchedQuery] = useState("");
   const [pages, setPages] = useState<api.Page[]>([]);
+  const pagesRef = useRef<api.Page[]>([]);
+  pagesRef.current = pages;
   const [selectedIndex, setSelectedIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   // "All notebooks": also search every other notebook (read-only, in the backend).
@@ -159,7 +164,16 @@ export default function SearchPanel({
     }
     try {
       const blocks = await api.search(q, 20);
-      setResults(blocks.map(b => ({ block: b })));
+      // Every block result names its page (like cross-notebook ones): titles
+      // from the page list, the rest in one call.
+      const titles = new Map(pagesRef.current.map(p => [p.id, formatTitle(p.title, p.is_journal, p.journal_date)]));
+      const missing = blocks.filter(b => !titles.has(b.page_id)).map(b => b.id);
+      if (missing.length) {
+        const withPages = await api.getBlocks(missing).catch(() => [] as api.BlockWithPage[]);
+        for (const b of withPages) titles.set(b.page_id, formatTitle(b.page_title));
+      }
+      if (latestQuery.current !== q) return;
+      setResults(blocks.map(b => ({ block: b, pageTitle: titles.get(b.page_id) })));
       setSelectedIndex(0);
     } catch {
       setResults([]);
@@ -173,9 +187,20 @@ export default function SearchPanel({
     return () => clearTimeout(timer);
   }, [query, doSearch, isCommandMode]);
 
-  const filteredPages = isCommandMode || !query.trim() ? [] : pages.filter(p =>
-    p.title.toLowerCase().includes(query.toLowerCase())
-  ).slice(0, 5);
+  // Page titles match word by word in any order ("lisbon travel" finds
+  // "Travel — Lisbon 2027"); titles containing the query as typed come first.
+  // (Fuzzy ranking is UX Wave 4.)
+  const filteredPages = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (isCommandMode || !q) return [];
+    const words = q.split(/\s+/).filter(Boolean);
+    const hits = pages.filter(p => {
+      const t = formatTitle(p.title, p.is_journal, p.journal_date).toLowerCase() + " " + p.title.toLowerCase();
+      return words.every(w => t.includes(w));
+    });
+    const exact = (p: api.Page) => (p.title.toLowerCase().includes(q) ? 0 : 1);
+    return hits.sort((a, b) => exact(a) - exact(b)).slice(0, 5);
+  }, [pages, query, isCommandMode]);
 
   // "Create page “<query>”": offered once the search for this query has settled and
   // no page has exactly that title. It is the last item, so with no results it is
@@ -197,6 +222,12 @@ export default function SearchPanel({
     inputRef.current?.focus();
   };
   const createFromQuery = () => { onCreatePage?.(createTitle); onClose(); };
+  /** A block result opens its page at that block. */
+  const openBlock = (r: SearchResult) => {
+    setPendingReveal(r.block.id);
+    onPageClick(r.block.page_id);
+    onClose();
+  };
 
   // Close the palette FIRST: many commands open another panel through the same
   // "which panel is open" state, and closing afterwards would clear it again.
@@ -248,8 +279,7 @@ export default function SearchPanel({
         const blockIdx = selectedIndex - filteredPages.length;
         const otherIdx = blockIdx - results.length;
         if (blockIdx < results.length) {
-          onPageClick(results[blockIdx].block.page_id);
-          onClose();
+          openBlock(results[blockIdx]);
         } else if (otherIdx < otherHits.length) {
           openOther(otherHits[otherIdx]);
         } else if (canCreate) {
@@ -334,7 +364,7 @@ export default function SearchPanel({
                   {filteredPages.map((page, i) => (
                     <div
                       key={page.id}
-                      className={`command-palette-item ${i === selectedIndex ? "selected" : ""}`}
+                      className={`command-palette-item command-palette-page ${i === selectedIndex ? "selected" : ""}`}
                       onClick={() => { onPageClick(page.id); onClose(); }}
                     >
                       {formatTitle(page.title, page.is_journal, page.journal_date)}
@@ -345,15 +375,21 @@ export default function SearchPanel({
               {results.length > 0 && (
                 <>
                   <div className="command-palette-section">Blocks</div>
-                  {results.map((r, i) => (
-                    <div
-                      key={r.block.id}
-                      className={`command-palette-item ${i + filteredPages.length === selectedIndex ? "selected" : ""}`}
-                      onClick={() => { onPageClick(r.block.page_id); onClose(); }}
-                    >
-                      <span className="result-content">{r.block.content.slice(0, 80)}</span>
-                    </div>
-                  ))}
+                  {results.map((r, i) => {
+                    const plain = blockPlainText(r.block.content);
+                    return (
+                      <div
+                        key={r.block.id}
+                        className={`command-palette-item command-palette-block ${i + filteredPages.length === selectedIndex ? "selected" : ""}`}
+                        onClick={() => openBlock(r)}
+                        title={r.pageTitle ? `Go to this block in ${r.pageTitle}` : "Go to this block"}
+                      >
+                        {plain.state && <span className={`tasks-state tasks-state-${plain.state.toLowerCase()} command-palette-state`}>{plain.state}</span>}
+                        <span className="result-content">{plain.text || "(empty block)"}</span>
+                        {r.pageTitle && <span className="command-palette-block-page">{r.pageTitle}</span>}
+                      </div>
+                    );
+                  })}
                 </>
               )}
               {otherHits.length > 0 && (() => {

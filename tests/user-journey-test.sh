@@ -3686,8 +3686,6 @@ R=$(ev "(()=>{const s=[...document.querySelectorAll('.command-palette-item')].ma
 [[ "$R" == "false|true" ]] && pass "Recent: the archived page is gone, the others stay" || fail "Archived page still in Recent" "$R"
 press "Escape"; sleep 0.3; api "closePanel()" >/dev/null
 
-
-
 # ═══════════════════════════════════════════════
 journey "69. The TODO badge opens a live Tasks view — no generated page (UX review C-8)"
 # It used to write a real "All TODOs" page of raw {{todo:pending}} markup.
@@ -3858,6 +3856,31 @@ ev "(async()=>{const n=await import('/src/lib/notebooks.ts');await n.switchNoteb
 R=$(ev "document.title" | tr -d '"')
 [[ "$R" == *" — Title72 $S72 — MiNotes" ]] && pass "Follows a notebook switch: $R" || fail "Title after switching notebooks" "$R"
 ev "(async()=>{const n=await import('/src/lib/notebooks.ts');await n.switchNotebook('$HOME72');return 1})()" >/dev/null; sleep 2
+
+# ═══════════════════════════════════════════════
+journey "73. Search results read as text and say where they are"
+# ═══════════════════════════════════════════════
+A73="const api=await import('/src/lib/api.ts');"
+search73() { ev "(async()=>{const T=window.__MINOTES__;T.closePanel();T.openSearch();await new Promise(r=>setTimeout(r,400));const i=document.querySelector('.command-palette-input');const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;set.call(i,'$1');i.dispatchEvent(new Event('input',{bubbles:true}));await new Promise(r=>setTimeout(r,900));return 1})()" >/dev/null; }
+api "closePanel()" >/dev/null; press "Escape"; sleep 0.3
+ev "(async()=>{$A73 const t=await api.createPage('Travel — Lisbon 2027');const p=await api.createPage('Plans73');await api.createBlock(p.id,'TODO book flights73 for [[Travel — Lisbon 2027|'+t.id+']] see ((0e1d2c3b-4a59-4687-a6b5-c4d3e2f1a0b9)) {{whiteboard:wb73}}');return 1})()" >/dev/null; sleep 0.5
+
+step "\"lisbon travel\" finds the page \"Travel — Lisbon 2027\""
+search73 "lisbon travel"
+# Page hits are the rows above the "Blocks" section.
+R=$(ev "(()=>{const out=[];for(const e of document.querySelector('.command-palette-results')?.children||[]){if(e.classList.contains('command-palette-section'))break;if(e.classList.contains('command-palette-item'))out.push(e.textContent)}return out.join('|')})()" | tr -d '"')
+[[ "$R" == *"Travel — Lisbon 2027"* ]] && pass "Page found by words in any order ($R)" || fail "Token-wise title match" "$R"
+
+step "A block result is plain text with its page name"
+search73 "flights73"
+R=$(ev "(()=>{const b=document.querySelector('.command-palette-block');if(!b)return 'none';return (b.querySelector('.result-content')?.textContent||'')+'|'+(b.querySelector('.command-palette-block-page')?.textContent||'')})()" | tr -d '"')
+[[ "$R" == *"book flights73 for Travel — Lisbon 2027"*"|Plans73" && "$R" != *"[["* && "$R" != *"{{"* && "$R" != *"0e1d2c3b"* ]] && pass "Plain text + source page ($R)" || fail "Block result text" "$R"
+ss "73-search-blocks"
+
+step "The All notebooks checkbox is visibly unchecked"
+R=$(ev "(()=>{const c=document.querySelector('[data-testid=search-all-notebooks]');if(!c)return 'none';const cs=getComputedStyle(c);return c.checked+'|'+cs.borderTopStyle+'|'+(parseFloat(cs.borderTopWidth)>=1)+'|'+(parseFloat(cs.width)>=12)})()" | tr -d '"')
+[[ "$R" == "false|solid|true|true" ]] && pass "Unchecked box has a visible border ($R)" || fail "All-notebooks checkbox" "$R"
+press "Escape"; sleep 0.3; api "closePanel()" >/dev/null
 
 # ═══════════════════════════════════════════════
 close_app
