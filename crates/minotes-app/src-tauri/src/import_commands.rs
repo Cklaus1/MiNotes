@@ -470,6 +470,13 @@ pub fn import_undo(app: AppHandle, state: State<'_, AppState>, run_id: String, k
     Ok(r)
 }
 
+/// What "Undo import" would remove (nothing changes): for its confirmation.
+#[tauri::command]
+pub fn import_undo_preview(state: State<'_, AppState>, run_id: String) -> Result<import::UndoReport, String> {
+    let db = state.db_guard()?;
+    import::undo_preview(&db, &run_id).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn import_runs(state: State<'_, AppState>) -> Result<Vec<import::RunInfo>, String> {
     let db = state.db_guard()?;

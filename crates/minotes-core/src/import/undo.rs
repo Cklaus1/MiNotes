@@ -78,11 +78,18 @@ fn items(db: &Database, run: &str, kinds: &[&str]) -> Result<Vec<String>> {
     Ok(out)
 }
 
-/// Undo run `run`. Pages whose content changed since the import are never
-/// deleted: without `keep_edited` nothing happens and they are listed; with it,
-/// everything else is undone and they (and the Projects holding them) stay.
-/// `force` skips the edit check (cleaning up a cancelled import).
-pub fn undo_run(db: &Database, run: &str, keep_edited: bool, force: bool) -> Result<UndoReport> {
+/// What undoing `run` would do, changing nothing: `pages_deleted` = the pages
+/// it would delete, `edited` = the pages edited since (kept). For the "Undo
+/// this import?" confirmation.
+pub fn undo_preview(db: &Database, run: &str) -> Result<UndoReport> {
+    let (mut rep, to_delete) = plan_undo(db, run, false)?;
+    rep.pages_deleted = to_delete.len();
+    Ok(rep)
+}
+
+/// The run's pages that still exist: unchanged ones (to delete) and edited ones
+/// (listed in the report). `force`: no edit check.
+fn plan_undo(db: &Database, run: &str, force: bool) -> Result<(UndoReport, Vec<Uuid>)> {
     let exists: bool = db.conn.query_row("SELECT EXISTS(SELECT 1 FROM import_runs WHERE id = ?1)", [run], |r| r.get(0))?;
     if !exists {
         return Err(Error::NotFound(format!("Import run {run}")));
@@ -108,6 +115,15 @@ pub fn undo_run(db: &Database, run: &str, keep_edited: bool, force: bool) -> Res
         to_delete.push(u);
     }
     rep.updated_kept = items(db, run, &["updated"])?.len();
+    Ok((rep, to_delete))
+}
+
+/// Undo run `run`. Pages whose content changed since the import are never
+/// deleted: without `keep_edited` nothing happens and they are listed; with it,
+/// everything else is undone and they (and the Projects holding them) stay.
+/// `force` skips the edit check (cleaning up a cancelled import).
+pub fn undo_run(db: &Database, run: &str, keep_edited: bool, force: bool) -> Result<UndoReport> {
+    let (mut rep, to_delete) = plan_undo(db, run, force)?;
     if !rep.edited.is_empty() && !keep_edited {
         return Ok(rep);
     }

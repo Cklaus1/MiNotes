@@ -1810,6 +1810,7 @@ pub fn run() {
             import_commands::import_cancel,
             import_commands::import_discard,
             import_commands::import_undo,
+            import_commands::import_undo_preview,
             import_commands::import_runs,
             // ── End import ──
         ])

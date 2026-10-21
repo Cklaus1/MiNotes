@@ -421,6 +421,10 @@ waitfor "document.querySelector('[data-testid=import-dialog]')?.dataset.step==='
 EN=$(ev "(async()=>{$A6 const t=(await api.listPages(1000)).map(p=>p.title);const ph=await api.getPageTree('Trip photos');return [t.includes('Packing list (2)'),t.includes('Pancakes'),ph.blocks.some(b=>b.content.includes('![beach.png](attachment:'))].join('|')})()")
 is "Notes, numbered duplicate title, en-media image as attachment" "$EN" "true|true|true"
 ev "document.querySelector('[data-testid=import-undo]')?.click()" >/dev/null
+waitfor "!!document.querySelector('[data-testid=confirm-dialog]')" 10
+C6=$(ev "document.querySelector('[data-testid=confirm-dialog]')?.innerText||'none'")
+[[ "$C6" == *"Undo this import?"*"deletes the "*" pages"* ]] && pass "Undo import asks first, with the page count" || fail "No confirmation before Undo import" "$C6"
+ev "document.querySelector('[data-testid=confirm-ok]')?.click()" >/dev/null
 waitfor "document.querySelector('[data-testid=import-dialog]')?.dataset.step==='undone'" 20 && pass "Undo import" || fail "Undo" "$(step6) $(ev "document.querySelector('[data-testid=import-dialog]')?.innerText.slice(0,300)||''")"
 "$DC" wshot "d6-undone" >/dev/null
 is "The Evernote notebook is empty again (today's journal aside)" "$(ev "(async()=>{$A6 return String((await api.listPages(1000)).filter(p=>p.title!=='Journal/$(date +%F)').length)})()")" "0"
@@ -428,14 +432,16 @@ ENDIR=$(ls -d "$IH/MiNotes/"*/ | grep -v Vault | head -1)
 is "Its attachment store is empty" "$(find "$ENDIR/attachments" -type f 2>/dev/null | wc -l | tr -d ' ')" "0"
 press_esc() { "$DC" press Escape >/dev/null 2>&1; }; press_esc
 
-step "Undo refuses pages I edited since — and lists them"
+step "Undo warns about pages I edited since — and keeps them unless I cancel"
 ev "window.__MINOTES__.switchNotebook('$NB6')" >/dev/null; sleep 2
 ev "(async()=>{$A6 const t=await api.getPageTree('Beta');await api.updateBlock(t.blocks[0].id,'# Beta (mine now)');return 1})()" >/dev/null
 open_import; ev "document.querySelector('[data-testid=import-run-undo]')?.click()" >/dev/null
-waitfor "!!document.querySelector('[data-testid=import-undo-refused]')" 10 \
-  && is "Refused, listing the edited page" "$(ev "document.querySelector('[data-testid=import-undo-refused] .imp-chip')?.textContent||''")" "Beta" \
-  || fail "Undo refusal" "$(step6)"
-"$DC" wshot "d6-undo-refused" >/dev/null
+waitfor "!!document.querySelector('[data-testid=confirm-dialog]')" 10
+C6=$(ev "document.querySelector('[data-testid=confirm-dialog]')?.innerText||'none'")
+[[ "$C6" == *"edited since the import"*"Beta"* ]] && pass "The confirmation names the edited page it keeps" || fail "No edited-page warning" "$C6"
+"$DC" wshot "d6-undo-edited-warning" >/dev/null
+ev "document.querySelector('[data-testid=confirm-cancel]')?.click()" >/dev/null; sleep 0.5
+is "Cancel: the import is still there" "$(ev "(async()=>{$A6 return String((await api.listPages(1000)).some(p=>p.title==='Alpha'))})()")" "true"
 press_esc; sleep 0.5
 
 step "I paste a screenshot into a block: stored as an attachment, still there after a restart"

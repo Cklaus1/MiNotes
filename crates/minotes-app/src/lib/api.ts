@@ -1253,6 +1253,8 @@ export const importRun = (destination: ImportDestination, options: ImportOptions
   invoke<ImportResult>("import_run", { destination, options });
 export const importCancel = () => invoke<void>("import_cancel");
 export const importDiscard = () => invoke<void>("import_discard");
+/** What "Undo import" would remove (changes nothing): pages_deleted = pages it would delete, edited = kept. */
+export const importUndoPreview = (runId: string) => invoke<ImportUndoReport>("import_undo_preview", { runId });
 export const importUndo = (runId: string, keepEdited = false) => invoke<ImportUndoReport>("import_undo", { runId, keepEdited });
 export const importRuns = () => invoke<ImportRun[]>("import_runs");
 

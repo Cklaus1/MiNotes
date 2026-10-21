@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as api from "../lib/api";
 import { errorMessage } from "../lib/errors";
+import { confirmDialog } from "../lib/confirm";
 import { formatSize, pickFolder, prettyPath, switchNotebook } from "../lib/notebooks";
 import { showToast } from "../lib/toast";
 import { takeNextImportPick } from "../lib/importPicks";
@@ -273,7 +274,25 @@ export default function ImportDialog({ initialKind, onClose, onOpenPage, onRefre
   const doUndo = async (runId: string, keepEdited = false) => {
     setBusy(true);
     try {
-      const r = await api.importUndo(runId, keepEdited);
+      // Say what goes before anything goes: how many pages, and which edited
+      // pages stay (UX review: Undo import deleted at once).
+      const plan = await api.importUndoPreview(runId);
+      const n = plan.pages_deleted;
+      const edited = plan.edited;
+      const names = edited.slice(0, 5).map(e => `“${e.title}”`).join(", ") + (edited.length > 5 ? ` and ${edited.length - 5} more` : "");
+      const ok = await confirmDialog({
+        title: "Undo this import?",
+        message:
+          `This deletes the ${n} page${n === 1 ? "" : "s"} the import created, and the Projects and attachments only they use.` +
+          (edited.length
+            ? `\n\n${edited.length} imported page${edited.length === 1 ? " was" : "s were"} edited since the import and ${edited.length === 1 ? "is" : "are"} kept: ${names}.`
+            : "") +
+          (plan.updated_kept ? `\n\nPages the import updated in place stay as they are now.` : ""),
+        confirmLabel: n > 0 ? `Delete ${n} page${n === 1 ? "" : "s"}${edited.length ? `, keep ${edited.length}` : ""}` : "Undo import",
+        danger: true,
+      });
+      if (!ok) return;
+      const r = await api.importUndo(runId, keepEdited || edited.length > 0);
       setUndo(r);
       if (r.undone) {
         setStep("undone");

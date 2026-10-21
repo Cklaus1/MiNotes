@@ -3065,6 +3065,13 @@ step "Undo import removes everything it created"
 RUN61=$(ev "(async()=>{$A61 return (await api.importRuns())[0]?.id||''})()" | tr -d '"')
 api "openImport()" >/dev/null; sleep 0.8
 ev "document.querySelector('[data-testid=import-run-undo]')?.click()" >/dev/null
+for _ in $(seq 1 10); do sleep 0.3; R=$(ev "document.querySelector('[data-testid=confirm-dialog]')?.innerText||''" | tr -d '"'); [[ -n "$R" ]] && break; done
+[[ "$R" == *"Undo this import?"*"deletes the "*" page"* ]] && pass "Undo asks first, with the page count" || fail "No confirmation before Undo import" "$R"
+ev "document.querySelector('[data-testid=confirm-cancel]')?.click()" >/dev/null; sleep 0.5
+R=$(ev "(async()=>{$A61 return String((await api.listPages(1000)).filter(p=>!p.is_journal).length>0)})()" | tr -d '"')
+[[ "$R" == "true" ]] && pass "Cancel: nothing was removed" || fail "Cancel still undid the import" "$R"
+ev "document.querySelector('[data-testid=import-run-undo]')?.click()" >/dev/null; sleep 0.8
+ev "document.querySelector('[data-testid=confirm-ok]')?.click()" >/dev/null
 for _ in $(seq 1 20); do sleep 0.5; R=$(ev "document.querySelector('[data-testid=import-dialog]')?.dataset.step||''" | tr -d '"'); [[ "$R" == "undone" ]] && break; done
 [[ "$R" == "undone" ]] && pass "Undo import ran ($RUN61)" || fail "Undo import" "$R $(ev "document.querySelector('[data-testid=import-dialog]')?.innerText.slice(0,200)||''")"
 R=$(ev "(async()=>{$A61 return String((await api.listPages(1000)).filter(p=>!p.is_journal).length)})()" | tr -d '"')
