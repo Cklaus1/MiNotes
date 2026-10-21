@@ -3514,7 +3514,7 @@ R=$(ev "(async()=>{const e=await import('/src/lib/encryption.ts');await e.lockNo
 
 step "From the unlock screen I can open another notebook; this one stays locked"
 ev "(async()=>{const e=await import('/src/lib/encryption.ts');await e.lockNow();return 1})()" >/dev/null; sleep 1
-ev "[...document.querySelectorAll('.enc-others-list button')].find(b=>!b.textContent.includes('🔒'))?.click()" >/dev/null
+ev "[...document.querySelectorAll('.enc-others-list button')].find(b=>!b.querySelector('[data-icon=lock]'))?.click()" >/dev/null
 for _ in $(seq 1 20); do sleep 0.5; R=$(ev "!document.querySelector('[data-testid=unlock-screen]')&&!!document.querySelector('.sidebar')" | tr -d '"'); [[ "$R" == "true" ]] && break; done
 R2=$(ev "(async()=>{$A65 const l=await api.listNotebooks();const v=l.find(n=>n.name==='$NB65');return (v?v.encrypted+'/'+v.locked:'missing')+'|'+((await api.getNotebookSession()).encrypted)})()" | tr -d '"')
 [[ "$R" == "true" && "$R2" == "true/true|false" ]] && pass "Another notebook opened; the encrypted one is listed as locked ($R2)" || fail "Open another" "$R $R2"

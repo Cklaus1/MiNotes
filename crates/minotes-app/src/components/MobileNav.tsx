@@ -1,3 +1,5 @@
+import Icon from "./Icon";
+
 interface MobileNavProps {
   activeTab: string;
   onPagesClick: () => void;
@@ -16,11 +18,11 @@ export default function MobileNav({
   onMenuClick,
 }: MobileNavProps) {
   const tabs = [
-    { id: "pages", label: "Pages", icon: "\u{1F4C4}", onClick: onPagesClick },
-    { id: "journal", label: "Journal", icon: "\u{1F4D3}", onClick: onJournalClick },
-    { id: "search", label: "Search", icon: "\u{1F50D}", onClick: onSearchClick },
-    { id: "graph", label: "Graph", icon: "\u{1F578}\uFE0F", onClick: onGraphClick },
-    { id: "menu", label: "Menu", icon: "\u2630", onClick: onMenuClick },
+    { id: "pages", label: "Pages", icon: "pages" as const, onClick: onPagesClick },
+    { id: "journal", label: "Journal", icon: "journal" as const, onClick: onJournalClick },
+    { id: "search", label: "Search", icon: "search" as const, onClick: onSearchClick },
+    { id: "graph", label: "Graph", icon: "graph" as const, onClick: onGraphClick },
+    { id: "menu", label: "Menu", icon: "sidebar" as const, onClick: onMenuClick },
   ];
 
   return (
@@ -32,7 +34,7 @@ export default function MobileNav({
             className={`mobile-nav-tab${activeTab === tab.id ? " active" : ""}`}
             onClick={tab.onClick}
           >
-            <span className="mobile-nav-tab-icon">{tab.icon}</span>
+            <span className="mobile-nav-tab-icon"><Icon name={tab.icon} size={20} /></span>
             <span className="mobile-nav-tab-label">{tab.label}</span>
           </button>
         ))}

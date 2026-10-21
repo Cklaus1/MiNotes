@@ -67,7 +67,7 @@ export function extractLabel(content: string, maxLen = 60): string {
 }
 
 /** Label shown in place of a `{{whiteboard:<id>}}` embed. */
-export const WHITEBOARD_LABEL = "🎨 Whiteboard";
+export const WHITEBOARD_LABEL = "[Whiteboard]";
 
 /**
  * Remove the leading TODO/DOING/DONE keyword — for views that already show the

@@ -9,11 +9,16 @@ interface Props {
 }
 
 function drawPlaceholder(ctx: CanvasRenderingContext2D) {
-  ctx.fillStyle = "#9ca0b0";
-  ctx.font = "20px sans-serif";
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  ctx.fillText("🎨", THUMB_W / 2, THUMB_H / 2);
+  // The "draw" icon of the app's set (lib/icons.ts), centred.
+  ctx.save();
+  ctx.strokeStyle = "#9ca0b0";
+  ctx.lineWidth = 1.75;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.translate(THUMB_W / 2 - 12, THUMB_H / 2 - 12);
+  ctx.stroke(new Path2D("M12 20h9"));
+  ctx.stroke(new Path2D("M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"));
+  ctx.restore();
 }
 
 /** Render a thumbnail from already-parsed whiteboard data (null = never saved). */

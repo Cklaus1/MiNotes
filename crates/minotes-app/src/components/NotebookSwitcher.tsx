@@ -12,6 +12,7 @@ import { JoinNotebookDialog } from "./EncryptionDialogs";
 import { LOCK_CHANGED, lockNow } from "../lib/encryption";
 import "./notebooks.css";
 import { useLayer } from "../lib/layers";
+import Icon from "./Icon";
 
 /** Event other views fire to open a notebook dialog (detail: "new" | "manage" | "move"). */
 const OPEN_DIALOG = "minotes-open-notebook-dialog";
@@ -131,7 +132,7 @@ export default function NotebookSwitcher() {
         data-testid="notebook-switcher"
       >
         <span className="nb-switcher-name">{name}</span>
-        {session?.encrypted && <span className="nb-lock-badge" title="Encrypted notebook" aria-label="Encrypted" data-testid="notebook-lock-icon">🔒</span>}
+        {session?.encrypted && <span className="nb-lock-badge" title="Encrypted notebook" aria-label="Encrypted" data-testid="notebook-lock-icon"><Icon name="lock" size={12} /></span>}
         {session?.read_only && <span className="nb-badge" title="Open read-only">read-only</span>}
         <span className="nb-switcher-caret" aria-hidden>▾</span>
       </button>
@@ -156,7 +157,7 @@ export default function NotebookSwitcher() {
                     <span className="nb-item-text">
                       <span className="nb-item-name">
                         {nb.name}
-                        {nb.encrypted && <span className="nb-lock-badge" title={nb.locked ? "Encrypted, locked" : "Encrypted"} aria-label="Encrypted">🔒</span>}
+                        {nb.encrypted && <span className="nb-lock-badge" title={nb.locked ? "Encrypted, locked" : "Encrypted"} aria-label="Encrypted"><Icon name="lock" size={12} /></span>}
                       </span>
                       <span className="nb-item-path">
                         {caps.app_storage ? "On this device" : nb.available ? prettyPath(nb.kind === "folder" ? nb.path : nb.mirror_dir) : "unavailable"}

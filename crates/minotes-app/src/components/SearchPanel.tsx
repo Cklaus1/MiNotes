@@ -7,6 +7,7 @@ import { setPendingReveal } from "../lib/pendingReveal";
 import { blockPlainText } from "../lib/plainText";
 import "./tasks.css";
 import { useLayer } from "../lib/layers";
+import Icon from "./Icon";
 
 function formatTitle(title: string, isJournal?: boolean, journalDate?: string): string {
   const dateStr = journalDate ?? (title.startsWith("Journal/") ? title.slice(8) : null);
@@ -356,7 +357,7 @@ export default function SearchPanel({
             <>
               {!query && recent.length > 0 && (
                 <>
-                  <div className="command-palette-section">&#128336; Recent</div>
+                  <div className="command-palette-section"><Icon name="clock" size={12} /> Recent</div>
                   {recent.map((r, i) => (
                     <div
                       key={r.id}

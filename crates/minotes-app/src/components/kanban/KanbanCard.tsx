@@ -5,6 +5,7 @@ import type { Block } from "../../lib/api";
 import * as api from "../../lib/api";
 import { extractTaskLabel, detectTodoState } from "../mindmap/blocksToFlow";
 import { useEscapeToClose } from "../../lib/escapeStack";
+import Icon from "../Icon";
 
 interface Props {
   block: Block;
@@ -176,7 +177,7 @@ function KanbanCard({ block, subBlockCount, columnId, columns, onMoveTo, columnC
               <span className="kanban-sub-count">{subBlockCount} sub-block{subBlockCount !== 1 ? "s" : ""}</span>
             )}
             {/* Edit hint — pencil icon on hover */}
-            <button className="kanban-card-edit-btn" onClick={(e) => { e.stopPropagation(); startEdit(); }} title="Edit card">✎</button>
+            <button className="kanban-card-edit-btn" onClick={(e) => { e.stopPropagation(); startEdit(); }} title="Edit card" aria-label="Edit card"><Icon name="pencil" size={13} /></button>
           </>
         )}
       </div>

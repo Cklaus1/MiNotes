@@ -7,6 +7,7 @@ import Whiteboard from "./Whiteboard";
 import AllPagesView from "./AllPagesView";
 import { useEscapeToClose } from "../lib/escapeStack";
 import { WHITEBOARD_REGEX } from "../lib/whiteboardUtils";
+import Icon from "./Icon";
 
 export type CanvasModeType = "graph" | "mindmap" | "draw" | "kanban" | "pages";
 
@@ -150,31 +151,31 @@ export default function CanvasMode({
             className={`canvas-mode-btn ${mode === "graph" ? "active" : ""}`}
             onClick={() => handleModeSwitch("graph")}
           >
-            🔗 Graph
+            <Icon name="graph" size={15} /> Graph
           </button>
           <button
             className={`canvas-mode-btn ${mode === "mindmap" ? "active" : ""}`}
             onClick={() => handleModeSwitch("mindmap")}
           >
-            🧠 Mindmap
+            <Icon name="mindmap" size={15} /> Mind map
           </button>
           <button
             className={`canvas-mode-btn ${mode === "draw" ? "active" : ""}`}
             onClick={() => handleModeSwitch("draw")}
           >
-            🎨 Draw
+            <Icon name="draw" size={15} /> Draw
           </button>
           <button
             className={`canvas-mode-btn ${mode === "kanban" ? "active" : ""}`}
             onClick={() => handleModeSwitch("kanban")}
           >
-            📋 Kanban
+            <Icon name="kanban" size={15} /> Kanban
           </button>
           <button
             className={`canvas-mode-btn ${mode === "pages" ? "active" : ""}`}
             onClick={() => handleModeSwitch("pages")}
           >
-            📄 Pages
+            <Icon name="pages" size={15} /> Pages
           </button>
         </div>
 

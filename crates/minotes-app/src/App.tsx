@@ -56,6 +56,7 @@ import AiMount from "./components/AiMount";
 import ImportMount from "./components/ImportMount";
 import { openImport } from "./lib/importPicks";
 import { askNewPage } from "./lib/newPage";
+import Icon from "./components/Icon";
 // ── End import ──
 // ── End AI platform ──
 
@@ -1160,7 +1161,7 @@ export default function App() {
                   buttons and a not-yet-written day is never a dead end. */}
               <div className="main-header">
                 <h2 className="pending-journal-date">
-                  {"\u{1F4C5}"} {(() => {
+                  <Icon name="calendar" size={20} className="title-icon" /> {(() => {
                     const [y, m, d] = pendingJournalDate.split("-").map(Number);
                     const dt = new Date(y, m - 1, d);
                     return isNaN(dt.getTime()) ? pendingJournalDate : dt.toLocaleDateString(undefined, {

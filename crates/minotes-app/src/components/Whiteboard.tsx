@@ -8,6 +8,7 @@ import { registerFlush } from "../lib/pendingEdits";
 import { isRemoteSrc } from "../lib/remoteImages";
 import { useAppTheme } from "../lib/theme";
 import { coveredAbove } from "../lib/layers";
+import Icon from "./Icon";
 
 interface StickyNote {
   id: string;
@@ -1983,7 +1984,7 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
             </div>
           )}
           <button className="btn btn-sm" onClick={clearCanvas} title="Clear">Clear</button>
-          <button className="btn btn-sm" onClick={() => { setShowCanvasSettings(v => !v); setShowExportMenu(false); }} title="Canvas settings">⚙</button>
+          <button className="btn btn-sm" onClick={() => { setShowCanvasSettings(v => !v); setShowExportMenu(false); }} title="Canvas settings" aria-label="Canvas settings"><Icon name="settings" size={14} /></button>
           {showCanvasSettings && (
             <div className="wb-popover" onClick={(e) => e.stopPropagation()}>
               <div className="wb-popover-row">

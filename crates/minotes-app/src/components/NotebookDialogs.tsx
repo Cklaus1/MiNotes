@@ -10,6 +10,7 @@ import {
 } from "../lib/notebooks";
 import { passphraseProblem } from "../lib/passphrase";
 import { PassphraseFields, RecoveryKeyModal } from "./EncryptionDialogs";
+import Icon from "./Icon";
 
 /** Same check as minotes-core notebook::validate_name. */
 function nameProblem(name: string, existing: string[]): string | null {
@@ -365,7 +366,7 @@ export function ManageNotebooksDialog({ notebooks, session, onClose, onMove, onL
                             title={nb.locked ? "Encrypted — locked" : "Encrypted"}
                             aria-label={nb.locked ? "Encrypted, locked" : "Encrypted"}
                             data-testid="notebook-row-lock"
-                          >🔒</span>
+                          ><Icon name="lock" size={12} /></span>
                         )}
                         {current && <span className="nb-badge">open</span>}
                         {!nb.available && <span className="nb-badge warn">unavailable</span>}

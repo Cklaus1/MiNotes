@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import type { Page, FolderTreeRoot } from "../lib/api";
 import * as api from "../lib/api";
+import Icon from "./Icon";
 
 interface Props {
   onPageClick: (id: string) => void;
@@ -134,7 +135,7 @@ export default function AllPagesView({ onPageClick, onClose }: Props) {
                 onClick={() => onPageClick(page.id)}
               >
                 <td className="all-pages-td all-pages-title">
-                  {page.icon ?? "📄"} {page.title}
+                  {page.icon ?? <Icon name="page" size={14} />} {page.title}
                 </td>
                 <td className="all-pages-td all-pages-project">
                   {getProjectName(page)}

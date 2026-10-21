@@ -15,6 +15,7 @@ import { pageTitleConflict } from "../lib/pageNames";
 import { confirmDialog, plural } from "../lib/confirm";
 import SyncChip from "./SyncChip";
 import { NEW_PAGE_FIELD_EVENT } from "../lib/newPage";
+import Icon from "./Icon";
 function formatJournalDate(dateStr: string): string {
   try {
     const [y, m, d] = dateStr.split("-").map(Number);
@@ -349,11 +350,11 @@ export default function Sidebar({
       <div className="sidebar-header">
         <h1>MiNotes</h1>
         <NotebookSwitcher />
-        <button className="sidebar-gear-btn" onClick={onSettingsClick} title="Settings (Ctrl+,)">&#x2699;</button>
+        <button className="sidebar-gear-btn" onClick={onSettingsClick} title="Settings (Ctrl+,)" aria-label="Settings"><Icon name="settings" /></button>
       </div>
       <div className="sidebar-actions-bar">
         <button className="btn btn-sm" onClick={onSearchClick} title="Search (Ctrl+K)" style={{ flex: 1 }}>
-          &#128269; Search
+          <Icon name="search" size={14} /> Search
         </button>
         <button
           className="btn btn-sm btn-primary"
@@ -388,7 +389,7 @@ export default function Sidebar({
       {/* -- Journal + Calendar -- */}
       <div className="sidebar-journal-row">
         <span className="sidebar-journal-text" onClick={() => onJournalClick()} title="Open today's journal (Ctrl+J)">
-          &#128197; <strong>Today</strong> &middot; {todayLabel}
+          <Icon name="calendar" size={14} /> <strong>Today</strong> &middot; {todayLabel}
         </span>
         <span
           className="sidebar-section-chevron"
@@ -427,7 +428,7 @@ export default function Sidebar({
                   loadTree();
                 }
               }}
-            >&#128204; Pinned</div>
+            ><Icon name="pin" size={13} /> Pinned</div>
             {/* Pinned items — user-ordered via drag, soft cap at 7 */}
             {(() => {
               const PINNED_CAP = 7;
@@ -639,7 +640,7 @@ export default function Sidebar({
                 className="sidebar-system-item"
                 onClick={() => setShowArchived(v => !v)}
               >
-                <span>&#128230; Archived ({archivedItems.length})</span>
+                <span><Icon name="archive" size={14} /> Archived ({archivedItems.length})</span>
                 <span className="sidebar-section-chevron">{showArchived ? "\u25B4" : "\u25BE"}</span>
               </div>
               {showArchived && (
@@ -647,7 +648,7 @@ export default function Sidebar({
                   {archivedItems.map(item => (
                     <div key={item.id} className="page-item sidebar-trash-item">
                       <span>
-                        {item.item_type === "folder" ? "\uD83D\uDCC1 " : ""}
+                        {item.item_type === "folder" ? <><Icon name="folder" size={13} />{" "}</> : ""}
                         {displayTitle({ title: item.title })}
                         {item.item_type === "folder" && item.page_count > 0 && (
                           <span className="folder-count"> ({item.page_count})</span>
@@ -678,7 +679,7 @@ export default function Sidebar({
             className="sidebar-system-item"
             onClick={() => setShowTrash(v => !v)}
           >
-            <span>&#128465; Trash{trashItems.length > 0 ? ` (${trashItems.length})` : ""}</span>
+            <span><Icon name="trash" size={14} /> Trash{trashItems.length > 0 ? ` (${trashItems.length})` : ""}</span>
             {trashItems.length > 0 && (
               <span className="sidebar-section-chevron">{showTrash ? "\u25B4" : "\u25BE"}</span>
             )}
@@ -688,7 +689,7 @@ export default function Sidebar({
               {trashItems.map(item => (
                 <div key={item.id} className="page-item sidebar-trash-item" data-testid="trash-item">
                   <span className="sidebar-trash-title" title={displayTitle({ title: item.title })}>
-                    {item.item_type === "folder" ? "\uD83D\uDCC1" : ""} {displayTitle({ title: item.title })}
+                    {item.item_type === "folder" ? <Icon name="folder" size={13} /> : ""} {displayTitle({ title: item.title })}
                     {item.item_type === "folder" && item.page_count > 0 && (
                       <span className="folder-count"> ({item.page_count})</span>
                     )}
@@ -724,7 +725,7 @@ export default function Sidebar({
                         await api.permanentlyDelete(item.id, item.item_type);
                         loadTree();
                       }}
-                    >&#10005;</button>
+                    ><Icon name="x" size={13} /></button>
                   </span>
                 </div>
               ))}
@@ -759,19 +760,19 @@ export default function Sidebar({
         <SyncChip onOpenSettings={onSettingsClick} />
         <div className="stats-modes-grid">
           <button className={`stats-mode-btn ${activeMode === "graph" ? "active" : ""}`} onClick={onGraphClick} title="Graph (Ctrl+G)">
-            &#128202;Graph
+            <Icon name="graph" size={18} /><span>Graph</span>
           </button>
           <button className={`stats-mode-btn ${activeMode === "mindmap" ? "active" : ""}`} onClick={onMindmapClick} title="Mindmap (Ctrl+M)">
-            &#129504;Mind
+            <Icon name="mindmap" size={18} /><span>Mind</span>
           </button>
           <button className={`stats-mode-btn ${activeMode === "whiteboard" ? "active" : ""}`} onClick={onWhiteboardClick} title="Draw (Ctrl+W)">
-            &#127912;Draw
+            <Icon name="draw" size={18} /><span>Draw</span>
           </button>
           <button className={`stats-mode-btn ${activeMode === "kanban" ? "active" : ""}`} onClick={onKanbanClick} title="Kanban (Ctrl+Shift+K)">
-            &#128450;Kanban
+            <Icon name="kanban" size={18} /><span>Kanban</span>
           </button>
           <button className={`stats-mode-btn ${activeMode === "pages" ? "active" : ""}`} onClick={onPagesClick} title="All Pages">
-            &#128196;Pages
+            <Icon name="pages" size={18} /><span>Pages</span>
           </button>
         </div>
       </div>
@@ -1040,14 +1041,14 @@ function DraggablePage({
               className="sidebar-context-menu-item"
               onClick={() => { setCtxMenu(null); setRenameValue(page.title); setRenaming(true); }}
             >
-              &#9998; Rename
+              <Icon name="pencil" size={14} /> Rename
             </button>
           )}
           <button
             className="sidebar-context-menu-item"
             onClick={() => setShowMoveSubmenu(v => !v)}
           >
-            &#128194; Move to… {showMoveSubmenu ? "\u25B4" : "\u25BE"}
+            <Icon name="move" size={14} /> Move to… {showMoveSubmenu ? "\u25B4" : "\u25BE"}
           </button>
           {showMoveSubmenu && folderList && (
             <MoveTargets
@@ -1060,7 +1061,7 @@ function DraggablePage({
             className="sidebar-context-menu-item"
             onClick={handleDuplicate}
           >
-            &#128203; Duplicate
+            <Icon name="copy" size={14} /> Duplicate
           </button>
           <button
             className="sidebar-context-menu-item"
@@ -1072,7 +1073,7 @@ function DraggablePage({
             className="sidebar-context-menu-item"
             onClick={handleTogglePin}
           >
-            {isPinned || pinnedPage ? "\uD83D\uDDD9 Unpin" : "\uD83D\uDCCC Pin"}
+            {isPinned || pinnedPage ? <><Icon name="pin-off" size={14} /> Unpin</> : <><Icon name="pin" size={14} /> Pin</>}
           </button>
           <div className="sidebar-context-menu-sep" />
           <button
@@ -1082,7 +1083,7 @@ function DraggablePage({
               onDeletePage(page.id, displayTitle(page));
             }}
           >
-            &#128465; Delete
+            <Icon name="trash" size={14} /> Delete
           </button>
         </ContextMenuPortal>
       )}
@@ -1126,7 +1127,7 @@ function MoveTargets({ entries, currentParent, exclude, onPick }: {
           title={e.folder.id === currentParent ? "It is already here" : undefined}
           onClick={() => onPick(e.folder.id)}
         >
-          {e.folder.icon ?? "📁"} {e.folder.name}
+          {e.folder.icon ?? <Icon name="folder" size={14} />} {e.folder.name}
         </button>
       ))}
     </div>
@@ -1343,7 +1344,7 @@ function FolderItem({
             autoFocus
           />
         ) : (
-          <span className="folder-name" style={folder.color ? { color: folder.color } : undefined}>{folder.icon ?? "📁"} {folder.name}</span>
+          <span className="folder-name" style={folder.color ? { color: folder.color } : undefined}>{folder.icon ?? <Icon name="folder" size={14} />} {folder.name}</span>
         )}
         {totalPages > 0 && (
           <span className={`folder-count${isExpanded ? "" : " folder-count-hover"}`} title={countTitle}>{totalPages}</span>
@@ -1374,26 +1375,26 @@ function FolderItem({
             className="sidebar-context-menu-item"
             onClick={() => { closeFolderMenu(); onExpand(folder.id); setShowInlineCreate(true); }}
           >
-            &#128196; New page
+            <Icon name="file-plus" size={14} /> New page
           </button>
           <button
             className="sidebar-context-menu-item"
             onClick={() => { closeFolderMenu(); onExpand(folder.id); setShowSubCreate(true); }}
           >
-            &#128193; New sub-project
+            <Icon name="folder-plus" size={14} /> New sub-project
           </button>
           <button
             className="sidebar-context-menu-item"
             onClick={() => { closeFolderMenu(); setFolderRenameValue(folder.name); setRenamingFolder(true); }}
           >
-            &#9998; Rename
+            <Icon name="pencil" size={14} /> Rename
           </button>
           <button
             className="sidebar-context-menu-item"
             onClick={() => setShowMoveSubmenu(v => !v)}
             aria-expanded={showMoveSubmenu}
           >
-            &#128194; Move to… {showMoveSubmenu ? "▴" : "▾"}
+            <Icon name="move" size={14} /> Move to… {showMoveSubmenu ? "▴" : "▾"}
           </button>
           {showMoveSubmenu && (
             <MoveTargets
@@ -1415,21 +1416,21 @@ function FolderItem({
               });
             }}
           >
-            &#128230; Archive
+            <Icon name="archive" size={14} /> Archive
           </button>
           <div className="sidebar-context-menu-sep" />
           <button
             className="sidebar-context-menu-item danger"
             onClick={handleTrashFolder}
           >
-            &#128465; Delete
+            <Icon name="trash" size={14} /> Delete
           </button>
           <div className="sidebar-context-menu-sep" />
           <button
             className="sidebar-context-menu-item"
             onClick={() => { closeFolderMenu(); onFolderSettings?.(folder.id); }}
           >
-            &#9881; Settings...
+            <Icon name="settings" size={14} /> Settings…
           </button>
         </ContextMenuPortal>
       )}

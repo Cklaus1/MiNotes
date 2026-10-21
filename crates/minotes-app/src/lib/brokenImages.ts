@@ -36,7 +36,7 @@ export function installBrokenImageHints(): void {
     img.dataset.brokenReason = reason;
     if (!img.dataset.originalAlt) img.dataset.originalAlt = img.getAttribute("alt") ?? "";
     const alt = img.dataset.originalAlt;
-    img.setAttribute("alt", `⚠ ${reason}${alt ? ` (“${alt}”)` : ""}`);
+    img.setAttribute("alt", `${reason}${alt ? ` (“${alt}”)` : ""}`);
     img.title = reason;
   }, true);
   document.addEventListener("load", (e) => {

@@ -6,6 +6,7 @@ import { useEscapeToClose } from "../lib/escapeStack";
 import { showToast } from "../lib/toast";
 import { errorMessage } from "../lib/errors";
 import "./tasks.css";
+import Icon from "./Icon";
 
 type Filter = "open" | "todo" | "doing" | "done" | "all";
 const FILTERS: Array<[Filter, string]> = [["open", "Open"], ["todo", "TODO"], ["doing", "DOING"], ["done", "DONE"], ["all", "All"]];
@@ -126,7 +127,7 @@ export default function TasksView({ onOpenTask, onClose }: {
             </button>
           ))}
         </div>
-        <button className="btn btn-sm tasks-close" onClick={onClose} title="Close (Esc)" aria-label="Close tasks">✕</button>
+        <button className="btn btn-sm tasks-close" onClick={onClose} title="Close (Esc)" aria-label="Close tasks"><Icon name="x" size={14} /></button>
       </div>
       {error && <div className="nb-field-error" role="alert">{error}</div>}
       <div className="tasks-body">

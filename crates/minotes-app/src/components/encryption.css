@@ -23,8 +23,8 @@
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.3);
 }
 .enc-lock-icon {
-  font-size: 28px;
   line-height: 1;
+  color: var(--accent);
 }
 .enc-lock-title {
   margin: 0;
@@ -135,6 +135,8 @@
 .nb-lock-badge {
   font-size: 11px;
   margin-left: 4px;
+  color: var(--text-secondary);
+  display: inline-flex;
 }
 
 /* Print only the recovery key panel. */

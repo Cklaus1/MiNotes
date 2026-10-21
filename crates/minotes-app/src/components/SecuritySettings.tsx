@@ -8,6 +8,7 @@ import { passphraseProblem } from "../lib/passphrase";
 import { updateSettings, useSettings } from "../lib/settings";
 import { EncryptNotebookDialog, PassphraseFields, RecoveryKeyModal } from "./EncryptionDialogs";
 import Modal from "./Modal";
+import Icon from "./Icon";
 
 type Dialog = null | "encrypt" | "change" | "recovery" | "rotate" | "decrypt";
 
@@ -152,7 +153,7 @@ export default function SecuritySettings() {
       {session.encrypted ? (
         <>
           <div className="settings-row">
-            <span className="settings-row-label">🔒 “{session.name}” is encrypted</span>
+            <span className="settings-row-label"><Icon name="lock" size={14} /> “{session.name}” is encrypted</span>
             <button className="btn btn-sm" onClick={() => lockNow().catch(e => showToast(errorMessage(e)))} data-testid="security-lock-now">
               Lock now
             </button>

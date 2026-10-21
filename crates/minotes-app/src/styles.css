@@ -212,6 +212,14 @@ body {
 @keyframes busy-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .busy-spinner { animation-duration: 2.4s; } }
 
+/* UI icons (lib/icons.ts, components/Icon.tsx): line icons in the text colour. */
+.ui-icon {
+  display: inline-block;
+  flex-shrink: 0;
+  vertical-align: -0.18em;
+}
+.title-icon { vertical-align: -0.12em; color: var(--text-secondary); }
+
 /* Layout */
 .app {
   display: flex;
@@ -1147,8 +1155,8 @@ body {
 
 .stats-modes-grid {
   display: flex;
-  justify-content: center;
-  gap: 4px;
+  justify-content: space-between;
+  gap: 2px;
 }
 
 .stats-modes {
@@ -1176,20 +1184,27 @@ body {
   opacity: 1;
 }
 
+/* View bar: an icon over a readable label (not 10 px emoji text). */
 .stats-mode-btn {
   background: none;
   border: none;
-  color: var(--text-muted);
+  color: var(--text-secondary);
   cursor: pointer;
-  font-size: 10px;
-  padding: 3px 6px;
-  min-height: 24px;
-  border-radius: 4px;
+  font-size: 11px;
+  padding: 5px 1px 4px;
+  min-height: 40px;
+  flex: 1 1 0;
+  min-width: 0;
+  border-radius: 6px;
   transition: background 0.15s, color 0.15s;
-  line-height: 1;
+  line-height: 1.1;
   font-weight: 500;
-  letter-spacing: 0.02em;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
 }
+.stats-mode-btn span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
 
 .stats-mode-btn:hover {
   background: var(--bg-surface);
@@ -1457,7 +1472,9 @@ body {
 }
 
 .sidebar-context-menu-item {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   width: 100%;
   padding: 6px 12px;
   background: none;
@@ -4407,6 +4424,9 @@ body.theme-light { /* matches our light theme */ }
 }
 
 .canvas-mode-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   background: rgba(255, 255, 255, 0.05);
   border: none;
   color: var(--text-primary);

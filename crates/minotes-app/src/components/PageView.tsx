@@ -30,6 +30,7 @@ import { registerFlush } from "../lib/pendingEdits";
 import { getSettingsCached } from "../lib/cachedSettings";
 import RemoteImageBar from "./RemoteImageBar";
 import { hasOpenLayer } from "../lib/layers";
+import Icon from "./Icon";
 
 /**
  * Big pages render progressively: the first INITIAL_RENDER blocks at once, the
@@ -1832,7 +1833,7 @@ export default function PageView({
             }}
             title={onRenamePage && !page.is_journal ? "Click to rename" : undefined}
           >
-            {page.icon ?? (page.is_journal ? "\u{1F4C5}" : "")} {page.is_journal && page.journal_date ? formatJournalTitle(page.journal_date) : page.title}
+            {page.icon ?? (page.is_journal ? <Icon name="calendar" size={20} className="title-icon" /> : "")} {page.is_journal && page.journal_date ? formatJournalTitle(page.journal_date) : page.title}
           </h2>
         )}
         {page.is_journal && onJournalNav && (
@@ -1882,8 +1883,9 @@ export default function PageView({
           className="prop-toggle-btn"
           onClick={() => setShowProps(p => !p)}
           title="Page info"
+          aria-label="Page info"
         >
-          ℹ
+          <Icon name="info" size={16} />
         </button>
       </div>
 

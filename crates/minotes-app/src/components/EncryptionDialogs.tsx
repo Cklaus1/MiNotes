@@ -8,6 +8,7 @@ import { notebooksChanged, switchNotebook } from "../lib/notebooks";
 import Modal from "./Modal";
 import { confirmDialog } from "../lib/confirm";
 import "./encryption.css";
+import Icon from "./Icon";
 
 /** "Wrong passphrase" for WRONG_PASSPHRASE errors, else the message itself. */
 function friendly(e: unknown): string {
@@ -247,7 +248,7 @@ export function UnlockScreen({ session }: { session: api.NotebookSession }) {
   return (
     <div className="enc-lockscreen" data-testid="unlock-screen">
       <form className="enc-lock-card" onSubmit={e => { e.preventDefault(); submit(); }}>
-        <div className="enc-lock-icon" aria-hidden>🔒</div>
+        <div className="enc-lock-icon" aria-hidden><Icon name="lock" size={36} /></div>
         <h2 className="enc-lock-title" data-testid="unlock-notebook-name">{session.name}</h2>
         <p className="enc-lock-sub">This notebook is encrypted and locked.</p>
         {mode === "passphrase" ? (
@@ -340,7 +341,7 @@ export function UnlockScreen({ session }: { session: api.NotebookSession }) {
                     }
                   }}
                 >
-                  {n.encrypted ? "🔒 " : ""}{n.name}
+                  {n.encrypted ? <><Icon name="lock" size={13} label="Encrypted" />{" "}</> : ""}{n.name}
                 </button>
               ))}
             </div>
