@@ -56,7 +56,7 @@ export default function SyncPanel({ open, onClose, currentPageId, onPageRestored
       await loadStatus();
       await loadVersions();
     } catch (e: any) {
-      setError(e?.toString() ?? "Sync failed");
+      setError(e?.toString() ?? "Saving a version failed");
     } finally {
       setSyncing(false);
     }
@@ -71,7 +71,7 @@ export default function SyncPanel({ open, onClose, currentPageId, onPageRestored
       await loadStatus();
       await loadVersions();
     } catch (e: any) {
-      setError(e?.toString() ?? "Sync failed");
+      setError(e?.toString() ?? "Saving a version failed");
     } finally {
       setSyncing(false);
     }
@@ -99,63 +99,78 @@ export default function SyncPanel({ open, onClose, currentPageId, onPageRestored
     }
   };
 
+  // The three counters never overlap: every page either has no saved version,
+  // or its newest version is current, or it changed since (UX review: "Synced"
+  // and "Pending" counted the same pages and could add up to twice the total).
+  const total = status?.total_pages ?? null;
+  const saved = status?.synced_pages ?? null;
+  const never = total !== null && saved !== null ? Math.max(0, total - saved) : null;
+  const changed = status && never !== null ? Math.max(0, status.pending_changes - never) : null;
+  const upToDate = saved !== null && changed !== null ? Math.max(0, saved - changed) : null;
+  const n = (v: number | null) => (v === null ? "…" : String(v));
+
   return (
     <div className="command-palette-overlay" onClick={onClose}>
-      <div className="sync-panel" onClick={(e) => e.stopPropagation()}>
+      <div className="sync-panel" role="dialog" aria-label="Page versions" data-testid="page-versions" onClick={(e) => e.stopPropagation()}>
         <div className="sync-panel-header">
-          <h3>Sync &amp; Versions</h3>
+          <h3>Page versions</h3>
           <button className="btn btn-sm" onClick={onClose}>Close</button>
+        </div>
+        <div className="sync-versions-empty" style={{ marginBottom: 10 }}>
+          Snapshots of pages saved on this device, to go back to an earlier version.
+          This is not git sync (that is in Settings → Sync &amp; Backup).
         </div>
 
         {error && <div className="sync-error">{error}</div>}
 
         <div className="sync-status-section">
-          <div className="sync-status-grid">
-            <div className="sync-stat">
-              <span className="sync-stat-value">{status?.total_pages ?? "..."}</span>
-              <span className="sync-stat-label">Total Pages</span>
+          <div className="sync-status-grid" data-testid="page-versions-counts">
+            <div className="sync-stat" title="Pages whose newest saved version matches the page">
+              <span className="sync-stat-value">{n(upToDate)}</span>
+              <span className="sync-stat-label">Saved, unchanged</span>
             </div>
-            <div className="sync-stat">
-              <span className="sync-stat-value">{status?.synced_pages ?? "..."}</span>
-              <span className="sync-stat-label">Synced</span>
+            <div className="sync-stat" title="Pages edited since their newest saved version">
+              <span className="sync-stat-value">{n(changed)}</span>
+              <span className="sync-stat-label">Changed since saved</span>
             </div>
-            <div className="sync-stat">
-              <span className="sync-stat-value">{status?.pending_changes ?? "..."}</span>
-              <span className="sync-stat-label">Pending</span>
+            <div className="sync-stat" title="Pages with no saved version yet">
+              <span className="sync-stat-value">{n(never)}</span>
+              <span className="sync-stat-label">Never saved</span>
             </div>
           </div>
-          {status?.last_sync && (
+          {total !== null && (
             <div className="sync-last-time">
-              Last sync: {formatTime(status.last_sync)}
+              {total} page{total === 1 ? "" : "s"} in this notebook
+              {status?.last_sync ? ` · last version saved ${formatTime(status.last_sync)}` : ""}
             </div>
           )}
         </div>
 
         <div className="sync-actions">
-          <button
-            className="btn btn-primary"
-            disabled={syncing}
-            onClick={handleSyncAll}
-          >
-            {syncing ? "Syncing..." : "Sync All Pages"}
-          </button>
           {currentPageId && (
             <button
-              className="btn"
+              className="btn btn-primary"
               disabled={syncing}
               onClick={handleSyncCurrent}
             >
-              Sync Current Page
+              Save a version of this page
             </button>
           )}
+          <button
+            className="btn"
+            disabled={syncing}
+            onClick={handleSyncAll}
+          >
+            {syncing ? "Saving…" : "Save a version of every page"}
+          </button>
         </div>
 
         {currentPageId && (
           <div className="sync-versions">
-            <h4>Version History</h4>
+            <h4>Versions of this page</h4>
             {versions.length === 0 ? (
               <div className="sync-versions-empty">
-                No versions yet. Sync the page to create a snapshot.
+                No saved versions yet. “Save a version of this page” keeps a snapshot you can go back to.
               </div>
             ) : (
               <div className="sync-versions-list">

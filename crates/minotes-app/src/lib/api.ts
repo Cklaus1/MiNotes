@@ -905,7 +905,13 @@ export interface GitSyncStatus {
   /** Sync is on for this folder, but it was set up on another computer (copied
    *  here): it doesn't sync until the user confirms (`gitSyncConfirm`). */
   needs_confirmation?: boolean;
+  /** The last sync's error (kept until a sync reaches the remote again). */
+  last_error?: string | null;
+  last_error_kind?: SyncErrorKind | null;
 }
+
+/** "offline": the network (retried quietly); the others need the user. */
+export type SyncErrorKind = "offline" | "remote_not_found" | "auth" | "other";
 
 export interface GitSyncResult {
   /** Git AND the import went through. */
@@ -925,12 +931,19 @@ export interface GitSyncResult {
   offline?: boolean;
   /** Nothing ran: the folder's sync needs the user's confirmation first. */
   needs_confirmation?: boolean;
+  error_kind?: SyncErrorKind | null;
+  /** The repo has no remote: the cycle only committed locally. */
+  no_remote?: boolean;
 }
 
 export interface HeldDeletions {
+  /** Pages, not counting journal days. */
   pages: number;
+  /** Journal days. */
+  journals?: number;
   folders: number;
   titles: string[];
+  /** Pages in the notebook: not journal days, nothing trashed or archived. */
   total_pages: number;
 }
 
@@ -1020,6 +1033,8 @@ export const saveWhiteboard = (id: string, data: string) =>
 /** UI state kept in the notebook's database (encrypted notebooks: recent pages). */
 export const getUiState = (key: string) => invoke<string | null>("get_ui_state", { key }).then(v => v ?? null);
 export const setUiState = (key: string, value: string) => invoke<void>("set_ui_state", { key, value });
+/** Record the onboarding page this device just seeded (sync replaces it while untouched — C-9). */
+export const markOnboardingSeed = (pageId: string) => invoke<void>("mark_onboarding_seed", { pageId });
 
 // ── PDF viewer ──
 /**
@@ -1240,6 +1255,8 @@ export const importRun = (destination: ImportDestination, options: ImportOptions
   invoke<ImportResult>("import_run", { destination, options });
 export const importCancel = () => invoke<void>("import_cancel");
 export const importDiscard = () => invoke<void>("import_discard");
+/** What "Undo import" would remove (changes nothing): pages_deleted = pages it would delete, edited = kept. */
+export const importUndoPreview = (runId: string) => invoke<ImportUndoReport>("import_undo_preview", { runId });
 export const importUndo = (runId: string, keepEdited = false) => invoke<ImportUndoReport>("import_undo", { runId, keepEdited });
 export const importRuns = () => invoke<ImportRun[]>("import_runs");
 

@@ -220,6 +220,15 @@ export function createImportMockHandlers(m: H): H {
         if (notebookKey) m.switch_notebook({ key: original });
       }
     },
+    import_undo_preview: ({ runId }: { runId: string }) => {
+      const run = runs.find((r) => r.id === runId);
+      if (!run) throw `Not found: Import run ${runId}`;
+      const live = new Set((m.list_pages({ limit: 100000 }) as { id: string }[]).map((p) => p.id));
+      const edited = run.pages.filter((id) => live.has(id) && contentOf(id) !== run.hashes.get(id))
+        .map((id) => ({ id, title: m.get_page_tree({ titleOrId: id }).page.title }));
+      const deleting = run.pages.filter((id) => live.has(id)).length - edited.length;
+      return { run_id: runId, undone: false, pages_deleted: deleting, folders_deleted: 0, attachments_deleted: 0, edited, updated_kept: 0 };
+    },
     import_undo: ({ runId, keepEdited }: { runId: string; keepEdited?: boolean }) => {
       const run = runs.find((r) => r.id === runId);
       if (!run) throw `Not found: Import run ${runId}`;

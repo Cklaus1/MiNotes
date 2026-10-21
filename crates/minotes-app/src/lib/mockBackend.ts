@@ -1616,33 +1616,31 @@ const handlers: Record<string, (args: any) => any> = {
 
   // Git Sync
   git_available: () => true,
-  git_sync_enable: () => ({
-    enabled: true,
-    remote_url: null,
-    branch: "main",
-    last_sync: ts(),
-  }),
-  git_sync_disable: () => {},
-  git_sync: () => ({
-    success: true,
-    pages_exported: 0,
-    pages_imported: 0,
-    conflicts_resolved: 0,
-    error: null,
-  }),
-  git_sync_status: () => ({
-    enabled: false,
-    remote_url: null,
-    branch: null,
-    last_sync: null,
-    needs_confirmation: false,
-  }),
-  git_sync_confirm: () => [],
+  // Stateful like the real backend: "Last synced" only after a push (with a
+  // remote); journeys set `mockSync.remote_url` / `mockSync.fail` to simulate.
+  git_sync_enable: () => { mockSync.enabled = true; return mockSyncStatus(); },
+  git_sync_disable: () => { mockSync.enabled = false; },
+  git_sync: () => {
+    if (!mockSync.enabled) return { success: false, pages_exported: 0, pages_imported: 0, conflicts_resolved: 0, error: "Sync is not enabled" };
+    const error = mockSync.fail?.error ?? null;
+    const kind = mockSync.fail?.kind ?? null;
+    if (error) { mockSync.last_error = error; mockSync.last_error_kind = kind; }
+    else {
+      mockSync.last_error = null; mockSync.last_error_kind = null;
+      if (mockSync.remote_url) mockSync.last_sync = ts();
+    }
+    return {
+      success: !error, pages_exported: 0, pages_imported: 0, conflicts_resolved: 0, error,
+      error_kind: kind, offline: kind === "offline", no_remote: !mockSync.remote_url,
+    };
+  },
+  git_sync_status: () => mockSyncStatus(),
+  git_sync_confirm: () => { mockSync.needs_confirmation = false; return []; },
 
   // AI: TODOs. Uses the shared line rules in todoExtractor.ts, which mirror the
   // Rust parse_pending_todo. Hidden (trashed/archived, also via folders) pages don't count.
   get_pending_todo_count: () => countPendingTodos(
-    Array.from(blocks.values()).filter(b => pages.has(b.page_id) && !pageHidden(b.page_id)).map(b => b.content),
+    Array.from(blocks.values()).filter(b => pages.has(b.page_id) && !pageHidden(b.page_id) && !isConflictCopy(pages.get(b.page_id)!.title)).map(b => b.content),
   ),
   list_pending_todos: () => pendingTodos().map(({ page_title, text }) => ({ page_title, text })),
   list_pending_todos_with_page_ids: () => pendingTodos(),
@@ -1650,6 +1648,7 @@ const handlers: Record<string, (args: any) => any> = {
   // ── Whiteboards (mirrors minotes-core repo/whiteboards.rs) ──
   get_ui_state: ({ key }: { key: string }) => mockUiState.get(`${currentNotebook}:${key}`) ?? null,
   set_ui_state: ({ key, value }: { key: string; value: string }) => { mockUiState.set(`${currentNotebook}:${key}`, value); },
+  mark_onboarding_seed: () => {},
   get_whiteboard: ({ id }: { id: string }) => mockWhiteboards.get(id) ?? null,
   save_whiteboard: ({ id, data }: { id: string; data: string }) => {
     if (!/^[A-Za-z0-9_-]{1,200}$/.test(id)) fail(`Invalid input: invalid whiteboard id: ${JSON.stringify(id)}`);
@@ -1667,11 +1666,14 @@ const handlers: Record<string, (args: any) => any> = {
   // ── End whiteboards ──
 };
 
+/** A sync conflict copy: its TODOs are the original page's again (not counted). */
+const isConflictCopy = (title: string) => / \(conflict from .*\)/.test(title);
+
 function pendingTodos(): Array<{ page_id: string; page_title: string; text: string }> {
   const out: Array<{ page_id: string; page_title: string; text: string }> = [];
   for (const b of blocks.values()) {
     const p = pages.get(b.page_id);
-    if (!p || pageHidden(p.id)) continue;
+    if (!p || pageHidden(p.id) || isConflictCopy(p.title)) continue;
     for (const line of b.content.split("\n")) {
       const t = parseTodoLine(line);
       if (t && !t.done) out.push({ page_id: p.id, page_title: p.title, text: t.text });
@@ -1684,6 +1686,31 @@ function pendingTodos(): Array<{ page_id: string; page_title: string; text: stri
 const mockWhiteboards: Map<string, string> = new Map();
 /** ui_state rows, keyed "<notebook>:<key>" (each notebook has its own table). */
 const mockUiState: Map<string, string> = new Map();
+
+/** Git sync of the mock (one notebook). Tests may set `remote_url`,
+ *  `needs_confirmation` and `fail` ({ error, kind }) to simulate states. */
+export const mockSync: {
+  enabled: boolean;
+  remote_url: string | null;
+  last_sync: string | null;
+  needs_confirmation: boolean;
+  last_error: string | null;
+  last_error_kind: string | null;
+  fail: { error: string; kind: string } | null;
+} = { enabled: false, remote_url: null, last_sync: null, needs_confirmation: false, last_error: null, last_error_kind: null, fail: null };
+
+function mockSyncStatus() {
+  const paused = mockSync.enabled && mockSync.needs_confirmation;
+  return {
+    enabled: mockSync.enabled,
+    remote_url: mockSync.enabled ? mockSync.remote_url : null,
+    branch: mockSync.enabled ? "main" : null,
+    last_sync: mockSync.enabled && !paused && mockSync.remote_url ? mockSync.last_sync : null,
+    needs_confirmation: paused,
+    last_error: mockSync.enabled && !paused ? mockSync.last_error : null,
+    last_error_kind: mockSync.enabled && !paused ? mockSync.last_error_kind : null,
+  };
+}
 
 // ── Notebooks: each notebook is its own store; switching swaps the live maps ──
 

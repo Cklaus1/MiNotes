@@ -134,7 +134,7 @@ probe "Settings (Ctrl+,)"                  editor  yes 'press Control+,' 'docume
 probe "SQL query panel (Ctrl+Q)"           neutral yes 'press Control+q' 'document.querySelector(".query-panel")'
 probe "Flashcard review (Ctrl+R)"          neutral yes 'press Control+r' 'document.querySelector(".review-panel")'
 probe "Plugins (palette command)"          neutral yes 'palette_cmd Plugins' 'document.querySelector(".plugin-manager")'
-probe "Sync (palette command)"             neutral yes 'palette_cmd Sync' 'document.querySelector(".sync-panel")'
+probe "Page versions (palette command)"    neutral yes 'palette_cmd Versions' 'document.querySelector(".sync-panel")'
 probe "CSS snippets (palette command)"     neutral yes 'palette_cmd CSS' 'window.__sig.byText(".command-palette", "Snippet")'
 probe "Graph view (Ctrl+G)"                neutral no  'press Control+g 1.5' '(document.querySelector(".canvas-mode-btn.active")?.innerText || "").includes("Graph") ? document.querySelector(".canvas-layer") : null'
 probe "Mind map (Ctrl+M)"                  neutral no  'press Control+m 1.5' '(document.querySelector(".canvas-mode-btn.active")?.innerText || "").includes("Mind") ? document.querySelector(".canvas-layer") : null'

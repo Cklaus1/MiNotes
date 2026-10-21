@@ -400,6 +400,11 @@ pub fn import<A: DbAccess>(
     writer::write(acc, prep, opts, dest, cancel, progress)
 }
 
+/// What undoing an import run would do (nothing is changed; see [`undo::undo_preview`]).
+pub fn undo_preview(db: &Database, run: &str) -> Result<UndoReport> {
+    undo::undo_preview(db, run)
+}
+
 /// Undo an import run (see [`undo::undo_run`]).
 pub fn undo(db: &Database, run: &str, keep_edited: bool) -> Result<UndoReport> {
     undo::undo_run(db, run, keep_edited, false)

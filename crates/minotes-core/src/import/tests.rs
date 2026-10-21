@@ -388,6 +388,13 @@ fn undo_is_exact_and_refuses_edited_pages() {
     let beta = page(&db, "Beta");
     let b = db.get_page_blocks(&beta.id).unwrap()[0].clone();
     db.update_block(&b.id, Some("# Beta (edited)"), "user").unwrap();
+    // The preview (for the confirmation) counts and lists, changing nothing.
+    let before = db.list_pages(Some(1000)).unwrap().len();
+    let plan = undo_preview(&db, &rep.run_id).unwrap();
+    assert!(!plan.undone);
+    assert!(plan.pages_deleted > 5, "{plan:?}");
+    assert_eq!(plan.edited.iter().map(|e| e.title.as_str()).collect::<Vec<_>>(), vec!["Beta"]);
+    assert_eq!(db.list_pages(Some(1000)).unwrap().len(), before);
     let refused = undo(&db, &rep.run_id, false).unwrap();
     assert!(!refused.undone);
     assert_eq!(refused.edited.iter().map(|e| e.title.as_str()).collect::<Vec<_>>(), vec!["Beta"]);
@@ -396,6 +403,7 @@ fn undo_is_exact_and_refuses_edited_pages() {
     db.update_block(&b.id, Some("# Beta"), "user").unwrap();
     let done = undo(&db, &rep.run_id, false).unwrap();
     assert!(done.undone && done.edited.is_empty(), "{done:?}");
+    assert_eq!(done.pages_deleted, plan.pages_deleted + 1, "the preview counted all but the edited page");
     let left: Vec<String> = db.list_pages(Some(1000)).unwrap().into_iter().map(|p| p.title).collect();
     assert_eq!(left, vec!["My own page".to_string()]);
     assert!(db.get_folder_tree().unwrap().is_empty());

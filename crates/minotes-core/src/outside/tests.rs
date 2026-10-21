@@ -470,3 +470,43 @@ fn atomic_write_refuses_to_replace_a_symlink() {
     assert_eq!(fs::read_to_string(&target).unwrap(), "original");
     assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
 }
+
+// C-9: a sync folder cloned from another device holds its "Getting Started";
+// this device's own untouched copy gives way instead of keeping "(2)".
+#[test]
+fn a_dropped_in_page_replaces_the_untouched_onboarding_page() {
+    let (_tmp, db, target) = setup();
+    let seed = db.create_page("Getting Started", None, false, None, "user").unwrap();
+    db.create_block(&seed.id, "Welcome", None, None, "user").unwrap();
+    db.mark_onboarding_seed(&seed.id).unwrap();
+    run(&db, &target, false).unwrap();
+    let theirs = Uuid::now_v7();
+    fs::create_dir_all(target.dir.join("Elsewhere")).unwrap();
+    fs::write(
+        target.dir.join("Elsewhere/Getting Started.md"),
+        format!("---\nid: {theirs}\ntitle: \"Getting Started\"\n---\n\n- Welcome, from the other device\n"),
+    )
+    .unwrap();
+    import_outside_edits(&db, &target, &paths(&["Elsewhere/Getting Started.md"])).unwrap();
+    let g = db.get_page_by_title("Getting Started").unwrap().unwrap();
+    assert_eq!(g.id, theirs);
+    assert!(db.get_page(&seed.id).unwrap().is_none());
+    assert!(db.get_page_by_title("Getting Started (2)").unwrap().is_none());
+
+    // An onboarding page this device edited is kept: the newcomer is numbered.
+    let (_tmp2, db2, target2) = setup();
+    let mine = db2.create_page("Getting Started", None, false, None, "user").unwrap();
+    db2.create_block(&mine.id, "Welcome", None, None, "user").unwrap();
+    db2.mark_onboarding_seed(&mine.id).unwrap();
+    db2.create_block(&mine.id, "my note", None, None, "user").unwrap();
+    run(&db2, &target2, false).unwrap();
+    fs::create_dir_all(target2.dir.join("Elsewhere")).unwrap();
+    fs::write(
+        target2.dir.join("Elsewhere/Getting Started.md"),
+        format!("---\nid: {}\ntitle: \"Getting Started\"\n---\n\n- other\n", Uuid::now_v7()),
+    )
+    .unwrap();
+    import_outside_edits(&db2, &target2, &paths(&["Elsewhere/Getting Started.md"])).unwrap();
+    assert_eq!(db2.get_page_by_title("Getting Started").unwrap().unwrap().id, mine.id);
+    assert!(db2.get_page_by_title("Getting Started (2)").unwrap().is_some());
+}

@@ -437,7 +437,12 @@ impl Ctx<'_> {
     fn create_from(&mut self, mut file: ImportFile) -> Result<(Uuid, String)> {
         let db = self.db;
         let base = file.fm.title.clone().filter(|t| !t.trim().is_empty()).unwrap_or_else(|| file.stem.clone());
-        let title = free_title(db, &base)?;
+        // This device's untouched onboarding page gives way (sync_page replaces
+        // it), as it does for a page git sync brings (C-9).
+        let title = match db.get_page_by_title(&base)? {
+            Some(p) if p.title == base && db.is_untouched_onboarding_seed(&p)? => base.clone(),
+            _ => free_title(db, &base)?,
+        };
         file.fm.title = Some(title.clone());
         let id = *file.fm.id.get_or_insert_with(Uuid::now_v7);
         file.content = refresh_known_markers(db, &file.content)?;
@@ -826,23 +831,55 @@ pub fn adopt_pulled_files(db: &Database, target: &MirrorTarget, paths: Option<&[
     }
     let tracked: HashMap<String, Uuid> = st.pages.iter().map(|(id, e)| (e.path.clone(), *id)).collect();
     let fps = mirror::page_fingerprints(db)?;
+    // (path, hash, page id in the file)
+    let mut pulled: Vec<(String, String, Option<Uuid>)> = Vec::new();
     for rel in rels {
-        let key = rel_str(&rel);
         // A symbolic link the pull wrote is never read through.
         let Ok(bytes) = export::read_below(dir, &rel) else { continue };
-        let hash = bytes_hash(&bytes);
-        if let Some(id) = tracked.get(&key) {
-            if let Some(e) = st.pages.get_mut(id) {
-                e.hash = hash;
+        let id = syncmod::parse_frontmatter_id(&String::from_utf8_lossy(&bytes));
+        pulled.push((rel_str(&rel), bytes_hash(&bytes), id));
+    }
+    // The pull can put ANOTHER page's file where a page's file was (two devices'
+    // same-titled pages trading names). The page tracked there has no file
+    // there any more: forget that entry, so the file is adopted by its own page
+    // below — not taken for an outside edit of the old one, or the old page's
+    // new file for a dropped-in copy (a third "Title (3)" page on every sync).
+    for (key, _, id) in &pulled {
+        if let (Some(old), Some(id)) = (tracked.get(key), id) {
+            if old != id && st.pages.get(old).is_some_and(|e| e.path == *key) {
+                st.pages.remove(old);
             }
-            continue;
         }
-        let Some(id) = syncmod::parse_frontmatter_id(&String::from_utf8_lossy(&bytes)) else { continue };
-        if st.pages.contains_key(&id) || db.get_page(&id)?.is_none() || db.is_page_hidden(&id)? {
-            continue;
+    }
+    for (key, hash, id) in pulled {
+        match (id, tracked.get(&key)) {
+            (Some(id), _) => {
+                if let Some(e) = st.pages.get_mut(&id) {
+                    // Tracked elsewhere: move the entry here only if that file
+                    // no longer holds the page (renamed by the pull).
+                    let moved = e.path != key
+                        && export::read_below(dir, Path::new(&e.path))
+                            .map(|b| syncmod::parse_frontmatter_id(&String::from_utf8_lossy(&b)) != Some(id))
+                            .unwrap_or(true);
+                    if e.path == key || moved {
+                        e.path = key;
+                        e.hash = hash;
+                    }
+                    continue;
+                }
+                if db.get_page(&id)?.is_none() || db.is_page_hidden(&id)? {
+                    continue;
+                }
+                let fp = fps.get(&id).cloned().unwrap_or_default();
+                st.pages.insert(id, PageEntry { path: key, hash, fp, rewrite: true });
+            }
+            (None, Some(old)) => {
+                if let Some(e) = st.pages.get_mut(old) {
+                    e.hash = hash;
+                }
+            }
+            (None, None) => {}
         }
-        let fp = fps.get(&id).cloned().unwrap_or_default();
-        st.pages.insert(id, PageEntry { path: key, hash, fp, rewrite: true });
     }
     mirror::save_state(state_path, &st)
 }

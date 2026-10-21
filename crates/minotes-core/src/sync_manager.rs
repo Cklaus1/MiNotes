@@ -78,7 +78,15 @@ fn config_path(key: &str) -> PathBuf {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SyncConfig {
     pub enabled: bool,
+    /// When this notebook last reached the remote (pushed). Never set by a
+    /// cycle without a remote: a local commit is not "synced".
     pub last_sync: Option<String>,
+    /// The last cycle's error (cleared by a cycle that reached the remote).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    /// [`sync_error_kind`] of `last_error`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error_kind: Option<String>,
 }
 
 // ── Trust: was sync for this folder set up on this machine? ──
@@ -211,11 +219,15 @@ pub(crate) struct HeldState {
 /// Deletions held back by the mass-delete guard, as shown to the user.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct HeldDeletions {
+    /// Held pages, not counting journal days.
     pub pages: usize,
+    /// Held journal days.
+    pub journals: usize,
     pub folders: usize,
     /// Up to 20 page titles (then folder names), for the notice.
     pub titles: Vec<String>,
-    /// Pages in the notebook (excluding trash), for "34 of 50".
+    /// Pages in the notebook for "34 of 50": not journal days, not in the
+    /// Trash or the Archive (as the sidebar and All Pages count them).
     pub total_pages: usize,
 }
 
@@ -284,11 +296,13 @@ fn refresh_held(db: &Database, dir: &Path) -> Result<()> {
 fn held_summary(db: &Database, dir: &Path) -> Result<Option<HeldDeletions>> {
     let Some(h) = read_state(dir).held else { return Ok(None) };
     let mut titles = Vec::new();
+    let mut journals = 0usize;
     for id in &h.page_ids {
-        if titles.len() >= 20 {
-            break;
+        let Some(p) = db.get_page(id)? else { continue };
+        if p.is_journal {
+            journals += 1;
         }
-        if let Some(p) = db.get_page(id)? {
+        if titles.len() < 20 {
             titles.push(p.title);
         }
     }
@@ -300,12 +314,22 @@ fn held_summary(db: &Database, dir: &Path) -> Result<Option<HeldDeletions>> {
             titles.push(format!("{}/", f.name));
         }
     }
+    // Counted like the sidebar and All Pages count: pages, not journal days
+    // (those are counted apart), nothing trashed or archived (UX review: the
+    // banner said "25 pages (of 36)" next to a sidebar showing 35).
     let total_pages: usize = db.conn.query_row(
-        "SELECT COUNT(*) FROM pages WHERE id NOT IN (SELECT page_id FROM trash)",
+        "SELECT COUNT(*) FROM pages WHERE is_journal = 0
+           AND id NOT IN (SELECT page_id FROM trash) AND id NOT IN (SELECT page_id FROM archive)",
         [],
         |r| r.get::<_, i64>(0),
     )? as usize;
-    Ok(Some(HeldDeletions { pages: h.page_ids.len(), folders: h.folder_ids.len(), titles, total_pages }))
+    Ok(Some(HeldDeletions {
+        pages: h.page_ids.len() - journals,
+        journals,
+        folders: h.folder_ids.len(),
+        titles,
+        total_pages,
+    }))
 }
 
 /// The user's answer to held deletions. `move_to_trash`: apply them (to trash,
@@ -402,11 +426,17 @@ pub struct GitSyncStatus {
     pub enabled: bool,
     pub remote_url: Option<String>,
     pub branch: Option<String>,
+    /// When this device last reached the remote. None without a remote, before
+    /// the first push, and while sync waits for confirmation (a copied folder's
+    /// config carries the other computer's time).
     pub last_sync: Option<String>,
     /// Sync is on for this folder, but it was set up on another computer: it
     /// does not sync here until the user confirms ([`confirm_sync`]).
     #[serde(default)]
     pub needs_confirmation: bool,
+    /// The last cycle's error, if it failed ([`sync_error_kind`] in `last_error_kind`).
+    pub last_error: Option<String>,
+    pub last_error_kind: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -438,6 +468,13 @@ pub struct GitSyncResult {
     /// user has not confirmed syncing it here yet.
     #[serde(default)]
     pub needs_confirmation: bool,
+    /// [`sync_error_kind`] of `error`.
+    #[serde(default)]
+    pub error_kind: Option<String>,
+    /// The repo has no remote: the cycle only committed locally (nothing was
+    /// sent anywhere — not "synced").
+    #[serde(default)]
+    pub no_remote: bool,
 }
 
 impl GitSyncResult {
@@ -454,7 +491,22 @@ impl GitSyncResult {
             offline: false,
             warnings: vec![],
             needs_confirmation: false,
+            error_kind: None,
+            no_remote: false,
         }
+    }
+
+    /// Fill `error_kind` (and `offline`) from `error`.
+    pub(crate) fn classified(mut self) -> Self {
+        // "Git error: Remote not found — …" → the message the user needs.
+        if let Some(e) = self.error.as_mut() {
+            if let Some(rest) = e.strip_prefix("Git error: ") {
+                *e = rest.to_string();
+            }
+        }
+        self.error_kind = self.error.as_deref().map(|e| sync_error_kind(e).to_string());
+        self.offline = self.error_kind.as_deref() == Some(SYNC_ERR_OFFLINE);
+        self
     }
 
     fn not_enabled() -> Self {
@@ -471,9 +523,32 @@ impl GitSyncResult {
 
 /// Does a git error mean "the remote is unreachable" (offline) rather than a
 /// real failure?
+///
+/// Only network failures: a remote that answers "not found" or refuses the
+/// credentials is a real error the user has to fix, never a quiet "Offline"
+/// (UX review: a moved remote showed only a grey "Offline").
 pub fn is_offline_error(msg: &str) -> bool {
+    sync_error_kind(msg) == SYNC_ERR_OFFLINE
+}
+
+/// [`sync_error_kind`]: the remote can't be reached (network). Retried quietly.
+pub const SYNC_ERR_OFFLINE: &str = "offline";
+/// The remote's address leads nowhere: moved, deleted, mistyped.
+pub const SYNC_ERR_REMOTE_NOT_FOUND: &str = "remote_not_found";
+/// The remote refused the credentials.
+pub const SYNC_ERR_AUTH: &str = "auth";
+/// Anything else (an import problem, a git failure).
+pub const SYNC_ERR_OTHER: &str = "other";
+
+/// What kind of failure a sync error message is, for the UI.
+pub fn sync_error_kind(msg: &str) -> &'static str {
     let m = msg.to_lowercase();
-    [
+    let any = |keys: &[&str]| keys.iter().any(|k| m.contains(k));
+    if any(&["authentication failed", "permission denied", "could not read username", "terminal prompts disabled", "returned error: 403", "returned error: 401"]) {
+        SYNC_ERR_AUTH
+    } else if any(&["remote not found", "does not appear to be a git repository", "repository not found", "' not found", "returned error: 404"]) {
+        SYNC_ERR_REMOTE_NOT_FOUND
+    } else if any(&[
         "network error",
         "could not resolve host",
         "could not resolve hostname",
@@ -481,14 +556,15 @@ pub fn is_offline_error(msg: &str) -> bool {
         "connection timed out",
         "network is unreachable",
         "no route to host",
-        "could not read from remote repository",
-        "unable to access",
         "failed to connect",
         "operation timed out",
         "temporary failure in name resolution",
-    ]
-    .iter()
-    .any(|k| m.contains(k))
+        "connection reset",
+    ]) {
+        SYNC_ERR_OFFLINE
+    } else {
+        SYNC_ERR_OTHER
+    }
 }
 
 /// Outcome of phase 1.
@@ -539,26 +615,62 @@ pub fn get_sync_status(key: &str) -> Result<GitSyncStatus> {
     let sync_dir = sync_dir_for_notebook(key);
     let needs_confirmation = config.enabled && !sync_trusted(key);
 
+    // Waiting for the user's OK: whatever the folder's config says happened
+    // happened on another computer (its time, its errors).
+    let (last_error, last_error_kind) = if config.enabled && !needs_confirmation {
+        (config.last_error.clone(), config.last_error_kind.clone())
+    } else {
+        (None, None)
+    };
+
     if !config.enabled || !git_cmd::is_git_repo(&sync_dir) {
         return Ok(GitSyncStatus {
             enabled: config.enabled,
             remote_url: None,
             branch: None,
-            last_sync: config.last_sync,
+            last_sync: None,
             needs_confirmation,
+            last_error,
+            last_error_kind,
         });
     }
 
     let remote_url = git_cmd::get_remote_url(&sync_dir)?;
     let branch = git_cmd::get_branch(&sync_dir).ok().flatten();
+    // Only a push is "synced": never without a remote (older versions stamped
+    // the time a local-only commit was made).
+    let last_sync = if needs_confirmation || remote_url.is_none() { None } else { config.last_sync };
 
     Ok(GitSyncStatus {
         enabled: config.enabled,
         remote_url,
         branch,
-        last_sync: config.last_sync,
+        last_sync,
         needs_confirmation,
+        last_error,
+        last_error_kind,
     })
+}
+
+/// Record a cycle's outcome in the notebook's sync config: the time it reached
+/// the remote, or its error.
+fn record_outcome(key: &str, reached_remote: bool, error: Option<&str>) -> Result<()> {
+    let mut config = read_config(key);
+    match error {
+        Some(e) => {
+            let e = e.strip_prefix("Git error: ").unwrap_or(e);
+            config.last_error = Some(e.to_string());
+            config.last_error_kind = Some(sync_error_kind(e).to_string());
+        }
+        None => {
+            config.last_error = None;
+            config.last_error_kind = None;
+            if reached_remote {
+                config.last_sync = Some(Utc::now().to_rfc3339());
+            }
+        }
+    }
+    write_config(key, &config)
 }
 
 /// Enable git sync for a notebook. `lock_db` is called only around the DB work (never
@@ -571,7 +683,7 @@ where
     if !git_cmd::git_available() {
         return Err(Error::Git("Git is not installed".to_string()));
     }
-    {
+    let (git_error, has_remote) = {
         let _guard = SYNC_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let target = MirrorTarget::for_notebook(&notebook(key));
         // Turning sync on is the user's explicit choice for this folder: an
@@ -580,14 +692,19 @@ where
         if git_cmd::is_git_repo(&target.dir) && !repo_trusted(&target.dir) {
             git_cmd::strip_untrusted_config(&target.dir)?;
         }
-        enable_in_dir(&target, &lock_db)?;
+        let e = enable_in_dir(&target, &lock_db)?;
         trust_repo(&target.dir)?;
-    }
+        (e, git_cmd::has_remote(&target.dir))
+    };
 
     let mut config = read_config(key);
     config.enabled = true;
-    config.last_sync = Some(Utc::now().to_rfc3339());
+    if !has_remote {
+        // A copied folder's config may carry another computer's time.
+        config.last_sync = None;
+    }
     write_config(key, &config)?;
+    record_outcome(key, has_remote, git_error.as_deref())?;
 
     get_sync_status(key)
 }
@@ -609,7 +726,10 @@ pub fn enable_sync(db: &Database, key: &str) -> Result<GitSyncStatus> {
 /// changed: every page whose file the pull left alone is protected, and so is
 /// every page edited during the network phase. Blocks the pull removed are
 /// parked in a Trash page "(removed by sync …)", never deleted.
-pub fn enable_in_dir<G, F>(target: &MirrorTarget, lock_db: &F) -> Result<()>
+///
+/// Returns the remote's error, if the pull or the push failed (sync is on and
+/// everything is committed locally; the next cycle retries).
+pub fn enable_in_dir<G, F>(target: &MirrorTarget, lock_db: &F) -> Result<Option<String>>
 where
     G: Deref<Target = Database>,
     F: Fn() -> Result<G>,
@@ -619,11 +739,12 @@ where
         // Fails closed (before anything is committed or pushed) when the remote
         // holds another notebook.
         let r = crate::sync_encrypted::cycle(sync_dir, lock_db, true)?;
-        if let Some(e) = r.error.filter(|_| !r.offline) {
+        if let Some(e) = r.error.clone().filter(|_| !r.offline) {
             return Err(Error::Git(e));
         }
-        return Ok(());
+        return Ok(r.error);
     }
+    let mut remote_error: Option<String> = None;
     if !git_cmd::is_git_repo(sync_dir) {
         git_cmd::init_repo(sync_dir)?;
     }
@@ -641,8 +762,9 @@ where
     // 2. (no DB lock) Bring in what other devices pushed.
     if git_cmd::has_remote(sync_dir) {
         if let Err(e) = pull_with_resolve(sync_dir) {
-            // Empty/unreachable remote — first push will create it.
+            // (An empty remote is not an error: the first push creates the branch.)
             eprintln!("[minotes-sync] enable: pull skipped: {e}");
+            remote_error = Some(e.to_string());
         }
     }
 
@@ -682,11 +804,15 @@ where
     }
 
     if git_cmd::has_remote(sync_dir) {
-        if let Err(e) = git_cmd::push(sync_dir) {
-            eprintln!("[minotes-sync] enable: push failed: {e}");
+        match git_cmd::push(sync_dir) {
+            Ok(_) => remote_error = None,
+            Err(e) => {
+                eprintln!("[minotes-sync] enable: push failed: {e}");
+                remote_error = Some(e.to_string());
+            }
         }
     }
-    Ok(())
+    Ok(remote_error)
 }
 
 /// Every page except those whose file is among `paths` (changed by a pull):
@@ -1109,7 +1235,10 @@ where
             .map(|a| format!("{a} is over 50 MB and was not synced"))
             .collect(),
         needs_confirmation: false,
-    })
+        error_kind: None,
+        no_remote: !git_cmd::has_remote(sync_dir),
+    }
+    .classified())
 }
 
 /// Update the last_sync timestamp in the notebook's sync config file.
@@ -1132,10 +1261,12 @@ where
     if !sync_trusted(key) {
         return Ok(GitSyncResult::unconfirmed());
     }
-    let result = sync_cycle(&MirrorTarget::for_notebook(&notebook(key)), lock_db)?;
-    if result.success {
-        update_last_sync(key)?;
-    }
+    let target = MirrorTarget::for_notebook(&notebook(key));
+    let mut result = sync_cycle(&target, lock_db)?.classified();
+    result.no_remote = !git_cmd::has_remote(&target.dir);
+    // "Last synced" means the remote has it: a cycle without a remote only
+    // committed locally.
+    record_outcome(key, result.success && !result.no_remote, result.error.as_deref())?;
     Ok(result)
 }
 
@@ -1374,6 +1505,133 @@ mod tests {
             texts.retain(|t| !t.is_empty());
             assert_eq!(texts, ["evening on B", "later on A", "morning on A"]);
         }
+    }
+
+    /// Every page title in the database (trash and archive included), sorted.
+    fn all_titles(db: &Database) -> Vec<String> {
+        let mut st = db.conn.prepare("SELECT title FROM pages ORDER BY title").unwrap();
+        let v: Vec<String> = st.query_map([], |r| r.get::<_, String>(0)).unwrap().map(|r| r.unwrap()).collect();
+        v
+    }
+
+    /// What the app does on a fresh install: a "Getting Started" page with the
+    /// tutorial blocks, recorded as this device's seed, and today's journal
+    /// (opened, so it holds one empty block).
+    fn fresh_install(db: &Database, day: chrono::NaiveDate) -> crate::models::Page {
+        let p = db.create_page("Getting Started", None, false, None, "user").unwrap();
+        for t in ["Welcome to MiNotes! This is a block.", "Press **Enter** to create a new block.", "Type **[[** to link to another page."] {
+            db.create_block(&p.id, t, None, None, "user").unwrap();
+        }
+        db.mark_onboarding_seed(&p.id).unwrap();
+        let j = db.get_or_create_journal(day, None, "user").unwrap();
+        db.create_block(&j.id, "", None, None, "user").unwrap();
+        p
+    }
+
+    // C-9: a fresh device joining sync kept its own onboarding page next to the
+    // remote's: "Getting Started", "Getting Started (2)", later "(2) (2)", and a
+    // "Journal/… (2)" in the Trash. Its untouched seed and its empty journal of
+    // the day give way to the remote's pages instead.
+    fn fresh_device_joins(a_edits_its_copy: bool) {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_remote, a, b) = setup_remote_and_devices(tmp.path());
+        let ta = MirrorTarget::new(&a, Some(tmp.path().join("a-state.json")));
+        let tb = MirrorTarget::new(&b, Some(tmp.path().join("b-state.json")));
+        let day = chrono::Local::now().date_naive();
+        let db_a = Database::open_in_memory().unwrap();
+        let db_b = Database::open_in_memory().unwrap();
+        let ga = fresh_install(&db_a, day);
+        if a_edits_its_copy {
+            db_a.create_block(&ga.id, "my own note on A", None, None, "user").unwrap();
+        }
+        let ja = db_a.find_journal(day).unwrap().unwrap();
+        db_a.create_block(&ja.id, "written on A", None, None, "user").unwrap();
+        enable_in_dir(&ta, &|| Ok::<&Database, Error>(&db_a)).unwrap();
+
+        let gb = fresh_install(&db_b, day);
+        enable_in_dir(&tb, &|| Ok::<&Database, Error>(&db_b)).unwrap();
+        for _ in 0..3 {
+            sync_cycle(&ta, || Ok(&db_a)).unwrap();
+            sync_cycle(&tb, || Ok(&db_b)).unwrap();
+        }
+        let journal = db_a.find_journal(day).unwrap().unwrap().title;
+        for (name, db) in [("A", &db_a), ("B", &db_b)] {
+            let mut want = vec!["Getting Started".to_string(), journal.clone()];
+            want.sort();
+            assert_eq!(all_titles(db), want, "device {name}: one onboarding page, one journal, nothing in the Trash");
+            let g = db.get_page_by_title("Getting Started").unwrap().unwrap();
+            assert_eq!(g.id, ga.id, "device {name} keeps the page the remote had");
+            assert_eq!(in_order(db, &g.id).contains(&"my own note on A".to_string()), a_edits_its_copy);
+            assert!(db.get_page(&gb.id).unwrap().is_none(), "B's untouched seed is gone everywhere");
+            let j = db.find_journal(day).unwrap().unwrap();
+            assert!(in_order(db, &j.id).contains(&"written on A".to_string()));
+        }
+        assert!(!a.join("Getting Started (2).md").exists() && !b.join("Getting Started (2).md").exists());
+    }
+
+    #[test]
+    fn test_fresh_device_join_keeps_one_getting_started() {
+        if git_cmd::git_available() {
+            fresh_device_joins(false);
+        }
+    }
+
+    #[test]
+    fn test_fresh_device_join_keeps_the_edited_getting_started() {
+        if git_cmd::git_available() {
+            fresh_device_joins(true);
+        }
+    }
+
+    // A page this device's user touched is never dropped: two devices' own
+    // same-titled pages both stay — numbered once, the same on both devices, and
+    // stable over repeated syncs (no "(2) (2)" chains).
+    #[test]
+    fn test_same_title_pages_from_two_devices_get_one_number_and_converge() {
+        if !git_cmd::git_available() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let (_remote, a, b) = setup_remote_and_devices(tmp.path());
+        let ta = MirrorTarget::new(&a, Some(tmp.path().join("a-state.json")));
+        let tb = MirrorTarget::new(&b, Some(tmp.path().join("b-state.json")));
+        let day = chrono::Local::now().date_naive();
+        let db_a = Database::open_in_memory().unwrap();
+        let db_b = Database::open_in_memory().unwrap();
+        // Each device's onboarding page was edited: both are real pages now.
+        let ga = fresh_install(&db_a, day);
+        db_a.create_block(&ga.id, "A's note", None, None, "user").unwrap();
+        let ia = db_a.create_page("Ideas", None, false, None, "user").unwrap();
+        db_a.create_block(&ia.id, "idea from A", None, None, "user").unwrap();
+        enable_in_dir(&ta, &|| Ok::<&Database, Error>(&db_a)).unwrap();
+        let gb = fresh_install(&db_b, day);
+        db_b.create_block(&gb.id, "B's note", None, None, "user").unwrap();
+        let ib = db_b.create_page("Ideas", None, false, None, "user").unwrap();
+        db_b.create_block(&ib.id, "idea from B", None, None, "user").unwrap();
+        enable_in_dir(&tb, &|| Ok::<&Database, Error>(&db_b)).unwrap();
+        for _ in 0..4 {
+            sync_cycle(&ta, || Ok(&db_a)).unwrap();
+            sync_cycle(&tb, || Ok(&db_b)).unwrap();
+        }
+        let a_titles = all_titles(&db_a);
+        assert!(a_titles.iter().all(|t| !t.contains(") (")), "no chains: {a_titles:?}");
+        assert_eq!(a_titles, all_titles(&db_b), "both devices agree");
+        for db in [&db_a, &db_b] {
+            assert_eq!(in_order(db, &ia.id), vec!["idea from A"]);
+            assert_eq!(in_order(db, &ib.id), vec!["idea from B"]);
+            let mut pair = vec![db.get_page(&ia.id).unwrap().unwrap().title, db.get_page(&ib.id).unwrap().unwrap().title];
+            pair.sort();
+            assert_eq!(pair, vec!["Ideas".to_string(), "Ideas (2)".to_string()]);
+            let gs: Vec<String> = all_titles(db).into_iter().filter(|t| t.starts_with("Getting Started")).collect();
+            assert_eq!(gs, vec!["Getting Started".to_string(), "Getting Started (2)".to_string()]);
+        }
+        // Stable: more syncs change nothing.
+        let before = all_titles(&db_a);
+        sync_cycle(&ta, || Ok(&db_a)).unwrap();
+        sync_cycle(&tb, || Ok(&db_b)).unwrap();
+        sync_cycle(&ta, || Ok(&db_a)).unwrap();
+        assert_eq!(all_titles(&db_a), before);
+        assert_eq!(all_titles(&db_b), before);
     }
 
     // #2: an edit made while the git network phase runs is not reverted — neither
@@ -1654,6 +1912,12 @@ mod tests {
         cycle(&a, &db_a);
         cycle(&b, &db_b);
         assert_eq!(db_b.list_pages(None).unwrap().len(), 30);
+        // B also has today's journal and an archived page: neither is one of
+        // "the pages" the notice counts (the sidebar doesn't count them either).
+        let today = db_b.get_or_create_journal(chrono::Local::now().date_naive(), None, "user").unwrap();
+        db_b.create_block(&today.id, "today on B", None, None, "user").unwrap();
+        let old = db_b.create_page("Archived on B", None, false, None, "user").unwrap();
+        db_b.archive_page(&old.id).unwrap();
 
         // A deletes 25 of 30 pages.
         for id in &ids[..25] {
@@ -1663,10 +1927,11 @@ mod tests {
         let r = cycle(&b, &db_b);
         let held = r.held_deletions.clone().expect("guard trip is reported");
         assert_eq!(held.pages, 25);
-        assert_eq!(held.total_pages, 30);
+        assert_eq!(held.total_pages, 30, "pages only: no journal days, nothing archived");
+        assert_eq!(held.journals, 0);
         assert!(held.titles.contains(&"Note 00".to_string()));
         assert!(r.import_errors.is_empty(), "a held deletion is not an import error");
-        assert_eq!(db_b.list_pages(None).unwrap().len(), 30, "nothing trashed without the user");
+        assert_eq!(db_b.list_pages(None).unwrap().len(), 31, "nothing trashed without the user (30 + the journal)");
 
         // Further cycles keep holding: the files are NOT written back (that would
         // undo A's deletion everywhere), and the notice persists.
@@ -1692,7 +1957,7 @@ mod tests {
         assert!(!db_b.is_trashed(&ids[24]).unwrap());
         let r = cycle(&b, &db_b);
         assert!(r.held_deletions.is_none());
-        assert_eq!(db_b.list_pages(None).unwrap().len(), 6);
+        assert_eq!(db_b.list_pages(None).unwrap().len(), 7, "5 notes + Note 24 + the journal");
     }
 
     #[test]
@@ -1753,9 +2018,11 @@ mod tests {
         assert!(db_b.get_page(&poison.id).unwrap().is_some(), "retried next cycle");
     }
 
-    // P0: an unreachable remote is "offline", not a hard failure.
+    // P0: an unreachable remote is "offline", not a hard failure — but a remote
+    // that is gone (moved, deleted, mistyped) is an error the user must see, not
+    // a quiet grey "Offline" (UX review, Sync error states).
     #[test]
-    fn test_unreachable_remote_is_offline() {
+    fn test_missing_remote_is_an_error_not_offline() {
         if !git_cmd::git_available() {
             return;
         }
@@ -1767,9 +2034,66 @@ mod tests {
         std::fs::rename(&remote, tmp.path().join("gone.git")).unwrap();
         let r = cycle_any(&a, &db_a);
         assert!(!r.success);
+        assert!(!r.offline, "{:?}", r.error);
+        assert_eq!(r.error_kind.as_deref(), Some(SYNC_ERR_REMOTE_NOT_FOUND), "{:?}", r.error);
+        assert!(r.error.as_deref().unwrap_or("").contains("Remote not found"), "{:?}", r.error);
+
+        // A host that can't be resolved is offline (retried quietly).
+        git_cmd::run_git(&a, &["remote", "set-url", "origin", "https://nonexistent.invalid/notes.git"]).unwrap();
+        let r = cycle_any(&a, &db_a);
+        assert!(!r.success);
         assert!(r.offline, "{:?}", r.error);
-        assert!(is_offline_error("fatal: unable to access 'https://x/': Could not resolve host: x"));
-        assert!(!is_offline_error("Authentication failed — check your SSH keys or credentials"));
+
+        for (msg, kind) in [
+            ("fatal: unable to access 'https://x/': Could not resolve host: x", SYNC_ERR_OFFLINE),
+            ("Network error — can't reach the sync remote. Check your internet connection", SYNC_ERR_OFFLINE),
+            ("Authentication failed — check your SSH keys or credentials", SYNC_ERR_AUTH),
+            ("remote: Repository not found.\nfatal: repository 'https://github.com/x/y.git/' not found", SYNC_ERR_REMOTE_NOT_FOUND),
+            ("fatal: '/tmp/x.git' does not appear to be a git repository\nfatal: Could not read from remote repository.", SYNC_ERR_REMOTE_NOT_FOUND),
+            ("Could not import 1 file(s) from the other device: x", SYNC_ERR_OTHER),
+        ] {
+            assert_eq!(sync_error_kind(msg), kind, "{msg}");
+            assert_eq!(sync_error_kind(&git_cmd::classify_git_error(msg)), kind, "classified: {msg}");
+        }
+    }
+
+    // "Last synced" only after the remote has it: never for a notebook without a
+    // remote (that only commits locally), and the last error is kept until a
+    // cycle reaches the remote again.
+    #[test]
+    fn test_status_is_honest_about_the_remote() {
+        if !git_cmd::git_available() {
+            return;
+        }
+        let _home = crate::notebook::tests::FakeHome::new();
+        let db = Database::open_in_memory().unwrap();
+        db.create_page("Local only", None, false, None, "user").unwrap();
+        let s = enable_sync(&db, "default").unwrap();
+        assert!(s.enabled && s.remote_url.is_none());
+        assert_eq!(s.last_sync, None, "no remote: nothing was synced anywhere");
+        let r = full_sync(&db, "default").unwrap();
+        assert!(r.success && r.no_remote);
+        let s = get_sync_status("default").unwrap();
+        assert_eq!(s.last_sync, None);
+        assert_eq!(s.last_error, None);
+
+        // A remote that isn't there.
+        let dir = sync_dir_for_notebook("default");
+        let missing = dir.parent().unwrap().join("missing.git");
+        git_cmd::run_git(&dir, &["remote", "add", "origin", missing.to_str().unwrap()]).unwrap();
+        let r = full_sync(&db, "default").unwrap();
+        assert!(!r.success && !r.offline && !r.no_remote);
+        let s = get_sync_status("default").unwrap();
+        assert_eq!(s.last_sync, None);
+        assert_eq!(s.last_error_kind.as_deref(), Some(SYNC_ERR_REMOTE_NOT_FOUND), "{:?}", s.last_error);
+
+        // The remote appears: synced, error cleared.
+        git_cmd::run_git(dir.parent().unwrap(), &["init", "--bare", "-q", missing.to_str().unwrap()]).unwrap();
+        let r = full_sync(&db, "default").unwrap();
+        assert!(r.success, "{:?}", r.error);
+        let s = get_sync_status("default").unwrap();
+        assert!(s.last_sync.is_some());
+        assert_eq!(s.last_error, None);
     }
 
     // Sync on top of the mirror: a notebook's sync dir IS its mirror, and the
@@ -2296,12 +2620,13 @@ mod tests {
         git_cmd::tests::configure_test_repo(&notes);
         git_cmd::run_git(&notes, &["remote", "add", "origin", remote.to_str().unwrap()]).unwrap();
         // As copied: sync on in the folder's own config, no record on this machine.
-        write_config(&nb.key, &SyncConfig { enabled: true, last_sync: None }).unwrap();
+        write_config(&nb.key, &SyncConfig { enabled: true, last_sync: Some("2026-10-01T09:00:00Z".into()), ..Default::default() }).unwrap();
         let marker = home.path().join("PWNED");
         plant_hostile_repo_config(&notes, &marker);
 
         assert!(!sync_trusted(&nb.key));
         assert!(get_sync_status(&nb.key).unwrap().needs_confirmation);
+        assert_eq!(get_sync_status(&nb.key).unwrap().last_sync, None, "the other computer's time is not shown as ours");
         let r = full_sync_with(&nb.key, || Ok(&db)).unwrap();
         assert!(r.needs_confirmation && !r.success);
         assert_eq!(git_cmd::rev_parse_head(&notes).unwrap(), None, "nothing was committed");

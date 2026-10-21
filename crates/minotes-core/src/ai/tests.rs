@@ -803,3 +803,27 @@ fn ask_on_a_read_only_connection_writes_nothing() {
     let rw = Database::open(&path).unwrap();
     assert!(list_runs(&rw, 10).unwrap().is_empty(), "nothing logged");
 }
+
+/// UX review: Ask against a local server that isn't running took 10–14 s and
+/// said "timeout". A refused connection must fail at once and say what to do.
+#[test]
+fn refused_connection_fails_fast_and_says_so() {
+    let port = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap().port()
+    }; // closed again: nothing listens there
+    for host in ["127.0.0.1", "localhost"] {
+        let c = OpenAiCompatClient::local(&format!("http://{host}:{port}/v1"));
+        let req = ChatRequest {
+            model: "m".into(), messages: vec![json!({"role": "user", "content": "Q"})], tools: vec![],
+            tool_choice: "auto", max_tokens: 10, reasoning_effort: None,
+        };
+        let t = std::time::Instant::now();
+        let e = c.chat(&req, &mut |_| {}).unwrap_err();
+        let took = t.elapsed();
+        let msg = e.to_string();
+        assert!(took < std::time::Duration::from_secs(3), "{host}: took {took:?}: {msg}");
+        assert!(msg.contains("isn't running") || msg.contains("refused"), "{host}: {msg}");
+        assert!(!msg.to_lowercase().contains("timeout"), "{host}: {msg}");
+    }
+}

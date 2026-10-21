@@ -41,7 +41,7 @@ echo "════════════════════════�
 echo "  MiNotes Desktop Journeys (real app, real backend)"
 echo "═══════════════════════════════════════════════"
 
-rm -rf "$STATE"/{persist,devA,devB,nbook,outside,xnb,zip8,barrier10,trust10,rimg,img10,remote.git,enc13,enc13-tmp,enc13-keychain,enc14a,enc14b,enc14c,enc14-tmp,remote14.git,w1,w1-files,w2} "$STATE/results.tsv"
+rm -rf "$STATE"/{persist,devA,devB,nbook,outside,xnb,zip8,barrier10,trust10,rimg,img10,remote.git,enc13,enc13-tmp,enc13-keychain,enc14a,enc14b,enc14c,enc14-tmp,remote14.git,w1,w1-files,w2,j17a,j17b,t17,remote17.git,remote17.git.moved} "$STATE/results.tsv"
 if [[ -z "$DESKTOP_NO_BUILD" ]]; then
   "$DC" up --webdriver --profile persist >/dev/null || { echo "build/launch failed"; exit 1; }
 else
@@ -422,6 +422,10 @@ waitfor "document.querySelector('[data-testid=import-dialog]')?.dataset.step==='
 EN=$(ev "(async()=>{$A6 const t=(await api.listPages(1000)).map(p=>p.title);const ph=await api.getPageTree('Trip photos');return [t.includes('Packing list (2)'),t.includes('Pancakes'),ph.blocks.some(b=>b.content.includes('![beach.png](attachment:'))].join('|')})()")
 is "Notes, numbered duplicate title, en-media image as attachment" "$EN" "true|true|true"
 ev "document.querySelector('[data-testid=import-undo]')?.click()" >/dev/null
+waitfor "!!document.querySelector('[data-testid=confirm-dialog]')" 10
+C6=$(ev "document.querySelector('[data-testid=confirm-dialog]')?.innerText||'none'")
+[[ "$C6" == *"Undo this import?"*"deletes the "*" pages"* ]] && pass "Undo import asks first, with the page count" || fail "No confirmation before Undo import" "$C6"
+ev "document.querySelector('[data-testid=confirm-ok]')?.click()" >/dev/null
 waitfor "document.querySelector('[data-testid=import-dialog]')?.dataset.step==='undone'" 20 && pass "Undo import" || fail "Undo" "$(step6) $(ev "document.querySelector('[data-testid=import-dialog]')?.innerText.slice(0,300)||''")"
 "$DC" wshot "d6-undone" >/dev/null
 is "The Evernote notebook is empty again (today's journal aside)" "$(ev "(async()=>{$A6 return String((await api.listPages(1000)).filter(p=>p.title!=='Journal/$(date +%F)').length)})()")" "0"
@@ -429,14 +433,16 @@ ENDIR=$(ls -d "$IH/MiNotes/"*/ | grep -v Vault | head -1)
 is "Its attachment store is empty" "$(find "$ENDIR/attachments" -type f 2>/dev/null | wc -l | tr -d ' ')" "0"
 press_esc() { "$DC" press Escape >/dev/null 2>&1; }; press_esc
 
-step "Undo refuses pages I edited since — and lists them"
+step "Undo warns about pages I edited since — and keeps them unless I cancel"
 ev "window.__MINOTES__.switchNotebook('$NB6')" >/dev/null; sleep 2
 ev "(async()=>{$A6 const t=await api.getPageTree('Beta');await api.updateBlock(t.blocks[0].id,'# Beta (mine now)');return 1})()" >/dev/null
 open_import; ev "document.querySelector('[data-testid=import-run-undo]')?.click()" >/dev/null
-waitfor "!!document.querySelector('[data-testid=import-undo-refused]')" 10 \
-  && is "Refused, listing the edited page" "$(ev "document.querySelector('[data-testid=import-undo-refused] .imp-chip')?.textContent||''")" "Beta" \
-  || fail "Undo refusal" "$(step6)"
-"$DC" wshot "d6-undo-refused" >/dev/null
+waitfor "!!document.querySelector('[data-testid=confirm-dialog]')" 10
+C6=$(ev "document.querySelector('[data-testid=confirm-dialog]')?.innerText||'none'")
+[[ "$C6" == *"edited since the import"*"Beta"* ]] && pass "The confirmation names the edited page it keeps" || fail "No edited-page warning" "$C6"
+"$DC" wshot "d6-undo-edited-warning" >/dev/null
+ev "document.querySelector('[data-testid=confirm-cancel]')?.click()" >/dev/null; sleep 0.5
+is "Cancel: the import is still there" "$(ev "(async()=>{$A6 return String((await api.listPages(1000)).some(p=>p.title==='Alpha'))})()")" "true"
 press_esc; sleep 0.5
 
 step "I paste a screenshot into a block: stored as an attachment, still there after a restart"
@@ -1385,6 +1391,162 @@ api "focusBlock(0)" >/dev/null; sleep 0.5
 "$DC" type '```python'; sleep 0.3; "$DC" key Return; sleep 0.5; "$DC" type 'print(16)'; sleep 0.3
 ev "document.activeElement?.blur()" >/dev/null; sleep 1.5
 is "Stored as a python fence" "$(stored16 Fence16)" '```python⏎print(16)⏎```@0'
+journey "D17. Sync tells the truth — and a new device joins cleanly (UX review Wave 2)"
+# A fresh device joining sync keeps ONE "Getting Started" (C-9). "Sync now" and
+# the sidebar status chip; a conflict toast that names the page and the device,
+# with Open; a remote that is gone is an error with Retry, not a grey
+# "Offline"; no remote is "no remote", never "Last synced"; a copied folder
+# after "Not now" is "Paused — waiting for your OK". Real clicks on the chip,
+# Settings and the toast; WebDriver sets up and reads back.
+# ═══════════════════════════════════════════════
+if command -v git >/dev/null; then
+A17="const api=await import('/src/lib/api.ts');"
+R17="$STATE/remote17.git"
+git init -q --bare -b main "$R17"
+for d in j17a j17b t17; do
+  mkdir -p "$STATE/$d"
+  printf '[user]\n\tname = %s\n\temail = %s@example.test\n[init]\n\tdefaultBranch = main\n' "$d" "$d" >"$STATE/$d/.gitconfig"
+done
+rclick17() {
+  local xy; xy=$(ev "(()=>{const e=$1;if(!e)return '';e.scrollIntoView({block:'center'});const r=e.getBoundingClientRect();return Math.round(r.left+r.width/2)+' '+Math.round(r.top+r.height/2)})()")
+  [[ -n "$xy" ]] && "$DC" click $xy >/dev/null
+}
+ready17() { waitfor "window.__MINOTES__ && !!window.__MINOTES__.navigateTo" 30; sleep 1.5; }
+chip17() { ev "(document.querySelector('[data-testid=sync-chip]')?.textContent||'none')"; }
+phase17() { ev "(document.querySelector('[data-testid=sync-chip]')?.dataset.phase||'none')"; }
+# Titles of every "Getting Started…" page, and every numbered "(n)" title anywhere (Trash too).
+gs17_() { ev "(async()=>{$A17 return (await api.listPages(1000)).map(p=>p.title).filter(t=>t.startsWith('Getting Started')).sort().join('|')})()"; }
+numbered17_() { ev "(async()=>{$A17 const live=(await api.listPages(1000)).map(p=>p.title);const tr=(await api.listTrash()).map(t=>t.title);return live.concat(tr).filter(t=>/\\(\\d+\\)$/.test(t)).join('|')||'none'})()"; }
+# (Retried once: an eval that lands while a sync reopens the page comes back empty.)
+gs17() { local r; r=$(gs17_); [[ -n "$r" ]] || { sleep 1.5; r=$(gs17_); }; echo "$r"; }
+numbered17() { local r; r=$(numbered17_); [[ -n "$r" ]] || { sleep 1.5; r=$(numbered17_); }; echo "$r"; }
+# Sync now, as the user does it (the palette/Settings event), then wait for it to finish.
+syncnow17() {
+  ev "window.dispatchEvent(new Event('minotes-sync-now'))" >/dev/null; sleep 0.5
+  waitfor "!!document.querySelector('[data-testid=sync-chip]') && document.querySelector('[data-testid=sync-chip]').dataset.phase!=='syncing'" 40; sleep 0.8
+}
+# Turn sync on with the Settings toggle (a real click).
+enable17() {
+  api "openSettings()" >/dev/null; sleep 0.8
+  rclick17 "document.querySelector('[data-testid=sync-enable]')?.closest('label')"
+  waitfor "!!document.querySelector('[data-testid=settings-sync-state]')" 40; sleep 0.5
+}
+
+step "Device A: a fresh install, sync on, pushing to the remote"
+mkdir -p "$STATE/j17a/MiNotes_Sync"
+HOME="$STATE/j17a" git -C "$STATE/j17a/MiNotes_Sync" init -q -b main
+HOME="$STATE/j17a" git -C "$STATE/j17a/MiNotes_Sync" remote add origin "$R17"
+device j17a keep || true
+ready17
+is "A starts with its Getting Started" "$(gs17)" "Getting Started"
+enable17
+is "Settings: synced (A reached the remote)" "$(ev "document.querySelector('[data-testid=settings-sync-state]')?.dataset.phase||'none'")|$(ev "String(!!document.querySelector('[data-testid=settings-last-synced]'))")" "idle|true"
+api "closePanel()" >/dev/null; sleep 0.5
+[[ "$(chip17)" == Synced* ]] && pass "The sidebar chip says $(chip17)" || fail "Chip after the first sync" "$(chip17)"
+ev "(async()=>{$A17 const p=await api.createPage('Roadmap17');await api.createBlock(p.id,'Q1 plan');return 1})()" >/dev/null
+syncnow17
+REMOTE17=$(git --git-dir="$R17" ls-tree -r --name-only main 2>/dev/null | grep -c '^Getting Started\.md$\|^Roadmap17\.md$')
+is "The remote has A's Getting Started and Roadmap17" "$REMOTE17" "2"
+
+step "Device B: a fresh install that clones the sync folder and joins"
+HOME="$STATE/j17b" git clone -q "$R17" "$STATE/j17b/MiNotes_Sync" 2>/dev/null
+device j17b keep || true
+ready17
+enable17
+api "closePanel()" >/dev/null; sleep 0.5
+syncnow17
+is "B has exactly one Getting Started" "$(gs17)" "Getting Started"
+is "…and no numbered copies anywhere, Trash included" "$(numbered17)" "none"
+[[ "$(ev "(async()=>{$A17 return (await api.listPages(1000)).map(p=>p.title).join('|')})()")" == *"Roadmap17"* ]] && pass "B has A's notes" || fail "B did not get Roadmap17" "$(ev "(async()=>{$A17 return (await api.listPages(1000)).map(p=>p.title).join('|')})()")"
+"$DC" wshot "d17-b-joined" >/dev/null
+
+step "Both devices change the same line: the toast names the page and the device, and Open goes there"
+ev "(async()=>{$A17 const t=await api.getPageTree('Roadmap17');await api.updateBlock(t.blocks[0].id,'Q1 plan, edited on B');return 1})()" >/dev/null
+device j17a keep || true
+ready17
+syncnow17
+is "A has exactly one Getting Started after B joined" "$(gs17)" "Getting Started"
+is "A has no numbered copies either" "$(numbered17)" "none"
+ev "(async()=>{$A17 const t=await api.getPageTree('Roadmap17');await api.updateBlock(t.blocks[0].id,'Q1 plan, edited on A');return 1})()" >/dev/null
+syncnow17
+device j17b keep || true
+ready17
+# B's own edit is already in its database; this sync brings A's.
+syncnow17
+waitfor "[...document.querySelectorAll('.minotes-toast')].some(t=>t.textContent.includes('Sync conflict'))" 15
+T17=$(ev "([...document.querySelectorAll('.minotes-toast')].find(t=>t.textContent.includes('Sync conflict'))?.textContent||'none')")
+"$DC" shot "d17-conflict-toast" >/dev/null
+[[ "$T17" == *"Roadmap17"*"(conflict from "* && "$T17" != *"<device>"* ]] && pass "The toast names the page and the copy ($T17)" || fail "Conflict toast text" "$T17"
+rclick17 "[...document.querySelectorAll('.minotes-toast')].find(t=>t.textContent.includes('Sync conflict'))?.querySelector('button')"
+sleep 1.5
+[[ "$(api 'getCurrentPage()')" == "Roadmap17 (conflict from "* ]] && pass "Open shows the conflict copy" || fail "Open did not go to the copy" "$(api 'getCurrentPage()')"
+
+step "The remote is moved away: an error with the reason and Retry — not a grey Offline"
+mv "$R17" "$R17.moved"
+syncnow17
+is "Chip: error" "$(phase17)|$(chip17)" "error|Sync remote not found"
+TIP17=$(ev "document.querySelector('[data-testid=sync-chip]')?.title||''")
+[[ "$TIP17" == *"Remote not found"* ]] && pass "Its tooltip gives the reason" || fail "Chip tooltip" "$TIP17"
+rclick17 "document.querySelector('[data-testid=sync-chip]')"; sleep 0.6
+[[ "$(ev "document.querySelector('[data-testid=sync-details]')?.innerText||'none'")" == *"Sync remote not found"*"Retry"* ]] && pass "Clicking it shows the error and Retry" || fail "Chip details" "$(ev "document.querySelector('[data-testid=sync-details]')?.innerText||'none'")"
+"$DC" shot "d17-missing-remote" >/dev/null
+api "openSettings()" >/dev/null; sleep 0.8
+S17=$(ev "document.querySelector('[data-testid=settings-sync-state]')?.innerText||'none'")
+[[ "$S17" == *"Sync remote not found"*"Remote not found"*"Retry"* ]] && pass "Settings shows the error, the remote and Retry" || fail "Settings sync error" "$S17"
+"$DC" wshot "d17-settings-error" >/dev/null
+api "closePanel()" >/dev/null; sleep 0.5
+mv "$R17.moved" "$R17"
+[[ "$(ev "String(!!document.querySelector('[data-testid=sync-details]'))")" == "true" ]] || { rclick17 "document.querySelector('[data-testid=sync-chip]')"; sleep 0.5; }
+rclick17 "document.querySelector('[data-testid=sync-details-retry]')"
+waitfor "document.querySelector('[data-testid=sync-chip]')?.dataset.phase==='idle'" 40
+[[ "$(chip17)" == Synced* ]] && pass "Retry with the remote back: $(chip17)" || fail "Retry" "$(phase17)|$(chip17)"
+
+step "A notebook with sync on but no remote says so — never \"Last synced\""
+device t17 keep || true
+ready17
+enable17
+is "Settings: on, no remote" "$(ev "document.querySelector('[data-testid=settings-sync-state]')?.dataset.phase||'none'")|$(ev "String(!!document.querySelector('[data-testid=settings-last-synced]'))")" "local|false"
+api "closePanel()" >/dev/null; sleep 0.5
+syncnow17
+is "Chip: no remote" "$(chip17)" "Not synced — no remote"
+is "Status has no last-synced time" "$(ev "(async()=>{$A17 return String((await api.gitSyncStatus()).last_sync)})()")" "null"
+
+step "A folder synced on another computer: after Not now, Settings says Paused"
+F17="$STATE/t17/Incoming/Copied17"
+KEY17=$(ev "(async()=>{$A17 const n=await api.createNotebook('Copied17','$F17');return n.key})()")
+HOME="$STATE/t17" git -C "$F17/notes" init -q -b main
+HOME="$STATE/t17" git -C "$F17/notes" remote add origin "$R17"
+mkdir -p "$F17/.minotes"; printf '{"enabled": true, "last_sync": "2026-10-01T09:00:00Z"}\n' >"$F17/.minotes/sync-config.json"
+ev "window.__MINOTES__.switchNotebook('$KEY17')" >/dev/null
+waitfor "!!document.querySelector('[data-testid=sync-confirm-banner]')" 20 && pass "The trust banner asks" || fail "No trust banner" ""
+rclick17 "document.querySelector('[data-testid=sync-decline]')"; sleep 0.8
+is "Chip: paused" "$(phase17)|$(chip17)" "paused|Sync paused"
+api "openSettings()" >/dev/null; sleep 0.8
+P17=$(ev "document.querySelector('[data-testid=settings-sync-state]')?.innerText||'none'")
+[[ "$P17" == *"Paused — waiting for your OK"* && "$(ev "String(!!document.querySelector('[data-testid=settings-last-synced]'))")" == "false" ]] \
+  && pass "Settings: Paused — waiting for your OK (no other computer's Last synced)" || fail "Settings while paused" "$P17"
+"$DC" wshot "d17-paused" >/dev/null
+api "closePanel()" >/dev/null; sleep 0.5
+
+step "Ask with a local model server that isn't running: a clear message within seconds, and Retry"
+CLOSED17=$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')
+ev "(async()=>{$A17 const s=(await api.aiGetStatus()).settings;s.provider='local';s.local.base_url='http://127.0.0.1:$CLOSED17/v1';s.local.model='test-model';await api.aiSaveSettings(s);return 1})()" >/dev/null
+ev "window.dispatchEvent(new CustomEvent('minotes:open-ai',{detail:'ask'}))" >/dev/null
+waitfor "!!document.querySelector('[data-testid=ai-input]')" 15
+ev "(()=>{const t=document.querySelector('[data-testid=ai-input]');const set=Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set;set.call(t,'What is on my roadmap?');t.dispatchEvent(new Event('input',{bubbles:true}));return 1})()" >/dev/null
+T0=$SECONDS
+rclick17 "document.querySelector('[data-testid=ai-send]')"
+waitfor "!!document.querySelector('[data-testid=ai-error]')" 30
+TOOK17=$((SECONDS - T0))
+E17=$(ev "document.querySelector('[data-testid=ai-error]')?.innerText||'none'")
+[[ "$TOOK17" -le 8 ]] && pass "It failed in ${TOOK17}s (was ~15 s)" || fail "Ask took too long to fail" "${TOOK17}s"
+[[ "$E17" == *"isn't running"*"Retry"* && "$E17" != *"timeout"* ]] && pass "It says the server isn't running, with Retry" || fail "Ask error text" "$E17"
+"$DC" wshot "d17-ask-refused" >/dev/null
+rclick17 "document.querySelector('[data-testid=ai-retry]')"; sleep 0.5
+waitfor "!!document.querySelector('[data-testid=ai-error]')" 30
+is "Retry asks again (one question, one answer slot)" "$(ev "String(document.querySelectorAll('.ai-turn').length)")" "1"
+"$DC" press Escape >/dev/null 2>&1; sleep 0.5
+fi
 
 # ═══════════════════════════════════════════════
 echo ""

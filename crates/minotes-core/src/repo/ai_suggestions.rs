@@ -4,11 +4,14 @@ use crate::repo::archive::ARCHIVED_FOLDER_TREE;
 use crate::repo::trash::TRASHED_FOLDER_TREE;
 
 /// Excludes trashed/archived pages and pages inside a trashed/archived folder
-/// subtree. Requires the `trashed_tree` / `archived_tree` CTEs.
+/// subtree, and sync conflict copies "(conflict from <device>)" — their TODOs
+/// are the same TODOs again (UX review: they inflated the sidebar count).
+/// Requires the `trashed_tree` / `archived_tree` CTEs.
 const VISIBLE_PAGE_FILTER: &str = "p.id NOT IN (SELECT page_id FROM trash)
                AND p.id NOT IN (SELECT page_id FROM archive)
                AND (p.folder_id IS NULL OR (p.folder_id NOT IN (SELECT id FROM trashed_tree)
-                    AND p.folder_id NOT IN (SELECT id FROM archived_tree)))";
+                    AND p.folder_id NOT IN (SELECT id FROM archived_tree)))
+               AND p.title NOT LIKE '% (conflict from %)'";
 
 /// Parse a single line for a *pending* TODO and return its text, or None.
 ///
@@ -190,6 +193,18 @@ mod tests {
     fn test_count_pending_todos_empty() {
         let db = test_db();
         assert_eq!(db.count_pending_todos().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_conflict_copies_do_not_count_twice() {
+        let db = test_db();
+        let page = db.create_page("Roadmap", None, false, None, "test").unwrap();
+        db.create_block(&page.id, "TODO ship it", None, None, "test").unwrap();
+        let copy = db.create_page("Roadmap (conflict from laptop)", None, false, None, "test").unwrap();
+        db.create_block(&copy.id, "TODO ship it", None, None, "test").unwrap();
+        assert_eq!(db.count_pending_todos().unwrap(), 1);
+        assert_eq!(db.list_pending_todos().unwrap().len(), 1);
+        assert_eq!(db.list_pending_todos_with_page_ids().unwrap()[0].page_id, page.id.to_string());
     }
 
     #[test]

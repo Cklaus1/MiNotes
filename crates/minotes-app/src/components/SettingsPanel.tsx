@@ -6,13 +6,17 @@ import { prettyPath } from "../lib/notebooks";
 import { getSettings, updateSettings, type MiNotesSettings } from "../lib/settings";
 import { getTheme, setTheme } from "../lib/theme";
 import * as api from "../lib/api";
+import { errorMessage } from "../lib/errors";
+import { showToast } from "../lib/toast";
+import {
+  ago, applySyncStatus, errorHint, errorTitle, requestSyncNow, SYNC_CONFIRM_EVENT, useSyncView,
+} from "../lib/syncStatus";
+import "./sync.css";
 
 interface Props {
   open: boolean;
   onClose: () => void;
-  syncError?: string | null;
-  onSyncRetry?: () => void;
-  /** Open the Sync & version history panel. */
+  /** Open the Page versions panel (local snapshots, not git sync). */
   onOpenSync?: () => void;
   /** Open the CSS snippets manager. */
   onOpenCssSnippets?: () => void;
@@ -38,6 +42,8 @@ const SHORTCUT_GROUPS: Array<{ title: string; items: Array<[string, string]> }> 
       ["Ctrl+Shift+C", "Copy the page as text"],
       ["Ctrl+Shift+T", "Toggle light/dark theme"],
       ["Ctrl+Shift+L", "Lock an encrypted notebook"],
+      ["Ctrl+Shift+A", "Ask AI about your notes"],
+      ["Ctrl+Shift+I", "Import from Obsidian, Evernote or markdown"],
       ["Ctrl+,", "Settings"],
       ["Ctrl+\\", "Show/hide the right sidebar"],
       ["Esc", "Close the open panel, menu or view"],
@@ -104,7 +110,65 @@ const SHORTCUT_GROUPS: Array<{ title: string; items: Array<[string, string]> }> 
   },
 ];
 
-export default function SettingsPanel({ open, onClose, syncError, onSyncRetry, onOpenSync, onOpenCssSnippets }: Props) {
+/** Where sync stands, honestly: paused, failing (and why), local only, or when
+ *  it last reached the remote — with Sync now / Retry / Sync it here. */
+function SyncStateBox({ syncDir }: { syncDir: string }) {
+  const v = useSyncView();
+  const s = v.status;
+  if (!s?.enabled) return null;
+  const remote = s.remote_url;
+  const syncNow = (
+    <button className="btn btn-sm btn-primary" disabled={v.phase === "syncing"} onClick={requestSyncNow} data-testid="settings-sync-now">
+      {v.phase === "syncing" ? "Syncing…" : v.phase === "error" || v.phase === "offline" ? "Retry" : "Sync now"}
+    </button>
+  );
+  if (v.phase === "paused") {
+    return (
+      <div className="settings-sync-state paused" data-testid="settings-sync-state" data-phase="paused">
+        <span className="settings-sync-state-title">Paused — waiting for your OK</span>
+        <span className="settings-sync-state-text">
+          This notebook folder was set up for sync on another computer. It doesn't sync here until you choose “Sync it here”.
+        </span>
+        <div className="settings-sync-state-actions">
+          <button className="btn btn-sm btn-primary" onClick={() => window.dispatchEvent(new Event(SYNC_CONFIRM_EVENT))}>Sync it here</button>
+        </div>
+      </div>
+    );
+  }
+  if (v.phase === "error" || v.phase === "offline") {
+    return (
+      <div className={`settings-sync-state ${v.phase}`} data-testid="settings-sync-state" data-phase={v.phase} role="alert">
+        <span className="settings-sync-state-title">{errorTitle(v.errorKind)}</span>
+        <span className="settings-sync-state-text">{errorHint(v.errorKind)}</span>
+        {v.error && <span className="sync-pop-error" data-testid="settings-sync-error">{v.error}</span>}
+        {remote && <span className="settings-sync-state-text">Remote: {remote}</span>}
+        {s.last_sync && <span className="settings-sync-state-text">Last synced {ago(s.last_sync)}</span>}
+        <div className="settings-sync-state-actions">{syncNow}</div>
+      </div>
+    );
+  }
+  if (!remote) {
+    return (
+      <div className="settings-sync-state" data-testid="settings-sync-state" data-phase="local">
+        <span className="settings-sync-state-title">On — but no remote yet</span>
+        <span className="settings-sync-state-text">
+          Changes are committed in the sync folder ({syncDir}), a git repository, and sent nowhere else.
+          To sync with other devices, add a remote to it (<code>git remote add origin &lt;url&gt;</code>).
+        </span>
+        <div className="settings-sync-state-actions">{syncNow}</div>
+      </div>
+    );
+  }
+  return (
+    <div className="settings-sync-state ok" data-testid="settings-sync-state" data-phase={v.phase}>
+      <span className="settings-sync-state-title">{v.phase === "syncing" ? "Syncing…" : s.last_sync ? `Synced ${ago(s.last_sync)}` : "Not synced yet"}</span>
+      {s.last_sync && <span className="settings-sync-state-text" data-testid="settings-last-synced">Last synced {new Date(s.last_sync).toLocaleString()}</span>}
+      <div className="settings-sync-state-actions">{syncNow}</div>
+    </div>
+  );
+}
+
+export default function SettingsPanel({ open, onClose, onOpenSync, onOpenCssSnippets }: Props) {
   const [settings, setSettings] = useState<MiNotesSettings>(getSettings);
   const [currentTheme, setCurrentTheme] = useState(getTheme);
   const [stats, setStats] = useState<api.GraphStats | null>(null);
@@ -112,7 +176,7 @@ export default function SettingsPanel({ open, onClose, syncError, onSyncRetry, o
   const [activeTooltip, setActiveTooltip] = useState<string | null>(null);
   const tooltipTimerRef = { current: null as ReturnType<typeof setTimeout> | null };
   const [gitInstalled, setGitInstalled] = useState<boolean | null>(null);
-  const [syncStatus, setSyncStatus] = useState<api.GitSyncStatus | null>(null);
+  const syncStatus = useSyncView().status;
   const [syncLoading, setSyncLoading] = useState(false);
   const [showSyncAdvanced, setShowSyncAdvanced] = useState(false);
   const [syncDir, setSyncDir] = useState("~/MiNotes_Sync");
@@ -125,7 +189,7 @@ export default function SettingsPanel({ open, onClose, syncError, onSyncRetry, o
       setSettings(getSettings());
       setCurrentTheme(getTheme());
       api.gitAvailable().then(setGitInstalled).catch(() => setGitInstalled(false));
-      api.gitSyncStatus().then(setSyncStatus).catch(() => {});
+      api.gitSyncStatus().then(applySyncStatus).catch(() => {});
       api.getNotebookSession().then(s => {
         if (s?.mirror_dir) setSyncDir(prettyPath(s.mirror_dir));
         setEncrypted(!!s?.encrypted);
@@ -215,20 +279,22 @@ export default function SettingsPanel({ open, onClose, syncError, onSyncRetry, o
               <label className="settings-toggle">
                 <input
                   type="checkbox"
+                  aria-label="Enable sync"
+                  data-testid="sync-enable"
                   checked={syncStatus?.enabled ?? false}
                   disabled={syncLoading}
                   onChange={async (e) => {
                     setSyncLoading(true);
+                    const on = e.target.checked;
                     try {
-                      if (e.target.checked) {
-                        const status = await api.gitSyncEnable();
-                        setSyncStatus(status);
+                      if (on) {
+                        applySyncStatus(await api.gitSyncEnable());
                       } else {
                         await api.gitSyncDisable();
-                        setSyncStatus(prev => prev ? { ...prev, enabled: false } : null);
+                        applySyncStatus(await api.gitSyncStatus().catch(() => null));
                       }
                     } catch (err) {
-                      console.error("Sync toggle failed:", err);
+                      showToast(`Couldn't turn sync ${on ? "on" : "off"}: ${errorMessage(err)}`);
                     } finally {
                       setSyncLoading(false);
                     }
@@ -245,29 +311,7 @@ export default function SettingsPanel({ open, onClose, syncError, onSyncRetry, o
             )}
             {syncStatus?.enabled && (
               <>
-                {syncError && (
-                  <div className="settings-sync-error">
-                    <div className="settings-sync-error-header">
-                      <span>&#x26A0; Sync failed</span>
-                    </div>
-                    <div className="settings-sync-error-reason">
-                      {syncError}
-                    </div>
-                    {onSyncRetry && (
-                      <button className="btn btn-sm" onClick={onSyncRetry} style={{ marginTop: 6 }}>
-                        Retry
-                      </button>
-                    )}
-                  </div>
-                )}
-                {!syncError && syncStatus.last_sync && (
-                  <div className="settings-row">
-                    <span className="settings-row-label">Last synced</span>
-                    <span className="settings-row-value">
-                      {new Date(syncStatus.last_sync).toLocaleString()}
-                    </span>
-                  </div>
-                )}
+                <SyncStateBox syncDir={syncDir} />
                 <div
                   className="settings-advanced-toggle"
                   onClick={() => setShowSyncAdvanced(v => !v)}
@@ -305,9 +349,11 @@ export default function SettingsPanel({ open, onClose, syncError, onSyncRetry, o
           <div className="settings-section">
             <div className="settings-section-title">History</div>
             <div className="settings-row">
-              <span className="settings-row-label">Sync status &amp; page versions</span>
+              <span className="settings-row-label" title="Snapshots of a page saved on this device, to restore an earlier version. Not git sync.">
+                Saved versions of pages
+              </span>
               <button className="btn btn-sm" onClick={() => { onClose(); onOpenSync(); }}>
-                Sync &amp; version history…
+                Page versions…
               </button>
             </div>
           </div>
@@ -331,9 +377,12 @@ export default function SettingsPanel({ open, onClose, syncError, onSyncRetry, o
           ))}
         </div>
 
-        {/* AI Assistant — its own always-visible section (not part of Advanced, which stays last) */}
+        {/* Smart suggestions — local heuristics, no AI model involved; its own
+            always-visible section (not part of Advanced, which stays last). The
+            AI provider (Ask) has its own dialog, linked from here. */}
         <div className="settings-section" data-section="ai">
-          <div className="settings-section-title">AI Assistant</div>
+          <div className="settings-section-title">Smart suggestions</div>
+          <div className="nb-hint">Worked out on this device from your notes — nothing is sent anywhere.</div>
           {([
             ["autoTag", "Suggest tags", "Suggest tags for a page from its content"],
             ["linkSuggestions", "Suggest links", "Suggest related pages to link from the current page"],
@@ -352,6 +401,18 @@ export default function SettingsPanel({ open, onClose, syncError, onSyncRetry, o
               </label>
             </div>
           ))}
+          <div className="settings-row">
+            <span className="settings-row-label" title="Ask questions about your notes with an AI model you choose (Ctrl+Shift+A)">
+              Ask AI (model and privacy)
+            </span>
+            <button
+              className="btn btn-sm"
+              data-testid="settings-ai-provider"
+              onClick={() => { onClose(); window.dispatchEvent(new CustomEvent("minotes:open-ai", { detail: "settings" })); }}
+            >
+              AI provider…
+            </button>
+          </div>
         </div>
 
         {/* Advanced — collapsible */}

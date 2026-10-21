@@ -135,9 +135,21 @@ impl OpenAiCompatClient {
         Self::new(ProviderKind::Local, base_url.trim_end_matches('/').to_string(), None)
     }
     fn new(kind: ProviderKind, base_url: String, api_key: Option<String>) -> Self {
+        // A server on this computer accepts a connection at once: if nothing
+        // has answered in 2 s, nothing is listening (some systems drop the
+        // packets instead of refusing). Ask then says so right away instead of
+        // after 15 s with "timeout" (UX review). Remote servers keep 15 s.
+        let loopback = super::settings::endpoint_host(&base_url).is_some_and(|h| super::settings::is_loopback_host(&h));
+        let connect = if kind == ProviderKind::Local && loopback {
+            Duration::from_secs(2)
+        } else if kind == ProviderKind::Local {
+            Duration::from_secs(6)
+        } else {
+            Duration::from_secs(15)
+        };
         let config = ureq::Agent::config_builder()
             .http_status_as_error(false)
-            .timeout_connect(Some(Duration::from_secs(15)))
+            .timeout_connect(Some(connect))
             // Long silences happen while a model thinks; OpenRouter sends keep-alive comments.
             .timeout_recv_body(Some(Duration::from_secs(600)))
             .build();
@@ -201,8 +213,20 @@ impl OpenAiCompatClient {
     }
 
     fn transport_error(&self, e: ureq::Error) -> AiError {
-        AiError::Provider(match self.kind {
-            ProviderKind::Local => format!(
+        let nobody_home = match &e {
+            ureq::Error::Timeout(ureq::Timeout::Connect) | ureq::Error::ConnectionFailed => true,
+            ureq::Error::Io(io) => matches!(
+                io.kind(),
+                std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::TimedOut | std::io::ErrorKind::AddrNotAvailable
+            ),
+            _ => false,
+        };
+        AiError::Provider(match (self.kind, nobody_home) {
+            (ProviderKind::Local, true) => format!(
+                "The local model server at {} isn't running — nothing answered there. Start it, or check the address in AI settings.",
+                self.base_url
+            ),
+            (ProviderKind::Local, false) => format!(
                 "Couldn't reach the local model server at {} ({e}). Is it running?",
                 self.base_url
             ),

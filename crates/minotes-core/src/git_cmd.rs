@@ -677,10 +677,22 @@ pub(crate) fn run_git_timeout(dir: &Path, args: &[&str], timeout: Duration) -> R
 /// Classify a git error message into a user-friendly description.
 pub(crate) fn classify_git_error(stderr: &str) -> String {
     let lower = stderr.to_lowercase();
-    if lower.contains("could not resolve hostname") || lower.contains("connection refused") {
-        "Network error — check your internet connection".to_string()
-    } else if lower.contains("permission denied") || lower.contains("authentication") {
+    if lower.contains("permission denied") || lower.contains("authentication") || lower.contains("could not read username") {
         "Authentication failed — check your SSH keys or credentials".to_string()
+    } else if lower.contains("does not appear to be a git repository")
+        || lower.contains("repository not found")
+        || (lower.contains("repository '") && lower.contains("' not found"))
+    {
+        "Remote not found — the sync remote's address leads nowhere (moved, deleted or mistyped?)".to_string()
+    } else if lower.contains("could not resolve host")
+        || lower.contains("connection refused")
+        || lower.contains("timed out")
+        || lower.contains("network is unreachable")
+        || lower.contains("no route to host")
+        || lower.contains("failed to connect")
+        || lower.contains("temporary failure in name resolution")
+    {
+        "Network error — can't reach the sync remote. Check your internet connection".to_string()
     } else if lower.contains("not a git repository") {
         "Not a git repository".to_string()
     } else {

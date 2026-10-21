@@ -161,6 +161,7 @@
 @keyframes ai-pulse { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
 
 .ai-error { color: var(--danger); font-size: 12.5px; line-height: 1.5; padding: 4px 0; }
+.ai-error-actions { display: flex; align-items: center; gap: 10px; margin-top: 6px; }
 .ai-saved { color: var(--success); font-size: 12.5px; }
 .ai-link {
   background: none;
