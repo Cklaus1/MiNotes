@@ -54,7 +54,7 @@ cold_probe() {
   # app sits ~25 s in a D-Bus call before mapping its window.
   t0=$(now); env "${env[@]}" dbus-run-session -- "$bin" >/dev/null 2>&1 & local ap=$!
   while [ $(( $(now) - t0 )) -lt 90000 ]; do
-    if [ "$tw" = null ] && DISPLAY="$x" timeout 5 xwininfo -root -tree 2>/dev/null | grep -q '"MiNotes"'; then tw=$(( $(now) - t0 )); fi
+    if [ "$tw" = null ] && DISPLAY="$x" timeout 5 xwininfo -root -tree 2>/dev/null | grep -q 'MiNotes": ('; then tw=$(( $(now) - t0 )); fi
     if [ "$tw" != null ]; then
       cur="$(DISPLAY="$x" timeout 5 import -window root -resize 25% png:- 2>/dev/null | md5sum | cut -c1-12)"
       if [ "$tp" = null ]; then
@@ -68,7 +68,7 @@ cold_probe() {
     sleep 0.25
   done
   pkill -P $ap 2>/dev/null; kill $ap 2>/dev/null; wait $ap 2>/dev/null
-  local k; for k in $(seq 1 20); do DISPLAY="$x" timeout 5 xwininfo -root -tree 2>/dev/null | grep -q '"MiNotes"' || break; sleep 0.5; done
+  local k; for k in $(seq 1 20); do DISPLAY="$x" timeout 5 xwininfo -root -tree 2>/dev/null | grep -q 'MiNotes": (' || break; sleep 0.5; done
   echo "{\"window\": $tw, \"painted\": $tp, \"stable\": $ts}"
 }
 app_pid() { local p; for p in $(pgrep -x minotes-app); do tr '\0' '\n' <"/proc/$p/environ" 2>/dev/null | grep -qx "HOME=$DESKTOP_CHECK_DIR/$1" && { echo "$p"; return; }; done; }

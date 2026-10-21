@@ -1919,10 +1919,10 @@ FAVS=$(ev "(async()=>{const api=await import('/src/lib/api.ts');return (await ap
 step "Pinned pages not duplicated in main list"
 S=$(snap)
 # This is hard to test via snapshot alone — verify via API
-# getFolderTree() still lists pinned pages; the Sidebar filters them out of its
-# "Pages" section. So check what is rendered: no pinned title appears twice.
-DUP=$(ev "(async()=>{const api=await import('/src/lib/api.ts');const favs=await api.listFavorites();const texts=[...document.querySelectorAll('.sidebar *')].filter(e=>e.children.length===0).map(e=>e.textContent.trim());return favs.filter(f=>texts.filter(t=>t===f.title).length>1).length})()")
-[[ "$DUP" == "0" ]] && pass "No duplicate pinned pages in root list" || fail "Pinned pages duplicated in root list" "$DUP"
+# Pinned is a shortcut: a pinned page is listed under Pinned AND where it lives
+# (its project or Pages) — UX review Wave 2 — but never more than that.
+DUP=$(ev "(async()=>{const api=await import('/src/lib/api.ts');const favs=await api.listFavorites();const texts=[...document.querySelectorAll('.sidebar *')].filter(e=>e.children.length===0).map(e=>e.textContent.trim());return favs.filter(f=>texts.filter(t=>t===f.title).length>2).length})()")
+[[ "$DUP" == "0" ]] && pass "Pinned pages listed under Pinned and where they live, no more" || fail "Pinned pages listed more than twice" "$DUP"
 
 step "Unpin a page"
 ev "(async()=>{const api=await import('/src/lib/api.ts');const favs=await api.listFavorites();if(favs.length>0){await api.removeFavorite(favs[0].id);return 'unpinned'}return 'none'})()" > /dev/null; sleep 1
