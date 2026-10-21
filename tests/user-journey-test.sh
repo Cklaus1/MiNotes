@@ -4616,6 +4616,44 @@ ss "85-esc-topmost"
 reset85
 
 # ═══════════════════════════════════════════════
+journey "88. Tooltips are the app's own and never cover an open menu (UX Wave 3)"
+# ═══════════════════════════════════════════════
+api "closePanel()" >/dev/null; press "Escape"; sleep 0.3
+api "navigateTo('Project Alpha')" >/dev/null; sleep 1.5
+# Hover with pointer events at the element's centre (works on both backends).
+hover88() { ev "(()=>{const el=document.querySelector('$1');if(!el)return 'none';const r=el.getBoundingClientRect();const o={bubbles:true,clientX:r.left+r.width/2,clientY:r.top+r.height/2,pointerType:'mouse'};el.dispatchEvent(new PointerEvent('pointerover',o));el.dispatchEvent(new PointerEvent('pointermove',o));return 'ok'})()" >/dev/null; }
+unhover88() { ev "(()=>{const el=document.querySelector('$1');el?.dispatchEvent(new PointerEvent('pointerout',{bubbles:true,relatedTarget:document.body}));return 1})()" >/dev/null; }
+tip88() { ev "(()=>{const t=document.querySelector('.app-tooltip.visible');return t?t.textContent:'none'})()" | tr -d '"'; }
+BTN88=".page-more-btn"
+
+step "Hovering the page ⋮ button shows the app's tooltip, not the platform's"
+hover88 "$BTN88"; sleep 0.9
+R="$(tip88)|$(ev "document.querySelector('$BTN88')?.hasAttribute('title')" | tr -d '"')"
+[[ "$R" == "Page actions (Shift+F10)|false" ]] && pass "App tooltip shown, native title lifted while hovered ($R)" || fail "App tooltip on hover" "$R"
+
+step "The tooltip sits beside the button, not under the pointer"
+R=$(ev "(()=>{const t=document.querySelector('.app-tooltip.visible');const b=document.querySelector('$BTN88');if(!t||!b)return 'none';const tr=t.getBoundingClientRect(),br=b.getBoundingClientRect();const cx=br.left+br.width/2,cy=br.top+br.height/2;return !(cx>=tr.left&&cx<=tr.right&&cy>=tr.top&&cy<=tr.bottom)&&!(tr.top<br.bottom&&tr.bottom>br.top&&tr.left<br.right&&tr.right>br.left)})()" | tr -d '"')
+[[ "$R" == "true" ]] && pass "Bubble clear of the pointer and the button" || fail "Tooltip placement" "$R"
+unhover88 "$BTN88"; sleep 0.3
+R="$(tip88)|$(ev "document.querySelector('$BTN88')?.getAttribute('title')" | tr -d '"')"
+[[ "$R" == "none|Page actions (Shift+F10)" ]] && pass "Leaving hides it and puts the title back ($R)" || fail "Tooltip after leaving" "$R"
+
+step "With the page menu open, hovering the ⋮ button shows no tooltip"
+ev "document.querySelector('$BTN88')?.click()" >/dev/null; sleep 0.5
+hover88 "$BTN88"; sleep 0.9
+R="$(ev "!!document.querySelector('.sidebar-context-menu')" | tr -d '"')|$(tip88)"
+[[ "$R" == "true|none" ]] && pass "Menu open, no tooltip over it ($R)" || fail "Tooltip while the menu is open" "$R"
+ss "88-menu-no-tooltip"
+unhover88 "$BTN88"; press "Escape"; sleep 0.4
+
+step "The notebook switcher's tooltip doesn't cover its own menu"
+ev "document.querySelector('.nb-switcher-btn')?.click()" >/dev/null; sleep 0.4
+hover88 ".nb-switcher-btn"; sleep 0.9
+R="$(ev "!!document.querySelector('.nb-menu')" | tr -d '"')|$(tip88)"
+[[ "$R" == "true|none" ]] && pass "Switcher menu open, no tooltip ($R)" || fail "Switcher tooltip over its menu" "$R"
+unhover88 ".nb-switcher-btn"; press "Escape"; sleep 0.3
+
+# ═══════════════════════════════════════════════
 close_app
 
 # ═══════════════════════════════════════════════

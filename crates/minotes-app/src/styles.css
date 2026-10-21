@@ -152,6 +152,31 @@ body {
   align-self: center;
 }
 
+/* The app's tooltip (lib/tooltip.ts) — replaces the platform's title tooltip. */
+.app-tooltip {
+  position: fixed;
+  z-index: 100000;
+  max-width: 320px;
+  padding: 5px 8px;
+  border-radius: 5px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+}
+.app-tooltip.visible {
+  opacity: 1;
+  visibility: visible;
+  transition: opacity 0.08s;
+}
+
 /* Layout */
 .app {
   display: flex;

@@ -6,6 +6,10 @@ import App from "./App";
 import LockGate from "./components/LockGate";
 import "./styles.css";
 import "./lib/testModules";
+import { installTooltips } from "./lib/tooltip";
+
+// The app's own tooltip for every `title` (lib/tooltip.ts): never over a menu.
+installTooltips();
 
 class ErrorBoundary extends React.Component<
   { children: React.ReactNode },

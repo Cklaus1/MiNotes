@@ -20,6 +20,8 @@ import * as remoteImages from "./remoteImages";
 import * as encryption from "./encryption";
 import * as notebooks from "./notebooks";
 import * as theme from "./theme";
+import * as layers from "./layers";
+import * as tooltip from "./tooltip";
 import { registerTestApi } from "./testApi";
 
 registerTestApi({
@@ -36,5 +38,7 @@ registerTestApi({
     "/src/lib/encryption.ts": encryption,
     "/src/lib/notebooks.ts": notebooks,
     "/src/lib/theme.ts": theme,
+    "/src/lib/layers.ts": layers,
+    "/src/lib/tooltip.ts": tooltip,
   },
 } as any);
