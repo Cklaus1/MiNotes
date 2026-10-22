@@ -41,7 +41,7 @@ echo "════════════════════════�
 echo "  MiNotes Desktop Journeys (real app, real backend)"
 echo "═══════════════════════════════════════════════"
 
-rm -rf "$STATE"/{persist,devA,devB,nbook,outside,xnb,zip8,barrier10,trust10,rimg,img10,remote.git,enc13,enc13-tmp,enc13-keychain,enc14a,enc14b,enc14c,enc14-tmp,remote14.git,w1,w1-files,w2,j17a,j17b,t17,remote17.git,remote17.git.moved,w18,w19} "$STATE/results.tsv"
+rm -rf "$STATE"/{persist,devA,devB,nbook,outside,xnb,zip8,barrier10,trust10,rimg,img10,remote.git,enc13,enc13-tmp,enc13-keychain,enc14a,enc14b,enc14c,enc14-tmp,remote14.git,w1,w1-files,w2,j17a,j17b,t17,remote17.git,remote17.git.moved,w18,w19,w21} "$STATE/results.tsv"
 if [[ -z "$DESKTOP_NO_BUILD" ]]; then
   "$DC" up --webdriver --profile persist >/dev/null || { echo "build/launch failed"; exit 1; }
 else
@@ -627,11 +627,12 @@ waitfor "(window.__MINOTES__.getCurrentPage()||'')==='Plan8 final'" 15 && pass "
 is "…in that notebook" "$(cur8)" "$WKEY8"
 ev "window.__MINOTES__.switchNotebook('$HOME8')" >/dev/null; sleep 2
 
-step "The not-found chip explains; nothing is created over there"
+step "The not-found chip asks before creating it over there (UX Wave 4); Cancel creates nothing"
 api "navigateTo('Links8')" >/dev/null; sleep 1.5
 ev "document.querySelectorAll('.block .xnb-link')[1]?.click()" >/dev/null
-waitfor "[...document.querySelectorAll('.minotes-toast')].some(t=>t.textContent.includes('has no page'))" 5 \
-  && pass "A toast says Office8 has no such page" || fail "Not-found click" "$(ev "[...document.querySelectorAll('.minotes-toast')].map(t=>t.textContent).join(' | ')")"
+waitfor "(document.querySelector('[data-testid=confirm-dialog]')?.innerText||'').includes('Create page in Office8')" 5 \
+  && pass "Asks: Create page in Office8" || fail "Not-found click" "$(ev "document.querySelector('[data-testid=confirm-dialog]')?.innerText||'none'")"
+ev "document.querySelector('[data-testid=confirm-cancel]')?.click()" >/dev/null; sleep 1
 is "Still here" "$(cur8)|$(api 'getCurrentPage()')" "$HOME8|Links8"
 is "No page Missing8 in Office8" "$(sqlite3 "$W8/notebook.minotes" "select count(*) from pages where title like 'Missing8%'")" "0"
 
@@ -1708,6 +1709,90 @@ is "Still hidden after a restart (remembered on this device)" "$(ev "document.qu
 "$DC" shot "d19-sidebar-hidden" >/dev/null
 "$DC" key ctrl+shift+backslash; sleep 0.6
 is "Shown again" "$(ev "document.querySelector('.sidebar').getClientRects().length>0")" "true"
+
+# ═══════════════════════════════════════════════
+journey "D21. Finding my way back, and acting on many pages at once (UX review Wave 4: navigation)"
+# Real keys and mouse (xdotool): the Back arrow, Ctrl+[ / Ctrl+], the mouse's
+# back/forward buttons, Back across a notebook switch made from the palette, a
+# typo in search, a palette command, All Pages bulk move and Trash multi-restore
+# with real clicks — checked in the database.
+# ═══════════════════════════════════════════════
+A21="const api=await import('/src/lib/api.ts');"
+X21="localhost:${DESKTOP_CHECK_DISPLAY:-97}"
+xy21() { ev "(()=>{const e=$1;if(!e)return '';e.scrollIntoView({block:'nearest'});const r=e.getBoundingClientRect();return Math.round(r.left+r.width/2)+' '+Math.round(r.top+r.height/2)})()"; }
+rclick21() { local xy; xy=$(xy21 "$1"); [[ -n "$xy" ]] && "$DC" click $xy >/dev/null; }
+cur21() { api "getCurrentPage()"; }
+nb21() { ev "(async()=>{$A21 return (await api.getNotebookSession()).name})()"; }
+row21() { echo "[...document.querySelectorAll('.sidebar .page-item')].find(e=>e.textContent.replace(/⋮/g,'').trim()==='$1')"; }
+device w21 || true
+ev "(async()=>{$A21 for(const t of ['Nav21 A','Nav21 B','Roadmap21']){const p=await api.createPage(t);await api.createBlock(p.id,'text of '+t)}await api.createFolder('Proj21');for(const t of ['Bin21 one','Bin21 two','Bin21 three']){const p=await api.createPage(t);await api.createBlock(p.id,'line of '+t);await api.trashPage(p.id)}const o=await api.createNotebook('Other21');window.dispatchEvent(new Event('minotes-sidebar-refresh'));window.dispatchEvent(new Event('minotes-notebooks-changed'));return 1})()" >/dev/null; sleep 1.5
+api "navigateTo('Nav21 A')" >/dev/null; waitfor "window.__MINOTES__.getCurrentPage()==='Nav21 A'" 10; sleep 0.5
+HOME21=$(nb21)
+
+step "Real clicks: A → B in the sidebar, then the Back arrow; Ctrl+] and Ctrl+[ (real keys)"
+rclick21 "$(row21 'Nav21 B')"; waitfor "window.__MINOTES__.getCurrentPage()==='Nav21 B'" 10
+rclick21 "document.querySelector('[data-testid=nav-back]')"; waitfor "window.__MINOTES__.getCurrentPage()==='Nav21 A'" 10
+is "Back arrow → Nav21 A" "$(cur21)" "Nav21 A"
+"$DC" shot "d21-back-arrow" >/dev/null
+"$DC" key ctrl+bracketright; waitfor "window.__MINOTES__.getCurrentPage()==='Nav21 B'" 10
+is "Ctrl+] → Nav21 B" "$(cur21)" "Nav21 B"
+"$DC" key ctrl+bracketleft; waitfor "window.__MINOTES__.getCurrentPage()==='Nav21 A'" 10
+is "Ctrl+[ → Nav21 A" "$(cur21)" "Nav21 A"
+
+step "The mouse's forward / back buttons (X buttons 9 / 8)"
+XY=$(xy21 "document.querySelector('.main')")
+DISPLAY="$X21" xdotool mousemove $XY click 9; waitfor "window.__MINOTES__.getCurrentPage()==='Nav21 B'" 8
+is "Forward button → Nav21 B" "$(cur21)" "Nav21 B"
+DISPLAY="$X21" xdotool mousemove $XY click 8; waitfor "window.__MINOTES__.getCurrentPage()==='Nav21 A'" 8
+is "Back button → Nav21 A" "$(cur21)" "Nav21 A"
+
+step "Switch notebooks from the palette (real typing), then Ctrl+[ comes back"
+rclick21 "document.querySelector('.main-header h2, .main-header')"; sleep 0.3
+"$DC" key Escape; sleep 0.2
+"$DC" key ctrl+k; waitfor "!!document.querySelector('.command-palette-input')" 10
+"$DC" type ">swtich notebok"; sleep 0.6
+is "Typo still finds Switch Notebook…" "$(ev "document.querySelector('[data-testid=palette-command]')?.dataset.commandId||'none'")" "switch-notebook"
+"$DC" key Return; waitfor "document.querySelectorAll('[data-testid=palette-pick-item]').length>0" 10
+"$DC" type "Other21"; sleep 0.4; "$DC" key Return
+waitfor "(document.querySelector('[data-testid=notebook-switcher]')?.innerText||'').includes('Other21')" 20
+is "Now in Other21" "$(nb21)" "Other21"
+"$DC" key ctrl+bracketleft
+waitfor "window.__MINOTES__?.getCurrentPage?.()==='Nav21 A'" 20
+is "Ctrl+[ → back in the first notebook at Nav21 A" "$(nb21)|$(cur21)" "$HOME21|Nav21 A"
+
+step "A typo in search (real typing) finds the page; Enter opens it"
+"$DC" key ctrl+k; waitfor "!!document.querySelector('.command-palette-input')" 10
+"$DC" type "roadmp"; sleep 1
+is "First result: Roadmap21, highlighted" "$(ev "(()=>{const r=document.querySelector('[data-testid=search-section-pages] .command-palette-item');return (r?.textContent||'none')+'|'+(r?.querySelectorAll('mark').length>0)})()")" "Roadmap21|true"
+"$DC" shot "d21-typo-search" >/dev/null
+"$DC" key Return; waitfor "window.__MINOTES__.getCurrentPage()==='Roadmap21'" 10
+is "Opened Roadmap21" "$(cur21)" "Roadmap21"
+
+step "All Pages from the palette; tick two rows and Move to… Proj21 (real clicks)"
+"$DC" key ctrl+k; waitfor "!!document.querySelector('.command-palette-input')" 10
+"$DC" type ">all pgaes"; sleep 0.5; "$DC" key Return
+waitfor "!!document.querySelector('[data-testid=all-pages-view]')" 10
+is "All Pages is in the main pane, the sidebar stays" "$(ev "!!document.querySelector('[data-testid=all-pages-view]')+'|'+(document.querySelector('.sidebar').getClientRects().length>0)")" "true|true"
+"$DC" type "Nav21"; sleep 0.6
+rclick21 "[...document.querySelectorAll('[data-testid=all-pages-row]')].find(r=>r.textContent.includes('Nav21 A'))?.querySelector('[data-testid=all-pages-check]')"; sleep 0.2
+rclick21 "[...document.querySelectorAll('[data-testid=all-pages-row]')].find(r=>r.textContent.includes('Nav21 B'))?.querySelector('[data-testid=all-pages-check]')"; sleep 0.3
+is "Bulk bar: 2 selected" "$(ev "document.querySelector('.all-pages-bulk-count')?.textContent||'none'")" "2 selected"
+rclick21 "document.querySelector('[data-testid=bulk-move]')"; sleep 0.5
+rclick21 "[...document.querySelectorAll('[data-testid=move-target]')].find(b=>b.textContent.includes('Proj21'))"; sleep 1.2
+is "Both pages are in Proj21 (database)" "$(db w21 "select count(*) from pages p join folders f on f.id=p.folder_id where f.name='Proj21' and p.title like 'Nav21 %'")" "2"
+"$DC" shot "d21-all-pages-moved" >/dev/null
+
+step "Trash view: tick two items, Restore 2 (real clicks)"
+rclick21 "document.querySelector('[data-testid=sidebar-trash]')"; waitfor "!!document.querySelector('[data-testid=trash-view]')" 10; sleep 0.5
+rclick21 "[...document.querySelectorAll('[data-testid=trash-item]')].find(e=>e.textContent.includes('Bin21 one'))?.querySelector('[data-testid=trash-check]')"; sleep 0.2
+rclick21 "[...document.querySelectorAll('[data-testid=trash-item]')].find(e=>e.textContent.includes('Bin21 two'))?.querySelector('[data-testid=trash-check]')"; sleep 0.3
+is "The preview shows the last item ticked" "$(ev "document.querySelector('[data-testid=trash-preview] h3')?.textContent||'none'")" "Bin21 two"
+"$DC" shot "d21-trash-selected" >/dev/null
+rclick21 "document.querySelector('[data-testid=trash-restore-selected]')"; sleep 1.2
+is "Two restored, one still in the Trash (database)" "$(db w21 "select count(*) from trash t join pages p on p.id=t.page_id where p.title like 'Bin21 %'")" "1"
+is "…and gone from the list" "$(ev "[...document.querySelectorAll('[data-testid=trash-item]')].map(e=>e.textContent).filter(t=>t.includes('Bin21')).length")" "1"
+"$DC" key Escape; sleep 0.4
+is "Esc closes the Trash view" "$(ev "!!document.querySelector('[data-testid=trash-view]')")" "false"
 
 # ═══════════════════════════════════════════════
 echo ""
