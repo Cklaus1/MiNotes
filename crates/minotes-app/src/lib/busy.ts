@@ -138,8 +138,9 @@ export async function withBusy<T>(label: string, fn: () => Promise<T>, opts: Bus
 export function settleInput(): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(() => {
-      if (typeof requestAnimationFrame === "function") requestAnimationFrame(() => resolve());
-      else resolve();
+      // A hidden window gets no animation frames: never wait on one alone.
+      const fallback = setTimeout(resolve, 50);
+      if (typeof requestAnimationFrame === "function") requestAnimationFrame(() => { clearTimeout(fallback); resolve(); });
     }, 0);
   });
 }
