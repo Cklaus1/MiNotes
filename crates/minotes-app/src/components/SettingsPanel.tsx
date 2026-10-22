@@ -9,8 +9,9 @@ import * as api from "../lib/api";
 import { errorMessage } from "../lib/errors";
 import { showToast } from "../lib/toast";
 import {
-  ago, applySyncStatus, errorHint, errorTitle, requestSyncNow, SYNC_CONFIRM_EVENT, useSyncView,
+  ago, applySyncStatus, errorHint, errorTitle, requestSyncNow, SYNC_CONFIRM_EVENT, takeSyncSettingsTarget, useSyncView,
 } from "../lib/syncStatus";
+import SyncRemoteSettings from "./SyncRemoteSettings";
 import "./sync.css";
 import { useLayer } from "../lib/layers";
 import { useDialogFocus } from "../lib/dialogFocus";
@@ -69,7 +70,7 @@ function SyncStateBox({ syncDir }: { syncDir: string }) {
         <span className="settings-sync-state-title">On — but no remote yet</span>
         <span className="settings-sync-state-text">
           Changes are committed in the sync folder ({syncDir}), a git repository, and sent nowhere else.
-          To sync with other devices, add a remote to it (<code>git remote add origin &lt;url&gt;</code>).
+          To sync with your other devices, set up a remote below.
         </span>
         <div className="settings-sync-state-actions">{syncNow}</div>
       </div>
@@ -98,6 +99,7 @@ export default function SettingsPanel({ open, onClose, onOpenSync, onOpenCssSnip
   const [syncDir, setSyncDir] = useState("~/MiNotes_Sync");
   /** Encrypted notebooks sync encrypted files only (PRD-encryption §4.5). */
   const [encrypted, setEncrypted] = useState(false);
+  const [notebookName, setNotebookName] = useState("this notebook");
 
   useEffect(() => {
     if (open) {
@@ -109,6 +111,7 @@ export default function SettingsPanel({ open, onClose, onOpenSync, onOpenCssSnip
       api.getNotebookSession().then(s => {
         if (s?.mirror_dir) setSyncDir(prettyPath(s.mirror_dir));
         setEncrypted(!!s?.encrypted);
+        if (s?.name) setNotebookName(s.name);
       }).catch(() => {});
     }
   }, [open]);
@@ -142,6 +145,15 @@ export default function SettingsPanel({ open, onClose, onOpenSync, onOpenCssSnip
     panelRef.current.scrollTo({ top: section.offsetTop - (header?.offsetHeight ?? 0), behavior: "smooth" });
     (section.querySelector<HTMLElement>("select, input, button") ?? null)?.focus({ preventScroll: true });
   };
+  // Opened from the sync chip ("Sync settings…"): go to Sync & Backup once
+  // that section is there (it waits for "is git installed?").
+  const wantSync = useRef(false);
+  useEffect(() => { if (open && takeSyncSettingsTarget()) wantSync.current = true; }, [open]);
+  useEffect(() => {
+    if (!open || !wantSync.current || !sections.includes("Sync & Backup")) return;
+    wantSync.current = false;
+    setTimeout(() => jumpTo("Sync & Backup"), 50);
+  }, [open, sections]);
 
   if (!open) return null;
 
@@ -253,12 +265,13 @@ export default function SettingsPanel({ open, onClose, onOpenSync, onOpenCssSnip
             {encrypted && (
               <div className="nb-hint" data-testid="sync-encrypted-note">
                 This notebook is encrypted: git moves only encrypted files (opaque names, no titles or text).
-                Other devices join it with “Join encrypted notebook…” and the passphrase.
+                Other devices join it with “Join an existing notebook…” and the passphrase.
               </div>
             )}
+            {syncStatus?.enabled && <SyncStateBox syncDir={syncDir} />}
+            <SyncRemoteSettings encrypted={encrypted} notebookName={notebookName} />
             {syncStatus?.enabled && (
               <>
-                <SyncStateBox syncDir={syncDir} />
                 <div
                   className="settings-advanced-toggle"
                   onClick={() => setShowSyncAdvanced(v => !v)}
@@ -271,12 +284,6 @@ export default function SettingsPanel({ open, onClose, onOpenSync, onOpenCssSnip
                     <div className="settings-row">
                       <span className="settings-row-label">Directory</span>
                       <span className="settings-row-value" title="The markdown copy is the git repository">{syncDir}</span>
-                    </div>
-                    <div className="settings-row">
-                      <span className="settings-row-label">Remote</span>
-                      <span className="settings-row-value">
-                        {syncStatus.remote_url ?? "Not configured"}
-                      </span>
                     </div>
                     <div className="settings-row">
                       <span className="settings-row-label">Branch</span>

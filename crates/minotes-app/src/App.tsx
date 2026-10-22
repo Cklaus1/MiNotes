@@ -39,6 +39,8 @@ import { pageTitleConflict } from "./lib/pageNames";
 import { getRecentPages } from "./lib/recentFiles";
 import { getSettings } from "./lib/settings";
 import NotebookBanner from "./components/NotebookBanner";
+import ConflictBanner from "./components/ConflictBanner";
+import { CONFLICT_RESOLVED } from "./lib/conflicts";
 import {
   applySyncStatus, getSyncView, phaseOf, setSyncView, SYNC_CONFIRM_EVENT, SYNC_NOW_EVENT,
 } from "./lib/syncStatus";
@@ -617,6 +619,19 @@ export default function App() {
     }
   }, [refresh, reopenAfterSync]);
 
+  // A sync conflict copy was resolved (or that was undone): show the page it
+  // went into (or the copy again) and let the sidebar drop / show the copy.
+  useEffect(() => {
+    const onResolved = (e: Event) => {
+      const d = (e as CustomEvent<{ pageId: string; copyId: string; undone?: boolean }>).detail;
+      if (d) openPage(d.undone ? d.copyId : d.pageId).catch(() => {});
+      refresh();
+      window.dispatchEvent(new Event("minotes-sidebar-refresh"));
+    };
+    window.addEventListener(CONFLICT_RESOLVED, onResolved);
+    return () => window.removeEventListener(CONFLICT_RESOLVED, onResolved);
+  }, [openPage, refresh]);
+
   // Files of the markdown copy edited in another app were imported: reload the
   // open page if it was one of them (the sidebar refreshes on its own).
   useEffect(() => listenOutsideEdits(), []);
@@ -632,12 +647,12 @@ export default function App() {
   }, [openPage, refresh]);
 
   // The other device's mass deletion: the user decides.
-  const resolveHeldDeletions = useCallback(async (action: "trash" | "keep") => {
+  const resolveHeldDeletions = useCallback(async (action: "trash" | "keep", keep?: string[]) => {
     try {
-      const n = await api.gitSyncResolveDeletions(action);
+      const n = await api.gitSyncResolveDeletions(action, keep);
       setHeldDeletions(null);
       showToast(action === "trash"
-        ? `Moved ${n} item(s) to trash, as on the other device`
+        ? `Moved ${n} item(s) to trash, as on the other device${keep?.length ? ` — kept ${keep.length}, the next sync sends them back` : ""}`
         : "Kept the pages; the next sync sends them back to the other device");
       refresh();
       if (activePage) openPage(activePage.page.id).catch(() => {});
@@ -1104,6 +1119,7 @@ export default function App() {
             onConfirmSync={confirmSync}
             onDeclineSync={() => setSyncNeedsConfirm(false)}
           />
+          {activePage && !showTasks && <ConflictBanner key={activePage.page.id} page={activePage.page} onOpenPage={id => { openPage(id).catch(() => {}); }} />}
           {lastError && (
             <div style={{ background: "#f38ba8", color: "#1e1e2e", padding: "8px 16px", fontSize: 13, fontWeight: 600 }}>
               {lastError}

@@ -752,7 +752,8 @@ function termMatches(content: string[], term: Term): boolean {
 function searchBlocks(query: string, limit: number): Block[] {
   const terms = parseQuery(query);
   if (terms.length === 0) return [];
-  const visible = Array.from(blocks.values()).filter(b => pages.has(b.page_id) && !pageHidden(b.page_id));
+  // Sync conflict copies repeat their page: left out, like core `search`.
+  const visible = Array.from(blocks.values()).filter(b => pages.has(b.page_id) && !pageHidden(b.page_id) && !isConflictCopy(pages.get(b.page_id)!.title));
   if (CJK_RE.test(query)) {
     // Substring match of every whitespace-separated piece (SQL LIKE: ASCII case-insensitive).
     const needles = query.replace(/"/g, " ").split(/\s+/).filter(Boolean).map(asciiLower);
@@ -1798,7 +1799,7 @@ function mockSyncStatus() {
   const paused = mockSync.enabled && mockSync.needs_confirmation;
   return {
     enabled: mockSync.enabled,
-    remote_url: mockSync.enabled ? mockSync.remote_url : null,
+    remote_url: mockSync.remote_url,
     branch: mockSync.enabled ? "main" : null,
     last_sync: mockSync.enabled && !paused && mockSync.remote_url ? mockSync.last_sync : null,
     needs_confirmation: paused,
@@ -2085,6 +2086,10 @@ Object.assign(mockHandlers, {
   },
 });
 // ── End remote images ──
+
+// ── Sync setup, conflict compare, held deletions (UX Wave 4) — lib/syncMock.ts ──
+import { createSyncMockHandlers } from "./syncMock";
+Object.assign(mockHandlers, createSyncMockHandlers(mockHandlers));
 
 // ── Encrypted notebooks ──
 // Browser-mode mock of lock state and the passphrase commands — see

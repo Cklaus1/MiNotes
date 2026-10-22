@@ -137,10 +137,10 @@ pub fn create_encrypted_notebook(name: String, location: Option<String>, passphr
 pub fn join_encrypted_notebook(remote: String, name: String, location: Option<String>, passphrase: String) -> Result<NotebookInfo, String> {
     let name = name.trim().to_string();
     notebook::validate_name(&name).map_err(|e| e.to_string())?;
-    let remote = remote.trim().to_string();
-    if remote.is_empty() || remote.starts_with('-') || remote.contains('\0') {
-        return Err("Enter the sync remote's address".into());
-    }
+    // The same address rules as every other sync remote (no ext::, no options…).
+    let remote = minotes_core::sync_remote::validate_remote(&remote, &minotes_core::sync_remote::LocalRoots { homes: notebooks::home_roots(), picked: vec![] })
+        .map_err(|e| minotes_core::sync_remote::user_message(&e))?
+        .url;
     let loc = match location.filter(|l| !l.trim().is_empty() && !notebook::is_app_storage()) {
         Some(l) => l,
         None => notebook::default_location(&name).display().to_string(),

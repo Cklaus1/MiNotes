@@ -885,9 +885,10 @@ pub fn mirror_open_folder(state: State<'_, AppState>) -> Result<(), String> {
 }
 
 /// The user's answer to deletions held by the mass-delete guard:
-/// "trash" applies them, "keep" keeps the pages (their files are written again).
+/// "trash" applies them (except the ids in `keep`, ticked in the review list),
+/// "keep" keeps the pages (their files are written again).
 #[tauri::command(async)]
-pub fn git_sync_resolve_deletions(app: AppHandle, state: State<'_, AppState>, action: String) -> Result<usize, String> {
+pub fn git_sync_resolve_deletions(app: AppHandle, state: State<'_, AppState>, action: String, keep: Option<Vec<String>>) -> Result<usize, String> {
     let move_to_trash = match action.as_str() {
         "trash" => true,
         "keep" => false,
@@ -897,7 +898,12 @@ pub fn git_sync_resolve_deletions(app: AppHandle, state: State<'_, AppState>, ac
     let n = {
         let _fs = FS_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let db = state.db_guard()?;
-        minotes_core::sync_manager::resolve_held_deletions(&db, &graph, move_to_trash).map_err(|e| e.to_string())?
+        let keep = crate::sync_commands::keep_set(keep)?;
+        if move_to_trash && !keep.is_empty() {
+            minotes_core::sync_manager::resolve_held_deletions_partial(&db, &graph, &keep).map_err(|e| e.to_string())?
+        } else {
+            minotes_core::sync_manager::resolve_held_deletions(&db, &graph, move_to_trash).map_err(|e| e.to_string())?
+        }
     };
     if let Some(w) = app.try_state::<MirrorWorker>() {
         w.send(MirrorMsg::Changed);

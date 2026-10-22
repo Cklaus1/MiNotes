@@ -1,7 +1,7 @@
 import type { RestoreBlock } from './api';
 
 interface UndoAction {
-  type: 'create' | 'delete' | 'update' | 'merge' | 'reparent' | 'outside-import';
+  type: 'create' | 'delete' | 'update' | 'merge' | 'reparent' | 'outside-import' | 'conflict-resolve';
   blockId: string;
   pageId: string;
   oldContent?: string;
@@ -30,6 +30,12 @@ interface UndoAction {
   after?: RestoreBlock[];
   parkedPageId?: string | null;
   pageTitle?: string;
+  /**
+   * 'conflict-resolve': a sync conflict copy was resolved into `pageId` (whose
+   * blocks were `before` and became `after`) and moved to the Trash. Undo sets
+   * the page back and brings `copyId` back; redo applies it again.
+   */
+  copyId?: string;
   timestamp: number;
 }
 

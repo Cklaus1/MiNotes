@@ -115,3 +115,41 @@
 .settings-sync-state-title { font-weight: 600; font-size: 13px; color: var(--text-primary); }
 .settings-sync-state-text { color: var(--text-secondary); }
 .settings-sync-state-actions { display: flex; gap: 6px; margin-top: 4px; flex-wrap: wrap; }
+
+/* Settings → Sync & Backup: the remote (UX Wave 4) */
+.sync-remote { display: flex; flex-direction: column; gap: 6px; margin: 6px 0 4px; }
+.sync-remote-title { font-weight: 600; font-size: 13px; color: var(--text-primary); }
+.sync-remote-form { display: flex; flex-direction: column; gap: 6px; }
+.sync-remote-current { align-items: center; gap: 8px; }
+.sync-remote-url {
+  min-width: 0;
+  flex: 1;
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sync-remote-buttons { display: flex; gap: 6px; flex-shrink: 0; }
+.sync-remote-field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 6px; }
+.sync-remote-input-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.sync-remote-input-row .search-input { flex: 1 1 220px; min-width: 0; font-family: var(--font-mono, monospace); font-size: 12px; }
+.sync-remote-actions { display: flex; gap: 6px; align-items: center; justify-content: flex-end; flex-wrap: wrap; }
+.sync-remote-result {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border-left: 3px solid var(--border);
+  background: var(--bg-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.sync-remote-result.ok { border-left-color: var(--success); }
+.sync-remote-result.warn { border-left-color: var(--warning); }
+.sync-remote-result.bad { border-left-color: var(--danger); }
+.sync-remote-result-title { font-weight: 600; color: var(--text-primary); }
+.sync-remote-result-text { color: var(--text-secondary); overflow-wrap: anywhere; }
+.sync-credentials { font-size: 11px; }
+.sync-remote-join { display: flex; gap: 8px; align-items: center; justify-content: space-between; flex-wrap: wrap; }

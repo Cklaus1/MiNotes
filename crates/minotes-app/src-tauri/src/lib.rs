@@ -18,6 +18,7 @@ mod platform;
 mod security;
 mod remote_images;
 mod encryption_commands;
+mod sync_commands;
 // ── Import / attachments ──
 mod import_commands;
 // ── End import ──
@@ -1354,11 +1355,11 @@ fn empty_trash(state: State<'_, AppState>) -> Result<u32, String> {
 // every lock re-checks that the notebook being synced is still the active one, so a
 // notebook switch mid-sync can't import notebook A's files into notebook B.
 
-fn current_notebook_key(state: &AppState) -> Result<String, String> {
+pub(crate) fn current_notebook_key(state: &AppState) -> Result<String, String> {
     state.current_notebook.lock().map(|g| g.clone()).map_err(|e| e.to_string())
 }
 
-fn lock_db_for_notebook<'a>(
+pub(crate) fn lock_db_for_notebook<'a>(
     state: &'a AppState,
     key: &str,
 ) -> minotes_core::error::Result<DbGuard<'a>> {
@@ -1395,7 +1396,7 @@ fn git_sync_disable(state: State<'_, AppState>) -> Result<(), String> {
     sync_manager::disable_sync(&key).map_err(|e| e.to_string())
 }
 
-fn refuse_read_only(state: &AppState) -> Result<(), String> {
+pub(crate) fn refuse_read_only(state: &AppState) -> Result<(), String> {
     if state.session.lock().map_err(|e| e.to_string())?.held_by.is_some() {
         return Err("This notebook is open read-only in this window (another MiNotes window has it open)".into());
     }
@@ -1761,6 +1762,15 @@ pub fn run() {
             git_sync,
             git_sync_status,
             git_sync_confirm,
+            sync_commands::git_sync_test_remote,
+            sync_commands::git_sync_setup,
+            sync_commands::git_sync_set_remote,
+            sync_commands::git_sync_remove_remote,
+            sync_commands::pick_sync_remote_folder,
+            sync_commands::join_notebook,
+            sync_commands::conflict_compare,
+            sync_commands::resolve_conflict,
+            sync_commands::set_conflict_resolution,
             get_pending_todo_count,
             list_pending_todos,
             list_pending_todos_with_page_ids,

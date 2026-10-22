@@ -659,7 +659,9 @@ pub fn get_sync_status(key: &str) -> Result<GitSyncStatus> {
         (None, None)
     };
 
-    if !config.enabled || !git_cmd::is_git_repo(&sync_dir) {
+    // The remote is shown while sync is off too (turning it back on uses it;
+    // Settings offers Change / Remove instead of a second "Set up sync").
+    if !git_cmd::is_git_repo(&sync_dir) {
         return Ok(GitSyncStatus {
             enabled: config.enabled,
             remote_url: None,
@@ -675,7 +677,7 @@ pub fn get_sync_status(key: &str) -> Result<GitSyncStatus> {
     let branch = git_cmd::get_branch(&sync_dir).ok().flatten();
     // Only a push is "synced": never without a remote (older versions stamped
     // the time a local-only commit was made).
-    let last_sync = if needs_confirmation || remote_url.is_none() { None } else { config.last_sync };
+    let last_sync = if !config.enabled || needs_confirmation || remote_url.is_none() { None } else { config.last_sync };
 
     Ok(GitSyncStatus {
         enabled: config.enabled,
