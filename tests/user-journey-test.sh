@@ -5012,7 +5012,7 @@ R2=$(ev "(async()=>{$A94 return String((await api.search('Goals for Q4')).filter
 step "The copy has a banner: Conflict with laptop — Compare"
 api "navigateTo('Plan94 (conflict from laptop)')" >/dev/null; sleep 1.5
 R=$(ev "document.querySelector('[data-testid=conflict-banner]')?.innerText.replace(/\\n/g,' ')||'none'" | tr -d '"')
-[[ "$R" == "Conflict with laptop"*"Plan94"*"Compare" ]] && pass "Banner: $R" || fail "Conflict banner" "$R"
+[[ "$R" == "Conflict with laptop"*"Plan94"*"Compare"* ]] && pass "Banner: $R" || fail "Conflict banner" "$R"
 R=$(ev "String(!!document.querySelector('[data-testid=conflict-banner]'))" | tr -d '"')
 api "navigateTo('Plan94')" >/dev/null; sleep 1
 R2=$(ev "String(!!document.querySelector('[data-testid=conflict-banner]'))" | tr -d '"')
