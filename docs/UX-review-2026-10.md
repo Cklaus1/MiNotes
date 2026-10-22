@@ -121,9 +121,9 @@ Average **5.2 / 10** across 72 features. Nothing scores 10; the best is 9
 | Settings panel | 5 | Changes apply instantly; 2,700 px scroll, unreadable dropdowns, misleading "AI Assistant" section — **Fixed** (`abcc76d`: "Smart suggestions", says nothing is sent, "AI provider…" row; `52217c5`: a sticky section index; `8ec2aff`: readable selects) |
 | Markdown copy status / Rebuild / Open folder | 7 | Clear, live status; paths cut off; Open folder gives no feedback |
 | Outside edits of the markdown copy | 9 | Live update with Undo; deleted file → Trash with Restore |
-| Git sync end to end | 4 | Robust engine, but **no way to set a remote in the app**, no "Sync now", duplicate pages on first join — **Fixed**: duplicates (`29f6908`, C-9), "Sync now" in Settings and the palette + status chip (`6721a80`, `abcc76d`); the remote field is Wave 4 |
-| Conflict handling | 5 | Both versions kept; whole-page copy, no compare view; toast shows a literal `<device>` — **Fixed** (`6721a80`: the toast names the page, the device and the copy, with Open; copies leave the TODO count alone); compare view is Wave 4 |
-| Mass-deletion hold | 8 | Clear Review / Trash / Keep banner; "25 pages (of 36)" next to a sidebar "Pages (35)" — **Fixed** (`46f87ba`: counts pages like the sidebar, journal days and projects named apart) |
+| Git sync end to end | 4 | Robust engine, but **no way to set a remote in the app**, no "Sync now", duplicate pages on first join — **Fixed**: duplicates (`29f6908`, C-9), "Sync now" in Settings and the palette + status chip (`6721a80`, `abcc76d`); the remote: **Fixed** (`60afddc`, `25ce6a4`: Settings → Sync & Backup has the address, Test connection, Set up sync, Change… / Remove; "Join an existing notebook…" for plain and encrypted notebooks) |
+| Conflict handling | 5 | Both versions kept; whole-page copy, no compare view; toast shows a literal `<device>` — **Fixed** (`6721a80`: the toast names the page, the device and the copy, with Open; copies leave the TODO count alone); compare view: **Fixed** (`60afddc`, `25ce6a4`: the copy's banner "Conflict with <device> — Compare"; only the differing blocks, side by side; Keep mine / Keep theirs / Keep both; Resolve is one undo step and trashes the copy; the copy is named after the device that made the other version and is left out of search) |
+| Mass-deletion hold | 8 | Clear Review / Trash / Keep banner; "25 pages (of 36)" next to a sidebar "Pages (35)" — **Fixed** (`46f87ba`: counts pages like the sidebar, journal days and projects named apart); review list: **Fixed** (`60afddc`, `25ce6a4`: every held page is a link that opens it, with a Keep box — "Move 2 to trash, keep 2") |
 | Copied-folder trust banner | 7 | Clear and safe; Settings doesn't show sync is paused — **Fixed** (`6721a80`: "Paused — waiting for your OK" with "Sync it here"; the other computer's "Last synced" is not shown) |
 | Sync error states | 3 | A missing remote shows only a silent grey "Offline" — **Fixed** (`6721a80`: offline vs remote-not-found vs auth; chip tooltip, click → error, Retry; error in Settings; "Last synced" only after a push) |
 | Import (Obsidian, Evernote) | 8 | Excellent preview, report and undo; undo has no confirmation — **Fixed** (`93911f8`: confirm with the page count and the edited pages it keeps) |
@@ -159,7 +159,7 @@ Ranked by harm. **D** = data loss or corruption, **S** = safety/security, **B** 
 | C-14 | B | **PDF highlights can't be created** — no pdf.js text layer. **Fixed** in `c0af3c1` (text layer; Ctrl+P native picker + recent PDFs) | `PdfViewer.tsx` | M |
 | C-15 | B | **Page "Export as HTML" saves silently into the app's working directory** (found later as `Project Alpha.html` in the repo root) with no dialog or message; whiteboard export writes to Downloads with no dialog. **Fixed** in `d6cde77` (save dialog + toast for every export; `save_png_to_downloads` removed) | `exportPage.ts`, `Whiteboard.tsx` | S |
 | C-16 | B | **Kanban colour picker can't be clicked** (backdrop z-index 99 above picker 50). **Fixed** in `6f3a0fd` | `styles.css` | S |
-| C-17 | B | **Partly fixed** (`6721a80`, `abcc76d`: "Sync now", status chip, "Last synced" only after a push, a missing remote is an error with Retry; the remote field / join wizard is Wave 4) — **Git sync can't be set up in the app** — no remote field, no "Sync now", "Last synced" shown with no remote, a missing remote is a silent "Offline" | Settings / sync | M |
+| C-17 | B | **Fixed** (`6721a80`, `abcc76d`: "Sync now", status chip, "Last synced" only after a push, a missing remote is an error with Retry; Wave 4 `60afddc`, `25ce6a4`: the remote field with Test connection, Set up sync, Change… / Remove, "Join an existing notebook…"; desktop journey D20) — **Git sync can't be set up in the app** — no remote field, no "Sync now", "Last synced" shown with no remote, a missing remote is a silent "Offline" | Settings / sync | M |
 | C-18 | B | **Mind map radial layout overlaps nodes**. **Fixed** in `5117060` | `blocksToFlow.ts` | M |
 | C-19 | B | **Graph zoom drifts away from the cursor** (sign error) and **dragging a node opens its page**. **Fixed** in `c91ae6a` | `GraphView.tsx` ~461 | S |
 
@@ -336,6 +336,62 @@ rel=icon>` from the HTML already fetched and loads like any remote image (only
 when allowed). Journeys: browser 109–114 (34 of their 35 assertions fail on
 `571a120`), desktop D23 (real mouse and keys).
 
+**Wave 4 notes — sync (2026-10-21).** Three items, on top of `571a120`.
+(1) Sync setup, finishing C-17 (`60afddc` core, `25ce6a4` app): Settings →
+Sync & Backup shows the remote — without one, an address field (and "Choose
+folder…" on desktop), **Test connection** and **Set up sync**; with one, the
+address with Change… and Remove. Addresses are checked in core
+`sync_remote.rs` before git ever runs: no `ext::`/`fd::` (any `<helper>::`),
+no leading `-`, no control characters, no password or token in the URL, no
+`git://` (can't push); a local path must be in the home folder (not a hidden
+top-level one) or on an external drive — or a folder the user picked in the
+native dialog (`pick_sync_remote_folder` records it; a typed one can't claim
+that). Test connection is `git ls-remote` from an empty scratch folder with
+the usual hardened options and a 20 s timeout, worded as reachable / empty /
+not found / sign-in refused (incl. an unknown SSH host key) / not a git
+repository / can't reach it / no answer; a non-bare local repository gets a
+warning. Set up sync = test + `git init` + `remote add` + the existing enable
+(flush, pull, import what changed, push), rolled back (remote removed, sync
+off again) if enabling fails; a repository that already holds notes asks
+before merging them in and points at Join. Credentials stay with git (SSH
+agent, credential helper; prompts are off) and the UI says so next to every
+address field. The remote now shows while sync is off (turning sync back on
+uses it). "Join an existing notebook…" (notebook menu, Settings) replaces
+"Join encrypted notebook…": it fetches the remote into a new folder
+notebook; an encrypted notebook's remote answers `ENCRYPTED_REMOTE` and the
+same dialog asks for the passphrase. The chip's details say "Set up a
+remote…" and open Settings at Sync & Backup (Wave 2 left that open). (2)
+Conflict compare: a "(conflict from <device>)" page has a banner "Conflict
+with <device> — Compare". The copy's block ids are now derived from the
+copy's id and the original block ids (`conflict_block_id`), so the compare
+view pairs blocks exactly on every device (the ids travel in the file —
+encrypted notebooks too); older copies are paired by aligning the outlines
+on equal text. Only differing blocks show; Keep mine / Keep theirs / Keep
+both per block; Resolve applies them and trashes the copy in one
+transaction (`resolve_conflict`; a failure half-way changes nothing) and is
+one undo step (toast Undo, Ctrl+Z; `set_conflict_resolution` restores the
+page and brings the copy back). Found on the way: copies were named after
+**this** machine (the one that noticed the conflict), so "Conflict with
+<device>" would have named the wrong device — they are now named after the
+device in the other version's sync commit. Block search leaves conflict
+copies out (the TODO count already did). (3) Held deletions: the review lists
+every held item (not the first 20 titles), each page a link that opens it,
+with a Keep box; "Move N to trash, keep M" trashes the rest
+(`resolve_held_deletions_keeping`; a kept page's project stays too), and the
+next sync gives the kept pages back to the other device. Tests: core
+`sync_remote::tests` (validation, failure classification, Test connection on
+real repositories, set up / change / remove, plain join, encrypted remote),
+`repo::conflicts::tests` (only the conflicting block, Keep theirs / Keep both,
+undo and redo, atomic with a failure injected after the block edit, older
+copies, device names), an encrypted-notebook compare/resolve test, partial
+keep, search; browser journeys 92–95; desktop D20 (two devices, a typed
+remote: Test connection on a wrong and a right address, Set up sync, Join from
+the second device, a real same-block conflict resolved with Keep both / Keep
+theirs, both databases checked). Not done: whiteboard conflicts are still
+newer-wins; a block's *properties* conflicting alone show as equal text (the
+choice still applies the text only); the compare view has no AI merge
+proposal (PRD-git-sync §7).
+
 ## 4. Patterns behind the scores
 
 1. **The markdown round trip is the weak seam.** Tags, highlights, block
@@ -393,7 +449,8 @@ Ctrl+N and Ctrl+P instead of `prompt()`.
 
 ### Wave 4 — the features that make it feel complete (M/L)
 Sync setup in the app (remote field or "join existing", Test connection,
-"Sync now", status chip, real error view) and a conflict compare view ·
+"Sync now", status chip, real error view) and a conflict compare view
+(**done** — see Wave 4 notes, sync) ·
 navigation history (back/forward), a window title with page and notebook, a
 collapsible sidebar, a Ctrl+/ shortcut overlay and a full command palette ·
 search with rendered snippets, page context and fuzzy matching · backlinks

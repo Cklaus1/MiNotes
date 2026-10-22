@@ -8,7 +8,7 @@ import {
   switchNotebook, useCapabilities,
 } from "../lib/notebooks";
 import { NewNotebookDialog, ManageNotebooksDialog, MoveNotebookDialog } from "./NotebookDialogs";
-import { JoinNotebookDialog } from "./EncryptionDialogs";
+import JoinNotebookDialog from "./JoinNotebookDialog";
 import { LOCK_CHANGED, lockNow } from "../lib/encryption";
 import "./notebooks.css";
 import { useLayer } from "../lib/layers";
@@ -192,8 +192,9 @@ export default function NotebookSwitcher() {
             </button>
           )}
           {caps.open_folder && (
-            <button role="menuitem" className="nb-menu-action" onClick={() => { setOpen(false); setDialog("join"); }} data-testid="menu-join-encrypted">
-              Join encrypted notebook…
+            <button role="menuitem" className="nb-menu-action" onClick={() => { setOpen(false); setDialog("join"); }} data-testid="menu-join"
+              title="A notebook another device syncs to a git repository (plain or encrypted)">
+              Join an existing notebook…
             </button>
           )}
           <button role="menuitem" className="nb-menu-action" onClick={() => { setOpen(false); setDialog("manage"); }}>

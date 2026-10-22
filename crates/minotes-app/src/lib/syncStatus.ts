@@ -77,6 +77,18 @@ export function requestSyncNow(): void {
   window.dispatchEvent(new Event(SYNC_NOW_EVENT));
 }
 
+let wantSyncSettings = false;
+/** The next Settings opening scrolls to Sync & Backup (the chip's "Sync settings…"). */
+export function targetSyncSettings(): void {
+  wantSyncSettings = true;
+}
+/** Settings asks once whether it was opened for Sync & Backup. */
+export function takeSyncSettingsTarget(): boolean {
+  const w = wantSyncSettings;
+  wantSyncSettings = false;
+  return w;
+}
+
 /** "2 min ago" for a past ISO time. */
 export function ago(iso: string, now = Date.now()): string {
   const s = Math.max(0, Math.round((now - new Date(iso).getTime()) / 1000));
@@ -103,8 +115,8 @@ export function errorTitle(kind: SyncErrorKind | null): string {
 export function errorHint(kind: SyncErrorKind | null): string {
   switch (kind) {
     case "offline": return "Probably no network right now. Your notes are kept here and sync when the remote is reachable again.";
-    case "remote_not_found": return "Its address leads nowhere: the repository was moved, deleted or mistyped. Check the remote in Settings → Sync & Backup → Show advanced.";
-    case "auth": return "Check your SSH key or credentials for this remote.";
+    case "remote_not_found": return "Its address leads nowhere: the repository was moved, deleted or mistyped. Check it in Settings → Sync & Backup (Test connection, Change…).";
+    case "auth": return "MiNotes signs in with your computer's git setup: check your SSH key (ssh-agent) or git's credential helper for this remote.";
     default: return "Your notes are kept here. Retry, or check the details below.";
   }
 }

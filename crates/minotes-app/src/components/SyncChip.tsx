@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import {
-  chipText, errorHint, errorTitle, requestSyncNow, SYNC_CONFIRM_EVENT, useSyncView, ago,
+  chipText, errorHint, errorTitle, requestSyncNow, SYNC_CONFIRM_EVENT, targetSyncSettings, useSyncView, ago,
 } from "../lib/syncStatus";
 import { useEscapeToClose } from "../lib/escapeStack";
 import "./sync.css";
@@ -80,7 +80,7 @@ export default function SyncChip({ onOpenSettings }: Props) {
             <div className="sync-pop-hint">This notebook folder was set up for sync on another computer. Nothing syncs here until you say so.</div>
           )}
           {!problem && v.phase !== "paused" && !remote && (
-            <div className="sync-pop-hint">Changes are committed in the sync folder only. Add a remote to the folder's git repository to sync with other devices.</div>
+            <div className="sync-pop-hint">Changes are committed in the sync folder only. Set up a remote in Sync settings to sync with your other devices.</div>
           )}
           {remote && <div className="sync-pop-row"><span>Remote</span><span className="sync-pop-val" title={remote}>{remote}</span></div>}
           {remote && v.phase !== "paused" && (
@@ -95,7 +95,9 @@ export default function SyncChip({ onOpenSettings }: Props) {
                 {problem ? "Retry" : "Sync now"}
               </button>
             )}
-            <button className="btn btn-sm" onClick={() => { setOpen(false); onOpenSettings(); }}>Sync settings…</button>
+            <button className="btn btn-sm" onClick={() => { setOpen(false); targetSyncSettings(); onOpenSettings(); }} data-testid="sync-details-settings">
+              {!remote && !problem && v.phase !== "paused" ? "Set up a remote…" : "Sync settings…"}
+            </button>
           </div>
         </div>
       )}

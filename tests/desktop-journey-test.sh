@@ -41,7 +41,7 @@ echo "════════════════════════�
 echo "  MiNotes Desktop Journeys (real app, real backend)"
 echo "═══════════════════════════════════════════════"
 
-rm -rf "$STATE"/{persist,devA,devB,nbook,outside,xnb,zip8,barrier10,trust10,rimg,img10,remote.git,enc13,enc13-tmp,enc13-keychain,enc14a,enc14b,enc14c,enc14-tmp,remote14.git,w1,w1-files,w2,j17a,j17b,t17,remote17.git,remote17.git.moved,w18,w19,w23} "$STATE/results.tsv"
+rm -rf "$STATE"/{persist,devA,devB,nbook,outside,xnb,zip8,barrier10,trust10,rimg,img10,remote.git,enc13,enc13-tmp,enc13-keychain,enc14a,enc14b,enc14c,enc14-tmp,remote14.git,w1,w1-files,w2,j17a,j17b,t17,remote17.git,remote17.git.moved,w18,w19,w23,d20a} "$STATE/results.tsv"
 if [[ -z "$DESKTOP_NO_BUILD" ]]; then
   "$DC" up --webdriver --profile persist >/dev/null || { echo "build/launch failed"; exit 1; }
 else
@@ -1841,6 +1841,143 @@ rclick23 "document.querySelector('.link-preview-convert')"; sleep 1.5
 is "The block is now a plain link" "$(db w23 "select content from blocks where id='$L23'")" "<https://d23.invalid/article>"
 is "…shown as a link, not a card" "$(ev "!!document.querySelector('.link-preview-card')+'|'+!![...document.querySelectorAll('a')].find(a=>a.href==='https://d23.invalid/article')")" "false|true"
 "$DC" shot "d23-link-converted" >/dev/null
+journey "D20. Sync set up, joined and resolved entirely in the app (UX review Wave 4)"
+# Device A types a remote address in Settings → Sync & Backup, tests a wrong
+# and a right one, and sets sync up (init + first push). Device B joins through
+# "Join an existing notebook…". Both change the same two lines; the conflict
+# copy's banner opens Compare, where Keep both / Keep theirs resolve it — the
+# database and the other device follow. Real typing and clicks (xdotool);
+# WebDriver reads back. The remote is a local bare repository inside both
+# scratch homes (B's home is a folder of A's), so it is typed, never picked.
+# ═══════════════════════════════════════════════
+if command -v git >/dev/null; then
+A20="const api=await import('/src/lib/api.ts');"
+HB20="d20a/devB"                       # device B's profile (its HOME is inside A's)
+R20="$STATE/$HB20/Repos/notes20.git"
+DBB20="$STATE/$HB20/MiNotes/Joined20/notebook.minotes"
+HOST20=$(hostname)
+xy20() { ev "(()=>{const e=$1;if(!e)return '';e.scrollIntoView({block:'center'});const r=e.getBoundingClientRect();return Math.round(r.left+r.width/2)+' '+Math.round(r.top+r.height/2)})()"; }
+rclick20() { local xy; xy=$(xy20 "$1"); [[ -n "$xy" ]] && "$DC" click $xy >/dev/null; }
+# typein20 <css> <text>: click the field, select all, type (real keys).
+typein20() { rclick20 "document.querySelector('$1')"; sleep 0.2; "$DC" key ctrl+a; "$DC" type "$2"; sleep 0.3; }
+ready20() { waitfor "window.__MINOTES__ && !!window.__MINOTES__.navigateTo" 40; sleep 1.5; }
+phase20() { ev "(document.querySelector('[data-testid=sync-chip]')?.dataset.phase||'none')"; }
+idle20() { sleep 1; waitfor "!document.querySelector('[data-testid=sync-chip]') || document.querySelector('[data-testid=sync-chip]').dataset.phase!=='syncing'" 60; sleep 1; }
+syncnow20() { ev "window.dispatchEvent(new Event('minotes-sync-now'))" >/dev/null; sleep 0.5; idle20; }
+order20() { sqlite3 "$1" "select group_concat(content,' | ') from (select content from blocks where page_id=(select id from pages where title='Plan20') and parent_id is null order by position)" 2>&1; }
+result20() { ev "(()=>{const r=document.querySelector('[data-testid=$1-result]');return r?r.dataset.status+'|'+r.innerText.replace(/\\n/g,' '):''})()"; }
+DBA20="$STATE/d20a/.minotes/default.db"
+
+step "Device A: a page, then Settings → Sync & Backup with a typed address"
+device d20a || { sleep 2; device d20a; } || true
+ready20
+mkdir -p "$STATE/$HB20/Repos"
+git init -q --bare -b main "$R20"
+for h in d20a "$HB20"; do printf '[user]\n\tname = %s\n\temail = d20@example.test\n[init]\n\tdefaultBranch = main\n' "${h##*/}" >"$STATE/$h/.gitconfig"; done
+ev "(async()=>{$A20 const p=await api.createPage('Plan20');await api.createBlock(p.id,'alpha base');await api.createBlock(p.id,'beta base');await api.createBlock(p.id,'gamma steady');return 1})()" >/dev/null
+api "openSettings()" >/dev/null; sleep 0.8
+rclick20 "[...document.querySelectorAll('.settings-index-link')].find(b=>b.textContent.includes('Sync'))"; sleep 0.8
+is "No remote yet: the Set up form" "$(ev "String(!!document.querySelector('[data-testid=sync-setup]'))")" "true"
+
+step "Test connection on a wrong address (real typing): Not found — nothing set"
+typein20 "[data-testid=sync-remote-input]" "~/devB/Repos/nothere20.git"
+rclick20 "document.querySelector('[data-testid=sync-remote-test]')"
+waitfor "!!document.querySelector('[data-testid=sync-remote-result]')" 30
+R=$(result20 sync-remote)
+[[ "$R" == not_found*"Not found"* ]] && pass "Wrong address: $R" || fail "Test connection (wrong)" "$R"
+typein20 "[data-testid=sync-remote-input]" "ext::sh -c touch% $STATE/pwned20"
+rclick20 "document.querySelector('[data-testid=sync-remote-test]')"
+waitfor "!!document.querySelector('[data-testid=sync-remote-result]')" 30
+R=$(result20 sync-remote)
+[[ "$R" == invalid*"run a program"* && ! -e "$STATE/pwned20" ]] && pass "ext:: refused, nothing ran" || fail "ext:: address" "$R"
+"$DC" shot "d20-test-wrong" >/dev/null
+
+step "Test connection on the right one: an empty repository — then Set up sync pushes the notebook"
+typein20 "[data-testid=sync-remote-input]" "~/devB/Repos/notes20.git"
+rclick20 "document.querySelector('[data-testid=sync-remote-test]')"
+waitfor "!!document.querySelector('[data-testid=sync-remote-result]')" 30
+R=$(result20 sync-remote)
+[[ "$R" == empty*"Reachable"* ]] && pass "Right address: $R" || fail "Test connection (right)" "$R"
+rclick20 "document.querySelector('[data-testid=sync-setup]')"
+waitfor "!!document.querySelector('[data-testid=sync-remote-url]')" 60; idle20
+R=$(ev "document.querySelector('[data-testid=sync-remote-url]')?.textContent||'none'")
+[[ "$R" == "$R20" ]] && pass "Remote set: $R" || fail "Remote after Set up sync" "$R (want $R20)"
+is "Sync is on" "$(ev "String(document.querySelector('[data-testid=sync-enable]')?.checked)")" "true"
+FILES20=$(git --git-dir="$R20" ls-tree -r --name-only main 2>/dev/null | grep -c '^Plan20\.md$')
+is "The first push reached the remote (Plan20.md)" "$FILES20" "1"
+[[ "$(ev "document.querySelector('[data-testid=sync-chip]')?.textContent||''")" == Synced* ]] && pass "Chip: $(ev "document.querySelector('[data-testid=sync-chip]')?.textContent")" || fail "Chip after setup" "$(phase20)"
+"$DC" shot "d20-set-up" >/dev/null
+api "closePanel()" >/dev/null; sleep 0.4
+PID20=$(sqlite3 "$DBA20" "select id from pages where title='Plan20'")
+
+step "Device B joins through the notebook menu (real clicks and typing)"
+device "$HB20" keep || true   # keep: the remote lives in this home
+ready20
+rclick20 "document.querySelector('[data-testid=notebook-switcher]')"; sleep 0.5
+rclick20 "document.querySelector('[data-testid=menu-join]')"
+waitfor "!!document.querySelector('[data-testid=join-notebook-dialog]')" 10
+typein20 "[data-testid=join-remote-input]" "~/Repos/notes20.git"
+rclick20 "document.querySelector('[data-testid=join-remote-test]')"
+waitfor "!!document.querySelector('[data-testid=join-remote-result]')" 30
+R=$(result20 join-remote)
+[[ "$R" == reachable*"already holds notes"* ]] && pass "Test connection in Join: $R" || fail "Join: test connection" "$R"
+typein20 "[data-testid=join-name]" "Joined20"
+"$DC" shot "d20-join-dialog" >/dev/null
+rclick20 "document.querySelector('[data-testid=join-go]')"
+waitfor "!document.querySelector('[data-testid=join-notebook-dialog]')" 90; idle20
+is "B is in Joined20" "$(ev "(document.querySelector('[data-testid=notebook-switcher]')?.textContent||'').includes('Joined20')")" "true"
+is "Plan20 arrived with A's page id" "$(sqlite3 "$DBB20" "select id from pages where title='Plan20'" 2>&1)" "$PID20"
+is "…with its blocks" "$(order20 "$DBB20")" "alpha base | beta base | gamma steady"
+is "One Getting Started (A's)" "$(sqlite3 "$DBB20" "select count(*) from pages where title like 'Getting Started%'" 2>&1)" "1"
+[[ "$(ev "document.querySelector('[data-testid=sync-chip]')?.textContent||''")" == Synced* ]] && pass "B syncs: $(ev "document.querySelector('[data-testid=sync-chip]')?.textContent")" || fail "B's chip after join" "$(phase20)"
+is "No “Sync it here” question (set up here)" "$(ev "String(!!document.querySelector('[data-testid=sync-confirm-banner]'))")" "false"
+
+step "Both change the same two lines: A first (not yet synced), then B (synced)"
+device d20a keep || true
+ready20; idle20
+ev "(async()=>{$A20 const t=await api.getPageTree('Plan20');await api.updateBlock(t.blocks[0].id,'alpha by A');await api.updateBlock(t.blocks[1].id,'beta by A');return 1})()" >/dev/null
+sleep 1
+device "$HB20" keep || true
+ready20; idle20
+ev "(async()=>{$A20 const t=await api.getPageTree('Plan20');await api.updateBlock(t.blocks[0].id,'alpha by B');await api.updateBlock(t.blocks[1].id,'beta by B');return 1})()" >/dev/null
+syncnow20
+git --git-dir="$R20" show main:Plan20.md 2>/dev/null | grep -q "alpha by B" && pass "B's version is on the remote" || fail "B's push" "$(git --git-dir="$R20" show main:Plan20.md 2>&1 | head -5)"
+
+step "A syncs on start: a conflict copy named after the other device; its banner opens Compare"
+device d20a keep || true
+ready20; idle20
+waitfor "[...document.querySelectorAll('.minotes-toast')].some(t=>t.textContent.includes('Sync conflict'))" 30
+COPY20=$(sqlite3 "$DBA20" "select title from pages where title like 'Plan20 (conflict from %' and id not in (select page_id from trash)")
+is "Conflict copy" "$COPY20" "Plan20 (conflict from $HOST20)"
+is "A's page kept A's lines" "$(order20 "$DBA20")" "alpha by A | beta by A | gamma steady"
+rclick20 "[...document.querySelectorAll('.minotes-toast')].find(t=>t.textContent.includes('Sync conflict'))?.querySelector('button')"
+waitfor "!!document.querySelector('[data-testid=conflict-banner]')" 15
+R=$(ev "document.querySelector('[data-testid=conflict-banner]')?.innerText.replace(/\\n/g,' ')||'none'")
+[[ "$R" == "Conflict with $HOST20"*"Compare"* ]] && pass "Banner: Conflict with $HOST20 — Compare" || fail "Conflict banner" "$R"
+"$DC" shot "d20-conflict-banner" >/dev/null
+rclick20 "document.querySelector('[data-testid=conflict-compare-open]')"
+waitfor "!!document.querySelector('[data-testid=conflict-rows]')" 15
+R=$(ev "[...document.querySelectorAll('[data-testid=conflict-rows] > li')].map(r=>[...r.querySelectorAll('.conflict-version')].map(v=>v.textContent).join(' => ')).join(' ## ')")
+is "Only the two changed blocks, side by side" "$R" "alpha by A => alpha by B ## beta by A => beta by B"
+"$DC" shot "d20-compare" >/dev/null
+
+step "Keep both for the first, Keep theirs for the second, Resolve (real clicks)"
+rclick20 "document.querySelector('[data-testid=conflict-choice-0-both]')"; sleep 0.2
+rclick20 "document.querySelector('[data-testid=conflict-choice-1-theirs]')"; sleep 0.2
+rclick20 "document.querySelector('[data-testid=conflict-resolve]')"
+waitfor "!document.querySelector('[data-testid=conflict-compare]')" 15; sleep 1
+is "A's page in the database" "$(order20 "$DBA20")" "alpha by A | alpha by B | beta by B | gamma steady"
+is "The copy is in the Trash" "$(sqlite3 "$DBA20" "select count(*) from trash t join pages p on p.id=t.page_id where p.title like 'Plan20 (conflict from %'")" "1"
+is "It shows the page" "$(ev "window.__MINOTES__.getCurrentPage()")" "Plan20"
+syncnow20
+
+step "Device B gets the resolution"
+device "$HB20" keep || true
+ready20; idle20
+is "B's page in the database" "$(order20 "$DBB20")" "alpha by A | alpha by B | beta by B | gamma steady"
+is "No live conflict copy on B" "$(sqlite3 "$DBB20" "select count(*) from pages where title like 'Plan20 (conflict from %' and id not in (select page_id from trash)")" "0"
+"$DC" shot "d20-b-resolved" >/dev/null
+fi
 
 # ═══════════════════════════════════════════════
 echo ""

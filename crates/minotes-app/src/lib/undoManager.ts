@@ -61,6 +61,10 @@ export async function executeUndo(): Promise<boolean> {
       await api.outsideEditSetBlocks(action.pageId, action.before ?? [], undefined, action.parkedPageId);
       action.parkedPageId = null;
       break;
+    case 'conflict-resolve':
+      // One step: the page as it was, and the conflict copy back from the Trash.
+      await api.setConflictResolution(action.pageId, action.copyId ?? "", action.before ?? [], false);
+      break;
   }
   return true;
 }
@@ -95,6 +99,9 @@ export async function executeRedo(): Promise<boolean> {
     case 'outside-import':
       // Removed lines go to the Trash again (never a hard delete).
       action.parkedPageId = await api.outsideEditSetBlocks(action.pageId, action.after ?? [], action.pageTitle ?? "Page");
+      break;
+    case 'conflict-resolve':
+      await api.setConflictResolution(action.pageId, action.copyId ?? "", action.after ?? [], true);
       break;
   }
   return true;

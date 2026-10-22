@@ -96,6 +96,9 @@ impl Database {
     ///
     /// Excludes blocks belonging to trashed or archived pages (Bug #6) — those are
     /// hidden from the user everywhere else, so they must not leak through search.
+    /// Sync conflict copies ("… (conflict from <device>)") are left out too: they
+    /// repeat the page they are a version of (UX review Wave 4); the page itself,
+    /// its banner and Compare lead to them.
     pub fn search(&self, query: &str, limit: Option<i64>) -> Result<Vec<Block>> {
         let limit = limit.unwrap_or(20);
         let terms = parse_query(query);
@@ -120,6 +123,7 @@ impl Database {
                 "{hidden}
                  SELECT {cols} FROM blocks b
                  WHERE {conds} AND b.page_id NOT IN (SELECT id FROM hidden_pages)
+                   AND b.page_id NOT IN (SELECT id FROM pages WHERE title LIKE '% (conflict from %)')
                  ORDER BY b.updated_at DESC
                  LIMIT ?1"
             );
@@ -138,6 +142,7 @@ impl Database {
                  JOIN blocks b ON b.rowid = f.rowid
                  WHERE blocks_fts MATCH ?1
                    AND b.page_id NOT IN (SELECT id FROM hidden_pages)
+                   AND b.page_id NOT IN (SELECT id FROM pages WHERE title LIKE '% (conflict from %)')
                  ORDER BY rank
                  LIMIT ?2"
             );
@@ -219,6 +224,23 @@ mod tests {
         let results = db.search("launch codes", None).unwrap();
         assert_eq!(results.len(), 1, "only the live page's block should match");
         assert_eq!(results[0].page_id, live.id);
+    }
+
+    // UX Wave 4: a sync conflict copy repeats its page; search shows the page only.
+    #[test]
+    fn test_search_leaves_out_conflict_copies() {
+        let db = Database::open_in_memory().unwrap();
+        let page = db.create_page("Plan", None, false, None, "user").unwrap();
+        db.create_block(&page.id, "quarterly zebra goals", None, None, "user").unwrap();
+        let copy = db.create_page("Plan (conflict from laptop)", None, false, None, "git-sync").unwrap();
+        db.create_block(&copy.id, "quarterly zebra goals, other version", None, None, "git-sync").unwrap();
+        let ids: Vec<_> = db.search("zebra", None).unwrap().into_iter().map(|b| b.page_id).collect();
+        assert_eq!(ids, vec![page.id]);
+        let cjk: Vec<_> = {
+            db.create_block(&copy.id, "日本語 zebra", None, None, "git-sync").unwrap();
+            db.search("日本語", None).unwrap().into_iter().map(|b| b.page_id).collect()
+        };
+        assert!(cjk.is_empty(), "the substring path leaves copies out too");
     }
 
     // Bug #7: punctuation must not raise an FTS syntax error.

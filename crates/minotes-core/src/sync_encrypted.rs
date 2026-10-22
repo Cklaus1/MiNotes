@@ -531,6 +531,16 @@ pub struct PendingMerge {
     pub theirs: String,
     /// This device deleted the file (the other side changed it).
     pub local_deleted: bool,
+    /// The device that made the other version (from its commit), for the
+    /// conflict copy's name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<String>,
+}
+
+/// The device a conflict copy is named after: the one that made the other
+/// version, never this machine (which only noticed the conflict).
+pub(crate) fn other_device(name: Option<String>) -> String {
+    name.unwrap_or_else(|| "another device".to_string())
 }
 
 fn pull_with_resolve(dir: &Path) -> Result<u32> {
@@ -543,7 +553,8 @@ fn pull_with_resolve(dir: &Path) -> Result<u32> {
                 if mergeable {
                     let [base, theirs, local] = git_cmd::conflict_stages(dir, file)?;
                     if let Some(theirs) = theirs {
-                        merges.push(PendingMerge { path: file.to_string(), base, theirs, local_deleted: local.is_none() });
+                        let device = git_cmd::rebase_onto(dir).and_then(|o| git_cmd::device_of_last_change(dir, &o, file));
+                        merges.push(PendingMerge { path: file.to_string(), base, theirs, local_deleted: local.is_none(), device });
                     }
                 }
                 // The local file stays (the key file, folders and attachments too:
@@ -639,7 +650,6 @@ fn import(
     protect_after: Option<DateTime<Utc>>,
 ) -> Result<SyncResult> {
     let mut r = SyncResult::default();
-    let host = git_cmd::get_hostname();
     let mut entries: Vec<(String, Entry)> = Vec::new();
     if let Some(p) = pending {
         let paths: Vec<String> = match &p.changed {
@@ -763,6 +773,12 @@ fn import(
             },
             None => None,
         };
+        let range = match pending {
+            Some(Pending { base: Some(b), head, .. }) => format!("{b}..{head}"),
+            Some(p) => p.head.clone(),
+            None => "HEAD".to_string(),
+        };
+        let host = other_device(git_cmd::device_of_last_change(dir, &range, &rel));
         merge_page(db, &id, &rel, &theirs, base.as_deref(), &host, &mut r);
     }
 
@@ -818,6 +834,7 @@ fn import(
     let merges = std::mem::take(&mut st.merges);
     let mut left = Vec::new();
     for m in merges {
+        let host = other_device(m.device.clone());
         if let Err(e) = apply_pending_merge(db, dir, keys, &m, &host, &mut r) {
             r.errors.push(format!("{}: could not merge the other device's changes: {e}", m.path));
             left.push(m);

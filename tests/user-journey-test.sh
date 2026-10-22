@@ -2925,7 +2925,7 @@ R=$(ev "document.querySelector('.sidebar-header [data-testid=notebook-switcher]'
 step "Its menu lists my notebooks with the open one checked, plus New / Open / Manage"
 ev "document.querySelector('[data-testid=notebook-switcher]').click()" >/dev/null; sleep 0.5
 R=$(ev "(()=>{const m=document.querySelector('.nb-menu');if(!m)return 'no menu';const cur=m.querySelector('[aria-checked=true]');return (cur?cur.dataset.notebookKey:'none')+'|'+[...m.querySelectorAll('.nb-menu-action')].map(b=>b.textContent.trim()).join(',')})()" | tr -d '"')
-[[ "$R" == "$HOME_NB|New notebook…,Open notebook…,Join encrypted notebook…,Manage notebooks…,Export notebook…,Import notebook…,Import from other apps…" ]] && pass "Menu: current checked + actions" || fail "Notebook menu" "$R"
+[[ "$R" == "$HOME_NB|New notebook…,Open notebook…,Join an existing notebook…,Manage notebooks…,Export notebook…,Import notebook…,Import from other apps…" ]] && pass "Menu: current checked + actions" || fail "Notebook menu" "$R"
 ss "60-notebook-menu"
 
 step "New notebook… asks for a name and a location, creates it and opens it"
@@ -5099,6 +5099,265 @@ ev "document.querySelector('.link-preview-convert')?.click()" >/dev/null; sleep 
 R=$(ev "(async()=>{$A114 const t=await api.getPageTree('$L114');return t.blocks.find(b=>b.id==='$B114')?.content||'gone'})()" | tr -d '"')
 R2=$(ev "!!document.querySelector('.link-preview-card')" | tr -d '"')
 [[ "$R" != *"{{link-preview"* && "$R" == *"$U114"* && ( "$R" == "["*"]($U114)" || "$R" == "<$U114>" ) && "$R2" == "false" ]] && pass "Stored as: $R" || fail "Convert to plain link" "$R / card=$R2"
+
+journey "92. I set up sync from Settings: test an address, set it up, change it, remove it (UX Wave 4)"
+# Settings → Sync & Backup has the remote: an address, Test connection (what it
+# found, in words), Set up sync; then Change… / Remove. Addresses that could run
+# a program or would store a password are refused before git runs. The remotes
+# are simulated through the mock; the desktop backend does them for real (D20).
+# ═══════════════════════════════════════════════
+api "closePanel()" >/dev/null; press "Escape"; sleep 0.3
+# setv92 <css> <value>: type into a field as React sees it.
+setv92() { ev "(()=>{const i=document.querySelector('$1');if(!i)return 'no field';const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;set.call(i,'$2');i.dispatchEvent(new Event('input',{bubbles:true}));return 'ok'})()" >/dev/null; }
+# test92 <address>: type it, Test connection, wait for the result → "status|text".
+test92() {
+  setv92 "[data-testid=sync-remote-input]" "$1"; sleep 0.2
+  ev "document.querySelector('[data-testid=sync-remote-test]')?.click()" >/dev/null
+  for _ in $(seq 1 40); do
+    R=$(ev "(()=>{const r=document.querySelector('[data-testid=sync-remote-result]');return r?r.dataset.status+'|'+r.innerText.replace(/\\n/g,' '):''})()" | tr -d '"')
+    [[ -n "$R" ]] && break; sleep 0.25
+  done
+  echo "$R"
+}
+sync92() { ev "(()=>{const b=[...document.querySelectorAll('.settings-index-link')].find(b=>b.textContent.includes('Sync'));b?.click();return !!b})()" >/dev/null; sleep 0.8; }
+M92="const m=await import('/src/lib/mockBackend.ts');const sm=await import('/src/lib/syncMock.ts');"
+if [[ "$JOURNEY_BACKEND" != "desktop" ]]; then
+  ev "(async()=>{$M92 Object.assign(m.mockSync,{enabled:false,remote_url:null,last_sync:null,needs_confirmation:false,last_error:null,last_error_kind:null,fail:null});sm.mockRemotes.remotes={'/home/user/Repos/notes.git':{status:'empty'},'/home/user/Repos/other.git':{status:'empty'},'/home/user/Repos/shared.git':{status:'reachable'},'git@nas.local:locked.git':{status:'auth'}};window.dispatchEvent(new Event('minotes-trigger-sync'));return 1})()" >/dev/null; sleep 0.5
+fi
+api "openSettings()" >/dev/null; sleep 0.8
+sync92
+
+step "Without a remote, Sync & Backup offers an address field, Test connection and Set up sync — and says how sign-in works"
+R=$(ev "(()=>{const s=document.querySelector('[data-testid=sync-remote]');return !!s+'|'+!!document.querySelector('[data-testid=sync-remote-input]')+'|'+!!document.querySelector('[data-testid=sync-remote-test]')+'|'+!!document.querySelector('[data-testid=sync-setup]')+'|'+(document.querySelector('[data-testid=sync-credentials-note]')?.textContent.includes('never asks for, sees or stores a password')??false)})()" | tr -d '"')
+[[ "$R" == "true|true|true|true|true" ]] && pass "Remote field, Test, Set up, credentials note" || fail "Sync remote form" "$R"
+R=$(ev "(()=>{const b=document.querySelector('[data-testid=sync-setup]');return b.disabled+'|'+(b.parentElement.querySelector('.disabled-reason')?.textContent||'')})()" | tr -d '"')
+[[ "$R" == "true|Enter the repository"* ]] && pass "Set up sync is disabled and says why ($R)" || fail "Set up sync while empty" "$R"
+ss "92-sync-remote-form"
+
+step "Addresses that could run a program, store a password or live outside home are refused before git runs"
+R=$(test92 "ext::sh -c touch% /tmp/pwned92")
+[[ "$R" == invalid*"run a program"* ]] && pass "ext:: refused ($R)" || fail "ext:: address" "$R"
+R=$(test92 "https://me:hunter2@example.com/me/notes.git")
+[[ "$R" == invalid*"password or token"* ]] && pass "A password in the address is refused" || fail "Password in the address" "$R"
+R=$(test92 "/etc/notes92.git")
+[[ "$R" == invalid*"outside your home folder"* ]] && pass "A folder outside home is refused unless picked" || fail "Outside-home folder" "$R"
+R=$(test92 "-uhelp")
+[[ "$R" == invalid* ]] && pass "An option is refused" || fail "Option as address" "$R"
+
+if [[ "$JOURNEY_BACKEND" != "desktop" ]]; then
+step "Test connection says what it found: not found, sign-in refused, empty"
+R=$(test92 "~/Repos/missing.git")
+[[ "$R" == not_found*"Not found"* ]] && pass "Not found ($R)" || fail "Missing repository" "$R"
+R=$(test92 "git@nas.local:locked.git")
+[[ "$R" == auth*"SSH key"* ]] && pass "Sign-in refused, pointing at the SSH key / credential helper" || fail "Auth refused" "$R"
+R=$(test92 "~/Repos/notes.git")
+[[ "$R" == empty*"Reachable"* ]] && pass "Reachable — an empty repository" || fail "Empty repository" "$R"
+
+step "Set up sync: sync turns on, the first push reaches the remote, the chip says so"
+ev "document.querySelector('[data-testid=sync-setup]')?.click()" >/dev/null; sleep 1.5
+R=$(ev "(document.querySelector('[data-testid=sync-remote-url]')?.textContent||'none')+'|'+(document.querySelector('[data-testid=sync-enable]')?.checked)+'|'+(document.querySelector('[data-testid=settings-sync-state]')?.dataset.phase||'none')" | tr -d '"')
+[[ "$R" == "/home/user/Repos/notes.git|true|idle" ]] && pass "Remote set, sync on, idle ($R)" || fail "After Set up sync" "$R"
+R=$(ev "(document.querySelector('[data-testid=sync-chip]')?.textContent||'none')+'|'+[...document.querySelectorAll('.minotes-toast')].map(t=>t.textContent).join(' ¦ ')" | tr -d '"')
+[[ "$R" == "Synced just now|"*"Sync is set up"* ]] && pass "Chip: Synced just now, and a toast says it is set up" || fail "Chip / toast after setup" "$R"
+ss "92-sync-set-up"
+
+step "Change… tests the new address first: a missing one is refused and the old remote stays"
+ev "document.querySelector('[data-testid=sync-remote-edit]')?.click()" >/dev/null; sleep 0.4
+R=$(ev "document.querySelector('[data-testid=sync-remote-input]')?.value||'none'" | tr -d '"')
+[[ "$R" == "/home/user/Repos/notes.git" ]] && pass "The field starts with the current remote" || fail "Change… field" "$R"
+setv92 "[data-testid=sync-remote-input]" "~/Repos/missing.git"; sleep 0.2
+ev "document.querySelector('[data-testid=sync-remote-save]')?.click()" >/dev/null; sleep 1
+R=$(ev "(async()=>{$M92 return (document.querySelector('[data-testid=sync-remote-error]')?.textContent||'none')+'|'+m.mockSync.remote_url})()" | tr -d '"')
+[[ "$R" == "Not found"*"|/home/user/Repos/notes.git" ]] && pass "Refused, remote unchanged" || fail "Change to a missing remote" "$R"
+setv92 "[data-testid=sync-remote-input]" "~/Repos/other.git"; sleep 0.2
+ev "document.querySelector('[data-testid=sync-remote-save]')?.click()" >/dev/null; sleep 1.5
+R=$(ev "(document.querySelector('[data-testid=sync-remote-url]')?.textContent||'none')+'|'+(document.querySelector('[data-testid=sync-chip]')?.textContent||'none')" | tr -d '"')
+[[ "$R" == "/home/user/Repos/other.git|Synced just now" ]] && pass "Changed, and synced with the new remote ($R)" || fail "Change remote" "$R"
+
+step "Remove asks first; afterwards the chip says there is no remote and Settings offers Set up again"
+ev "document.querySelector('[data-testid=sync-remote-remove]')?.click()" >/dev/null; sleep 0.5
+R=$(ev "document.querySelector('[data-testid=confirm-dialog]')?.innerText.replace(/\\n/g,' ')||'none'" | tr -d '"')
+[[ "$R" == *"Stop syncing with this remote?"*"nothing is deleted on the remote"* ]] && pass "Remove asks, saying nothing is deleted on the remote" || fail "Remove confirmation" "$R"
+ev "document.querySelector('[data-testid=confirm-ok]')?.click()" >/dev/null; sleep 0.8
+R=$(ev "(document.querySelector('[data-testid=sync-chip]')?.textContent||'none')+'|'+!!document.querySelector('[data-testid=sync-setup]')+'|'+!!document.querySelector('[data-testid=sync-remote-url]')" | tr -d '"')
+[[ "$R" == "Not synced — no remote|true|false" ]] && pass "No remote: chip and Settings say so ($R)" || fail "After Remove" "$R"
+
+step "A repository that already holds notes: Set up sync asks before merging them in"
+R=$(test92 "~/Repos/shared.git")
+[[ "$R" == reachable*"already holds notes"* ]] && pass "Test connection: it already holds notes" || fail "Non-empty remote test" "$R"
+ev "document.querySelector('[data-testid=sync-setup]')?.click()" >/dev/null; sleep 0.6
+R=$(ev "document.querySelector('[data-testid=confirm-dialog]')?.innerText.replace(/\\n/g,' ')||'none'" | tr -d '"')
+[[ "$R" == *"already holds notes"*"Join an existing notebook"* ]] && pass "It asks, and points at Join for a separate notebook" || fail "Merge question" "$R"
+ev "document.querySelector('[data-testid=confirm-cancel]')?.click()" >/dev/null; sleep 0.5
+R=$(ev "(async()=>{$M92 return String(m.mockSync.remote_url)})()" | tr -d '"')
+[[ "$R" == "null" ]] && pass "Cancel sets nothing up" || fail "Cancel merge" "$R"
+
+step "The chip's details lead to the remote: Set up a remote… opens Settings at Sync & Backup"
+api "closePanel()" >/dev/null; sleep 0.4
+ev "document.querySelector('[data-testid=sync-chip]')?.click()" >/dev/null; sleep 0.4
+R=$(ev "document.querySelector('[data-testid=sync-details-settings]')?.textContent||'none'" | tr -d '"')
+[[ "$R" == "Set up a remote…" ]] && pass "The chip offers Set up a remote…" || fail "Chip details button" "$R"
+ev "document.querySelector('[data-testid=sync-details-settings]')?.click()" >/dev/null; sleep 1.2
+R=$(ev "(()=>{const p=document.querySelector('.settings-slide-panel');const s=document.querySelector('[data-testid=sync-remote]');if(!p||!s)return 'missing';const pr=p.getBoundingClientRect(),sr=s.getBoundingClientRect();return String(sr.top<pr.bottom&&sr.bottom>pr.top)})()" | tr -d '"')
+[[ "$R" == "true" ]] && pass "Settings opened scrolled to the remote" || fail "Settings at Sync & Backup" "$R"
+ev "(async()=>{$M92 Object.assign(m.mockSync,{enabled:false,remote_url:null,last_sync:null});window.dispatchEvent(new Event('minotes-trigger-sync'));return 1})()" >/dev/null
+fi
+api "closePanel()" >/dev/null; sleep 0.3
+
+# ═══════════════════════════════════════════════
+journey "93. I join a notebook another device syncs — plain or encrypted, one entry point (UX Wave 4)"
+# "Join an existing notebook…" (the notebook menu and Settings) fetches the
+# remote into a new notebook, opens it and turns sync on. An encrypted
+# notebook's remote asks for its passphrase in the same dialog.
+# ═══════════════════════════════════════════════
+api "closePanel()" >/dev/null; press "Escape"; sleep 0.3
+setv93() { ev "(()=>{const i=document.querySelector('$1');if(!i)return 'no field';const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;set.call(i,'$2');i.dispatchEvent(new Event('input',{bubbles:true}));return 'ok'})()" >/dev/null; }
+open93() {
+  ev "document.querySelector('[data-testid=notebook-switcher]')?.click()" >/dev/null; sleep 0.5
+  ev "document.querySelector('[data-testid=menu-join]')?.click()" >/dev/null; sleep 0.6
+}
+join93() { ev "document.querySelector('[data-testid=join-go]')?.click()" >/dev/null; sleep "${1:-2}"; }
+err93() { ev "document.querySelector('[data-testid=join-error]')?.textContent||'none'" | tr -d '"'; }
+M93="const m=await import('/src/lib/mockBackend.ts');const sm=await import('/src/lib/syncMock.ts');const api=await import('/src/lib/api.ts');"
+
+step "The notebook menu has one Join entry; it opens the dialog with a remote field and Test connection"
+open93
+R=$(ev "(()=>{const d=document.querySelector('[data-testid=join-notebook-dialog]');return !!d+'|'+(d?.getAttribute('aria-label')||'')+'|'+!!document.querySelector('[data-testid=join-remote-input]')+'|'+!!document.querySelector('[data-testid=join-remote-test]')+'|'+!!document.querySelector('[data-testid=join-passphrase]')})()" | tr -d '"')
+[[ "$R" == "true|Join an existing notebook|true|true|false" ]] && pass "Join an existing notebook (no passphrase field until needed)" || fail "Join dialog" "$R"
+setv93 "[data-testid=join-remote-input]" "ext::sh -c id"; setv93 "[data-testid=join-name]" "Evil93"; sleep 0.2
+join93 1
+R=$(err93)
+[[ "$R" == *"run a program"* ]] && pass "An ext:: address is refused here too" || fail "Join ext::" "$R"
+ss "93-join-dialog"
+
+if [[ "$JOURNEY_BACKEND" != "desktop" ]]; then
+ev "(async()=>{$M93 Object.assign(m.mockSync,{enabled:false,remote_url:null,last_sync:null,fail:null,last_error:null,last_error_kind:null});sm.mockRemotes.remotes['/home/user/Repos/empty93.git']={status:'empty'};sm.mockRemotes.remotes['/home/user/Repos/home93.git']={status:'reachable',pages:[{title:'Groceries93',blocks:['milk','eggs']}]};sm.mockRemotes.remotes['/home/user/Repos/vault93.git']={status:'reachable',passphrase:'correct horse battery staple',pages:[{title:'Secret93',blocks:['the plan']}]};return 1})()" >/dev/null
+
+step "An empty repository has nothing to join — it says where to start instead"
+setv93 "[data-testid=join-remote-input]" "~/Repos/empty93.git"; setv93 "[data-testid=join-name]" "Empty93"; sleep 0.2
+join93 1
+R=$(err93)
+[[ "$R" == *"empty"*"Set up sync"* ]] && pass "Empty: use Set up sync on the other device" || fail "Join an empty remote" "$R"
+
+step "A plain notebook: joined, opened, synced"
+setv93 "[data-testid=join-remote-input]" "~/Repos/home93.git"; setv93 "[data-testid=join-name]" "Home93"; sleep 0.2
+join93 3
+R=$(ev "(async()=>{$M93 const s=await api.getNotebookSession();const titles=(await api.listPages(500)).map(p=>p.title);return s.name+'|'+titles.includes('Groceries93')+'|'+!!document.querySelector('[data-testid=join-notebook-dialog]')+'|'+(document.querySelector('[data-testid=sync-chip]')?.textContent||'none')})()" | tr -d '"')
+[[ "$R" == "Home93|true|false|Synced just now" ]] && pass "In Home93 with its pages, synced ($R)" || fail "Plain join" "$R"
+ev "(async()=>{const nbs=await (await import('/src/lib/api.ts')).listNotebooks();const d=nbs.find(n=>n.name==='default');await window.__MINOTES__.switchNotebook(d.key);return 1})()" >/dev/null; sleep 2
+
+step "An encrypted notebook: the same dialog asks for its passphrase, refuses a wrong one, then joins"
+open93
+setv93 "[data-testid=join-remote-input]" "~/Repos/vault93.git"; setv93 "[data-testid=join-name]" "Vault93"; sleep 0.2
+join93 1.5
+R=$(ev "(!!document.querySelector('[data-testid=join-passphrase]'))+'|'+(document.querySelector('[data-testid=join-encrypted]')?.textContent||'')+'|'+(document.querySelector('[data-testid=join-go]')?.disabled)" | tr -d '"')
+[[ "$R" == "true|This notebook is encrypted"*"|true" ]] && pass "Passphrase field appears; Join waits for it" || fail "Encrypted remote detected" "$R"
+setv93 "[data-testid=join-passphrase]" "not it"; sleep 0.2
+join93 1.5
+R=$(err93)
+[[ "$R" == *"Wrong passphrase"* ]] && pass "A wrong passphrase is refused, nothing created" || fail "Wrong passphrase" "$R"
+setv93 "[data-testid=join-passphrase]" "correct horse battery staple"; sleep 0.2
+join93 3
+R=$(ev "(async()=>{$M93 const s=await api.getNotebookSession();const titles=(await api.listPages(500)).map(p=>p.title);return s.name+'|'+s.encrypted+'|'+titles.includes('Secret93')})()" | tr -d '"')
+[[ "$R" == "Vault93|true|true" ]] && pass "Joined the encrypted notebook ($R)" || fail "Encrypted join" "$R"
+ev "(async()=>{$M93 const d=(await api.listNotebooks()).find(n=>n.name==='default');await window.__MINOTES__.switchNotebook(d.key);Object.assign(m.mockSync,{enabled:false,remote_url:null,last_sync:null});return 1})()" >/dev/null; sleep 2
+else
+  press "Escape"; sleep 0.3
+fi
+press "Escape"; sleep 0.3
+
+# ═══════════════════════════════════════════════
+journey "94. A sync conflict copy says so and compares block by block — resolve, undo (UX Wave 4)"
+# A "(conflict from <device>)" page gets a banner with Compare; the compare view
+# shows only the blocks that differ, side by side, with Keep mine / Keep theirs
+# / Keep both; Resolve applies them in one step (Undo) and trashes the copy.
+# Search leaves the copy out. (Made through the API, so it runs on both backends.)
+# ═══════════════════════════════════════════════
+api "closePanel()" >/dev/null; press "Escape"; sleep 0.3
+A94="const api=await import('/src/lib/api.ts');"
+blocks94() { ev "(async()=>{$A94 const t=await api.getPageTree('$1');return t.blocks.map(b=>b.content).join(' ¦ ')})()" | tr -d '"'; }
+trashed94() { ev "(async()=>{$A94 return String((await api.listTrash()).some(t=>t.title==='Plan94 (conflict from laptop)'))})()" | tr -d '"'; }
+open94() {
+  api "navigateTo('Plan94 (conflict from laptop)')" >/dev/null; sleep 1.5
+  ev "document.querySelector('[data-testid=conflict-compare-open]')?.click()" >/dev/null; sleep 1
+}
+ev "(async()=>{$A94 const p=await api.createPage('Plan94');for(const t of ['Goals for Q4','Ship sync setup','Hire two people'])await api.createBlock(p.id,t);const c=await api.createPage('Plan94 (conflict from laptop)');for(const t of ['Goals for Q4','Ship sync setup and xylophone94 conflicts','Hire two people','Budget: 20k'])await api.createBlock(c.id,t);return 1})()" >/dev/null
+
+step "Search leaves the conflict copy out"
+R=$(ev "(async()=>{$A94 return String((await api.search('xylophone94')).length)})()" | tr -d '"')
+R2=$(ev "(async()=>{$A94 return String((await api.search('Goals for Q4')).filter(b=>true).length)})()" | tr -d '"')
+[[ "$R" == "0" && "$R2" == "1" ]] && pass "No search results from the copy (its page's text is found once: $R2)" || fail "Search shows the conflict copy" "$R results / page text found $R2 times"
+
+step "The copy has a banner: Conflict with laptop — Compare"
+api "navigateTo('Plan94 (conflict from laptop)')" >/dev/null; sleep 1.5
+R=$(ev "document.querySelector('[data-testid=conflict-banner]')?.innerText.replace(/\\n/g,' ')||'none'" | tr -d '"')
+[[ "$R" == "Conflict with laptop"*"Plan94"*"Compare"* ]] && pass "Banner: $R" || fail "Conflict banner" "$R"
+R=$(ev "String(!!document.querySelector('[data-testid=conflict-banner]'))" | tr -d '"')
+api "navigateTo('Plan94')" >/dev/null; sleep 1
+R2=$(ev "String(!!document.querySelector('[data-testid=conflict-banner]'))" | tr -d '"')
+[[ "$R2" == "false" ]] && pass "The page itself has no banner" || fail "Banner on an ordinary page" "$R2"
+
+step "Compare shows only the differing blocks, side by side; Resolve waits for a choice per block"
+open94
+R=$(ev "(()=>{const rows=[...document.querySelectorAll('[data-testid=conflict-rows] > li')];return rows.length+'|'+rows.map(r=>[...r.querySelectorAll('.conflict-version')].map(v=>v.textContent).join(' => ')).join(' ## ')})()" | tr -d '"')
+[[ "$R" == "2|Ship sync setup => Ship sync setup and xylophone94 conflicts ## (not on this page"*" => Budget: 20k" ]] && pass "Two rows: the changed block and the new one" || fail "Compare rows" "$R"
+R=$(ev "(document.querySelector('[data-testid=conflict-resolve]')?.disabled)+'|'+(document.querySelector('[data-testid=conflict-compare] .disabled-reason')?.textContent||'')" | tr -d '"')
+[[ "$R" == "true|Choose a version for 2 more blocks." ]] && pass "Resolve disabled: $R" || fail "Resolve gate" "$R"
+ss "94-conflict-compare"
+
+step "Keep theirs for every block → the page has their text, the copy is in the Trash; Undo puts both back"
+ev "document.querySelector('[data-testid=conflict-all-theirs]')?.click()" >/dev/null; sleep 0.2
+ev "document.querySelector('[data-testid=conflict-resolve]')?.click()" >/dev/null; sleep 2
+R=$(blocks94 "Plan94")
+[[ "$R" == "Goals for Q4 ¦ Ship sync setup and xylophone94 conflicts ¦ Hire two people ¦ Budget: 20k" ]] && pass "Page: $R" || fail "Keep theirs" "$R"
+R=$(ev "window.__MINOTES__.getCurrentPage()" | tr -d '"')
+[[ "$R" == "Plan94" ]] && pass "It shows the page" || fail "After resolve, current page" "$R"
+[[ "$(trashed94)" == "true" ]] && pass "The copy is in the Trash" || fail "Copy not trashed" ""
+ev "[...document.querySelectorAll('.minotes-toast')].find(t=>t.textContent.includes('Resolved'))?.querySelector('button')?.click()" >/dev/null; sleep 2
+R=$(blocks94 "Plan94")
+[[ "$R" == "Goals for Q4 ¦ Ship sync setup ¦ Hire two people" && "$(trashed94)" == "false" ]] && pass "Undo: the page as before, the copy back" || fail "Undo resolve" "$R / trashed=$(trashed94)"
+
+step "Keep both + Keep mine: theirs goes right after mine; the new block stays out"
+open94
+ev "document.querySelector('[data-testid=conflict-choice-0-both]')?.click()" >/dev/null
+ev "document.querySelector('[data-testid=conflict-choice-1-mine]')?.click()" >/dev/null; sleep 0.2
+ev "document.querySelector('[data-testid=conflict-resolve]')?.click()" >/dev/null; sleep 2
+R=$(blocks94 "Plan94")
+[[ "$R" == "Goals for Q4 ¦ Ship sync setup ¦ Ship sync setup and xylophone94 conflicts ¦ Hire two people" ]] && pass "Both kept: $R" || fail "Keep both" "$R"
+[[ "$(trashed94)" == "true" ]] && pass "The copy is in the Trash again" || fail "Copy not trashed (keep both)" ""
+press "Escape"; sleep 0.3
+
+# ═══════════════════════════════════════════════
+journey "95. Deletions held from another device: I open one, keep some, trash the rest (UX Wave 4)"
+# The mass-deletion banner's review list: every page is a link (it opens) with
+# a Keep checkbox; Move to trash applies the rest. Simulated through the mock;
+# the desktop backend's partial keep is covered by core tests.
+# ═══════════════════════════════════════════════
+if [[ "$JOURNEY_BACKEND" != "desktop" ]]; then
+api "closePanel()" >/dev/null; press "Escape"; sleep 0.3
+M95="const m=await import('/src/lib/mockBackend.ts');const sm=await import('/src/lib/syncMock.ts');const api=await import('/src/lib/api.ts');"
+ev "(async()=>{$M95 const items=[];for(const t of ['Held95 A','Held95 B','Held95 C','Held95 D']){const p=await api.createPage(t);await api.createBlock(p.id,'note '+t);items.push({id:p.id,title:t,kind:'page'})}sm.mockRemotes.held={pages:4,journals:0,folders:0,titles:items.map(i=>i.title),total_pages:12,items};Object.assign(m.mockSync,{enabled:true,remote_url:'/home/user/Repos/notes.git',fail:null});window.dispatchEvent(new Event('minotes-sync-now'));return 1})()" >/dev/null; sleep 2
+
+step "The banner's review lists every page with Keep and a link"
+ev "document.querySelector('[data-testid=held-review]')?.click()" >/dev/null; sleep 0.5
+R=$(ev "(()=>{const l=document.querySelector('[data-testid=held-list]');if(!l)return 'no list';return l.querySelectorAll('li').length+'|'+l.querySelectorAll('input[type=checkbox]').length+'|'+[...l.querySelectorAll('.nb-held-open')].map(b=>b.textContent).join(',')})()" | tr -d '"')
+[[ "$R" == "4|4|Held95 A,Held95 B,Held95 C,Held95 D" ]] && pass "4 items, 4 Keep boxes, 4 links" || fail "Review list" "$R"
+ss "95-held-review"
+
+step "A title opens that page (the banner stays)"
+ev "[...document.querySelectorAll('.nb-held-open')].find(b=>b.textContent==='Held95 B')?.click()" >/dev/null; sleep 1.2
+R=$(ev "window.__MINOTES__.getCurrentPage()+'|'+!!document.querySelector('[data-testid=held-deletions-banner]')" | tr -d '"')
+[[ "$R" == "Held95 B|true" ]] && pass "Opened Held95 B, banner still there" || fail "Open a held page" "$R"
+
+step "Keep A and C: the button says what happens; the other two go to the Trash"
+ev "[...document.querySelectorAll('[data-testid=held-list] li')].filter(li=>/Held95 (A|C)/.test(li.textContent)).forEach(li=>li.querySelector('input').click())" >/dev/null; sleep 0.3
+R=$(ev "document.querySelector('[data-testid=held-trash]')?.textContent||'none'" | tr -d '"')
+[[ "$R" == "Move 2 to trash, keep 2" ]] && pass "Button: $R" || fail "Partial keep button" "$R"
+ev "document.querySelector('[data-testid=held-trash]')?.click()" >/dev/null; sleep 1.2
+R=$(ev "(async()=>{$M95 const t=(await api.listTrash()).map(x=>x.title).filter(x=>x.startsWith('Held95')).sort().join(',');return t+'|'+!!document.querySelector('[data-testid=held-deletions-banner]')+'|'+[...document.querySelectorAll('.minotes-toast')].map(x=>x.textContent).join(' ¦ ')})()" | tr -d '"')
+[[ "$R" == "Held95 B,Held95 D|false|"*"kept 2"* ]] && pass "B and D trashed, A and C kept; banner gone" || fail "Partial keep" "$R"
+ev "(async()=>{$M95 sm.mockRemotes.held=null;Object.assign(m.mockSync,{enabled:false,remote_url:null,last_sync:null});return 1})()" >/dev/null
+fi
 
 # ═══════════════════════════════════════════════
 close_app

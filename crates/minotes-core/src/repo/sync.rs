@@ -1947,9 +1947,14 @@ pub(crate) fn parse_frontmatter_id(content: &str) -> Option<Uuid> {
 }
 
 /// Turn the remote side of a conflicted page into a SEPARATE page: fresh page id,
-/// title `"<title> (conflict from <host>)"`, block ids replaced by fresh ones (so its
+/// title `"<title> (conflict from <host>)"`, block ids replaced by new ones (so its
 /// blocks get new ids instead of stealing the original page's blocks), journal
 /// flag dropped. Properties are kept.
+///
+/// The copy's block ids are derived from the copy's page id and the original
+/// block id ([`conflict_block_id`]), so the compare view can pair every block of
+/// the copy with the block it is a version of — on every device, since the ids
+/// travel in the file.
 pub(crate) fn rewrite_as_conflict_copy(content: &str, fallback_title: &str, host: &str) -> String {
     let fm = parse_frontmatter(content);
     let base = fm
@@ -1957,17 +1962,37 @@ pub(crate) fn rewrite_as_conflict_copy(content: &str, fallback_title: &str, host
         .clone()
         .filter(|t| !t.trim().is_empty())
         .unwrap_or_else(|| fallback_title.to_string());
-    rewrite_as_separate_page(content, &format!("{base} (conflict from {host})"))
+    let copy_id = Uuid::now_v7();
+    rewrite_page_as(content, &format!("{base} (conflict from {host})"), copy_id, &|old| conflict_block_id(&copy_id, &old))
+}
+
+/// The id a conflict copy `copy_page` gives its version of `original_block`.
+pub fn conflict_block_id(copy_page: &Uuid, original_block: &Uuid) -> Uuid {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(b"minotes conflict copy v1");
+    h.update(copy_page.as_bytes());
+    h.update(original_block.as_bytes());
+    let d = h.finalize();
+    let mut b = [0u8; 16];
+    b.copy_from_slice(&d[..16]);
+    uuid::Builder::from_random_bytes(b).into_uuid()
 }
 
 /// Rewrite a page file as a SEPARATE page titled `title`: fresh page id, fresh
 /// block ids, journal flag dropped, properties kept. The conflict-copy policy
 /// shared by git sync and outside edits of the markdown mirror.
 pub(crate) fn rewrite_as_separate_page(content: &str, title: &str) -> String {
+    rewrite_page_as(content, title, Uuid::now_v7(), &|_| Uuid::now_v7())
+}
+
+/// [`rewrite_as_separate_page`] with page id `id` and block ids from `new_id`
+/// (given the old marker's id).
+fn rewrite_page_as(content: &str, title: &str, id: Uuid, new_id: &dyn Fn(Uuid) -> Uuid) -> String {
     let fm = parse_frontmatter(content);
     let mut out = String::new();
     out.push_str("---\n");
-    out.push_str(&format!("id: {}\n", Uuid::now_v7()));
+    out.push_str(&format!("id: {id}\n"));
     out.push_str(&format!("title: {}\n", serde_json::to_string(&title).unwrap_or_default()));
     for (k, v) in &fm.props {
         let needs_quote = v.contains('\n') || v.contains('\r') || v.starts_with('"') || v.trim() != v;
@@ -1976,7 +2001,7 @@ pub(crate) fn rewrite_as_separate_page(content: &str, title: &str) -> String {
     }
     out.push_str("---\n\n");
     for line in strip_frontmatter(content) {
-        out.push_str(&refresh_marker(line));
+        out.push_str(&remap_marker(line, new_id));
         out.push('\n');
     }
     out
@@ -1986,12 +2011,17 @@ pub(crate) fn rewrite_as_separate_page(content: &str, title: &str) -> String {
 /// the file, so every device that imports this copy agrees on its block ids (and
 /// re-exports byte-identical files), while never colliding with the original's.
 pub(crate) fn refresh_marker(line: &str) -> String {
+    remap_marker(line, &|_| Uuid::now_v7())
+}
+
+/// Replace a line's block id marker `<!-- id:X -->` with `new_id(X)`.
+fn remap_marker(line: &str, new_id: &dyn Fn(Uuid) -> Uuid) -> String {
     if let Some(start) = line.rfind("<!-- id:") {
         let after = &line[start + "<!-- id:".len()..];
         if let Some(end) = after.find("-->") {
-            if Uuid::parse_str(after[..end].trim()).is_ok() {
+            if let Ok(old) = Uuid::parse_str(after[..end].trim()) {
                 let rest = &after[end + 3..];
-                return format!("{}<!-- id:{} -->{rest}", &line[..start], Uuid::now_v7());
+                return format!("{}<!-- id:{} -->{rest}", &line[..start], new_id(old));
             }
         }
     }

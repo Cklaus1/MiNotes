@@ -1,0 +1,76 @@
+/* Sync conflict copies: the banner and the compare view (UX Wave 4). */
+.nb-modal[data-testid="conflict-compare"] {
+  width: min(920px, calc(100vw - 32px));
+  max-height: 84vh;
+}
+.conflict-bulk {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 8px 0;
+}
+.conflict-head,
+.conflict-pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.conflict-head {
+  padding: 0 2px 4px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.conflict-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.conflict-row {
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-secondary);
+}
+.conflict-version {
+  min-width: 0;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border-left: 3px solid var(--border);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.conflict-version.missing {
+  color: var(--text-muted);
+  font-style: italic;
+}
+.conflict-row.chose-mine .conflict-pair > :first-child,
+.conflict-row.chose-both .conflict-pair > * { border-left-color: var(--success); }
+.conflict-row.chose-theirs .conflict-pair > :last-child { border-left-color: var(--success); }
+.conflict-row.chose-mine .conflict-pair > :last-child,
+.conflict-row.chose-theirs .conflict-pair > :first-child { opacity: 0.55; }
+.conflict-choices {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+.conflict-choice.selected {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+@media (max-width: 640px) {
+  .conflict-head { display: none; }
+  .conflict-pair { grid-template-columns: 1fr; }
+}

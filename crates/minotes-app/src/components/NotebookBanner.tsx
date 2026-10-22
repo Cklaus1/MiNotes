@@ -9,7 +9,8 @@ import "./notebooks.css";
 interface Props {
   /** Deletions from another device that git sync held back (from the last sync). */
   heldDeletions: api.HeldDeletions | null;
-  onResolveHeld: (action: "trash" | "keep") => void;
+  /** "trash" all held deletions except `keep` (ids ticked in the review list), or "keep" them all. */
+  onResolveHeld: (action: "trash" | "keep", keep?: string[]) => void;
   /** Open a page (the "(edited outside)" copy of a conflict). */
   onOpenPage?: (id: string) => void;
   /** Git sync is on for this folder, but it was set up on another computer. */
@@ -73,6 +74,12 @@ export default function NotebookBanner({ heldDeletions, onResolveHeld, onOpenPag
   const [notices, setNotices] = useState<OutsideNotice[]>([]);
   const [, force] = useState(0);
   const [review, setReview] = useState(false);
+  /** Held items ticked "Keep" in the review list (the rest go to the Trash). */
+  const [kept, setKept] = useState<Set<string>>(() => new Set());
+  // A new hold (other items) starts over; the same hold reported again by the
+  // next sync keeps the ticks.
+  const heldKey = heldDeletions?.items?.map(i => i.id).join(",") ?? "";
+  useEffect(() => { setKept(new Set()); }, [heldKey]);
 
   const load = useCallback(() => {
     api.getNotebookSession().then(s => setSession(s ?? null)).catch(() => {});
@@ -191,7 +198,40 @@ export default function NotebookBanner({ heldDeletions, onResolveHeld, onOpenPag
             {" "}That is a lot at once, so sync did not remove them here.
             Until you decide, they stay here and are not sent back.
           </span>
-          {review && (
+          {review && heldDeletions.items?.length ? (
+            <>
+              <span className="nb-held-hint">Open a page to look at it. Tick the ones to keep — the rest go to the Trash.</span>
+              <ul className="nb-held-list items" data-testid="held-list">
+                {heldDeletions.items.map(it => (
+                  <li key={it.id} className="nb-held-item">
+                    <label className="nb-held-keep" title={`Keep “${it.title}” (the other device gets it back)`}>
+                      <input
+                        type="checkbox"
+                        checked={kept.has(it.id)}
+                        onChange={e => setKept(prev => {
+                          const next = new Set(prev);
+                          if (e.target.checked) next.add(it.id); else next.delete(it.id);
+                          return next;
+                        })}
+                        aria-label={`Keep ${it.title}`}
+                        data-testid={`held-keep-${it.id}`}
+                      />
+                      Keep
+                    </label>
+                    {it.kind === "folder" ? (
+                      <span className="nb-held-title" title="A project">{it.title}/</span>
+                    ) : (
+                      <button type="button" className="nb-held-open" onClick={() => onOpenPage?.(it.id)}
+                        title={`Open “${it.title}”`} data-testid={`held-open-${it.id}`}>
+                        {it.title}
+                      </button>
+                    )}
+                    {it.kind === "journal" && <span className="nb-held-kind">journal day</span>}
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : review && (
             <ul className="nb-held-list">
               {heldDeletions.titles.map(t => <li key={t}>{t}</li>)}
               {n + heldJournals + heldDeletions.folders > heldDeletions.titles.length && <li>…</li>}
@@ -199,9 +239,9 @@ export default function NotebookBanner({ heldDeletions, onResolveHeld, onOpenPag
           )}
         </div>
         <div className="nb-banner-actions">
-          <button className="btn btn-sm" onClick={() => setReview(r => !r)}>{review ? "Hide" : "Review"}</button>
-          <button className="btn btn-sm btn-danger" onClick={() => onResolveHeld("trash")} data-testid="held-trash">
-            Move to trash
+          <button className="btn btn-sm" onClick={() => setReview(r => !r)} data-testid="held-review">{review ? "Hide" : "Review"}</button>
+          <button className="btn btn-sm btn-danger" onClick={() => onResolveHeld("trash", [...kept])} data-testid="held-trash">
+            {kept.size > 0 ? `Move ${(heldDeletions.items?.length ?? 0) - kept.size} to trash, keep ${kept.size}` : "Move to trash"}
           </button>
           <button className="btn btn-sm" onClick={() => onResolveHeld("keep")} data-testid="held-keep">Keep them</button>
         </div>

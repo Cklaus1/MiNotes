@@ -203,8 +203,8 @@ another device") until they join again. See `PRD-encryption.md` §4.5.
 | Status-bar indicator (synced / syncing / error) | Done | `App.tsx` → status bar |
 | "Offline" state | Partial: state exists, never set | `App.tsx` |
 | Conflict toast | Done | `App.tsx` |
-| Conflict review (list, compare, resolve) | Not started | n/a |
-| Add a remote from the app | Not started (terminal only) | n/a |
+| Conflict review (compare, resolve) | Done (UX Wave 4, 2026-10-21): the copy's banner → Compare (only differing blocks, side by side, Keep mine / theirs / both), Resolve in one transaction + copy to Trash, one undo step; copies are named after the other version's device; left out of search. No list of all conflicts yet | `repo/conflicts.rs`, `components/ConflictCompare.tsx` |
+| Add a remote from the app | Done (UX Wave 4): address + Test connection + Set up sync / Change / Remove in Settings; "Join an existing notebook…" (plain and encrypted) | `sync_remote.rs`, `components/SyncRemoteSettings.tsx` |
 | Git sync from the CLI | Not started (only `sync-dir`, no git) | `minotes-cli/src/commands/sync.rs` |
 | Sync on top of the notebooks mirror | Not started (blocked on notebooks Phase 2) | n/a |
 | Encrypted-notebook sync | Built: encrypted files only, per-block merge after decryption, fail closed on a foreign remote, join with the passphrase (PRD-encryption §4.5) | `sync_encrypted.rs` |
@@ -219,8 +219,14 @@ another device") until they join again. See `PRD-encryption.md` §4.5.
 - **Status bar**: `☁ Synced 2m ago` · `☁ Syncing…` · `✗ Sync failed` (hover for detail).
 - **Conflict toast**: "Sync conflict in N page(s): both versions were kept… titled
   '… (conflict from <device>)'. Compare them and merge or delete the copy."
-- Remote setup today: `cd ~/MiNotes_Sync && git remote add origin <url>`. This is
-  the biggest onboarding hurdle. See §6 P1.
+- Remote setup [REVISED 2026-10-21, UX Wave 4]: Settings → Sync & Backup → the
+  remote's address, **Test connection** (`git ls-remote`, 20 s: reachable / empty /
+  not found / sign-in refused / not a git repository / offline / timeout), **Set
+  up sync** (init + remote + first push), Change… / Remove. Addresses are
+  validated in core (`sync_remote::validate_remote`: no `ext::` or other remote
+  helpers, no options, no password in the URL, local folders only in home or on
+  external drives unless picked). Other devices: **Join an existing notebook…**
+  (an encrypted notebook asks for its passphrase in the same dialog).
 
 ## 6. Remaining work, re-prioritised
 

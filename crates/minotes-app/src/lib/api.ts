@@ -973,11 +973,81 @@ export interface HeldDeletions {
   titles: string[];
   /** Pages in the notebook: not journal days, nothing trashed or archived. */
   total_pages: number;
+  /** Every held page / journal day / project (the review list). */
+  items?: HeldItem[];
 }
 
-/** "trash": apply the other device's deletions (to trash). "keep": keep the pages. */
-export const gitSyncResolveDeletions = (action: "trash" | "keep") =>
-  invoke<number>("git_sync_resolve_deletions", { action });
+export interface HeldItem { id: string; title: string; kind: "page" | "journal" | "folder" }
+
+/** "trash": apply the other device's deletions (to trash) — except the ids in
+ *  `keep` (ticked in the review list). "keep": keep them all. */
+export const gitSyncResolveDeletions = (action: "trash" | "keep", keep?: string[]) =>
+  invoke<number>("git_sync_resolve_deletions", { action, keep: keep?.length ? keep : null });
+
+// ── Sync setup from the app (UX Wave 4; core sync_remote) ──
+
+export type RemoteCheckStatus = "reachable" | "empty" | "not_found" | "auth" | "not_a_repo" | "offline" | "timeout" | "invalid" | "other";
+/** "Test connection". */
+export interface RemoteCheck {
+  status: RemoteCheckStatus;
+  message: string;
+  branches: string[];
+  default_branch: string | null;
+  /** Works, but… (a non-bare repository). */
+  warning: string | null;
+  /** The address as git gets it (canonical for a local folder). */
+  url: string;
+}
+export const gitSyncTestRemote = (url: string) =>
+  invoke<RemoteCheck>("git_sync_test_remote", { url });
+/** "Set up sync": remote (tested) + init + first push for the open notebook. */
+export const gitSyncSetup = (url: string) =>
+  invoke<GitSyncStatus>("git_sync_setup", { url });
+export const gitSyncSetRemote = (url: string) =>
+  invoke<GitSyncStatus>("git_sync_set_remote", { url });
+export const gitSyncRemoveRemote = () =>
+  invoke<GitSyncStatus>("git_sync_remove_remote");
+/** Native folder picker for a remote (a picked folder may be outside home). Desktop only. */
+export const pickSyncRemoteFolder = () =>
+  invoke<string | null>("pick_sync_remote_folder");
+/** "Join an existing notebook…" — a plain remote, or an encrypted one with
+ *  its passphrase (without one the error starts with "ENCRYPTED_REMOTE:"). */
+export const joinNotebook = (remote: string, name: string, location: string | undefined, passphrase?: string) =>
+  invoke<NotebookInfo>("join_notebook", { remote, name, location: location ?? null, passphrase: passphrase || null });
+
+// ── Sync conflict copies: compare and resolve (core repo/conflicts) ──
+
+export interface ConflictSide { block_id: string; content: string; depth: number }
+export interface ConflictRow { key: string; mine: ConflictSide | null; theirs: ConflictSide | null }
+export interface ConflictCompare {
+  copy_id: string;
+  copy_title: string;
+  device: string;
+  page_id: string | null;
+  page_title: string | null;
+  page_trashed: boolean;
+  rows: ConflictRow[];
+  /** Paired by block id (else by aligning text: an older copy). */
+  exact: boolean;
+}
+export type ConflictChoiceKind = "mine" | "theirs" | "both";
+export interface ConflictChoice { key: string; choice: ConflictChoiceKind }
+export interface ConflictResolution {
+  page_id: string;
+  copy_id: string;
+  before: RestoreBlock[];
+  after: RestoreBlock[];
+  kept_mine: number;
+  took_theirs: number;
+  kept_both: number;
+}
+export const conflictCompare = (copyId: string) =>
+  invoke<ConflictCompare>("conflict_compare", { copyId });
+export const resolveConflict = (copyId: string, choices: ConflictChoice[]) =>
+  invoke<ConflictResolution>("resolve_conflict", { copyId, choices });
+/** Undo (`before`, copy back) / redo (`after`, copy trashed) a resolution. */
+export const setConflictResolution = (pageId: string, copyId: string, blocks: RestoreBlock[], copyInTrash: boolean) =>
+  invoke<void>("set_conflict_resolution", { pageId, copyId, blocks, copyInTrash });
 
 // ── Outside edits of the markdown copy (PRD-notebooks Phase 4) ──
 

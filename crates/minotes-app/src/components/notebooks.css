@@ -355,6 +355,33 @@
   color: var(--text-secondary);
   font-size: 12px;
 }
+/* The review list (UX Wave 4): open a page, tick the ones to keep. */
+.nb-held-list.items {
+  list-style: none;
+  padding-left: 0;
+  max-height: 220px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.nb-held-hint { color: var(--text-secondary); font-size: 12px; }
+.nb-held-item { display: flex; align-items: center; gap: 10px; min-height: 24px; }
+.nb-held-keep { display: inline-flex; align-items: center; gap: 4px; color: var(--text-muted); cursor: pointer; flex-shrink: 0; }
+.nb-held-open {
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--accent);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nb-held-open:hover, .nb-held-open:focus-visible { text-decoration: underline; }
+.nb-held-title { color: var(--text-primary); }
+.nb-held-kind { color: var(--text-muted); font-size: 11px; }
 
 /* Settings section */
 .settings-subtitle {
