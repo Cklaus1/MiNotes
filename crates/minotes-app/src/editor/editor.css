@@ -668,6 +668,27 @@
 }
 .page-prop-add:hover { color: var(--accent); border-color: var(--accent); }
 
+/* Image resize handle (editor/imageView.ts): only while the block is edited */
+.block-content .ProseMirror .img-resizable { position: relative; display: inline-block; max-width: 100%; line-height: 0; }
+.block-content .ProseMirror .img-resizable img { max-width: 100%; height: auto; }
+.img-resize-handle {
+  position: absolute;
+  right: -4px;
+  bottom: 2px;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--bg-primary);
+  border-radius: 3px;
+  background: var(--accent);
+  cursor: nwse-resize;
+  opacity: 0;
+  transition: opacity 0.12s;
+  touch-action: none;
+}
+.ProseMirror-focused .img-resizable:hover .img-resize-handle,
+.ProseMirror-focused .img-resize-handle:active { opacity: 1; }
+.block-static .img-resize-handle { display: none; }
+
 /* Windowed big pages (lib/blockWindow.ts): PageView corrects the scroll itself */
 .content.is-windowed { overflow-anchor: none; }
 .block-list > .block-gap { width: 100%; pointer-events: none; }

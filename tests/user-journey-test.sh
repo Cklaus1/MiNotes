@@ -5159,6 +5159,18 @@ C=$(api "getLiveBlockContent(0)" | tr -d '"')
 [[ "$C" == "Select [some](https://example.com) words here" ]] && pass "Linked: $C" || fail "Toolbar link" "$C"
 ev "document.activeElement?.blur?.()" >/dev/null; sleep 0.5
 
+step "An image gets a resize handle; dragging it writes ![alt|width], double-click resets"
+PNG108="iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAEklEQVR4nGP4z8DwnxhmGEoKAXxZP8ElOKDHAAAAAElFTkSuQmCC"
+ev "(async()=>{$A108 const p=await api.createPage('Img108 $S108');await api.createBlock(p.id,'![dot|120](data:image/png;base64,$PNG108)');return 1})()" >/dev/null
+api "navigateTo('Img108 $S108')" >/dev/null; sleep 1.5
+R1=$(ev "Math.round(document.querySelector('.block-list img')?.getBoundingClientRect().width||0)" | tr -d '"')
+api "focusBlock(0)" >/dev/null; sleep 0.5
+R=$(ev "(async()=>{const h=document.querySelector('.block-list .img-resize-handle');if(!h)return 'no handle';const r=h.getBoundingClientRect();const o=(t,x)=>new PointerEvent(t,{bubbles:true,cancelable:true,clientX:x,clientY:r.top+4,pointerId:7});h.dispatchEvent(o('pointerdown',r.left+4));h.dispatchEvent(o('pointermove',r.left+84));h.dispatchEvent(o('pointerup',r.left+84));await new Promise(s=>setTimeout(s,400));return window.__MINOTES__.getLiveBlockContent(0).match(/\\|(\\d+)\\]/)?.[1]||'none'})()" | tr -d '"')
+ev "document.querySelector('.block-list .img-resize-handle')?.dispatchEvent(new MouseEvent('dblclick',{bubbles:true}))" >/dev/null; sleep 0.5
+R2=$(api "getLiveBlockContent(0)" | tr -d '"')
+[[ "$R1" == "120" && "$R" -ge 190 && "$R" -le 210 && "$R2" == '![dot](data:image/png;base64,'* ]] 2>/dev/null && pass "120 px → dragged to ${R} px → reset" || fail "Image resize" "start=$R1 dragged=$R reset=${R2:0:40}"
+ev "document.activeElement?.blur?.()" >/dev/null; sleep 0.5
+
 step "Kanban cards read as text, not markdown"
 ev "(async()=>{$A108 const p=await api.createPage('Board108 $S108');const c=await api.createBlock(p.id,'## Doing');await api.createBlock(p.id,'TODO call [[Ann108]] about [the doc](https://x.org) **today**',c.id);return 1})()" >/dev/null
 api "navigateTo('Board108 $S108')" >/dev/null; sleep 1.5

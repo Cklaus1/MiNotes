@@ -1788,6 +1788,8 @@ ev "(async()=>{$A22 await api.createPage('Hub22 $S22');const m=await api.createP
 api "navigateTo('Hub22 $S22')" >/dev/null; waitfor "!!document.querySelector('.unlinked-refs-toggle-btn')" 15
 ev "document.querySelector('.unlinked-refs')?.scrollIntoView({block:'center'})" >/dev/null; sleep 0.5
 rclick22 "document.querySelector('.unlinked-refs-toggle-btn')"; sleep 0.8
+waitfor "!!document.querySelector('[data-testid=unlinked-link]')" 10 || rclick22 "document.querySelector('.unlinked-refs-toggle-btn')"
+ev "document.querySelector('[data-testid=unlinked-link]')?.scrollIntoView({block:'center'})" >/dev/null; sleep 0.5
 rclick22 "document.querySelector('[data-testid=unlinked-link]')"; sleep 1.5
 is "The mention is a link now" "$(db w22 "select content from blocks where content like 'call %$S22%'")" "call [[hub22 $S22]] today"
 waitfor "(document.querySelector('.backlinks h4')?.textContent||'').startsWith('Backlinks (1)')" 10 && pass "The backlinks list it" || fail "Backlinks after Link" "$(ev "document.querySelector('.backlinks h4')?.textContent||'none'")"

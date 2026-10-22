@@ -14,6 +14,8 @@ import CodeBlockLowlight from "@tiptap/extension-code-block-lowlight";
 import { mergeAttributes } from "@tiptap/core";
 import { codeLanguageLabel } from "./codeLanguage";
 import { codeBlockNodeView } from "./codeBlockView";
+import { imageNodeView } from "./imageView";
+import { DOMSerializer } from "@tiptap/pm/model";
 import { TableRow } from "@tiptap/extension-table-row";
 import { MarkdownTable, AlignedTableCell, AlignedTableHeader } from "./tables";
 import Image from "@tiptap/extension-image";
@@ -184,6 +186,13 @@ export function createBlockExtensions(cb: BlockExtensionCallbacks) {
             ["span", { class: "remote-img-alt" }, alt || "Image"],
             ["span", { class: "remote-img-host" }, remoteHost(src)]],
         ];
+      },
+      // Resize handles; the width is `|N` at the end of the alt (editor/imageView.ts).
+      addNodeView() {
+        return (props: any) => imageNodeView(props, () => ({
+          dom: DOMSerializer.fromSchema(props.editor.schema).serializeNode(props.node) as HTMLElement,
+          ignoreMutation: () => true,
+        } as any));
       },
     }).configure({ inline: false, allowBase64: true }),
     Typography,
