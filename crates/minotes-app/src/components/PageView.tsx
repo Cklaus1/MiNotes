@@ -94,6 +94,9 @@ export default function PageView({
   const scrollerRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const [dragPinId, setDragPinId] = useState<string | null>(null);
+  // The block just made by Enter: rendered at once even past the window's edge
+  // (it takes the focus in the same keystroke).
+  const [enterPinId, setEnterPinId] = useState<string | null>(null);
 
   // Optimistic edits not yet confirmed by a fetched tree. A refresh (e.g. the delayed
   // [[link]] refresh, or a sync import) may carry a tree read BEFORE these edits
@@ -604,6 +607,7 @@ export default function PageView({
       // Progressive rendering: one more block, one more rendered (the new block
       // must exist now to take focus, even at the edge of the rendered range).
       setRenderState(st => ({ pageId: page.id, limit: (st.pageId === page.id ? st.limit : INITIAL_RENDER) + 1 }));
+      if (windowedRef.current) setEnterPinId(tempId);
     });
     // Same keystroke: the next key event already goes to the new block.
     blockRefs.current.get(tempId)?.focus("start");
@@ -851,7 +855,8 @@ export default function PageView({
         return false;
       });
     }
-    const depthOf = (b: Block) => { let d = 0; let p = b.parent_id; const byId = new Map(all.map(x => [x.id, x])); while (p) { d++; p = byId.get(p)?.parent_id; } return d; };
+    const byId = new Map(all.map(x => [x.id, x]));
+    const depthOf = (b: Block) => { let d = 0; let p = b.parent_id; while (p && d < 1000) { d++; p = byId.get(p)?.parent_id; } return d; };
     const text = templateFromBlocks(picked.map((b) => ({ content: b.content, depth: depthOf(b) })));
     if (!text.trim()) { showToast("Nothing to save: the blocks are empty"); return; }
     await refreshUserTemplates();
@@ -1933,7 +1938,7 @@ export default function PageView({
     if (!windowed) return filteredVisibleBlocks.slice(0, renderLimit).map((block, idx) => renderBlockItem(block, idx));
     // Windowed: the blocks near the viewport + the edited / dragged one; spacers between.
     const pinned: number[] = [];
-    for (const id of [activeBlockId, dragPinId]) {
+    for (const id of [activeBlockId, dragPinId, enterPinId]) {
       if (!id) continue;
       const i = filteredVisibleBlocks.findIndex(b => b.id === id || b.id === rid(id));
       if (i >= 0) pinned.push(i);
@@ -1944,7 +1949,7 @@ export default function PageView({
       ? renderBlockItem(filteredVisibleBlocks[part.index], part.index)
       : <div key={`gap-${part.from}`} className="block-gap" aria-hidden="true" data-gap={`${part.from}-${part.to}`} style={{ height: prefix[part.to] - prefix[part.from] }} />);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filteredVisibleBlocks, renderLimit, selectedBlockIds, blockTreeInfo, collapsedBlocks, windowed, winStart, winEnd, activeBlockId, dragPinId]);
+  }, [filteredVisibleBlocks, renderLimit, selectedBlockIds, blockTreeInfo, collapsedBlocks, windowed, winStart, winEnd, activeBlockId, dragPinId, enterPinId]);
 
   // Windowed: remember each shown block's height (for its spacer later), and keep
   // the view still when a block shown for the first time above it isn't as tall
