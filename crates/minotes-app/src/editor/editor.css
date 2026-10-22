@@ -362,25 +362,35 @@
   background: rgba(137, 180, 250, 0.3);
 }
 
-/* Slash command menu */
+/* Slash command menu: icon, title + one-line description, grouped (UX Wave 4) */
 .slash-menu {
   background: var(--bg-secondary, #1e1e2e);
   border: 1px solid var(--border, #45475a);
   border-radius: 8px;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
   padding: 4px;
-  min-width: 200px;
-  max-height: 320px;
+  width: 300px;
+  max-width: calc(100vw - 32px);
+  max-height: min(380px, 60vh);
   overflow-y: auto;
   z-index: 50;
 }
 
+.slash-menu-group {
+  padding: 8px 10px 3px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted, #6c7086);
+}
+.slash-menu-row:first-child .slash-menu-group { padding-top: 4px; }
+
 .slash-menu-item {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
+  align-items: center;
   width: 100%;
-  padding: 6px 10px;
+  padding: 5px 8px;
   border: none;
   border-radius: 6px;
   background: transparent;
@@ -388,19 +398,37 @@
   cursor: pointer;
   text-align: left;
   font-size: 13px;
-  line-height: 1.4;
-  gap: 1px;
+  line-height: 1.35;
+  gap: 10px;
+}
+
+.slash-menu-item-icon {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  border: 1px solid var(--border, #45475a);
+  background: var(--bg-primary, #1e1e2e);
+  color: var(--text-secondary, var(--text-primary));
+}
+
+.slash-menu-item-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
 }
 
 .slash-menu-item:hover,
 .slash-menu-item.active {
-  background: var(--accent, #89b4fa);
-  color: var(--bg-primary, #1e1e2e);
+  background: color-mix(in srgb, var(--accent, #89b4fa) 16%, transparent);
+  color: var(--text-primary, #cdd6f4);
 }
-
-.slash-menu-item.active .slash-menu-item-description,
-.slash-menu-item:hover .slash-menu-item-description {
-  color: var(--bg-secondary, #313244);
+.slash-menu-item.active .slash-menu-item-icon {
+  border-color: var(--accent, #89b4fa);
+  color: var(--accent, #89b4fa);
 }
 
 .slash-menu-item-title {
@@ -408,8 +436,11 @@
 }
 
 .slash-menu-item-description {
-  font-size: 11px;
+  font-size: 11.5px;
   color: var(--text-muted, #6c7086);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .slash-menu-empty {
@@ -434,4 +465,37 @@
   background: color-mix(in srgb, var(--accent, #6366f1) 18%, transparent);
   border-radius: 4px;
   transition: background 0.4s ease-out;
+}
+
+/* Callouts: `> [!note] …` (CalloutNode) */
+.block-content .ProseMirror .callout {
+  --callout: var(--accent, #89b4fa);
+  margin: 0.2em 0;
+  padding: 6px 10px 6px 12px;
+  border-left: 3px solid var(--callout);
+  border-radius: 4px 6px 6px 4px;
+  background: color-mix(in srgb, var(--callout) 10%, transparent);
+}
+.block-content .ProseMirror .callout-tip { --callout: var(--success, #a6e3a1); }
+.block-content .ProseMirror .callout-warning { --callout: var(--warning, #f9e2af); }
+.block-content .ProseMirror .callout::before {
+  content: attr(data-callout-label);
+  display: block;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--callout) 70%, var(--text-primary));
+  margin-bottom: 2px;
+  user-select: none;
+}
+.block-content .ProseMirror .callout > p { margin: 0; }
+
+/* promptDialog's live hint (e.g. the day "next friday" means) */
+.confirm-dialog-hint {
+  display: block;
+  min-height: 1.4em;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
 }

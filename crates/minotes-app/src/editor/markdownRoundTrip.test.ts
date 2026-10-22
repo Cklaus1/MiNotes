@@ -85,6 +85,11 @@ describe("markdown → doc → markdown is identical", () => {
     ["code block with language", "```python\nprint('hi')\n```", ["codeBlock"]],
     ["code block without language", "```\nplain\n```", ["codeBlock"]],
     ["quote", "> wise words", ["blockquote"]],
+    ["callout (note)", "> [!note] Remember this", ["callout"]],
+    ["callout (warning) with formatting", "> [!warning] Don't **delete** the [[Backups]] page", ["callout", "mark:bold", "wikiLink"]],
+    ["callout (tip) two lines", "> [!tip] First line\n> second line", ["callout", "hardBreak"]],
+    ["callout of another type keeps it", "> [!question] Why?", ["callout"]],
+    ["quote that only mentions [!note] is not a callout", "> plain quote", ["blockquote"]],
     ["table", "| a | b |\n| --- | --- |\n| 1 | 2 |", ["table", "tableRow", "tableHeader", "tableCell"]],
     ["task list", "- [ ] open\n- [x] done", ["taskList", "taskItem"]],
     ["TODO marker", "TODO write tests", []],
@@ -105,6 +110,7 @@ describe("markdown → doc → markdown is identical", () => {
       const k = kinds();
       for (const want of expectKinds) expect(k, `${name}: doc has ${want}`).toContain(want);
       if (name.endsWith("is not a tag")) expect(k).not.toContain("tag");
+      if (name.endsWith("is not a callout")) expect(k).not.toContain("callout");
     });
   }
 
@@ -165,6 +171,13 @@ describe("what the user types serializes correctly", () => {
     ed.commands.setTextSelection({ from: 6, to: 10 });
     ed.commands.toggleHighlight();
     expect(md()).toBe("make ==this== bright");
+  });
+
+  test("typing '> [!warning] ' makes a callout that saves as > [!warning] …", () => {
+    typeText("> [!warning] mind the gap");
+    expect(kinds()).toContain("callout");
+    expect(md()).toBe("> [!warning] mind the gap");
+    expect(roundTrip(md())).toBe("> [!warning] mind the gap");
   });
 
   test("typing [[Page]] makes a wiki link", () => {

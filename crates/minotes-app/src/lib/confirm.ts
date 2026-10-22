@@ -30,7 +30,7 @@ export interface ConfirmOptions {
 export interface PendingConfirm extends ConfirmOptions {
   id: number;
   /** A text field: the dialog is a prompt (promptDialog) and answers its value. */
-  input?: { label: string; value: string; placeholder?: string };
+  input?: { label: string; value: string; placeholder?: string; hint?: (value: string) => string };
 }
 
 /** promptDialog: the app's own text prompt (never `window.prompt`). */
@@ -45,6 +45,8 @@ export interface PromptOptions {
   /** Label of the confirming button (default "OK"). */
   confirmLabel?: string;
   cancelLabel?: string;
+  /** A live line under the field describing what was typed (e.g. the day a phrase means). */
+  hint?: (value: string) => string;
 }
 
 type Listener = (current: PendingConfirm | null) => void;
@@ -84,7 +86,7 @@ export function promptDialog(opts: PromptOptions): Promise<string | null> {
   return new Promise<string | null>((resolve) => {
     const req: PendingConfirm = {
       title: opts.title, message: opts.message ?? "", confirmLabel: opts.confirmLabel, cancelLabel: opts.cancelLabel,
-      input: { label: opts.label, value: opts.defaultValue ?? "", placeholder: opts.placeholder }, id: nextId++,
+      input: { label: opts.label, value: opts.defaultValue ?? "", placeholder: opts.placeholder, hint: opts.hint }, id: nextId++,
     };
     queue.push({ req, resolve: (a) => resolve(typeof a === "string" && a.trim() ? a.trim() : null) });
     if (queue.length === 1) notify();

@@ -26,6 +26,7 @@ import { PageLinkSuggestion } from "./PageLinkSuggestion";
 import { BlockRefSuggestion } from "./BlockRefSuggestion";
 import { TaskListInputRule } from "./taskListInputRule";
 import { TodoKeyword } from "./todoKeyword";
+import { CalloutNode } from "./CalloutNode";
 // ── Import / attachments ──
 import { displaySrc } from "../lib/attachments";
 // ── End import ──
@@ -129,6 +130,7 @@ export function createBlockExtensions(cb: BlockExtensionCallbacks) {
       },
     }).configure({ nested: true }),
     HighlightMark,
+    CalloutNode,
     // ── Import / attachments: `attachment:<hash>/<name>` srcs are served by the
     // attachment protocol; the stored markdown keeps the reference. ──
     Image.extend({

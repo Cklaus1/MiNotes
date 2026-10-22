@@ -350,7 +350,7 @@ export function useBlockEditor({
             const node = $from.node(d);
             const name = node.type.name;
             if (name === "listItem" || name === "taskItem" || name === "codeBlock" ||
-                name === "table" || name === "blockquote" || name === "bulletList" ||
+                name === "table" || name === "blockquote" || name === "callout" || name === "bulletList" ||
                 name === "orderedList" || name === "taskList") {
               isInsideSpecialNode = true;
               break;

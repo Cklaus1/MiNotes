@@ -61,6 +61,9 @@ export default function ConfirmHost() {
               data-confirm-input=""
               data-testid="prompt-input"
             />
+            {current.input.hint && (
+              <span className="confirm-dialog-hint" data-testid="prompt-hint" aria-live="polite">{current.input.hint(value)}</span>
+            )}
           </label>
         )}
         <div className="confirm-dialog-actions">

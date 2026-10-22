@@ -28,6 +28,9 @@ export const BlockRefSuggestion = Extension.create({
             primeBlockRef({ id: props.id, content: props.content ?? "", pageTitle: props.pageTitle, pageId: props.pageId ?? "" });
           }
           const contentPreview = refLabel(props.content ?? "");
+          // The slash menu's "Embed block" opened this picker: insert an embed.
+          const embed = !!(editor.storage as any).blockRefEmbed;
+          (editor.storage as any).blockRefEmbed = false;
 
           editor
             .chain()
@@ -38,6 +41,7 @@ export const BlockRefSuggestion = Extension.create({
               attrs: {
                 blockId: props.id,
                 content: contentPreview,
+                embed,
               },
             })
             .run();
@@ -103,7 +107,9 @@ export const BlockRefSuggestion = Extension.create({
               return (reactRenderer?.ref as any)?.onKeyDown?.(props) ?? false;
             },
 
-            onExit() {
+            onExit(props: SuggestionProps) {
+              // Closed without picking: the next (( is a plain reference again.
+              (props?.editor?.storage as any) && ((props.editor.storage as any).blockRefEmbed = false);
               popup?.[0]?.destroy();
               reactRenderer?.destroy();
             },
