@@ -241,6 +241,10 @@ interface Props {
   onShiftClick?: (blockId: string) => void;
   onOpenWhiteboard?: (whiteboardId: string) => void;
   onDragReorder?: (draggedBlockId: string, targetBlockId: string, position: DropPosition) => void;
+  /** A template from the `/` menu (its text); `intoEmpty`: it replaces this block. */
+  onInsertTemplate?: (blockId: string, text: string, intoEmpty: boolean) => void;
+  /** Block menu: save this block and its children as a template. */
+  onSaveAsTemplate?: (blockId: string) => void;
 }
 
 /** The block being dragged by its handle (set on dragstart, cleared on drop/dragend). */
@@ -275,7 +279,7 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
   block, depth = 0, hasChildren = false, isLastSibling = false, isOnActivePath = false, onFocusBlock, onBlurBlock, dataBlockId, selected = false, onUpdate, onDelete, onPageLinkClick,
   onBlockRefClick, onEnter, canEnter, onBackspaceAtStart, onArrowUp, onArrowDown, onPasteMultiline, onPasteBlocks,
   onIndent, onOutdent, onEscape, onDuplicate, onToggleCollapse, onSetCollapsed, onSetAllCollapsed, collapsed = false, hiddenCount = 0,
-  onZoomIn, onShiftClick, onOpenWhiteboard, onDragReorder,
+  onZoomIn, onShiftClick, onOpenWhiteboard, onDragReorder, onInsertTemplate, onSaveAsTemplate,
 }, ref) => {
   const settings = getSettingsCached();
   const [editorMode, setEditorMode] = useState<"minotes" | "obsidian">(
@@ -413,6 +417,7 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
     onEscape: onEscape ? () => onEscape(block.id) : undefined,
     onSetCollapsed: onSetCollapsed ? (c) => onSetCollapsed(block.id, c) : undefined,
     onMakeFlashcard: () => { void setFlashcard(true); },
+    onInsertTemplate: onInsertTemplate ? (text, intoEmpty) => onInsertTemplate(block.id, text, intoEmpty) : undefined,
     onSlashCommand: (newMarkdown: string) => {
       // Save to backend + update local state (triggers re-render → setContent)
       onUpdate(block.id, newMarkdown);
@@ -1018,6 +1023,7 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
           isFlashcard={isCard}
           onToggleFlashcard={() => { void setFlashcard(!isCard); }}
           onTableAction={menuInTable ? (action) => { handleTableAction(action); } : undefined}
+          onSaveAsTemplate={onSaveAsTemplate ? () => onSaveAsTemplate(block.id) : undefined}
         />
       )}
     </div>

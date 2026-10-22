@@ -1,96 +1,104 @@
-import { localDateKey, localTimeKey } from "./dates";
-
 /**
- * Substitute template placeholders. Dates use the viewer's local calendar day,
- * matching the journal/sidebar convention.
- *
- * Supported: {{date}} → YYYY-MM-DD, {{time}} → HH:MM.
+ * The built-in templates. Same outline format as user templates (lib/templates.ts):
+ * one block per line, two spaces of indentation per level, `{{blank}}` an empty
+ * block, `{{cursor}}` where the caret goes, `{{date}}` / `{{time}}` / `{{title}}`.
  */
-export function applyTemplateVars(line: string, now: Date = new Date()): string {
-  return line
-    .replace(/\{\{date\}\}/g, localDateKey(now))
-    .replace(/\{\{time\}\}/g, localTimeKey(now));
-}
-
-export interface Template {
+export interface BuiltinTemplate {
   name: string;
   description: string;
-  blocks: string[];
+  content: string;
 }
 
-export const BUILTIN_TEMPLATES: Template[] = [
+export const BUILTIN_TEMPLATES: BuiltinTemplate[] = [
   {
     name: "Meeting Notes",
-    description: "Structured meeting agenda with sections",
-    blocks: [
-      "# Meeting {{date}}",
-      "## Attendees",
-      "## Agenda",
-      "## Discussion",
-      "## Action Items",
-      "TODO ",
-      "## Follow-up",
-    ],
+    description: "Attendees, agenda, notes and action items",
+    content: [
+      "## Meeting {{date}}",
+      "  **Attendees**",
+      "    {{cursor}}",
+      "  **Agenda**",
+      "    {{blank}}",
+      "  **Notes**",
+      "    {{blank}}",
+      "  **Action items**",
+      "    TODO ",
+    ].join("\n"),
   },
   {
     name: "Project Brief",
-    description: "Project overview with goals and milestones",
-    blocks: [
+    description: "Goals, milestones, resources and risks",
+    content: [
       "## Overview",
+      "  {{cursor}}",
       "## Goals",
-      "TODO ",
+      "  TODO ",
       "## Milestones",
+      "  {{blank}}",
       "## Resources",
+      "  {{blank}}",
       "## Risks",
-    ],
+      "  {{blank}}",
+    ].join("\n"),
   },
   {
     name: "Weekly Review",
-    description: "Reflect on the past week and plan ahead",
-    blocks: [
-      "# Weekly Review — week of {{date}}",
-      "## Wins this week",
-      "## Challenges",
-      "## Lessons learned",
-      "## Next week priorities",
-      "TODO ",
-    ],
+    description: "Wins, challenges and next week's priorities",
+    content: [
+      "## Weekly review — week of {{date}}",
+      "  **Wins**",
+      "    {{cursor}}",
+      "  **Challenges**",
+      "    {{blank}}",
+      "  **Lessons learned**",
+      "    {{blank}}",
+      "  **Next week**",
+      "    TODO ",
+    ].join("\n"),
   },
   {
     name: "Bug Report",
-    description: "Structured bug report template",
-    blocks: [
+    description: "Steps to reproduce, expected and actual behaviour",
+    content: [
       "## Summary",
-      "## Steps to Reproduce",
-      "1. ",
-      "2. ",
-      "3. ",
-      "## Expected Behavior",
-      "## Actual Behavior",
+      "  {{cursor}}",
+      "## Steps to reproduce",
+      "  1. ",
+      "## Expected behaviour",
+      "  {{blank}}",
+      "## Actual behaviour",
+      "  {{blank}}",
       "## Environment",
-    ],
+      "  {{blank}}",
+    ].join("\n"),
   },
   {
     name: "Daily Standup",
-    description: "Quick daily update format",
-    blocks: [
-      "# Standup {{date}}",
-      "## Yesterday",
-      "DONE ",
-      "## Today",
-      "TODO ",
-      "## Blockers",
-    ],
+    description: "Yesterday, today and blockers",
+    content: [
+      "## Standup {{date}}",
+      "  **Yesterday**",
+      "    {{cursor}}",
+      "  **Today**",
+      "    TODO ",
+      "  **Blockers**",
+      "    {{blank}}",
+    ].join("\n"),
   },
   {
     name: "Decision Log",
-    description: "Record important decisions and reasoning",
-    blocks: [
+    description: "A decision with its context, options and reasons",
+    content: [
       "## Decision",
-      "## Context",
-      "## Options Considered",
-      "## Chosen Option",
-      "## Rationale",
-    ],
+      "  {{cursor}}",
+      "  **Context**",
+      "    {{blank}}",
+      "  **Options considered**",
+      "    {{blank}}",
+      "  **Chosen option**",
+      "    {{blank}}",
+      "  **Rationale**",
+      "    {{blank}}",
+    ].join("\n"),
   },
 ];

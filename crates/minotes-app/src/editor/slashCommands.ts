@@ -5,7 +5,7 @@ import { PluginKey } from "@tiptap/pm/state";
 import tippy, { type Instance as TippyInstance } from "tippy.js";
 import { SlashMenu, type SlashMenuItem } from "./SlashMenu";
 import { generateWhiteboardId } from "../lib/whiteboardUtils";
-import { BUILTIN_TEMPLATES, applyTemplateVars } from "../lib/builtinTemplates";
+import { BUILTIN_TEMPLATES, refreshUserTemplates, templateBlockCount, userTemplates } from "../lib/templates";
 import { emptyTableMarkdown } from "./tables";
 import { describeDate, journalLink, parseNaturalDate } from "../lib/naturalDate";
 import { localDateKey } from "../lib/dates";
@@ -31,7 +31,8 @@ export function setSlashCallbacks(
   editor: any,
   command: (markdown: string) => void,
   save: () => void,
-  template?: (lines: string[]) => void,
+  /** Insert a template's text (lib/templates.ts); `intoEmpty`: it replaces this empty block. */
+  template?: (text: string, intoEmpty: boolean) => void,
   flashcard?: () => void,
 ) {
   if (editor) {
@@ -148,6 +149,40 @@ async function insertPickedDate(editor: any) {
 function openBlockPicker(editor: any, range: { from: number; to: number }, embed: boolean) {
   (editor.storage as any).blockRefEmbed = embed;
   editor.chain().focus().deleteRange(range).insertContent("((").run();
+}
+
+/**
+ * Insert a template where the `/` was: into this block when it is otherwise empty
+ * (the first template block replaces it), else as blocks after it. PageView fills
+ * the placeholders and puts the caret at {{cursor}}.
+ */
+function insertTemplate(editor: any, range: { from: number; to: number }, text: string) {
+  const doc = editor.state.doc;
+  const rest = doc.textBetween(0, range.from, "\n", "\u0001") + doc.textBetween(range.to, doc.content.size, "\n", "\u0001");
+  const intoEmpty = !rest.trim();
+  const cb = callbacks(editor);
+  editor.chain().focus().deleteRange(range).run();
+  if (!intoEmpty) cb?.save();
+  cb?.template?.(text, intoEmpty);
+}
+
+function templateItem(name: string, description: string, content: string): SlashMenuItem {
+  return {
+    title: `Template: ${name}`,
+    description,
+    keywords: ["template"],
+    icon: "template",
+    group: "Templates",
+    command: ({ editor, range }) => insertTemplate(editor, range, content),
+  };
+}
+
+/** The user's saved templates as menu items (after the built-in ones). */
+function userTemplateItems(): SlashMenuItem[] {
+  return userTemplates().map((t) => {
+    const n = templateBlockCount(t.content);
+    return templateItem(t.name, t.description?.trim() || `Your template · ${n} block${n === 1 ? "" : "s"}`, t.content);
+  });
 }
 
 const dateItem = (date: Date, title: string): SlashMenuItem => ({
@@ -393,27 +428,8 @@ const COMMANDS: SlashMenuItem[] = [
       cb?.flashcard?.();
     },
   },
-  // ── Templates — each gets a slash command entry ──
-  ...BUILTIN_TEMPLATES.map((t): SlashMenuItem => ({
-    title: `Template: ${t.name}`,
-    description: t.description,
-    keywords: ["template"],
-    icon: "template",
-    group: "Templates",
-    command: ({ editor }: { editor: any; range: any }) => {
-      // Substitute {{date}}/{{time}} once per insertion so every line in the
-      // template shares a single timestamp.
-      const now = new Date();
-      const lines = t.blocks.map((b) => applyTemplateVars(b, now));
-      // Set current block to first template line, pass remaining lines as multiline insert
-      const [first, ...rest] = lines;
-      callbacks(editor)?.command(first ?? "");
-      // Insert remaining blocks via the onPasteMultiline mechanism
-      if (rest.length > 0) {
-        callbacks(editor)?.template?.(rest);
-      }
-    },
-  })),
+  // ── Templates — the built-in ones; the user's own are added per query ──
+  ...BUILTIN_TEMPLATES.map((t) => templateItem(t.name, t.description, t.content)),
 ];
 
 /** Every built-in slash command, in menu order (tests, the shortcut list). */
@@ -496,7 +512,11 @@ export const SlashCommands = Extension.create({
         command: ({ editor, range, props }: { editor: any; range: any; props: any }) => {
           props.command({ editor, range });
         },
-        items: ({ query }: { query: string }) => slashMenuItems(query),
+        items: async ({ query }: { query: string }) => {
+          // The user's templates: from the cache, refreshed at most every few seconds.
+          await refreshUserTemplates(5000);
+          return slashMenuItems(query, new Date(), [...COMMANDS, ...userTemplateItems()]);
+        },
         render: () => {
           let reactRenderer: ReactRenderer;
           let popup: TippyInstance[];

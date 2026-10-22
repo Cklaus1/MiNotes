@@ -565,6 +565,12 @@
 }
 .block-content .ProseMirror .callout > p { margin: 0; }
 
+/* Settings → Templates (components/TemplatesSettings.tsx) */
+.template-row .settings-row-label { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.template-row-count { color: var(--text-muted); font-size: 12px; }
+.template-row-actions { display: inline-flex; gap: 6px; flex: none; }
+.templates-empty { color: var(--text-muted); }
+
 /* promptDialog's live hint (e.g. the day "next friday" means) */
 .confirm-dialog-hint {
   display: block;

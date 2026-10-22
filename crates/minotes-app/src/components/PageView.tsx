@@ -12,6 +12,7 @@ import { mergeMarkdown } from "../editor/mergeBlocks";
 import type { PastedBlock } from "../editor/pasteMarkdown";
 import { noteBlockContent, refreshShownBlockRefs } from "../lib/blockRefs";
 import { caretAfterMarkdown } from "../editor/staticRender";
+import { fillTemplate, saveUserTemplate, templateFromBlocks, templateNameTaken, refreshUserTemplates } from "../lib/templates";
 import BacklinksPanel from "./BacklinksPanel";
 import UnlinkedRefsPanel from "./UnlinkedRefsPanel";
 import LinkPreview from "./LinkPreview";
@@ -22,7 +23,7 @@ import TableOfContents from "./TableOfContents";
 import { downloadHtml, printPage } from "../lib/exportPage";
 import { extractTags } from "../lib/tagExtractor";
 import { showToast, showUndoToast } from "../lib/toast";
-import { confirmDialog, plural } from "../lib/confirm";
+import { confirmDialog, plural, promptDialog } from "../lib/confirm";
 import { errorMessage } from "../lib/errors";
 import { suggestLinks, type LinkSuggestion } from "../lib/linkSuggestions";
 import { prefetchBlockProperties } from "../lib/blockProperties";
@@ -820,9 +821,19 @@ export default function PageView({
     if (first) handleBlockUpdate(blockId, first.content);
     const siblings = intoEmpty ? rest : items;
     const positions = positionsAfter(current, block, siblings.length);
+    // A template's {{cursor}}: that block gets the caret, at that offset.
+    let caret: { id: string; pos: number } | null = null;
+    const caretAt = (id: string, n: PastedBlock) => {
+      if (n.cursor === undefined || caret) return;
+      const before = n.content.slice(0, n.cursor);
+      // Markdown drops a trailing space: step over it when text follows.
+      const space = /\s$/.test(before) && n.content.slice(n.cursor).trim() ? 1 : 0;
+      caret = { id, pos: caretAfterMarkdown(before) + space };
+    };
     const createTree = async (nodes: PastedBlock[], parent: string): Promise<void> => {
       for (const n of nodes) {
         const created = await api.createBlock(page.id, n.content, parent);
+        caretAt(created.id, n);
         if (n.children.length) await createTree(n.children, created.id);
       }
     };
@@ -830,11 +841,13 @@ export default function PageView({
     try {
       lastId = await enqueue(async () => {
         const realParent = parentId ? rid(parentId) : undefined;
+        if (first) caretAt(blockId, first);
         if (first?.children.length) await createTree(first.children, rid(blockId));
         let last: string | null = first ? rid(blockId) : null;
         for (let i = 0; i < siblings.length; i++) {
           let created = await api.createBlock(page.id, siblings[i]!.content, realParent);
           if (positions) created = await api.reorderBlock(created.id, realParent, positions[i]);
+          caretAt(created.id, siblings[i]!);
           if (siblings[i]!.children.length) await createTree(siblings[i]!.children, created.id);
           last = created.id;
         }
@@ -845,8 +858,61 @@ export default function PageView({
       showToast(`Paste incomplete: ${errorMessage(e)}`);
     }
     onRefreshPage();
-    if (lastId) setFocusBlockId(lastId);
+    const target = caret as { id: string; pos: number } | null;
+    if (target) focusBlockAt(target.id, target.pos);
+    else if (lastId) setFocusBlockId(lastId);
   };
+
+  // A template from the / menu: placeholders filled for this page, then the same
+  // path as a structured paste (nesting, order, caret at {{cursor}}).
+  const handleInsertTemplate = (blockId: string, text: string, intoEmpty: boolean) => {
+    const tree = fillTemplate(text, { title: page.title });
+    if (!tree.length) return;
+    void handlePasteBlocks(blockId, tree, intoEmpty);
+  };
+
+  /** Save a page's blocks (or one block's subtree) as a user template. */
+  const saveAsTemplate = async (rootId: string | null) => {
+    const all = localBlocksRef.current;
+    let picked = all;
+    if (rootId) {
+      const ids = new Set([rootId]);
+      picked = all.filter((b) => {
+        if (b.id === rootId) return true;
+        if (b.parent_id && ids.has(b.parent_id)) { ids.add(b.id); return true; }
+        return false;
+      });
+    }
+    const depthOf = (b: Block) => { let d = 0; let p = b.parent_id; const byId = new Map(all.map(x => [x.id, x])); while (p) { d++; p = byId.get(p)?.parent_id; } return d; };
+    const text = templateFromBlocks(picked.map((b) => ({ content: b.content, depth: depthOf(b) })));
+    if (!text.trim()) { showToast("Nothing to save: the blocks are empty"); return; }
+    await refreshUserTemplates();
+    const first = picked[0]?.content.replace(/^#+\s*/, "").split("\n")[0].slice(0, 40).trim();
+    const name = await promptDialog({
+      title: "Save as template",
+      message: rootId ? "This block and its children become a template. Insert it with / in any block." : `The blocks of “${page.title}” become a template. Insert it with / in any block.`,
+      label: "Template name",
+      defaultValue: rootId ? first || "My template" : page.title,
+      confirmLabel: "Save template",
+    });
+    if (!name) return;
+    if (templateNameTaken(name)) {
+      const ok = await confirmDialog({ title: "Replace the template?", message: `A template named “${name}” already exists. Replace it with these blocks?`, confirmLabel: "Replace" });
+      if (!ok) return;
+    }
+    try {
+      await saveUserTemplate(name, text, rootId ? undefined : `From “${page.title}”`);
+      showToast(`Template “${name}” saved — type /${name.split(/\s+/)[0].toLowerCase()} to use it`);
+    } catch (e) {
+      showToast(`Template not saved: ${errorMessage(e)}`);
+    }
+  };
+  const insertTemplateRef = useRef(handleInsertTemplate);
+  insertTemplateRef.current = handleInsertTemplate;
+  const handleInsertTemplateLive = useCallback((id: string, text: string, intoEmpty: boolean) => insertTemplateRef.current(id, text, intoEmpty), []);
+  const saveAsTemplateRef = useRef(saveAsTemplate);
+  saveAsTemplateRef.current = saveAsTemplate;
+  const handleSaveBlockTemplateLive = useCallback((id: string) => { void saveAsTemplateRef.current(id); }, []);
 
   // UX-002: Block indent/outdent. Applied locally first (and the editor refocused
   // at the same caret in the same keystroke — a moved DOM node loses focus), then
@@ -1801,6 +1867,8 @@ export default function PageView({
       onShiftClick={handleShiftClickLive}
       onOpenWhiteboard={onOpenWhiteboard}
       onDragReorder={handleDragReorderLive}
+      onInsertTemplate={handleInsertTemplateLive}
+      onSaveAsTemplate={handleSaveBlockTemplateLive}
     />
   // eslint-disable-next-line react-hooks/exhaustive-deps
   )), [filteredVisibleBlocks, renderLimit, selectedBlockIds, blockTreeInfo, collapsedBlocks]);
@@ -1921,6 +1989,14 @@ export default function PageView({
               title="Export as HTML"
             >
               ↗ Export
+            </button>
+            <button
+              className="page-export-btn"
+              data-testid="save-page-template"
+              onClick={() => { void saveAsTemplate(null); }}
+              title="Save this page's blocks as a template you can insert with /"
+            >
+              <Icon name="template" size={13} /> Save as template
             </button>
           </div>
           <div className="page-properties-header">

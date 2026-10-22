@@ -12,6 +12,8 @@ import type { Editor } from "@tiptap/core";
 export interface PastedBlock {
   content: string;
   children: PastedBlock[];
+  /** Put the caret here afterwards (offset in `content`; templates' {{cursor}}). */
+  cursor?: number;
 }
 
 const FENCE = /^(\s*)(```+|~~~+)(.*)$/;

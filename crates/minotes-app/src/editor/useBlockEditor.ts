@@ -50,6 +50,8 @@ interface UseBlockEditorOptions {
   onEscape?: () => void;
   onSlashCommand?: (newMarkdown: string) => void;
   onTagClick?: (tag: string) => void;
+  /** A template from the `/` menu: its text (lib/templates.ts); `intoEmpty`: replace this block. */
+  onInsertTemplate?: (text: string, intoEmpty: boolean) => void;
   /** `/flashcard`: make this block a flashcard. */
   onMakeFlashcard?: () => void;
   /** Ctrl+Up folds this block's children, Ctrl+Down unfolds them. */
@@ -76,6 +78,7 @@ export function useBlockEditor({
   onTagClick,
   onMakeFlashcard,
   onSetCollapsed,
+  onInsertTemplate,
 }: UseBlockEditorOptions) {
   const onSaveRef = useRef(onSave);
   // NOT a mirror of the `content` prop — this tracks the last markdown the editor
@@ -101,6 +104,7 @@ export function useBlockEditor({
   const onTagClickRef = useRef(onTagClick);
   const onMakeFlashcardRef = useRef(onMakeFlashcard);
   const onSetCollapsedRef = useRef(onSetCollapsed);
+  const onInsertTemplateRef = useRef(onInsertTemplate);
   const editorInstanceRef = useRef<any>(null);
   const skipSyncRef = useRef(false);
   const slashActiveRef = useRef(false);
@@ -129,6 +133,7 @@ export function useBlockEditor({
   onTagClickRef.current = onTagClick;
   onMakeFlashcardRef.current = onMakeFlashcard;
   onSetCollapsedRef.current = onSetCollapsed;
+  onInsertTemplateRef.current = onInsertTemplate;
 
   // Slash callbacks are set per-editor instance after creation (see useEffect below)
 
@@ -632,9 +637,11 @@ export function useBlockEditor({
             slashActiveRef.current = false;
           }, 20);
         },
-        // Template callback: insert remaining lines as new blocks
-        (lines: string[]) => {
-          onPasteMultilineRef.current?.(lines);
+        // Template callback: PageView builds the blocks (placeholders, nesting, caret).
+        (text: string, intoEmpty: boolean) => {
+          slashActiveRef.current = true;
+          onInsertTemplateRef.current?.(text, intoEmpty);
+          setTimeout(() => { slashActiveRef.current = false; }, 100);
         },
         () => onMakeFlashcardRef.current?.(),
       );

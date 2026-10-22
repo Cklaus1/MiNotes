@@ -803,7 +803,14 @@ function applyTemplate(pageId: string, name: string): Block[] {
       continue;
     }
     if (line.trim() === "") { i++; continue; }
-    const b = createBlock(pageId, trimmed.trimEnd(), parent);
+    // `\ ` continues the block above; `{{blank}}` is an empty block (as core).
+    if ((trimmed.trimEnd() === "\\" || trimmed.startsWith("\\ ")) && made.length) {
+      const last = made[made.length - 1];
+      last.content = last.content + "\n" + trimmed.slice(2).trimEnd();
+      i++;
+      continue;
+    }
+    const b = createBlock(pageId, trimmed.trimEnd() === "{{blank}}" ? "" : trimmed.trimEnd(), parent);
     stack.push([indentOf(line), b.id]);
     made.push(b);
     i++;

@@ -15,6 +15,7 @@ import "./sync.css";
 import { useLayer } from "../lib/layers";
 import { useDialogFocus } from "../lib/dialogFocus";
 import ShortcutsList from "./ShortcutsList";
+import TemplatesSettings from "./TemplatesSettings";
 
 interface Props {
   open: boolean;
@@ -311,6 +312,8 @@ export default function SettingsPanel({ open, onClose, onOpenSync, onOpenCssSnip
           <div className="settings-section-title">Keyboard Shortcuts</div>
           <ShortcutsList />
         </div>
+
+        <TemplatesSettings />
 
         {/* Smart suggestions — local heuristics, no AI model involved; its own
             always-visible section (not part of Advanced, which stays last). The
