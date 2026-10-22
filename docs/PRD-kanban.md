@@ -81,13 +81,14 @@ Paths are under `crates/minotes-app/src/components/`. "ux-int" = in the UX workt
 | Card count in column header; collapse column | Done | `KanbanColumn.tsx` |
 | Card filter (`Ctrl+F` or `/`) | Done | `KanbanView.tsx` |
 | Keyboard: arrows between cards/columns, Enter edit, `n` new card, Esc | Done | `KanbanView.tsx` |
-| Card detail side panel | Partial — plain textarea + read-only sub-block list, not the TipTap editor | `KanbanView.tsx` (`SidePanelEditor`) |
-| Wikilinks on cards | Partial — shown as chips; clicking opens the side panel, not the page | `KanbanCard.tsx` |
+| Card detail side panel | Done (UX Wave 4) — the block editor, status control, properties, editable sub-items | `kanban/CardPanel.tsx` |
+| Wikilinks on cards | Done — inline chips with the page title (no raw markdown); click opens the page | `KanbanCard.tsx`, `lib/richText.ts` |
 | Export | Partial — "Copy as Table" (markdown table to clipboard); no image export | `KanbanView.tsx` |
 | Column colours | Partial — per device (localStorage `kanban-colors-<pageId>`), lost on sync | `KanbanView.tsx` |
-| Property badges on cards (tags, dates, assignee) | Not started | — |
+| Property badges on cards (tags, dates, assignee) | Done (UX Wave 4) — up to 4: due/scheduled (overdue/today), #tags, properties | `lib/richText.ts` `cardBadges` |
+| Group by status (TODO / DOING / DONE columns; a drop rewrites the task line) | Done (UX Wave 4); `kanban-group:: status` page property | `kanbanModel.ts` `buildStatusModel` |
 | Any-block boards (board of a zoomed block; several boards per page) | Not started — board always uses the whole page | `CanvasMode.tsx` |
-| Remember "this page opens as a board" | Not started (no `view::` property) | — |
+| Remember "this page opens as a board" | Done (UX Wave 4) — opt-in toolbar checkbox writes `view:: kanban` | `lib/pageView.ts` |
 
 ### Obsolete parts of the previous spec
 

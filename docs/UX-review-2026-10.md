@@ -1,6 +1,6 @@
 # UI review: every feature, rated
 
-Status: review complete; Waves 1–3 fixed (see the wave notes in §3), Wave 4 open · Owner: Chris Klaus · Reviewed 2026-10-19
+Status: review complete; Waves 1–3 fixed (see the wave notes in §3), Wave 4 in progress (views done) · Owner: Chris Klaus · Reviewed 2026-10-19
 Build reviewed: `main` at `9741b30` (debug build, production frontend + CSP).
 
 ## 1. How this was done
@@ -102,15 +102,15 @@ Average **5.2 / 10** across 72 features. Nothing scores 10; the best is 9
 
 | Feature | Score | Verdict |
 |---|---|---|
-| Graph view | 4 | Fast (0.4 s at 200 nodes), but zoom drifts off the cursor, dragging opens the page, labels pile up. **Fixed** (`c91ae6a`): zoom anchored at the cursor, 4 px drag threshold, collision-culled labels by link count + hover neighbourhood, theme colours |
-| Mind map | 6 | Horizontal/vertical good, re-parenting and SVG/PNG export work; radial layout broken; markdown export drops links. **Fixed** (`5117060`): leaf-weighted radial layout with no overlaps, export keeps links/headings, title once, refit on resize |
-| Kanban | 5 | Looks good; **colour picker can't be clicked**; tiny drop zones; Esc closes the board. **Fixed** (`6f3a0fd`): picker clickable, colour synced as a block property, whole-column drop target, Esc closes the topmost popover, wiki chips open pages |
-| Whiteboard | 6 | Tools, undo, zoom and persistence work; light canvas in dark theme; export skips the save dialog. **Fixed** (`ccb7fb4`, `d6cde77`): follows the theme, zoom % and undo/redo buttons, keyboard focus, save dialog + SVG export |
+| Graph view | 4 | Fast (0.4 s at 200 nodes), but zoom drifts off the cursor, dragging opens the page, labels pile up. **Fixed** (`c91ae6a`): zoom anchored at the cursor, 4 px drag threshold, collision-culled labels by link count + hover neighbourhood, theme colours. **Fixed** (Wave 4, `1acb7b4`): “you are here” ring, local graph (1–3 links), title search, project / tag / orphan filters, colour by project or tag with a legend, arrow keys between linked pages + Enter; 227 pages lay out in ~0.2 s |
+| Mind map | 6 | Horizontal/vertical good, re-parenting and SVG/PNG export work; radial layout broken; markdown export drops links. **Fixed** (`5117060`): leaf-weighted radial layout with no overlaps, export keeps links/headings, title once, refit on resize. **Fixed** (Wave 4, `45fb034`): Ctrl+click a `[[link]]` in a node opens it (labels show titles, not markdown), find box highlights / dims, layout and “open as mind map” remembered per page, narrower 3-line nodes in radial |
+| Kanban | 5 | Looks good; **colour picker can't be clicked**; tiny drop zones; Esc closes the board. **Fixed** (`6f3a0fd`): picker clickable, colour synced as a block property, whole-column drop target, Esc closes the topmost popover, wiki chips open pages. **Fixed** (Wave 4, `816702c`): group by status (a drop rewrites the task line), card panel in the block editor with status, properties and sub-items, cards render text (link chips, tag / due / property badges), “open as board” remembered per page |
+| Whiteboard | 6 | Tools, undo, zoom and persistence work; light canvas in dark theme; export skips the save dialog. **Fixed** (`ccb7fb4`, `d6cde77`): follows the theme, zoom % and undo/redo buttons, keyboard focus, save dialog + SVG export. **Fixed** (Wave 4, `55f6043`, `4f8c049`): connectors stay attached to shapes, rubber-band + Shift+click multi-select (move, delete, arrow keys, Ctrl+A), alignment guides, images in the page thumbnail; Ctrl+Z no longer also runs the page undo |
 | Switching canvas modes | 7 | Returns to the same board; Draw tab with no board is a dead end. **Fixed** (`ccb7fb4`): Draw tab offers this page's board or a new one; no stale board on another page |
 | PDF viewer | 3 | Renders and zooms; **highlights impossible** (no text layer); opening = typing a path into `prompt()`. **Fixed** (`c0af3c1`): text layer + highlights, native picker with recent PDFs, file name, disabled controls on errors |
-| Link preview cards | 6 | Real metadata; no loading/failure state; URL shown twice on failure. **Fixed** (`02556ad`): loading / loaded / "Preview unavailable · open link" with the domain; User-Agent sent |
-| Remote images | 8 | Clear placeholders and bar; Never/Ask/Always work |
-| Pasted images (attachments) | 2 | **Real image paste saved as a `blob:` URL — gone after restart** |
+| Link preview cards | 6 | Real metadata; no loading/failure state; URL shown twice on failure. **Fixed** (`02556ad`): loading / loaded / "Preview unavailable · open link" with the domain; User-Agent sent. **Fixed** (Wave 4, `7cd9729`): Refresh and Convert to plain link, a wide 16:9 image, the site's declared icon |
+| Remote images | 8 | Clear placeholders and bar; Never/Ask/Always work. **Fixed** (Wave 4, `47fdb13`): clicking a placeholder loads just that image |
+| Pasted images (attachments) | 2 | **Real image paste saved as a `blob:` URL — gone after restart**. **Fixed** (Wave 1, `922a083`); Wave 4 (`47fdb13`): image lightbox, `![alt|300](…)` width, files as chips (name, type · size) with Open / Show in folder |
 | Export flows | 3 | Mind map export good; page "Export as HTML" saves silently to the working directory; whiteboard writes straight to Downloads. **Fixed** (`d6cde77`): every export through the save dialog with a toast naming the file |
 | Narrow window / light theme (views) | 5 | Graph stays dark in light theme; mind map and whiteboard don't refit. **Fixed** (`c91ae6a`, `5117060`, `ccb7fb4`): graph and whiteboard follow the theme, the mind map refits on resize (the whiteboard keeps its camera, Fit/F refits) |
 
@@ -299,6 +299,43 @@ Journeys: browser 85–91 (21 of their 31 assertions fail on `3a307a7`),
 desktop D19. Not done: a custom option list for selects; slash-menu icons
 (Wave 4); the light theme's faint bullets.
 
+**Wave 4 notes — views (2026-10-21).** Graph (`1acb7b4`): the graph data now
+carries each page's project and inline `#tags` (core `repo/graph.rs`, one pass
+over blocks containing `#`); filters, the local graph and arrow-key steps are
+pure functions in `lib/graphModel.ts` (unit-tested). Local depth and colouring
+are remembered per device (localStorage), like "Hide unlinked", which became
+the "Which pages" select (all / linked / orphans only). Measured: 227 pages lay
+out and draw in 160–240 ms in headless Chrome. Kanban (`816702c`): status
+columns hold every task on the page at any depth (marker, checkbox or `todo:`
+line), in outline order; a drop rewrites only that line (`lib/tasks.ts`
+`setTaskState`), so dragging within a status column does not reorder. The card
+panel uses the real block editor (`useBlockEditor` + `EditorContent`, new
+`kanban/CardPanel.tsx`); Esc leaves its editor first, then closes the panel.
+Remembered views (PRD-kanban Q3, PRD-mindmap §9 Q2) are page properties written
+only on an explicit choice (`view:: kanban|mindmap`, `kanban-group:: status`,
+`mindmap-layout::`), so they sync and browsing never churns sync
+(`lib/pageView.ts`; App opens a page in its view). Card and node text comes from
+`lib/richText.ts` (on top of `plainText.ts`). Whiteboard (`55f6043`): arrows
+store `from`/`to` shape refs and their end points are recomputed whenever a
+shape changes (pure `lib/whiteboardGeometry.ts`); an arrow moved by hand lets
+go. Found on the way: strokes with ids (every stroke drawn since ids were added)
+could not be dragged, recoloured or deleted by keyboard (the code parsed the id
+as an index), and Ctrl+Z on a board also ran the app's page undo, which left the
+board unchanged (`4f8c049`: the board's undo is stopped at the board).
+Images and files (`47fdb13`): lightbox, width syntax and file chips post-process
+statically rendered blocks only (`lib/media.ts`, `MediaHost`), never a live
+ProseMirror DOM; Obsidian's `![alt|300](src)` round-trips unchanged through the
+editor (`lib/media.test.ts`). Not done: **resize handles** — they need an Image
+node view in `editor/` (editor-owned); the stored syntax is decided and
+displayed, so a node view only has to write it; while a block is being edited
+its image shows at natural size and opens the lightbox on double-click. "Open
+with…" is the OS default app (the allowlisted `open_attachment`); new
+`reveal_attachment` only shows the file (refused for encrypted notebooks, hidden
+on Android). Link previews (`7cd9729`): the icon is the page's declared `<link
+rel=icon>` from the HTML already fetched and loads like any remote image (only
+when allowed). Journeys: browser 109–114 (34 of their 35 assertions fail on
+`571a120`), desktop D23 (real mouse and keys).
+
 ## 4. Patterns behind the scores
 
 1. **The markdown round trip is the weak seam.** Tags, highlights, block
@@ -362,7 +399,8 @@ collapsible sidebar, a Ctrl+/ shortcut overlay and a full command palette ·
 search with rendered snippets, page context and fuzzy matching · backlinks
 grouped by page with jump-to-block and "Link" for unlinked mentions · PDF text
 layer and file picker · graph labels, local graph and search · mind map radial
-layout · kanban "group by status" · slash menu with fuzzy matching, icons and
+layout · kanban "group by status" (**views done 2026-10-21**, see the Wave 4
+notes — views) · slash menu with fuzzy matching, icons and
 the missing commands (numbered list, callout, image, date, embed) · user
 templates · list virtualisation for large pages · the plugin manager (or hide
 the stub).

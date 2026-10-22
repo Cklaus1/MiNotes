@@ -41,7 +41,7 @@ echo "════════════════════════�
 echo "  MiNotes Desktop Journeys (real app, real backend)"
 echo "═══════════════════════════════════════════════"
 
-rm -rf "$STATE"/{persist,devA,devB,nbook,outside,xnb,zip8,barrier10,trust10,rimg,img10,remote.git,enc13,enc13-tmp,enc13-keychain,enc14a,enc14b,enc14c,enc14-tmp,remote14.git,w1,w1-files,w2,j17a,j17b,t17,remote17.git,remote17.git.moved,w18,w19} "$STATE/results.tsv"
+rm -rf "$STATE"/{persist,devA,devB,nbook,outside,xnb,zip8,barrier10,trust10,rimg,img10,remote.git,enc13,enc13-tmp,enc13-keychain,enc14a,enc14b,enc14c,enc14-tmp,remote14.git,w1,w1-files,w2,j17a,j17b,t17,remote17.git,remote17.git.moved,w18,w19,w23} "$STATE/results.tsv"
 if [[ -z "$DESKTOP_NO_BUILD" ]]; then
   "$DC" up --webdriver --profile persist >/dev/null || { echo "build/launch failed"; exit 1; }
 else
@@ -1708,6 +1708,139 @@ is "Still hidden after a restart (remembered on this device)" "$(ev "document.qu
 "$DC" shot "d19-sidebar-hidden" >/dev/null
 "$DC" key ctrl+shift+backslash; sleep 0.6
 is "Shown again" "$(ev "document.querySelector('.sidebar').getClientRects().length>0")" "true"
+
+# ═══════════════════════════════════════════════
+journey "D23. The visual views under a real mouse and keyboard (UX review Wave 4)"
+# Real X input (xdotool): the local graph, its search and arrow keys; a kanban
+# card dragged to DONE (the task line changes in the database) and edited in
+# the card panel; Ctrl+click on a link in a mind map node; a whiteboard arrow
+# that stays on its box when the box moves, rubber-band selection, Delete and
+# Ctrl+Z; the image lightbox; a link preview converted to a plain link.
+# ═══════════════════════════════════════════════
+A23="const api=await import('/src/lib/api.ts');"
+X23="localhost:${DESKTOP_CHECK_DISPLAY:-97}"
+xy23() { ev "(()=>{const e=$1;if(!e)return '';const r=e.getBoundingClientRect();return Math.round(r.left+r.width/2)+' '+Math.round(r.top+r.height/2)})()"; }
+rclick23() { local xy; xy=$(xy23 "$1"); [[ -n "$xy" ]] && "$DC" click $xy >/dev/null; }
+# Real drag: press at (x0,y0), move in small steps, release at (x1,y1).
+rdrag23() {
+  local x0=$1 y0=$2 x1=$3 y1=$4 n=${5:-12}
+  DISPLAY="$X23" xdotool mousemove "$x0" "$y0" mousedown 1; sleep 0.15
+  for i in $(seq 1 "$n"); do DISPLAY="$X23" xdotool mousemove $((x0+(x1-x0)*i/n)) $((y0+(y1-y0)*i/n)); sleep 0.05; done
+  sleep 0.15; DISPLAY="$X23" xdotool mouseup 1; sleep 0.4
+}
+device w23 || true
+api "navigateTo('Getting Started')" >/dev/null; waitfor "window.__MINOTES__.getCurrentPage()==='Getting Started'" 10
+S23=$(date +%s)
+ev "localStorage.removeItem('minotes-graph-local');localStorage.removeItem('minotes-graph-color-by')" >/dev/null
+
+step "Graph: Local (real click) shows only this page's neighbours; typed search + Enter; arrow keys; Enter opens"
+ev "(async()=>{$A23 const ps=[];for(let i=0;i<12;i++)ps.push(await api.createPage('D23g$S23 p'+i));for(let i=1;i<12;i++)await api.createBlock(ps[i].id,'next to [[D23g$S23 p'+(i-1)+']]');return 1})()" >/dev/null
+api "navigateTo('D23g$S23 p5')" >/dev/null; waitfor "window.__MINOTES__.getCurrentPage()==='D23g$S23 p5'" 10; sleep 0.5
+"$DC" key Escape; "$DC" key ctrl+g; waitfor "!!document.querySelector('.graph-view canvas')?.dataset.nodes" 15
+rclick23 "document.querySelector('.graph-local-btn')"; sleep 1
+is "Local graph: p4, p5, p6" "$(ev "(()=>{const c=document.querySelector('.graph-view canvas');return c.dataset.nodes+'|'+c.__minotesGraph.nodes().map(n=>n.title.split(' ').pop()).sort().join(',')+'|'+(c.dataset.current===c.__minotesGraph.nodes().find(n=>n.current)?.id)})()")" "3|p4,p5,p6|true"
+rclick23 "document.querySelector('.graph-search-input')"; "$DC" type "p6"; sleep 0.4; "$DC" key Return; sleep 0.5
+is "Typed 'p6' + Enter: p6 is the keyboard's node, the graph has focus" "$(ev "(()=>{const c=document.querySelector('.graph-view canvas');return c.dataset.matches+'|'+(c.__minotesGraph.nodes().find(n=>n.id===c.dataset.selected)?.title.split(' ').pop())+'|'+(document.activeElement===c)})()")" "1|p6|true"
+MOVED23=""
+for k in Left Right Up Down; do
+  "$DC" key "$k"; sleep 0.3
+  T=$(ev "(()=>{const c=document.querySelector('.graph-view canvas');return c.__minotesGraph.nodes().find(n=>n.id===c.dataset.selected)?.title||''})()")
+  [[ "$T" == *" p5" ]] && { MOVED23="$T"; break; }
+done
+[[ -n "$MOVED23" ]] && pass "Arrow key $k moved to the linked page p5" || fail "Graph arrow keys" "selected=$T"
+"$DC" shot "d23-graph-local" >/dev/null
+"$DC" key Return; sleep 1.5
+is "Enter opened it (graph closed)" "$(ev "!!document.querySelector('.graph-view')+'|'+window.__MINOTES__.getCurrentPage()")" "false|D23g$S23 p5"
+ev "localStorage.removeItem('minotes-graph-local')" >/dev/null
+
+step "Kanban: Status (real click), then a real drag of the DOING card onto DONE changes the task in the database"
+R=$(ev "(async()=>{$A23 const p=await api.createPage('D23k$S23');const h=await api.createBlock(p.id,'## Work');await api.createBlock(p.id,'TODO Write23 the plan',h.id);const b=await api.createBlock(p.id,'DOING Build23 it',h.id);return b.id})()")
+B23="$R"
+api "navigateTo('D23k$S23')" >/dev/null; waitfor "window.__MINOTES__.getCurrentPage()==='D23k$S23'" 10; sleep 0.5
+"$DC" key Escape; "$DC" key ctrl+shift+k; waitfor "!!document.querySelector('.kanban-container')" 10; sleep 0.5
+rclick23 "document.querySelector('[data-testid=kanban-group-status]')"; waitfor "!!document.querySelector('.kanban-column[data-status=done]')" 10; sleep 0.5
+FROM=$(xy23 "[...document.querySelectorAll('.kanban-card')].find(c=>c.textContent.includes('Build23'))")
+TO=$(xy23 "document.querySelector('.kanban-column[data-status=done] .kanban-column-body, .kanban-column[data-status=done]')")
+rdrag23 $FROM $TO 20; sleep 1.5
+is "Dragged card: the block now reads DONE" "$(db w23 "select content from blocks where id='$B23'")" "DONE Build23 it"
+is "…and it sits in the DONE column" "$(ev "!![...document.querySelectorAll('.kanban-column[data-status=done] .kanban-card')].find(c=>c.textContent.includes('Build23'))")" "true"
+"$DC" shot "d23-kanban-status" >/dev/null
+
+step "Card panel (real right-click → Open): typing in its block editor saves the card"
+XY=$(xy23 "[...document.querySelectorAll('.kanban-card')].find(c=>c.textContent.includes('Write23'))")
+DISPLAY="$X23" xdotool mousemove $XY click 3; sleep 0.6
+rclick23 "[...document.querySelectorAll('.kanban-ctx-menu button')].find(b=>b.textContent==='Open')"; waitfor "!!document.querySelector('.kanban-card-panel .ProseMirror')" 10; sleep 0.5
+rclick23 "document.querySelector('.kanban-card-panel .kanban-card-editor-rich .ProseMirror')"; sleep 0.3
+"$DC" key End; "$DC" type " edited23"; sleep 0.3
+"$DC" key Escape; sleep 1.5
+is "Card saved through the panel editor" "$(db w23 "select content from blocks where content like '%Write23%'")" "TODO Write23 the plan edited23"
+rclick23 "[...document.querySelectorAll('.kanban-card-panel .kanban-status-opt')].find(b=>b.textContent==='DONE')"; sleep 1.5
+is "Status control (real click): DONE" "$(db w23 "select content from blocks where content like '%Write23%'")" "DONE Write23 the plan edited23"
+"$DC" shot "d23-card-panel" >/dev/null
+"$DC" key Escape; sleep 0.4; rclick23 "document.querySelector('.canvas-back-btn')"; sleep 0.6
+
+step "Mind map: Ctrl+click (real) on a [[link]] in a node opens that page"
+ev "(async()=>{$A23 const p=await api.createPage('D23m$S23');const a=await api.createBlock(p.id,'Idea23 see [[Getting Started]]');await api.createBlock(p.id,'Detail23',a.id);return 1})()" >/dev/null
+api "navigateTo('D23m$S23')" >/dev/null; waitfor "window.__MINOTES__.getCurrentPage()==='D23m$S23'" 10; sleep 0.5
+"$DC" key Escape; "$DC" key ctrl+m; waitfor "!!document.querySelector('.mm-link')" 15; sleep 1.5
+# The link may wrap: aim at its first line box, not the middle of its bounding box.
+XY=$(ev "(()=>{const r=document.querySelector('.mm-link').getClientRects()[0];return Math.round(r.left+r.width/2)+' '+Math.round(r.top+r.height/2)})()")
+DISPLAY="$X23" xdotool mousemove $XY keydown ctrl click 1 keyup ctrl; sleep 1.5
+is "Ctrl+click opened Getting Started, the map closed" "$(ev "!!document.querySelector('.mindmap-overlay')+'|'+window.__MINOTES__.getCurrentPage()")" "false|Getting Started"
+
+step "Whiteboard (real mouse): an arrow from box to box stays attached when the box moves"
+ev "(async()=>{$A23 const p=await api.createPage('D23w$S23');await api.createBlock(p.id,'Board below');return 1})()" >/dev/null
+api "navigateTo('D23w$S23')" >/dev/null; waitfor "window.__MINOTES__.getCurrentPage()==='D23w$S23'" 10; sleep 0.5
+"$DC" key Escape; "$DC" key ctrl+w; waitfor "!!document.querySelector('.whiteboard-canvas')" 10; sleep 0.8
+CV=$(ev "(()=>{const r=document.querySelector('.whiteboard-canvas').getBoundingClientRect();return Math.round(r.left)+' '+Math.round(r.top)})()")
+read -r CX CY <<< "$CV"
+tool23() { rclick23 "[...document.querySelectorAll('.whiteboard-toolbar button')].find(b=>b.textContent==='$1')"; sleep 0.3; }
+tool23 Box
+rdrag23 $((CX+100)) $((CY+100)) $((CX+220)) $((CY+190))
+rdrag23 $((CX+420)) $((CY+260)) $((CX+540)) $((CY+350))
+tool23 Arrow
+rdrag23 $((CX+160)) $((CY+145)) $((CX+480)) $((CY+305))
+tool23 Select
+BOARD23="document.querySelector('.whiteboard').__minotesBoard"
+is "Arrow attached to both boxes" "$(ev "(()=>{const d=$BOARD23.data();const a=d.arrows[0];return d.boxes.length+'|'+!!(a&&a.from&&a.to&&a.to.id===d.boxes[1].id)})()")" "2|true"
+rdrag23 $((CX+530)) $((CY+340)) $((CX+530)) $((CY+540))
+sleep 1
+R=$(ev "(()=>{const d=$BOARD23.data();const a=d.arrows[0],b=d.boxes[1];return Math.round(b.y)+'|'+(a.x2>=b.x-5&&a.x2<=b.x+b.width+5&&a.y2>=b.y-5&&a.y2<=b.y+b.height+5)+'|'+(a.to&&a.to.id===b.id)})()")
+IFS='|' read -r BY ON ST <<< "$R"
+[[ "$BY" -ge 400 && "$ON" == "true" && "$ST" == "true" ]] 2>/dev/null && pass "Box dragged down (y=$BY); the arrow end is still on its border" || fail "Connector after a real drag" "$R"
+"$DC" shot "d23-whiteboard-connector" >/dev/null
+
+step "Rubber band (real drag on empty canvas) selects both boxes and the arrow; Delete, then Ctrl+Z (real keys)"
+rdrag23 $((CX+40)) $((CY+40)) $((CX+640)) $((CY+640))
+is "3 selected" "$(ev "$BOARD23.selection().length+'|'+(document.querySelector('[data-testid=wb-multi]')?.textContent||'')" )" "3|3 selected Delete"
+"$DC" key Delete; sleep 0.6
+is "Delete removed all three" "$(ev "(()=>{const d=$BOARD23.data();return d.boxes.length+'|'+d.arrows.length})()")" "0|0"
+"$DC" key ctrl+z; sleep 0.8
+is "Ctrl+Z brought them back (the page's undo didn't run instead)" "$(ev "(()=>{const d=$BOARD23.data();return d.boxes.length+'|'+d.arrows.length})()")" "2|1"
+"$DC" key Escape; sleep 0.3; "$DC" key Escape; sleep 1
+
+step "Image lightbox: a real click on an image opens it large; Esc (real) closes it"
+ev "(async()=>{$A23 const c=document.createElement('canvas');c.width=320;c.height=160;const x=c.getContext('2d');x.fillStyle='#1e66f5';x.fillRect(0,0,320,160);const b=await new Promise(r=>c.toBlob(r,'image/png'));const a=await api.storeAttachment('d23.png','image/png',new Uint8Array(await b.arrayBuffer()));const p=await api.createPage('D23i$S23');await api.createBlock(p.id,'Intro23');await api.createBlock(p.id,'![d23 pic|240](attachment:'+a.hash+'/d23.png)');return 1})()" >/dev/null
+api "navigateTo('D23i$S23')" >/dev/null; waitfor "window.__MINOTES__.getCurrentPage()==='D23i$S23'" 10; sleep 1
+"$DC" key Escape; sleep 0.3
+waitfor "!!document.querySelector('.block-static img[data-width]')?.naturalWidth" 10
+is "Rendered 240 px wide from ![…|240]" "$(ev "Math.round(document.querySelector('.block-static img[data-width]')?.getBoundingClientRect().width||0)")" "240"
+rclick23 "document.querySelector('.block-static img[data-width]')"; sleep 0.8
+is "Lightbox open with the image" "$(ev "!!document.querySelector('[data-testid=lightbox] .lightbox-img')?.naturalWidth+'|'+(document.querySelector('[data-testid=lightbox] .lightbox-caption')?.textContent||'')")" "true|d23 pic"
+"$DC" shot "d23-lightbox" >/dev/null
+"$DC" key Escape; sleep 0.6
+is "Esc closed it; the page is still open" "$(ev "!!document.querySelector('[data-testid=lightbox]')+'|'+window.__MINOTES__.getCurrentPage()")" "false|D23i$S23"
+
+step "Link preview: Convert to a plain link (real hover + click)"
+R=$(ev "(async()=>{$A23 const p=await api.createPage('D23l$S23');await api.createBlock(p.id,'Reading');const b=await api.createBlock(p.id,'{{link-preview:https://d23.invalid/article}}');return b.id})()")
+L23="$R"
+api "navigateTo('D23l$S23')" >/dev/null; waitfor "window.__MINOTES__.getCurrentPage()==='D23l$S23'" 10
+waitfor "['loaded','failed'].includes(document.querySelector('.link-preview-card')?.dataset.previewState)" 15
+XY=$(xy23 "document.querySelector('.link-preview-card')"); DISPLAY="$X23" xdotool mousemove $XY; sleep 0.5
+rclick23 "document.querySelector('.link-preview-convert')"; sleep 1.5
+is "The block is now a plain link" "$(db w23 "select content from blocks where id='$L23'")" "<https://d23.invalid/article>"
+is "…shown as a link, not a card" "$(ev "!!document.querySelector('.link-preview-card')+'|'+!![...document.querySelectorAll('a')].find(a=>a.href==='https://d23.invalid/article')")" "false|true"
+"$DC" shot "d23-link-converted" >/dev/null
 
 # ═══════════════════════════════════════════════
 echo ""

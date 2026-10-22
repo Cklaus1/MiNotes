@@ -13,6 +13,10 @@ describe("inline segments (kanban cards, mind map nodes)", () => {
     ]);
     expect(segmentsText(s)).toBe("book flights for Travel Lisbon with Ana");
   });
+  it("a link never swallows an earlier lone [[", () => {
+    const s = inlineSegments("Type **[[** to link. Try [[My First Page]]");
+    expect(s.filter((x) => x.kind === "link")).toEqual([{ kind: "link", target: "My First Page", label: "My First Page" }]);
+  });
   it("aliases and cross-notebook links", () => {
     expect(parseWikiLink("Page|shown")).toEqual({ target: "Page", label: "shown" });
     expect(parseWikiLink("Work::Plan")).toEqual({ target: "Plan", label: "Plan", notebook: "Work" });

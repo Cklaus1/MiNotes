@@ -89,9 +89,9 @@ Non-goals
 | Export Markdown outline; copy branch | Done | `MindMapView.tsx` (`blocksToOutline`) |
 | Export PNG / SVG | Partial, **likely broken**: serialises the first `.react-flow svg` (background/edges). Nodes are HTML, so labels are missing | `MindMapView.tsx` (`handleExportPng/Svg`) |
 | Label clamp to 2 lines + tooltip; no duplicate `# Title` node; TODO keyword stripped | Done on branch `ux-int`, **not merged** | `ux-int:…/mindmap/blocksToFlow.ts` |
-| Remember the view per page (`view::` property) | Not started | n/a |
-| Ctrl+click `[[link]]` in a node opens the page | Not started | n/a |
-| Search highlights matching nodes | Not started | n/a |
+| Remember the view per page (`view:: mindmap`, `mindmap-layout::`; written only on an explicit choice) | Done (UX Wave 4) | `lib/pageView.ts` |
+| Ctrl+click `[[link]]` in a node opens the page | Done (UX Wave 4) | `MindMapNode.tsx` |
+| Search highlights matching nodes (find box, Ctrl+F, Enter centres the next) | Done (UX Wave 4) | `MindMapView.tsx` |
 | Journey tests (open, nodes render, layout switch, close, mode switch) | Done | `tests/user-journey-test.sh` journeys 33, 35 |
 | Unit tests for `blocksToFlow` / `extractLabel` | Not started (no frontend unit-test runner) | n/a |
 

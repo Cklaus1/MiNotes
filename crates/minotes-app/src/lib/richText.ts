@@ -54,7 +54,8 @@ export function inlineSegments(content: string, opts: { withTags?: boolean; maxL
     const last = out[out.length - 1];
     if (last?.kind === "text") last.text += text; else out.push({ kind: "text", text });
   };
-  const re = /\[\[([^\]]+?)\]\]|(^|\s)#([a-zA-Z][\w/-]*)/g;
+  // A link never spans another "[[" (e.g. "Type **[[** to link … [[Page]]").
+  const re = /\[\[((?:(?!\[\[)[^\]])+?)\]\]|(^|\s)#([a-zA-Z][\w/-]*)/g;
   let at = 0;
   let m: RegExpExecArray | null;
   while ((m = re.exec(body)) !== null) {
