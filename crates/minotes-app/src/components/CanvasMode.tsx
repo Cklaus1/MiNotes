@@ -71,6 +71,7 @@ export default function CanvasMode({
           <GraphView
             onPageClick={(id) => { onPageClick(id); onClose(); }}
             onClose={onClose}
+            currentPageId={pageId}
           />
         );
       case "mindmap":

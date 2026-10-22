@@ -1049,11 +1049,26 @@ const handlers: Record<string, (args: any) => any> = {
     return {
       nodes: visible
         .sort((a, b) => (a.title < b.title ? -1 : a.title > b.title ? 1 : 0))
-        .map(p => ({
-          id: p.id, title: p.title,
-          block_count: Array.from(blocks.values()).filter(b => b.page_id === p.id).length,
-          link_count: incoming.get(p.id) ?? 0,
-        })),
+        .map(p => {
+          // Inline #tags, most used first (core repo/graph.rs inline_tags).
+          const counts = new Map<string, number>();
+          for (const b of blocks.values()) {
+            if (b.page_id !== p.id) continue;
+            const text = b.content.replace(/```[\s\S]*?```/g, " ").replace(/`[^`]*`/g, " ");
+            for (const m of text.matchAll(/(?:^|\s)#([a-zA-Z][a-zA-Z0-9_\-/]*)/g)) {
+              const t = m[1].replace(/\/+$/, "").toLowerCase();
+              if (/^[0-9a-f]{6}$|^[0-9a-f]{8}$/.test(t) || (/^[0-9a-f]{3,4}$/.test(t) && /\d/.test(t))) continue;
+              counts.set(t, (counts.get(t) ?? 0) + 1);
+            }
+          }
+          return {
+            id: p.id, title: p.title,
+            block_count: Array.from(blocks.values()).filter(b => b.page_id === p.id).length,
+            link_count: incoming.get(p.id) ?? 0,
+            folder_id: p.folder_id ?? null,
+            tags: [...counts.entries()].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1)).slice(0, 8).map(([t]) => t),
+          };
+        }),
       edges: Array.from(edges.entries()).sort().map(([k, weight]) => {
         const [source, target] = k.split("\n");
         return { source, target, weight };

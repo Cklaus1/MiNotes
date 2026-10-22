@@ -10,6 +10,10 @@ pub struct GraphNode {
     pub title: String,
     pub block_count: i64,
     pub link_count: i64,
+    /// The page's project (folder), for colouring and filtering the graph.
+    pub folder_id: Option<Uuid>,
+    /// Inline `#tags` used on the page, most used first (at most 8).
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -45,7 +49,7 @@ impl Database {
         // Nodes: pages with block and (visible) incoming link counts
         let mut stmt = self.conn.prepare(&format!(
             "{hidden}
-             SELECT p.id, p.title,
+             SELECT p.id, p.title, p.folder_id,
                     (SELECT COUNT(*) FROM blocks WHERE page_id = p.id) as block_count,
                     (SELECT COUNT(*) FROM links l JOIN blocks b ON b.id = l.from_block
                       WHERE l.to_page = p.id
@@ -54,18 +58,42 @@ impl Database {
              WHERE p.id NOT IN (SELECT id FROM hidden_pages)
              ORDER BY p.title"
         ))?;
-        let nodes: Vec<GraphNode> = stmt
+        let mut nodes: Vec<GraphNode> = stmt
             .query_map([], |row| {
                 let id_str: String = row.get(0)?;
+                let folder: Option<String> = row.get(2)?;
                 Ok(GraphNode {
                     id: Uuid::parse_str(&id_str).unwrap_or_default(),
                     title: row.get(1)?,
-                    block_count: row.get(2)?,
-                    link_count: row.get(3)?,
+                    folder_id: folder.and_then(|f| Uuid::parse_str(&f).ok()),
+                    block_count: row.get(3)?,
+                    link_count: row.get(4)?,
+                    tags: Vec::new(),
                 })
             })?
             .filter_map(|r| r.ok())
             .collect();
+
+        // Inline #tags per page (one pass over the blocks that contain a '#').
+        let mut per_page: std::collections::HashMap<String, std::collections::HashMap<String, usize>> =
+            std::collections::HashMap::new();
+        {
+            let mut stmt = self.conn.prepare("SELECT page_id, content FROM blocks WHERE content LIKE '%#%'")?;
+            let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+            for (page, content) in rows.flatten() {
+                let counts = per_page.entry(page).or_default();
+                for t in inline_tags(&content) {
+                    *counts.entry(t).or_default() += 1;
+                }
+            }
+        }
+        for n in &mut nodes {
+            if let Some(counts) = per_page.remove(&n.id.to_string()) {
+                let mut v: Vec<(String, usize)> = counts.into_iter().collect();
+                v.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+                n.tags = v.into_iter().take(8).map(|(t, _)| t).collect();
+            }
+        }
 
         // Edges: aggregated links between pages
         let mut stmt = self.conn.prepare(&format!(
@@ -158,6 +186,8 @@ impl Database {
                         title: page.title,
                         block_count,
                         link_count: 0,
+                        folder_id: page.folder_id,
+                        tags: Vec::new(),
                     });
                 }
             }
@@ -194,5 +224,87 @@ impl Database {
             orphan_pages,
             journal_pages,
         })
+    }
+}
+
+/// Inline `#tags` in a block's markdown, lower-cased, in order of appearance
+/// (repeats kept). Same rules as the app's tag extractor (`lib/tagExtractor.ts`):
+/// a tag follows the start or whitespace, starts with a letter, then letters,
+/// digits, `_`, `-` and nested `/parts`; code spans and fences are skipped, and
+/// hex colours (`#ff00aa`, `#f0f`) are not tags.
+pub fn inline_tags(content: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut in_fence = false;
+    for line in content.lines() {
+        if line.trim_start().starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+        let chars: Vec<char> = line.chars().collect();
+        let mut in_code = false;
+        let mut i = 0;
+        while i < chars.len() {
+            let c = chars[i];
+            if c == '`' {
+                in_code = !in_code;
+                i += 1;
+                continue;
+            }
+            if in_code || c != '#' || (i > 0 && !chars[i - 1].is_whitespace()) {
+                i += 1;
+                continue;
+            }
+            let start = i + 1;
+            if start >= chars.len() || !chars[start].is_ascii_alphabetic() {
+                i += 1;
+                continue;
+            }
+            let mut j = start;
+            while j < chars.len() && (chars[j].is_ascii_alphanumeric() || matches!(chars[j], '_' | '-' | '/')) {
+                j += 1;
+            }
+            let tag: String = chars[start..j].iter().collect::<String>().trim_end_matches('/').to_lowercase();
+            i = j;
+            let hexish = tag.chars().all(|c| c.is_ascii_hexdigit());
+            let is_colour = hexish && (tag.len() == 6 || tag.len() == 8 || ((tag.len() == 3 || tag.len() == 4) && tag.chars().any(|c| c.is_ascii_digit())));
+            if !tag.is_empty() && !is_colour {
+                out.push(tag);
+            }
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::inline_tags;
+    use crate::db::Database;
+
+    #[test]
+    fn inline_tags_follow_the_app_rules() {
+        assert_eq!(inline_tags("Ship #work and #Home/garden today"), ["work", "home/garden"]);
+        assert_eq!(inline_tags("color:#fff url/#x #123 #f0f #ff00aa `#code` #ok"), ["ok"]);
+        assert_eq!(inline_tags("```\n#include\n```\n#real"), ["real"]);
+        assert!(inline_tags("no tags here").is_empty());
+    }
+
+    #[test]
+    fn graph_nodes_carry_project_and_tags() {
+        let db = Database::open_in_memory().unwrap();
+        let folder = db.create_folder("Proj", None, None, None, "test").unwrap();
+        let a = db.create_page("A", None, false, None, "test").unwrap();
+        db.move_page_to_folder(&a.id, Some(&folder.id), "test").unwrap();
+        db.create_block(&a.id, "Plan #work #work #idea", None, None, "test").unwrap();
+        db.create_page("B", None, false, None, "test").unwrap();
+        let g = db.get_graph_data().unwrap();
+        let na = g.nodes.iter().find(|n| n.title == "A").unwrap();
+        assert_eq!(na.folder_id, Some(folder.id));
+        assert_eq!(na.tags, ["work", "idea"]);
+        let nb = g.nodes.iter().find(|n| n.title == "B").unwrap();
+        assert_eq!(nb.folder_id, None);
+        assert!(nb.tags.is_empty());
     }
 }

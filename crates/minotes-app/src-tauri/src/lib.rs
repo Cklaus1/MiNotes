@@ -328,6 +328,8 @@ struct FrontendGraphNode {
     title: String,
     block_count: i64,
     link_count: i64,
+    folder_id: Option<String>,
+    tags: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -353,6 +355,8 @@ fn get_graph_data(state: State<'_, AppState>) -> Result<FrontendGraphData, Strin
             title: n.title,
             block_count: n.block_count,
             link_count: n.link_count,
+            folder_id: n.folder_id.map(|f| f.to_string()),
+            tags: n.tags,
         }).collect(),
         edges: data.edges.into_iter().map(|e| FrontendGraphEdge {
             source: e.from_page.to_string(),

@@ -14,10 +14,18 @@ import * as api from "../lib/api";
 import { onThemeChange, themeColor } from "../lib/theme";
 import NotebookLabel from "./NotebookLabel";
 import { useLayer } from "../lib/layers";
+import Icon from "./Icon";
+import {
+  adjacency, categories, NO_PROJECT, OTHER, stepTo, titleMatches, visibleNodes,
+  type ArrowKey, type ColorBy, type GraphFilters,
+} from "../lib/graphModel";
+import "./views.css";
 
 interface Props {
   onPageClick: (id: string) => void;
   onClose: () => void;
+  /** The page the graph was opened from ("you are here", local graph centre). */
+  currentPageId?: string | null;
 }
 
 interface SimNode extends SimulationNodeDatum {
@@ -28,6 +36,8 @@ interface SimNode extends SimulationNodeDatum {
   radius: number;
   /** Visible edges touching this node (label priority). */
   degree: number;
+  /** Colour category (graphModel.categories), or "" when not colouring. */
+  category: string;
 }
 
 interface SimEdge extends SimulationLinkDatum<SimNode> {
@@ -35,7 +45,10 @@ interface SimEdge extends SimulationLinkDatum<SimNode> {
 }
 
 /** Canvas colours, read from the theme's CSS variables (light theme → light canvas). */
-interface GraphColors { bg: string; node: string; nodeHover: string; edge: string; label: string; labelHover: string }
+interface GraphColors {
+  bg: string; node: string; nodeHover: string; edge: string; label: string; labelHover: string;
+  here: string; match: string; muted: string; cats: string[];
+}
 function readColors(): GraphColors {
   return {
     bg: themeColor("--bg-primary", "#1e1e2e"),
@@ -44,6 +57,10 @@ function readColors(): GraphColors {
     edge: themeColor("--border", "#45475a"),
     label: themeColor("--text-secondary", "#a6adc8"),
     labelHover: themeColor("--text-primary", "#cdd6f4"),
+    here: themeColor("--text-primary", "#cdd6f4"),
+    match: themeColor("--warning", "#f9e2af"),
+    muted: themeColor("--text-muted", "#9399b2"),
+    cats: [1, 2, 3, 4, 5, 6, 7].map((i) => themeColor(`--cat-${i}`, "#89b4fa")),
   };
 }
 
@@ -61,6 +78,8 @@ const DRAG_THRESHOLD_PX = 4;
 const FIT_PADDING = 32; // screen px kept free around the fitted graph
 const FIT_MAX_ZOOM = 1.5;
 const HIDE_UNLINKED_KEY = "minotes-graph-hide-unlinked";
+const LOCAL_KEY = "minotes-graph-local";
+const COLOR_KEY = "minotes-graph-color-by";
 
 function nodeRadius(blockCount: number): number {
   return Math.max(6, Math.min(24, 6 + Math.sqrt(blockCount) * 3));
@@ -75,22 +94,34 @@ function labelFontSize(k: number): number {
   return Math.max(10, 12 / k);
 }
 
-function readHidePref(): boolean | null {
+function readPref<T>(key: string, parse: (v: string) => T | null): T | null {
   try {
-    const v = localStorage.getItem(HIDE_UNLINKED_KEY);
-    return v === "1" ? true : v === "0" ? false : null;
+    const v = localStorage.getItem(key);
+    return v == null ? null : parse(v);
   } catch { return null; }
 }
+function writePref(key: string, v: string) {
+  try { localStorage.setItem(key, v); } catch { /* best effort */ }
+}
 
-export default function GraphView({ onPageClick, onClose }: Props) {
+export default function GraphView({ onPageClick, onClose, currentPageId = null }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [empty, setEmpty] = useState(false);
   const [data, setData] = useState<api.GraphData | null>(null);
   // null = no saved choice yet: decided from the data once it loads.
-  const [hidePref, setHidePref] = useState<boolean | null>(readHidePref);
+  const [hidePref, setHidePref] = useState<boolean | null>(() => readPref(HIDE_UNLINKED_KEY, (v) => v === "1" ? true : v === "0" ? false : null));
+  // Local graph: 0 = whole notebook, 1–3 = links away from the current page.
+  const [localDepth, setLocalDepth] = useState<number>(() => readPref(LOCAL_KEY, (v) => (/^[0-3]$/.test(v) ? Number(v) : null)) ?? 0);
+  const [colorBy, setColorBy] = useState<ColorBy>(() => readPref(COLOR_KEY, (v) => (v === "project" || v === "tag" || v === "none" ? v : null)) ?? "none");
+  const [query, setQuery] = useState("");
+  const [projectFilter, setProjectFilter] = useState<string | null>(null);
+  const [tagFilter, setTagFilter] = useState<string | null>(null);
+  const [orphansOnly, setOrphansOnly] = useState(false);
+  const [folderNames, setFolderNames] = useState<Map<string, string>>(new Map());
   const [counts, setCounts] = useState({ nodes: 0, edges: 0 });
+  const [selectedTitle, setSelectedTitle] = useState("");
   const wrapRef = useRef<HTMLDivElement>(null);
   // True once the user pans/zooms by hand — a window resize then keeps their view.
   const userMovedRef = useRef(false);
@@ -101,15 +132,18 @@ export default function GraphView({ onPageClick, onClose }: Props) {
   const simRef = useRef<ReturnType<typeof forceSimulation<SimNode>> | null>(null);
   const transformRef = useRef({ x: 0, y: 0, k: 1 });
   const hoveredRef = useRef<SimNode | null>(null);
-  const dragRef = useRef<{
-    node: SimNode | null;
-    active: boolean;
-  }>({ node: null, active: false });
+  /** The keyboard's node (arrow keys move it, Enter opens it). */
+  const selectedRef = useRef<SimNode | null>(null);
+  const matchesRef = useRef<Set<string> | null>(null);
+  const currentRef = useRef<string | null>(currentPageId);
+  currentRef.current = currentPageId;
+  const catColorRef = useRef<Map<string, string>>(new Map());
   const colorsRef = useRef<GraphColors>(readColors());
   // Neighbours of every node, and the nodes by degree (most linked first).
   const neighboursRef = useRef<Map<SimNode, Set<SimNode>>>(new Map());
   const byDegreeRef = useRef<SimNode[]>([]);
   const labelsRef = useRef<PlacedLabel[]>([]);
+  const layoutMsRef = useRef(0);
 
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
@@ -139,19 +173,20 @@ export default function GraphView({ onPageClick, onClose }: Props) {
 
     const nodes = nodesRef.current;
     const edges = edgesRef.current;
-    const hovered = hoveredRef.current;
-    // Hovering a node highlights it and its neighbours; the rest fades.
+    // Hovering (or the keyboard's node) highlights it and its neighbours; the rest fades.
+    const hovered = hoveredRef.current ?? selectedRef.current;
+    const matches = matchesRef.current;
     const focus = hovered ? neighboursRef.current.get(hovered) ?? new Set<SimNode>() : null;
-    const inFocus = (n: SimNode) => !focus || n === hovered || focus.has(n);
+    const inFocus = (n: SimNode) => (!focus || n === hovered || focus.has(n)) && (!matches || matches.has(n.id));
+    const fillOf = (n: SimNode) => (n.category ? catColorRef.current.get(n.category) ?? C.muted : C.node);
 
     // Draw edges
-    ctx.strokeStyle = C.edge;
     for (const edge of edges) {
       const s = edge.source as SimNode;
       const t = edge.target as SimNode;
       if (s.x == null || s.y == null || t.x == null || t.y == null) continue;
       const hot = !!hovered && (s === hovered || t === hovered);
-      ctx.globalAlpha = focus && !hot ? 0.25 : 1;
+      ctx.globalAlpha = (focus && !hot) || (matches && !(matches.has(s.id) && matches.has(t.id))) ? 0.2 : 1;
       ctx.strokeStyle = hot ? C.nodeHover : C.edge;
       ctx.lineWidth = (hot ? 2 : 1) / k;
       ctx.beginPath();
@@ -161,22 +196,52 @@ export default function GraphView({ onPageClick, onClose }: Props) {
     }
 
     // Draw nodes
+    const current = currentRef.current;
     for (const node of nodes) {
       if (node.x == null || node.y == null) continue;
       ctx.beginPath();
       ctx.arc(node.x, node.y, node.radius, 0, Math.PI * 2);
-      ctx.fillStyle = node === hovered ? C.nodeHover : C.node;
-      ctx.globalAlpha = inFocus(node) ? 0.85 : 0.3;
+      ctx.fillStyle = node === hovered && !node.category ? C.nodeHover : fillOf(node);
+      ctx.globalAlpha = inFocus(node) ? 0.9 : node.id === current ? 0.6 : matches ? 0.12 : 0.3;
       ctx.fill();
+      ctx.globalAlpha = 1;
+      if (matches?.has(node.id)) {
+        ctx.strokeStyle = C.match;
+        ctx.lineWidth = 2.5 / k;
+        ctx.beginPath();
+        ctx.arc(node.x, node.y, node.radius + 3 / k, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      if (node.id === current) {
+        // "You are here": a double ring in the text colour.
+        ctx.strokeStyle = C.here;
+        ctx.lineWidth = 2.5 / k;
+        ctx.beginPath();
+        ctx.arc(node.x, node.y, node.radius + 4 / k, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.lineWidth = 1 / k;
+        ctx.beginPath();
+        ctx.arc(node.x, node.y, node.radius + 8 / k, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      if (node === selectedRef.current) {
+        ctx.strokeStyle = C.nodeHover;
+        ctx.lineWidth = 2 / k;
+        ctx.setLineDash([4 / k, 3 / k]);
+        ctx.beginPath();
+        ctx.arc(node.x, node.y, node.radius + (node.id === current ? 12 : 6) / k, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
     }
     ctx.globalAlpha = 1;
     ctx.restore();
 
-    // Labels, in screen space. Priority: the hovered node, its neighbours, then
-    // the most linked nodes. A label is drawn only where it overlaps no label
-    // already placed, so zooming out thins them out instead of piling them up.
+    // Labels, in screen space. Priority: the current page, the hovered/keyboard
+    // node, search matches, its neighbours, then the most linked nodes. A label
+    // is drawn only where it overlaps no label already placed, so zooming out
+    // thins them out instead of piling them up.
     const fontPx = labelFontSize(k) * k;
-    ctx.font = `${fontPx}px ${LABEL_FONT}`;
     ctx.textAlign = "left";
     ctx.textBaseline = "top";
     const lineH = Math.ceil(fontPx * 1.25);
@@ -194,7 +259,11 @@ export default function GraphView({ onPageClick, onClose }: Props) {
     const ordered: SimNode[] = [];
     const seen = new Set<SimNode>();
     const push = (n: SimNode) => { if (!seen.has(n)) { seen.add(n); ordered.push(n); } };
-    if (hovered) { push(hovered); for (const n of [...(focus ?? [])].sort((a, b) => b.degree - a.degree)) push(n); }
+    const currentNode = current ? nodes.find((n) => n.id === current) : undefined;
+    if (currentNode) push(currentNode);
+    if (hovered) push(hovered);
+    if (matches) for (const n of byDegreeRef.current) if (matches.has(n.id)) push(n);
+    if (hovered) for (const n of [...(focus ?? [])].sort((a, b) => b.degree - a.degree)) push(n);
     for (const n of byDegreeRef.current) push(n);
     for (const node of ordered) {
       if (node.x == null || node.y == null) continue;
@@ -202,20 +271,22 @@ export default function GraphView({ onPageClick, onClose }: Props) {
       const sy = ty + h / 2 + node.y * k;
       const rr = node.radius * k;
       if (sx + rr < 0 || sx - rr > w || sy + rr < 0 || sy - rr > h) continue; // off screen
+      const isHere = node.id === current;
+      ctx.font = `${isHere ? "600 " : ""}${fontPx}px ${LABEL_FONT}`;
       const label = nodeLabel(node);
       const lw = ctx.measureText(label).width;
       // Nudge a label that would poke out past the canvas edge back in.
       const lx = Math.min(Math.max(sx - lw / 2, 4), Math.max(4, w - 4 - lw));
-      const rect: PlacedLabel = { id: node.id, x: lx, y: sy + rr + LABEL_GAP, w: lw, h: lineH };
-      const forced = node === hovered;
+      const rect: PlacedLabel = { id: node.id, x: lx, y: sy + rr + LABEL_GAP + (isHere ? 8 : 0), w: lw, h: lineH };
+      const forced = node === hovered || isHere;
       if (!forced && collides(rect)) continue;
       placed.push(rect);
       for (const c of cells(rect)) { const l = grid.get(c); if (l) l.push(rect); else grid.set(c, [rect]); }
-      const hot = node === hovered || (focus?.has(node) ?? false);
+      const hot = node === hovered || isHere || (focus?.has(node) ?? false) || (matches?.has(node.id) ?? false);
       // A halo in the background colour keeps labels readable over edges.
       ctx.lineWidth = 3;
       ctx.strokeStyle = C.bg;
-      ctx.globalAlpha = inFocus(node) ? 1 : 0.45;
+      ctx.globalAlpha = inFocus(node) || isHere ? 1 : 0.45;
       ctx.strokeText(label, rect.x, rect.y);
       ctx.fillStyle = hot ? C.labelHover : C.label;
       ctx.fillText(label, rect.x, rect.y);
@@ -225,7 +296,8 @@ export default function GraphView({ onPageClick, onClose }: Props) {
   }, []);
 
   // Follow the app theme (light theme → light canvas).
-  useEffect(() => onThemeChange(() => { colorsRef.current = readColors(); draw(); }), [draw]);
+  const [themeTick, setThemeTick] = useState(0);
+  useEffect(() => onThemeChange(() => { colorsRef.current = readColors(); setThemeTick((t) => t + 1); }), []);
 
   // Bounding box (sim units) of every node plus its label at zoom k.
   const graphBounds = useCallback((k: number) => {
@@ -274,6 +346,10 @@ export default function GraphView({ onPageClick, onClose }: Props) {
     canvas.dataset.edges = String(edgesRef.current.length);
     canvas.dataset.inView = String(inView);
     canvas.dataset.zoom = k.toFixed(3);
+    canvas.dataset.layoutMs = String(Math.round(layoutMsRef.current));
+    canvas.dataset.selected = selectedRef.current?.id ?? "";
+    canvas.dataset.current = nodesRef.current.some((n) => n.id === currentRef.current) ? currentRef.current ?? "" : "";
+    canvas.dataset.matches = matchesRef.current ? String(matchesRef.current.size) : "";
   }, []);
 
   // Zoom/pan so every node (and its label) sits inside the canvas with padding.
@@ -311,6 +387,25 @@ export default function GraphView({ onPageClick, onClose }: Props) {
     publishStats();
   }, [draw, graphBounds, publishStats]);
 
+  /** Pan (not zoom) so `node` is on screen with a margin. */
+  const revealNode = useCallback((node: SimNode) => {
+    const canvas = canvasRef.current;
+    if (!canvas || node.x == null || node.y == null) return;
+    const t = transformRef.current;
+    const w = canvas.clientWidth, h = canvas.clientHeight, m = 60;
+    const sx = t.x + w / 2 + node.x * t.k, sy = t.y + h / 2 + node.y * t.k;
+    if (sx < m) t.x += m - sx; else if (sx > w - m) t.x -= sx - (w - m);
+    if (sy < m) t.y += m - sy; else if (sy > h - m) t.y -= sy - (h - m);
+  }, []);
+
+  const select = useCallback((node: SimNode | null, reveal = true) => {
+    selectedRef.current = node;
+    setSelectedTitle(node?.title ?? "");
+    if (node && reveal) revealNode(node);
+    draw();
+    publishStats();
+  }, [draw, publishStats, revealNode]);
+
   // Hit test: find node under screen coordinates
   const hitTest = useCallback((screenX: number, screenY: number): SimNode | null => {
     const canvas = canvasRef.current;
@@ -334,7 +429,7 @@ export default function GraphView({ onPageClick, onClose }: Props) {
     return null;
   }, []);
 
-  // Load the graph once
+  // Load the graph once (and the project names, for filters and the legend)
   useEffect(() => {
     let cancelled = false;
     api.getGraphData().then((d) => {
@@ -347,47 +442,95 @@ export default function GraphView({ onPageClick, onClose }: Props) {
       setError(String(e));
       setLoading(false);
     });
+    api.getFolderTree().then((t) => {
+      if (cancelled) return;
+      const names = new Map<string, string>();
+      const walk = (fs: api.FolderTree[], prefix: string) => {
+        for (const f of fs) {
+          names.set(f.id, prefix + f.name);
+          walk(f.children ?? [], prefix + f.name + " / ");
+        }
+      };
+      walk(t.folders, "");
+      setFolderNames(names);
+    }).catch(() => { /* names are cosmetic */ });
     return () => { cancelled = true; };
   }, []);
 
-  // Pages with no link in either direction.
-  const linkedIds = useMemo(() => {
-    const ids = new Set<string>();
-    if (!data) return ids;
-    const known = new Set(data.nodes.map((n) => n.id));
-    for (const e of data.edges) {
-      if (e.source === e.target || !known.has(e.source) || !known.has(e.target)) continue;
-      ids.add(e.source);
-      ids.add(e.target);
-    }
-    return ids;
-  }, [data]);
+  const adj = useMemo(() => (data ? adjacency(data) : new Map<string, Set<string>>()), [data]);
+  const linkedCount = useMemo(() => [...adj.values()].filter((s) => s.size > 0).length, [adj]);
   const totalCount = data?.nodes.length ?? 0;
-  const unlinkedCount = totalCount - linkedIds.size;
+  const unlinkedCount = totalCount - linkedCount;
   // Default: hide the orphans when they would drown out the linked pages.
-  const hideUnlinked = hidePref ?? (linkedIds.size > 0 && unlinkedCount > totalCount / 2);
+  const hideUnlinked = hidePref ?? (linkedCount > 0 && unlinkedCount > totalCount / 2);
+  const currentKnown = !!currentPageId && adj.has(currentPageId);
+  const localActive = localDepth > 0 && currentKnown;
 
   const toggleHideUnlinked = useCallback((next: boolean) => {
-    try { localStorage.setItem(HIDE_UNLINKED_KEY, next ? "1" : "0"); } catch { /* best effort */ }
+    writePref(HIDE_UNLINKED_KEY, next ? "1" : "0");
     setHidePref(next);
   }, []);
+  const changeLocal = useCallback((depth: number) => {
+    writePref(LOCAL_KEY, String(depth));
+    setLocalDepth(depth);
+  }, []);
+  const changeColorBy = useCallback((v: ColorBy) => {
+    writePref(COLOR_KEY, v);
+    setColorBy(v);
+  }, []);
+
+  const filters: GraphFilters = useMemo(() => ({
+    local: localActive ? { centerId: currentPageId!, depth: localDepth } : null,
+    project: projectFilter,
+    tag: tagFilter,
+    orphansOnly,
+    hideUnlinked,
+  }), [localActive, currentPageId, localDepth, projectFilter, tagFilter, orphansOnly, hideUnlinked]);
+
+  const shown = useMemo(() => (data ? visibleNodes(data, adj, filters) : []), [data, adj, filters]);
+  const projectName = useCallback((id: string) => folderNames.get(id) ?? "Project", [folderNames]);
+  const cats = useMemo(() => categories(shown, colorBy, projectName), [shown, colorBy, projectName]);
+  const legend = useMemo(() => {
+    const C = colorsRef.current;
+    const map = new Map<string, string>();
+    let i = 0;
+    for (const c of cats.list) {
+      map.set(c.key, c.key === OTHER || c.key === NO_PROJECT ? C.muted : C.cats[i++ % C.cats.length]);
+    }
+    return map;
+    // themeTick: re-read the palette after a theme change
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cats, themeTick]);
+  catColorRef.current = legend;
+
+  // Filter choices, from the whole notebook (not just what is shown).
+  const projectChoices = useMemo(() => {
+    const ids = new Set<string>();
+    for (const n of data?.nodes ?? []) if (n.folder_id) ids.add(n.folder_id);
+    return [...ids].map((id) => ({ id, name: projectName(id) })).sort((a, b) => a.name.localeCompare(b.name));
+  }, [data, projectName]);
+  const tagChoices = useMemo(() => {
+    const c = new Map<string, number>();
+    for (const n of data?.nodes ?? []) for (const t of n.tags ?? []) c.set(t, (c.get(t) ?? 0) + 1);
+    return [...c.entries()].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1)).map(([t]) => t);
+  }, [data]);
 
   // Build the simulation for the visible nodes, settle it, then fit to view.
   useEffect(() => {
     if (!data) return;
+    const t0 = performance.now();
 
-    const nodes: SimNode[] = data.nodes
-      .filter((n) => !hideUnlinked || linkedIds.has(n.id))
-      .map((n) => ({
-        id: n.id,
-        title: n.title,
-        block_count: n.block_count,
-        link_count: n.link_count,
-        radius: nodeRadius(n.block_count),
-        degree: 0,
-        x: (Math.random() - 0.5) * 400,
-        y: (Math.random() - 0.5) * 400,
-      }));
+    const nodes: SimNode[] = shown.map((n) => ({
+      id: n.id,
+      title: n.title,
+      block_count: n.block_count,
+      link_count: n.link_count,
+      radius: nodeRadius(n.block_count),
+      degree: 0,
+      category: cats.categoryOf.get(n.id) ?? "",
+      x: (Math.random() - 0.5) * 400,
+      y: (Math.random() - 0.5) * 400,
+    }));
 
     const nodeMap = new Map(nodes.map((n) => [n.id, n]));
 
@@ -413,6 +556,9 @@ export default function GraphView({ onPageClick, onClose }: Props) {
     nodesRef.current = nodes;
     edgesRef.current = edges;
     hoveredRef.current = null;
+    const prevSel = selectedRef.current?.id;
+    selectedRef.current = prevSel ? nodeMap.get(prevSel) ?? null : null;
+    setSelectedTitle(selectedRef.current?.title ?? "");
     setCounts({ nodes: nodes.length, edges: edges.length });
 
     const sim = forceSimulation<SimNode>(nodes)
@@ -438,15 +584,76 @@ export default function GraphView({ onPageClick, onClose }: Props) {
 
     // Settle the layout up front (no seconds-long drift), then fit it. The
     // simulation only runs again while a node is being dragged.
+    // A local graph centres on the current page.
+    const here = nodeMap.get(currentRef.current ?? "");
+    if (here && localActive) { here.fx = 0; here.fy = 0; }
     sim.tick(nodes.length > 1500 ? 80 : 300);
+    if (here) { here.fx = null; here.fy = null; }
     sim.on("tick", () => { draw(); });
     simRef.current = sim;
     fitToView();
+    layoutMsRef.current = performance.now() - t0;
+    publishStats();
 
     return () => {
       sim.stop();
     };
-  }, [data, hideUnlinked, linkedIds, draw, fitToView]);
+    // cats.categoryOf is rebuilt with `shown`; colour-only changes go through the effect below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data, shown, draw, fitToView, publishStats]);
+
+  // Colour changes recolour in place (no new layout).
+  useEffect(() => {
+    for (const n of nodesRef.current) n.category = cats.categoryOf.get(n.id) ?? "";
+    draw();
+  }, [cats, legend, draw]);
+
+  // Search: matching titles stand out, the rest fades (null = no search).
+  useEffect(() => {
+    const q = query.trim();
+    matchesRef.current = q ? new Set(nodesRef.current.filter((n) => titleMatches(n.title, q)).map((n) => n.id)) : null;
+    draw();
+    publishStats();
+  }, [query, counts, draw, publishStats]);
+  const matchCount = query.trim() ? nodesRef.current.filter((n) => titleMatches(n.title, query)).length : 0;
+
+  /** Enter in the search box: the best match becomes the keyboard's node. */
+  const jumpToMatch = useCallback(() => {
+    const m = matchesRef.current;
+    if (!m || m.size === 0) return;
+    const best = byDegreeRef.current.find((n) => m.has(n.id));
+    if (best) {
+      select(best);
+      canvasRef.current?.focus({ preventScroll: true });
+    }
+  }, [select]);
+
+  const onCanvasKeyDown = useCallback((e: React.KeyboardEvent<HTMLCanvasElement>) => {
+    const nodes = nodesRef.current;
+    if (nodes.length === 0) return;
+    const sel = selectedRef.current;
+    if (e.key === "Enter") {
+      if (sel) { e.preventDefault(); onPageClick(sel.id); }
+      return;
+    }
+    if (e.key === "ArrowUp" || e.key === "ArrowDown" || e.key === "ArrowLeft" || e.key === "ArrowRight") {
+      e.preventDefault();
+      if (!sel) {
+        select(nodes.find((n) => n.id === currentRef.current) ?? byDegreeRef.current[0] ?? null);
+        return;
+      }
+      const pt = (n: SimNode) => ({ id: n.id, x: n.x ?? 0, y: n.y ?? 0 });
+      const nb = [...(neighboursRef.current.get(sel) ?? [])].map(pt);
+      const next = stepTo(pt(sel), e.key as ArrowKey, nb, nodes.map(pt));
+      if (next) select(nodes.find((n) => n.id === next) ?? null);
+    }
+  }, [onPageClick, select]);
+
+  const onCanvasFocus = useCallback(() => {
+    if (selectedRef.current) return;
+    const nodes = nodesRef.current;
+    select(nodes.find((n) => n.id === currentRef.current) ?? byDegreeRef.current[0] ?? null, false);
+  }, [select]);
 
   // Mouse interactions
   useEffect(() => {
@@ -469,7 +676,6 @@ export default function GraphView({ onPageClick, onClose }: Props) {
         if (Math.hypot(e.clientX - press.x, e.clientY - press.y) < DRAG_THRESHOLD_PX) return;
         press.moved = true;
         if (press.node) {
-          dragRef.current = { node: press.node, active: true };
           press.node.fx = press.node.x;
           press.node.fy = press.node.y;
           simRef.current?.alphaTarget(0.3).restart();
@@ -498,7 +704,6 @@ export default function GraphView({ onPageClick, onClose }: Props) {
         p.node.fx = null;
         p.node.fy = null;
         simRef.current?.alphaTarget(0);
-        dragRef.current = { node: null, active: false };
       } else if (p.node && !p.moved) {
         onPageClick(p.node.id);
       }
@@ -507,6 +712,7 @@ export default function GraphView({ onPageClick, onClose }: Props) {
     const onMouseDown = (e: MouseEvent) => {
       if (e.button !== 0) return;
       e.preventDefault(); // no text selection while dragging
+      canvas.focus({ preventScroll: true });
       press = {
         x: e.clientX, y: e.clientY, node: hitTest(e.clientX, e.clientY), moved: false,
         panX: transformRef.current.x, panY: transformRef.current.y,
@@ -564,10 +770,15 @@ export default function GraphView({ onPageClick, onClose }: Props) {
           id: n.id, title: n.title, degree: n.degree, r: n.radius * k,
           x: rect.left + tx + canvas.clientWidth / 2 + n.x! * k,
           y: rect.top + ty + canvas.clientHeight / 2 + n.y! * k,
+          color: n.category ? catColorRef.current.get(n.category) ?? null : null,
+          match: matchesRef.current?.has(n.id) ?? false,
+          current: n.id === currentRef.current,
         }));
       },
       labels: () => labelsRef.current.map((l) => ({ ...l })),
       colors: () => ({ ...colorsRef.current }),
+      selected: () => selectedRef.current?.id ?? null,
+      layoutMs: () => layoutMsRef.current,
     };
 
     return () => {
@@ -630,43 +841,128 @@ export default function GraphView({ onPageClick, onClose }: Props) {
     );
   }
 
+  const filtered = projectFilter !== null || tagFilter !== null || orphansOnly;
+  const localReason = !currentPageId ? "Open a page first: the local graph is centred on it" : !currentKnown ? "This page isn't in the graph" : "";
+
   return (
     <div className="graph-view">
       <div className="graph-toolbar">
         <NotebookLabel />
         <span className="graph-toolbar-stats">
-          {counts.nodes} nodes · {counts.edges} edges
-          {hideUnlinked && unlinkedCount > 0 && (
-            <span className="graph-hidden-count"> · {unlinkedCount} unlinked hidden</span>
+          {counts.nodes} pages · {counts.edges} links
+          {!orphansOnly && hideUnlinked && unlinkedCount > 0 && !localActive && (
+            <span className="graph-hidden-count" title="Pages with no links are hidden (Which pages)"> · {unlinkedCount} unlinked hidden</span>
           )}
         </span>
-        <label
-          className="graph-toggle"
-          title={unlinkedCount === 0 ? "Every page is linked" : "Hide pages with no links to or from other pages"}
-        >
+        <div className="graph-search">
+          <Icon name="search" size={14} />
           <input
-            type="checkbox"
-            className="graph-hide-unlinked"
-            checked={hideUnlinked}
-            disabled={unlinkedCount === 0}
-            onChange={(e) => toggleHideUnlinked(e.target.checked)}
+            type="search"
+            className="graph-search-input"
+            placeholder="Find a page…"
+            aria-label="Find a page in the graph"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") { e.preventDefault(); jumpToMatch(); }
+              if (e.key === "Escape" && query) { e.preventDefault(); setQuery(""); }
+            }}
           />
-          Hide unlinked
-        </label>
+          {query.trim() && <span className="graph-search-count" aria-live="polite">{matchCount} match{matchCount === 1 ? "" : "es"}</span>}
+        </div>
+        <div className="graph-segmented" role="group" aria-label="Graph scope">
+          <button className={`btn btn-sm${!localActive ? " active" : ""}`} aria-pressed={!localActive} onClick={() => changeLocal(0)} title="Every page in the notebook">All</button>
+          <button
+            className={`btn btn-sm graph-local-btn${localActive ? " active" : ""}`}
+            aria-pressed={localActive}
+            disabled={!!localReason}
+            onClick={() => changeLocal(localDepth || 1)}
+            title={localReason || "Only the pages near this one"}
+          >
+            <Icon name="target" size={13} /> Local
+          </button>
+        </div>
+        {localActive && (
+          <select className="graph-local-depth" aria-label="Local graph depth" value={localDepth} onChange={(e) => changeLocal(Number(e.target.value))}>
+            <option value={1}>1 link away</option>
+            <option value={2}>2 links away</option>
+            <option value={3}>3 links away</option>
+          </select>
+        )}
+        <select
+          className="graph-show"
+          aria-label="Which pages"
+          value={orphansOnly ? "orphans" : hideUnlinked ? "linked" : "all"}
+          onChange={(e) => {
+            const v = e.target.value;
+            setOrphansOnly(v === "orphans");
+            if (v !== "orphans") toggleHideUnlinked(v === "linked");
+          }}
+          title={unlinkedCount === 0 ? "Every page is linked" : `${unlinkedCount} page${unlinkedCount === 1 ? " has" : "s have"} no links to or from other pages`}
+        >
+          <option value="all">All pages</option>
+          <option value="linked">Linked pages</option>
+          <option value="orphans">Orphans only</option>
+        </select>
+        <select className="graph-filter-project" aria-label="Show project" value={projectFilter ?? ""} onChange={(e) => setProjectFilter(e.target.value || null)}>
+          <option value="">All projects</option>
+          {projectChoices.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+          <option value={NO_PROJECT}>No project</option>
+        </select>
+        <select className="graph-filter-tag" aria-label="Show tag" value={tagFilter ?? ""} onChange={(e) => setTagFilter(e.target.value || null)} disabled={tagChoices.length === 0} title={tagChoices.length === 0 ? "No page uses a #tag yet" : undefined}>
+          <option value="">All tags</option>
+          {tagChoices.map((t) => <option key={t} value={t}>#{t}</option>)}
+        </select>
+        <select className="graph-color-by" aria-label="Colour nodes by" value={colorBy} onChange={(e) => changeColorBy(e.target.value as ColorBy)}>
+          <option value="none">One colour</option>
+          <option value="project">Colour: project</option>
+          <option value="tag">Colour: tag</option>
+        </select>
         <button className="btn btn-sm graph-fit-btn" onClick={fitToView} title="Fit all nodes in view">
           Fit
         </button>
-        <button className="btn btn-sm" onClick={onClose}>
-          Close (Esc)
+        <button className="btn btn-sm graph-close-btn" onClick={onClose} title="Close the graph (Esc)" aria-label="Close the graph">
+          <Icon name="x" size={14} />
         </button>
       </div>
       <div ref={wrapRef} className="graph-canvas-wrap">
-        <canvas ref={canvasRef} />
+        <canvas
+          ref={canvasRef}
+          tabIndex={0}
+          role="application"
+          aria-label="Page graph. Arrow keys move between linked pages, Enter opens one."
+          onKeyDown={onCanvasKeyDown}
+          onFocus={onCanvasFocus}
+        />
+        <div className="graph-sr-status" aria-live="polite">{selectedTitle}</div>
+        {cats.list.length > 0 && (
+          <div className="graph-legend" data-testid="graph-legend">
+            {cats.list.map((c) => (
+              <div key={c.key} className="graph-legend-row" data-key={c.key}>
+                <span className="graph-legend-dot" style={{ background: legend.get(c.key) }} />
+                <span className="graph-legend-label">{c.label}</span>
+                <span className="graph-legend-count">{c.count}</span>
+              </div>
+            ))}
+          </div>
+        )}
         {counts.nodes === 0 && (
           <div className="graph-canvas-note">
-            <span>None of the {totalCount} pages link to each other yet.</span>
-            <button className="btn btn-sm" onClick={() => toggleHideUnlinked(false)}>Show unlinked pages</button>
+            {filtered || localActive ? (
+              <>
+                <span>No page matches these filters.</span>
+                <button className="btn btn-sm" onClick={() => { setProjectFilter(null); setTagFilter(null); setOrphansOnly(false); changeLocal(0); }}>Show all pages</button>
+              </>
+            ) : (
+              <>
+                <span>None of the {totalCount} pages link to each other yet.</span>
+                <button className="btn btn-sm" onClick={() => toggleHideUnlinked(false)}>Show unlinked pages</button>
+              </>
+            )}
           </div>
+        )}
+        {localActive && counts.nodes > 0 && (
+          <div className="graph-here-note">Local graph · {localDepth} link{localDepth > 1 ? "s" : ""} from this page</div>
         )}
       </div>
     </div>

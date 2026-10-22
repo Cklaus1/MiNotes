@@ -360,7 +360,7 @@ G_OPEN=$(ev "!!document.querySelector('.graph-view canvas')" | tr -d '"')
 
 step "Every node (and its label) is fitted inside the viewport"
 # The graph is a canvas: it publishes what it shows as data-* attributes.
-G_SET="(v)=>{const c=document.querySelector('.graph-hide-unlinked');if(!c)return 'no toggle';if(c.checked!==v)c.click();return 'ok'}"
+G_SET="(v)=>{const c=document.querySelector('.graph-show');if(!c)return 'no toggle';c.value=v?'linked':'all';c.dispatchEvent(new Event('change',{bubbles:true}));return 'ok'}"
 G_STAT="(()=>{const c=document.querySelector('.graph-view canvas');return c?c.dataset.nodes+':'+c.dataset.inView:'no canvas'})()"
 ev "($G_SET)(false)" > /dev/null 2>&1; sleep 1
 G_ALL=$(ev "$G_STAT" | tr -d '"')

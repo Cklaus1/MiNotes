@@ -296,6 +296,10 @@ export interface GraphNode {
   title: string;
   block_count: number;
   link_count: number;
+  /** The page's project (folder); null at the top level. */
+  folder_id?: string | null;
+  /** Inline #tags on the page, most used first (lower-case, at most 8). */
+  tags?: string[];
 }
 
 export interface GraphEdge {
