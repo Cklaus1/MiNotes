@@ -439,7 +439,9 @@ export default function KanbanView({ pageId, pageTitle, blocks, onRefreshPage, o
     for (let i = 0; i < maxCards; i++) {
       const row = boardColumns.map((c) => {
         const cards = cardsByColumn.get(c.id) ?? [];
-        return i < cards.length ? esc(segmentsText(inlineSegments(cards[i].content))) : "";
+        // Text without markdown, keeping the task marker (the table has no badges).
+        const marker = cards[i]?.content.match(/^(TODO|DOING|DONE) /)?.[0] ?? "";
+        return i < cards.length ? esc(marker + segmentsText(inlineSegments(cards[i].content))) : "";
       });
       md += "| " + row.join(" | ") + " |\n";
     }
