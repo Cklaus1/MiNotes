@@ -5028,15 +5028,17 @@ ev "(async()=>{$A105 await api.createPage('Hub105 $S105');for(let k=0;k<3;k++){c
 api "navigateTo('Hub105 $S105')" >/dev/null; sleep 3
 
 step "Groups by page with counts; at most 50 rows at first"
-R=$(ev "(()=>{const g=[...document.querySelectorAll('.backlinks .backlink-group')];return document.querySelector('.backlinks h4')?.textContent+'|'+g.length+'|'+g.map(x=>x.querySelector('.backlink-count').textContent).join(',')+'|'+document.querySelectorAll('.backlinks .backlink-item').length})()" | tr -d '"')
+# (Group order follows the backend's link order; the counts are what matter.)
+R=$(ev "(()=>{const g=[...document.querySelectorAll('.backlinks .backlink-group')];return document.querySelector('.backlinks h4')?.textContent+'|'+g.length+'|'+g.map(x=>Number(x.querySelector('.backlink-count').textContent)).sort((a,b)=>b-a).join(',')+'|'+document.querySelectorAll('.backlinks .backlink-item').length})()" | tr -d '"')
 [[ "$R" == "Backlinks (68) · 3 pages|3|60,4,4|50" ]] && pass "$R" || fail "Grouped backlinks" "$R"
 ss "105-backlinks-grouped"
 
 step "Show more adds rows; a group folds"
-ev "document.querySelector('[data-testid=backlinks-more]')?.click()" >/dev/null; sleep 0.4
+BIG105="[...document.querySelectorAll('.backlinks .backlink-group')].find(g=>g.querySelector('.backlink-count').textContent==='60')"
+ev "$BIG105?.querySelector('[data-testid=backlinks-more]')?.click()" >/dev/null; sleep 0.4
 N1=$(ev "document.querySelectorAll('.backlinks .backlink-item').length" | tr -d '"')
-ev "document.querySelector('.backlinks .backlink-group-toggle')?.click()" >/dev/null; sleep 0.4
-N2=$(ev "document.querySelectorAll('.backlinks .backlink-item').length+'|'+document.querySelector('.backlinks .backlink-group-toggle').getAttribute('aria-expanded')" | tr -d '"')
+ev "$BIG105?.querySelector('.backlink-group-toggle')?.click()" >/dev/null; sleep 0.4
+N2=$(ev "document.querySelectorAll('.backlinks .backlink-item').length+'|'+$BIG105?.querySelector('.backlink-group-toggle').getAttribute('aria-expanded')" | tr -d '"')
 [[ "$N1" -gt 50 && "$N2" == "8|false" ]] 2>/dev/null && pass "More: $N1 rows; folded first group: $N2" || fail "Show more / fold" "$N1 / $N2"
 
 step "Unlinked mentions show their page and Link wraps the mention in [[ ]]"

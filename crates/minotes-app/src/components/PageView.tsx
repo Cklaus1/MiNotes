@@ -385,8 +385,21 @@ export default function PageView({
 
   // Execute focus when focusBlockId changes (optionally at a remembered caret).
   const focusCaretRef = useRef<{ id: string; pos: FocusPosition } | null>(null);
+  const focusWaitRef = useRef<{ id: string; since: number } | null>(null);
   useEffect(() => {
     if (focusBlockId !== null) {
+      // A block just created on the backend (a template, a paste) that the page
+      // hasn't loaded yet: wait for the refreshed tree (this effect re-runs on
+      // every blocks change), at most a few seconds.
+      const id = rid(focusBlockId);
+      if (!blocks.some(b => b.id === id || b.id === focusBlockId)) {
+        if (focusWaitRef.current?.id !== focusBlockId) focusWaitRef.current = { id: focusBlockId, since: Date.now() };
+        if (Date.now() - focusWaitRef.current.since < 5000) {
+          const t = setTimeout(() => onRefreshPageRef.current(), 400);
+          return () => clearTimeout(t);
+        }
+      }
+      focusWaitRef.current = null;
       // Not rendered yet (progressive rendering of a big page): render everything first.
       if (!blockRefs.current.has(rid(focusBlockId)) && ensureRendered(focusBlockId)) return;
       // Small delay to ensure refs are mounted after render
