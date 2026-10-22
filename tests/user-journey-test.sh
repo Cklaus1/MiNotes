@@ -4821,6 +4821,355 @@ R=$(ev "(async()=>{const links=[...document.querySelectorAll('[data-testid=setti
 api "closePanel()" >/dev/null
 
 # ═══════════════════════════════════════════════
+journey "102. The / menu has icons, groups and the commands I need (UX Wave 4)"
+# It was a flat list with keyword soup for descriptions, no callout, image,
+# date, link, embed or block-reference commands.
+# ═══════════════════════════════════════════════
+A102="const api=await import('/src/lib/api.ts');"
+S102=$(date +%s)
+api "closePanel()" >/dev/null; press "Escape"; sleep 0.3
+ev "(async()=>{$A102 const p=await api.createPage('Slash102 $S102');for(let i=0;i<8;i++)await api.createBlock(p.id,'');const s=await api.createPage('EmbedSrc102 $S102');await api.createBlock(s.id,'quokka102 $S102 fact');return 1})()" >/dev/null
+api "navigateTo('Slash102 $S102')" >/dev/null; sleep 2
+# type102 <block> <text>: real-ish typing (one insertText per character)
+type102() { api "focusBlock($1)" >/dev/null; sleep 0.3; ev "(async()=>{for(const ch of '$2'){document.execCommand('insertText',false,ch);await new Promise(r=>setTimeout(r,25))}return 1})()" >/dev/null; sleep 0.7; }
+menu102() { ev "[...document.querySelectorAll('.slash-menu-item-title')].map(e=>e.textContent).join(',')" | tr -d '"'; }
+active102() { ev "document.querySelector('.slash-menu-item.active .slash-menu-item-title')?.textContent||'none'" | tr -d '"'; }
+key102() { api "pressKeyInBlock($1, '$2', {focus:false})" >/dev/null; sleep 0.25; }
+live102() { api "getLiveBlockContent($1)" | tr -d '"'; }
+saved102() { ev "(async()=>{$A102 const t=await api.getPageTree('Slash102 $S102');return t.blocks[$1]?.content??'none'})()" | tr -d '"'; }
+
+step "Typing / shows the commands under groups, each with an icon and a one-line description"
+type102 0 "/"
+R=$(ev "[...document.querySelectorAll('.slash-menu-group')].map(e=>e.textContent).join('|')" | tr -d '"')
+[[ "$R" == "Basic|Lists|Media|Links & dates|Advanced|Templates" ]] && pass "Groups: $R" || fail "Slash menu groups" "$R"
+R=$(ev "(()=>{const items=[...document.querySelectorAll('.slash-menu-item')];const icons=items.filter(i=>i.querySelector('svg.ui-icon')).length;const bad=items.map(i=>i.querySelector('.slash-menu-item-description').textContent).filter(d=>!/^[A-Z0-9]/.test(d));return items.length+'|'+icons+'|'+bad.length})()" | tr -d '"')
+IFS='|' read -r N102 I102 B102 <<< "$R"
+[[ "$N102" -ge 25 && "$N102" == "$I102" && "$B102" == "0" ]] 2>/dev/null && pass "$N102 commands, all with icons and sentence descriptions" || fail "Icons / descriptions" "$R"
+ss "102-slash-groups"
+
+step "The keyboard moves through it: ↓, End, PageUp (a group back), Esc closes"
+key102 0 ArrowDown; A1=$(active102)
+key102 0 End; A2=$(active102)
+key102 0 Home; key102 0 PageDown; A3=$(active102)
+[[ "$A1" == "Heading 2" && "$A2" == Template:* && "$A3" == "Bullet List" ]] && pass "↓ → $A1, End → $A2, PageDown → $A3" || fail "Menu keyboard" "$A1 / $A2 / $A3"
+key102 0 Escape; sleep 0.3
+R=$(ev "!!document.querySelector('.slash-menu')" | tr -d '"')
+[[ "$R" == "false" ]] && pass "Esc closed the menu" || fail "Esc on the menu" "$R"
+ev "(()=>{document.execCommand('selectAll');document.execCommand('delete');return 1})()" >/dev/null; sleep 0.3
+
+step "/callout turns the block into a callout, stored as > [!note] (Obsidian syntax)"
+type102 0 "Remember the milk /callout"
+R=$(menu102); R=${R%%,*}
+key102 0 Enter; sleep 0.8
+C=$(live102 0); HTML=$(ev "(()=>{const c=document.querySelector('.block-list .callout');return c?c.getAttribute('data-callout-label')+'|'+c.textContent:'none'})()" | tr -d '"')
+[[ "$R" == "Callout" && "$C" == "> [!note] Remember the milk" && "$HTML" == "Note|Remember the milk" ]] && pass "Callout: $C ($HTML)" || fail "/callout" "menu=$R content=$C dom=$HTML"
+
+step "/date next friday links the coming Friday's journal; /tomorrow offers tomorrow first"
+NF=$(ev "(()=>{const d=new Date();const n=new Date(d.getFullYear(),d.getMonth(),d.getDate()+(((5-d.getDay()+7)%7)||7));return n.getFullYear()+'-'+String(n.getMonth()+1).padStart(2,'0')+'-'+String(n.getDate()).padStart(2,'0')})()" | tr -d '"')
+TM=$(ev "(()=>{const d=new Date();const n=new Date(d.getFullYear(),d.getMonth(),d.getDate()+1);return n.getFullYear()+'-'+String(n.getMonth()+1).padStart(2,'0')+'-'+String(n.getDate()).padStart(2,'0')})()" | tr -d '"')
+type102 1 "Retro /date next friday"
+M1=$(menu102)
+key102 1 Enter; sleep 0.6
+C=$(live102 1)
+[[ "$M1" == "Date: $NF" && "$C" == "Retro [[Journal/$NF]]" ]] && pass "Inserted [[Journal/$NF]]" || fail "/date next friday" "menu=$M1 content=$C"
+type102 2 "/tomorrow"
+M2=$(menu102); M2=${M2%%,*}
+[[ "$M2" == "Date: $TM" ]] && pass "/tomorrow → $M2" || fail "/tomorrow" "$M2"
+key102 2 Escape; ev "(()=>{document.execCommand('selectAll');document.execCommand('delete');return 1})()" >/dev/null; sleep 0.3
+
+step "Pick a date… asks in the app, shows the day the phrase means, then links it"
+type102 2 "/pick"
+key102 2 Enter; sleep 0.6
+ev "(()=>{const i=document.querySelector('[data-testid=prompt-input]');const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;set.call(i,'in 3 days');i.dispatchEvent(new Event('input',{bubbles:true}));return 1})()" >/dev/null; sleep 0.3
+H=$(ev "document.querySelector('[data-testid=prompt-hint]')?.textContent||'none'" | tr -d '"')
+D3=$(ev "(()=>{const d=new Date();const n=new Date(d.getFullYear(),d.getMonth(),d.getDate()+3);return n.getFullYear()+'-'+String(n.getMonth()+1).padStart(2,'0')+'-'+String(n.getDate()).padStart(2,'0')})()" | tr -d '"')
+ev "document.querySelector('[data-testid=confirm-ok]')?.click()" >/dev/null; sleep 0.8
+C=$(live102 2)
+[[ "$H" == "→ "* && "$C" == "[[Journal/$D3]]" ]] && pass "Hint '$H', inserted $C" || fail "Date picker" "hint=$H content=$C"
+
+step "/embed opens the (( block picker and inserts an embed card"
+type102 3 "/embed"
+key102 3 Enter; sleep 0.4
+ev "(async()=>{for(const ch of 'quokka102'){document.execCommand('insertText',false,ch);await new Promise(r=>setTimeout(r,30))}return 1})()" >/dev/null; sleep 1.2
+key102 3 Enter; sleep 0.8
+C=$(live102 3)
+[[ "$C" =~ ^\{\{embed\ \(\([0-9a-f-]{36}\)\)\}\}$ ]] && pass "Embed: $C" || fail "/embed" "content=$C"
+
+step "/link asks for the address in the app's dialog and inserts a markdown link"
+type102 4 "/link"
+key102 4 Enter; sleep 0.6
+DLG=$(ev "!!document.querySelector('[data-testid=prompt-dialog]')" | tr -d '"')
+ev "(()=>{const i=document.querySelector('[data-testid=prompt-input]');const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;set.call(i,'example.org/docs');i.dispatchEvent(new Event('input',{bubbles:true}));return 1})()" >/dev/null; sleep 0.2
+ev "document.querySelector('[data-testid=confirm-ok]')?.click()" >/dev/null; sleep 0.8
+C=$(live102 4)
+[[ "$DLG" == "true" && "$C" == "[example.org/docs](https://example.org/docs)" ]] && pass "Link: $C" || fail "/link" "dialog=$DLG content=$C"
+
+step "/ref opens the block picker for a plain reference"
+type102 5 "/ref"
+key102 5 Enter; sleep 0.4
+ev "(async()=>{for(const ch of 'quokka102'){document.execCommand('insertText',false,ch);await new Promise(r=>setTimeout(r,30))}return 1})()" >/dev/null; sleep 1.2
+key102 5 Enter; sleep 0.8
+C=$(live102 5)
+[[ "$C" =~ ^\(\([0-9a-f-]{36}\)\)$ ]] && pass "Reference: $C" || fail "/ref" "$C"
+ev "document.activeElement?.blur?.()" >/dev/null; sleep 1.2
+R="$(saved102 0)|$(saved102 1)"
+CARD=$(ev "document.querySelector('.block-list .block-transclusion')?.textContent||'none'" | tr -d '"')
+[[ "$R" == "> [!note] Remember the milk|Retro [[Journal/$NF]]" && "$CARD" == *"quokka102"* ]] && pass "Saved: $R; the embed card shows the block" || fail "Slash results saved" "$R / card=$CARD"
+ss "102-slash-results"
+
+# ═══════════════════════════════════════════════
+journey "103. A code block has a language dropdown and a copy button (UX Wave 4)"
+# No way to pick or change the language after the fence was typed; no copy.
+# ═══════════════════════════════════════════════
+A103="const api=await import('/src/lib/api.ts');"
+S103=$(date +%s)
+api "closePanel()" >/dev/null; press "Escape"; sleep 0.3
+ev "(async()=>{$A103 const p=await api.createPage('Code103 $S103');await api.createBlock(p.id,'\`\`\`python\nprint(103)\n\`\`\`');await api.createBlock(p.id,'');return 1})()" >/dev/null
+api "navigateTo('Code103 $S103')" >/dev/null; sleep 2
+ev "(()=>{window.__copied103=null;try{Object.defineProperty(navigator.clipboard,'writeText',{configurable:true,value:(t)=>{window.__copied103=t;return Promise.resolve()}})}catch(e){}return 1})()" >/dev/null
+
+step "The label names the language and is a button; the copy button copies the code"
+R=$(ev "document.querySelector('.block-list .code-lang-btn')?.textContent||'none'" | tr -d '"')
+ev "document.querySelector('.block-list .code-copy-btn')?.click()" >/dev/null; sleep 0.4
+CP=$(ev "window.__copied103" | tr -d '"')
+[[ "$R" == "Python" && "$CP" == "print(103)" ]] && pass "Label $R, copied '$CP'" || fail "Code header" "label=$R copied=$CP"
+
+step "Picking Rust in the dropdown rewrites the fence"
+ev "document.querySelector('.block-list .code-lang-btn')?.click()" >/dev/null; sleep 0.5
+PK103=$(ev "!!document.querySelector('[data-testid=code-lang-picker]')" | tr -d '"')
+ev "(()=>{const i=document.querySelector('.code-lang-filter');const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;set.call(i,'rus');i.dispatchEvent(new Event('input',{bubbles:true}));i.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));return 1})()" >/dev/null; sleep 1
+ev "document.activeElement?.blur?.()" >/dev/null; sleep 1
+DB=$(ev "(async()=>{$A103 const t=await api.getPageTree('Code103 $S103');return t.blocks[0].content})()" | tr -d '"')
+L=$(ev "document.querySelector('.block-list .code-lang-btn')?.textContent" | tr -d '"')
+[[ "$PK103" == "true" && "$DB" == '```rust\nprint(103)\n```' && "$L" == "Rust" ]] && pass "Fence is now rust ($L)" || fail "Language dropdown" "picker=$PK103 db=$DB label=$L"
+ss "103-code-language"
+
+step "/code makes a code block and asks for its language; Esc keeps plain text"
+api "focusBlock(1)" >/dev/null; sleep 0.3
+ev "(async()=>{for(const ch of '/code'){document.execCommand('insertText',false,ch);await new Promise(r=>setTimeout(r,25))}return 1})()" >/dev/null; sleep 0.6
+api "pressKeyInBlock(1, 'Enter', {focus:false})" >/dev/null; sleep 0.8
+R=$(ev "!!document.querySelector('[data-testid=code-lang-picker]')+'|'+(document.activeElement?.className||'')" | tr -d '"')
+ev "document.querySelector('.code-lang-filter')?.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}))" >/dev/null; sleep 0.5
+C=$(api "getLiveBlockContent(1)" | tr -d '"')
+G=$(ev "!!document.querySelector('[data-testid=code-lang-picker]')" | tr -d '"')
+[[ "$R" == "true|code-lang-filter" && "$C" == '```\n```' && "$G" == "false" ]] && pass "Asked ($R), Esc → plain code block" || fail "/code asks for a language" "$R content=$C still-open=$G"
+
+# ═══════════════════════════════════════════════
+journey "104. I save my own templates and reuse them from the / menu (UX Wave 4)"
+# Only six flat built-ins; no user templates, no nesting, no caret position.
+# ═══════════════════════════════════════════════
+A104="const api=await import('/src/lib/api.ts');"
+S104=$(date +%s)
+api "closePanel()" >/dev/null; press "Escape"; sleep 0.3
+ev "(async()=>{$A104 const p=await api.createPage('Retro104 $S104');const a=await api.createBlock(p.id,'## Went well');await api.createBlock(p.id,'{{cursor}}',a.id);const b=await api.createBlock(p.id,'## To improve');await api.createBlock(p.id,'TODO ',b.id);const q=await api.createPage('Use104 $S104');await api.createBlock(q.id,'');await api.createBlock(q.id,'');return 1})()" >/dev/null
+setv104() { ev "(()=>{const i=document.querySelector('$1');const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;set.call(i,'$2');i.dispatchEvent(new Event('input',{bubbles:true}));return 1})()" >/dev/null; }
+tree104() { api "getBlockTree().map(b=>'.'.repeat(b.depth)+b.content).join('/')" | tr -d '"'; }
+
+step "Save as template from the page's info panel"
+api "navigateTo('Retro104 $S104')" >/dev/null; sleep 1.5
+ev "document.querySelector('.prop-toggle-btn[aria-label=\"Page info\"]')?.click()" >/dev/null; sleep 0.4
+ev "document.querySelector('[data-testid=save-page-template]')?.click()" >/dev/null; sleep 0.5
+setv104 "[data-testid=prompt-input]" "Retro104x"
+ev "document.querySelector('[data-testid=confirm-ok]')?.click()" >/dev/null; sleep 1
+R=$(ev "(async()=>{$A104 const t=(await api.listTemplates()).find(t=>t.name==='Retro104x');return t?t.content.replace(/\\n/g,'⏎'):'none'})()" | tr -d '"')
+[[ "$R" == '## Went well⏎  {{cursor}}⏎## To improve⏎  TODO'* ]] && pass "Stored with nesting: $R" || fail "Save page as template" "$R"
+
+step "It is in the / menu; inserting it builds the nested blocks and puts the caret at {{cursor}}"
+api "navigateTo('Use104 $S104')" >/dev/null; sleep 1.5
+api "focusBlock(0)" >/dev/null; sleep 0.3
+ev "(async()=>{for(const ch of '/retro104x'){document.execCommand('insertText',false,ch);await new Promise(r=>setTimeout(r,25))}return 1})()" >/dev/null; sleep 0.8
+M=$(ev "document.querySelector('.slash-menu-item-title')?.textContent" | tr -d '"')
+api "pressKeyInBlock(0, 'Enter', {focus:false})" >/dev/null; sleep 2
+T=$(tree104)
+FC104=$(api "getFocusedBlockIndex()" | tr -d '"')
+[[ "$M" == "Template: Retro104x" && "$T" == "## Went well/./## To improve/.TODO"* && "$FC104" == "1" ]] && pass "Menu '$M' → $T, caret in block $FC104" || fail "Apply user template" "menu=$M tree=$T focused=$FC104"
+ev "document.execCommand('insertText',false,'shipped')" >/dev/null; sleep 0.3
+ev "document.activeElement?.blur?.()" >/dev/null; sleep 1
+R=$(ev "(async()=>{$A104 const t=await api.getPageTree('Use104 $S104');return t.blocks.map(b=>b.content).join('/')})()" | tr -d '"')
+[[ "$R" == "## Went well/shipped/## To improve/TODO"* ]] && pass "Typed at the caret: $R" || fail "Caret at {{cursor}}" "$R"
+
+step "A built-in template is nested too (Meeting Notes)"
+api "focusBlock(4)" >/dev/null; sleep 0.3
+ev "(async()=>{for(const ch of '/meeting'){document.execCommand('insertText',false,ch);await new Promise(r=>setTimeout(r,25))}return 1})()" >/dev/null; sleep 0.8
+api "pressKeyInBlock(4, 'Enter', {focus:false})" >/dev/null; sleep 2
+R=$(api "getBlockTree().filter(b=>b.depth>0&&b.index>=4).length" | tr -d '"')
+[[ "$R" -ge 5 ]] 2>/dev/null && pass "Meeting Notes made $R nested blocks" || fail "Nested built-in" "$R $(tree104)"
+
+step "Save as template from a block's menu: the block and its children"
+api "navigateTo('Retro104 $S104')" >/dev/null; sleep 1.5
+ev "(()=>{const b=[...document.querySelectorAll('.block-list > .block')].find(x=>x.textContent.includes('To improve'));b.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,clientX:300,clientY:200}));return 1})()" >/dev/null; sleep 0.4
+ev "document.querySelector('[data-action=save-template]')?.click()" >/dev/null; sleep 0.5
+setv104 "[data-testid=prompt-input]" "Improve104x"
+ev "document.querySelector('[data-testid=confirm-ok]')?.click()" >/dev/null; sleep 1
+R=$(ev "(async()=>{$A104 const t=(await api.listTemplates()).find(t=>t.name==='Improve104x');return t?t.content.replace(/\\n/g,'⏎').trimEnd():'none'})()" | tr -d '"')
+[[ "$R" == '## To improve⏎  TODO' ]] && pass "Subtree template: $R" || fail "Block subtree template" "$R"
+
+step "Settings → Templates renames and deletes"
+api "openSettings()" >/dev/null; sleep 0.8
+R=$(ev "[...document.querySelectorAll('[data-testid=settings-templates] .template-row')].map(r=>r.dataset.template).filter(n=>n.endsWith('104x')).join(',')" | tr -d '"')
+ev "document.querySelector('[data-template=Improve104x] [data-action=rename-template]')?.click()" >/dev/null; sleep 0.5
+setv104 "[data-testid=prompt-input]" "Better104x"
+ev "document.querySelector('[data-testid=confirm-ok]')?.click()" >/dev/null; sleep 1
+ev "document.querySelector('[data-template=Retro104x] [data-action=delete-template]')?.click()" >/dev/null; sleep 0.5
+ev "document.querySelector('[data-testid=confirm-ok]')?.click()" >/dev/null; sleep 1
+R2=$(ev "(async()=>{$A104 return (await api.listTemplates()).map(t=>t.name).filter(n=>n.endsWith('104x')).sort().join(',')})()" | tr -d '"')
+[[ "$R" == *"Retro104x"* && "$R" == *"Improve104x"* && "$R2" == "Better104x" ]] && pass "Listed ($R); after rename + delete: $R2" || fail "Manage templates" "listed=$R after=$R2"
+ss "104-templates-settings"
+api "closePanel()" >/dev/null; press "Escape"; sleep 0.3
+
+# ═══════════════════════════════════════════════
+journey "105. Backlinks are grouped by page, page in long lists, and an unlinked mention links in one click (UX Wave 4)"
+# 200+ rows in one flat list; unlinked mentions had no page and no "Link".
+# ═══════════════════════════════════════════════
+A105="const api=await import('/src/lib/api.ts');"
+S105=$(date +%s)
+api "closePanel()" >/dev/null; press "Escape"; sleep 0.3
+ev "(async()=>{$A105 await api.createPage('Hub105 $S105');for(let k=0;k<3;k++){const p=await api.createPage('Src105 '+k+' $S105');for(let i=0;i<(k===0?60:4);i++)await api.createBlock(p.id,'note '+i+' on [[Hub105 $S105]]')}const m=await api.createPage('Mention105 $S105');await api.createBlock(m.id,'ask hub105 $S105 about it');return 1})()" >/dev/null
+api "navigateTo('Hub105 $S105')" >/dev/null; sleep 3
+
+step "Groups by page with counts; at most 50 rows at first"
+R=$(ev "(()=>{const g=[...document.querySelectorAll('.backlinks .backlink-group')];return document.querySelector('.backlinks h4')?.textContent+'|'+g.length+'|'+g.map(x=>x.querySelector('.backlink-count').textContent).join(',')+'|'+document.querySelectorAll('.backlinks .backlink-item').length})()" | tr -d '"')
+[[ "$R" == "Backlinks (68) · 3 pages|3|60,4,4|50" ]] && pass "$R" || fail "Grouped backlinks" "$R"
+ss "105-backlinks-grouped"
+
+step "Show more adds rows; a group folds"
+ev "document.querySelector('[data-testid=backlinks-more]')?.click()" >/dev/null; sleep 0.4
+N1=$(ev "document.querySelectorAll('.backlinks .backlink-item').length" | tr -d '"')
+ev "document.querySelector('.backlinks .backlink-group-toggle')?.click()" >/dev/null; sleep 0.4
+N2=$(ev "document.querySelectorAll('.backlinks .backlink-item').length+'|'+document.querySelector('.backlinks .backlink-group-toggle').getAttribute('aria-expanded')" | tr -d '"')
+[[ "$N1" -gt 50 && "$N2" == "8|false" ]] 2>/dev/null && pass "More: $N1 rows; folded first group: $N2" || fail "Show more / fold" "$N1 / $N2"
+
+step "Unlinked mentions show their page and Link wraps the mention in [[ ]]"
+for _ in 1 2 3 4 5 6 7 8 9 10; do R=$(ev "!!document.querySelector('.unlinked-refs-toggle-btn')" | tr -d '"'); [[ "$R" == "true" ]] && break; sleep 0.5; done
+ev "document.querySelector('.unlinked-refs-toggle-btn')?.click()" >/dev/null; sleep 0.5
+G=$(ev "document.querySelector('.unlinked-refs .backlink-page')?.textContent||'none'" | tr -d '"')
+ev "document.querySelector('[data-testid=unlinked-link]')?.click()" >/dev/null; sleep 1.5
+C=$(ev "(async()=>{$A105 return (await api.getPageTree('Mention105 $S105')).blocks[0].content})()" | tr -d '"')
+H=$(ev "document.querySelector('.backlinks h4')?.textContent" | tr -d '"')
+[[ "$G" == "Mention105 $S105" && "$C" == "ask [[hub105 $S105]] about it" && "$H" == "Backlinks (69) · 4 pages" ]] && pass "Linked in '$G': $C; $H" || fail "Link an unlinked mention" "group=$G content=$C head=$H"
+ss "105-linked"
+
+step "Undo (the toast) puts the text back"
+ev "[...document.querySelectorAll('.minotes-toast button')].find(b=>/undo/i.test(b.textContent))?.click()" >/dev/null; sleep 1.5
+C=$(ev "(async()=>{$A105 return (await api.getPageTree('Mention105 $S105')).blocks[0].content})()" | tr -d '"')
+[[ "$C" == "ask hub105 $S105 about it" ]] && pass "Undone: $C" || fail "Undo Link" "$C"
+
+# ═══════════════════════════════════════════════
+journey "106. A 1,200-block page is windowed: it opens at once and stays usable (UX Wave 4)"
+# Every block was in the DOM (rendered progressively): ~10 s to open on the
+# desktop and 12,000+ nodes; now only the blocks near the viewport are.
+# ═══════════════════════════════════════════════
+A106="const api=await import('/src/lib/api.ts');"
+api "closePanel()" >/dev/null; press "Escape"; sleep 0.3
+R=$(ev "(async()=>{$A106 let p;try{p=(await api.getPageTree('Big106')).page}catch{p=null}if(!p){p=await api.createPage('Big106');for(let i=0;i<1200;i++)await api.createBlock(p.id,(i===0?'big106 start ':'')+'Row '+i+' with **bold** and [[Getting Started]]'+(i%10===0?'\nsecond line':''))}return (await api.getPageTree('Big106')).blocks.length})()" | tr -d '"')
+[[ "$R" == "1200" ]] && pass "Big106 has 1,200 blocks" || fail "Big page not created" "$R"
+api "navigateTo('Getting Started')" >/dev/null; sleep 1.5
+
+step "It opens fast with only the blocks near the viewport in the DOM"
+R=$(ev "(async()=>{const M=window.__MINOTES__;const t0=performance.now();let first=null,last=t0,stall=0;M.navigateTo('Big106');await new Promise(res=>{const tick=()=>{const n=performance.now();stall=Math.max(stall,n-last);last=n;const el=document.querySelector('.block-list .block .ProseMirror');if(first===null&&el&&el.textContent.includes('big106 start'))first=n-t0;if((first!==null&&n-t0>first+1500)||n-t0>30000)return res();setTimeout(tick,0)};setTimeout(tick,0)});return Math.round(first)+'|'+Math.round(stall)+'|'+M.isWindowed()+'|'+M.getRenderedBlockCount()+'|'+M.getBlockCount()})()" | tr -d '"')
+IFS='|' read -r F106 ST106 W106 RC106 BC106 <<< "$R"
+[[ "$W106" == "true" && "$RC106" -lt 250 && "$BC106" == "1200" && "$F106" -lt 3000 && "$ST106" -lt 1500 ]] 2>/dev/null && pass "first ${F106} ms, stall ${ST106} ms, $RC106 of $BC106 blocks in the DOM" || fail "Windowed big page" "$R"
+ss "106-big-top"
+
+step "Scrolling to the middle shows the blocks there (no blank screen)"
+R=$(ev "(async()=>{const sc=document.querySelector('.content');sc.scrollTop=sc.scrollHeight/2;await new Promise(r=>setTimeout(r,500));const t=sc.getBoundingClientRect();const vis=[...document.querySelectorAll('.block-list > .block')].filter(b=>{const r=b.getBoundingClientRect();return r.bottom>t.top&&r.top<t.bottom});return vis.length+'|'+(vis[0]?.textContent.match(/Row (\\d+)/)?.[1]??'none')})()" | tr -d '"')
+IFS='|' read -r V106 ROW106 <<< "$R"
+[[ "$V106" -ge 5 && "$ROW106" -gt 400 && "$ROW106" -lt 800 ]] 2>/dev/null && pass "$V106 blocks on screen around row $ROW106" || fail "Scroll into the middle" "$R"
+ss "106-big-middle"
+
+step "Arrow-down from the last rendered block, a deep edit, and a jump to a block far away all work"
+api "focusBlock(1150)" >/dev/null; sleep 0.8
+FI=$(api "getFocusedBlockIndex()" | tr -d '"')
+ev "document.execCommand('insertText',false,' EDIT106')" >/dev/null; sleep 0.3
+api "pressKeyInBlock(1150, 'ArrowDown', {focus:false})" >/dev/null; sleep 0.8
+FD=$(api "getFocusedBlockIndex()" | tr -d '"')
+ev "document.activeElement?.blur?.()" >/dev/null; sleep 1.2
+DB=$(ev "(async()=>{$A106 const t=await api.getPageTree('Big106');return t.blocks.filter(b=>b.content.includes('EDIT106')).map(b=>b.content.split(' with')[0]).join('|')})()" | tr -d '"')
+ID=$(api "getBlockTree()[30].id" | tr -d '"')
+api "openBlockRef('$ID')" >/dev/null; sleep 1.2
+HL=$(ev "(()=>{const b=document.querySelector('.block-ref-highlight');if(!b)return 'none';const r=b.getBoundingClientRect();return b.dataset.blockId===('$ID')&&r.top>=0&&r.bottom<=innerHeight})()" | tr -d '"')
+[[ "$FI" == "1150" && "$FD" == "1151" && "$DB" == "Row 1150" && "$HL" == "true" ]] && pass "focused $FI → ↓ $FD, saved '$DB', jumped to row 30 and highlighted" || fail "Deep navigation" "focused=$FI down=$FD db=$DB highlight=$HL"
+api "pressKeyInBlock(0, 'Escape', {focus:false})" >/dev/null 2>&1; ev "document.activeElement?.blur?.()" >/dev/null; sleep 0.3
+
+# ═══════════════════════════════════════════════
+journey "107. Properties: typed key:: value, page properties under the title, key suggestions (UX Wave 4)"
+# Typed key:: value stayed text; page properties were hidden in the info panel;
+# the inputs were a few characters wide with no suggestions.
+# ═══════════════════════════════════════════════
+A107="const api=await import('/src/lib/api.ts');"
+S107=$(date +%s)
+api "closePanel()" >/dev/null; press "Escape"; sleep 0.3
+ev "(async()=>{$A107 const p=await api.createPage('Props107 $S107');await api.createBlock(p.id,'Fix the login bug');await api.createBlock(p.id,'');await api.setProperty(p.id,'page','owner107','Ann');const o=await api.createPage('Other107 $S107');const b=await api.createBlock(o.id,'x');await api.setProperty(b.id,'block','stage107','beta');return 1})()" >/dev/null
+api "navigateTo('Props107 $S107')" >/dev/null; sleep 2
+
+step "Page properties are a row under the title, without opening anything"
+R=$(ev "(()=>{const r=document.querySelector('[data-testid=page-props]');return r?r.innerText.replace(/\\s+/g,' ').trim():'none'})()" | tr -d '"')
+[[ "$R" == "owner107 Ann × Add property" ]] && pass "Row: $R" || fail "Page properties row" "$R"
+
+step "A typed key:: value line becomes a property of the block"
+api "focusBlock(0)" >/dev/null; sleep 0.3
+api "pressKeyInBlock(0, 'Enter', {shift:true, focus:false})" >/dev/null; sleep 0.2
+ev "document.execCommand('insertText',false,'status107:: doing')" >/dev/null; sleep 0.3
+ev "document.activeElement?.blur?.()" >/dev/null; sleep 1.5
+R=$(ev "(async()=>{$A107 const t=await api.getPageTree('Props107 $S107');const b=t.blocks[0];const p=await api.getProperties(b.id);return b.content+'|'+p.map(x=>x.key+'='+x.value).join(',')+'|'+(document.querySelector('[data-block-id=\"'+b.id+'\"] .block-properties')?.innerText.replace(/\\s+/g,' ').trim()??'none')+'|'+(document.querySelector('[data-block-id=\"'+b.id+'\"] .block-content')?.innerText.trim())})()" | tr -d '"')
+[[ "$R" == "Fix the login bug|status107=doing|status107 doing ×|Fix the login bug" ]] && pass "$R" || fail "Typed key:: value" "$R"
+ss "107-typed-property"
+
+step "Adding a page property: the key suggests keys in use; a real-size field"
+ev "document.querySelector('[data-testid=page-prop-add]')?.click()" >/dev/null; sleep 0.5
+ev "(()=>{const i=document.querySelector('.page-props-row .prop-key-input');i.focus();const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;set.call(i,'stage1');i.dispatchEvent(new Event('input',{bubbles:true}));return 1})()" >/dev/null; sleep 0.6
+SG=$(ev "[...document.querySelectorAll('.prop-key-suggestion')].map(e=>e.textContent).join(',')" | tr -d '"')
+W=$(ev "Math.round(document.querySelector('.page-props-row .prop-key-input').getBoundingClientRect().width)" | tr -d '"')
+ev "document.querySelector('.page-props-row .prop-key-input').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true}))" >/dev/null; sleep 0.2
+ev "document.querySelector('.page-props-row .prop-key-input').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}))" >/dev/null; sleep 0.3
+ev "(()=>{const i=document.activeElement;const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;set.call(i,'alpha');i.dispatchEvent(new Event('input',{bubbles:true}));i.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));return 1})()" >/dev/null; sleep 1
+PP107=$(ev "(async()=>{$A107 const t=await api.getPageTree('Props107 $S107');return (await api.getProperties(t.page.id)).map(x=>x.key+'='+x.value).sort().join(',')})()" | tr -d '"')
+[[ "$SG" == "stage107" && "$W" -ge 90 && "$PP107" == "owner107=Ann,stage107=alpha" ]] 2>/dev/null && pass "Suggested '$SG', field ${W}px, saved $PP107" || fail "Key autocomplete" "suggest=$SG width=$W props=$PP107"
+ss "107-page-props"
+
+# ═══════════════════════════════════════════════
+journey "108. Bullets line up and show in the light theme; the toolbar fits; cards read as text (UX Wave 4)"
+# ═══════════════════════════════════════════════
+A108="const api=await import('/src/lib/api.ts');"
+S108=$(date +%s)
+api "closePanel()" >/dev/null; press "Escape"; sleep 0.3
+ev "(async()=>{$A108 const p=await api.createPage('Look108 $S108');for(const c of ['Select some words here','# Big heading','plain','## Medium','### Small'])await api.createBlock(p.id,c);return 1})()" >/dev/null
+api "navigateTo('Look108 $S108')" >/dev/null; sleep 2
+
+step "Every bullet is centred on its block's first line (headings too)"
+OFF108="[...document.querySelectorAll('.block-list > .block')].map(b=>{const be=getComputedStyle(b,'::before');const c=b.getBoundingClientRect().top+parseFloat(be.top)+parseFloat(be.height)/2;const f=b.querySelector('.ProseMirror > *');const rg=document.createRange();rg.selectNodeContents(f);const r=rg.getClientRects()[0];return Math.round(c-(r.top+r.height/2))})"
+R=$(ev "(()=>{const o=$OFF108;return o.join(',')+'|'+o.every(x=>Math.abs(x)<=2)})()" | tr -d '"')
+[[ "$R" == *"|true" ]] && pass "Bullet offsets (px): ${R%|*}" || fail "Bullets centred" "$R"
+
+step "Light theme: the bullet is clearly visible against the page"
+R=$(ev "(async()=>{const was=document.documentElement.getAttribute('data-theme');document.documentElement.setAttribute('data-theme','light');await new Promise(r=>setTimeout(r,500));const b=[...document.querySelectorAll('.block-list > .block')][2];const c=getComputedStyle(b,'::before').backgroundColor;document.documentElement.setAttribute('data-theme',was||'dark');const m=c.match(/[\\d.]+/g).map(Number);const alpha=c.startsWith('color(')?m[3]:(m.length>3?m[3]:1);const rgb=c.startsWith('color(')?m.slice(0,3).map(x=>x*255):m.slice(0,3);const lum=(0.2126*rgb[0]+0.7152*rgb[1]+0.0722*rgb[2])/255;return (alpha>=0.6&&lum<0.5)+'|'+c})()" | tr -d '"')
+[[ "$R" == true\|* ]] && pass "Light bullet: ${R#*|}" || fail "Faint light-theme bullet" "$R"
+
+step "On the first block the bubble toolbar sits below the selection (not under the header) with Link and a Highlight icon"
+api "focusBlock(0)" >/dev/null; sleep 0.4
+ev "(()=>{document.querySelector('.content').scrollTop=0;const pm=document.querySelector('.block-list .ProseMirror');const t=pm.querySelector('p').firstChild;const r=document.createRange();r.setStart(t,7);r.setEnd(t,11);const s=getSelection();s.removeAllRanges();s.addRange(r);document.dispatchEvent(new Event('selectionchange'));pm.dispatchEvent(new MouseEvent('mouseup',{bubbles:true}));return 1})()" >/dev/null; sleep 0.9
+R=$(ev "(()=>{const tb=document.querySelector('.bubble-toolbar');if(!tb)return 'none';const h=document.querySelector('.main-header').getBoundingClientRect().bottom;const r=tb.getBoundingClientRect();const sel=getSelection().getRangeAt(0).getBoundingClientRect();return (r.top>=h)+'|'+(r.top>=sel.bottom-1)+'|'+!!tb.querySelector('[data-action=link]')+'|'+!!tb.querySelector('[data-action=highlight] svg')})()" | tr -d '"')
+[[ "$R" == "true|true|true|true" ]] && pass "Toolbar below the selection, Link + Highlight icon" || fail "Bubble toolbar" "$R"
+ss "108-toolbar"
+
+step "The toolbar's Link asks for the address and links the selected text"
+ev "document.querySelector('.bubble-toolbar [data-action=link]')?.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true}))" >/dev/null; sleep 0.6
+ev "(()=>{const i=document.querySelector('[data-testid=prompt-input]');const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;set.call(i,'example.com');i.dispatchEvent(new Event('input',{bubbles:true}));document.querySelector('[data-testid=confirm-ok]').click();return 1})()" >/dev/null; sleep 0.8
+C=$(api "getLiveBlockContent(0)" | tr -d '"')
+[[ "$C" == "Select [some](https://example.com) words here" ]] && pass "Linked: $C" || fail "Toolbar link" "$C"
+ev "document.activeElement?.blur?.()" >/dev/null; sleep 0.5
+
+step "Kanban cards read as text, not markdown"
+ev "(async()=>{$A108 const p=await api.createPage('Board108 $S108');const c=await api.createBlock(p.id,'## Doing');await api.createBlock(p.id,'TODO call [[Ann108]] about [the doc](https://x.org) **today**',c.id);return 1})()" >/dev/null
+api "navigateTo('Board108 $S108')" >/dev/null; sleep 1.5
+ev "(()=>{for(const b of document.querySelectorAll('.stats-mode-btn')){if(b.textContent?.includes('Kanban')){b.click();return 1}}return 0})()" >/dev/null; sleep 2.5
+R=$(ev "[...document.querySelectorAll('.kanban-card-text')].map(e=>e.textContent).find(t=>t.includes('Ann108'))||'none'" | tr -d '"')
+[[ "$R" == "call Ann108 about the doc today" ]] && pass "Card reads: $R" || fail "Kanban card shows markdown" "$R"
+ss "108-kanban-card"
+press "Escape"; sleep 0.5
+ev "(()=>{for(const b of document.querySelectorAll('.stats-mode-btn')){if(b.classList.contains('active')){b.click();return 1}}return 0})()" >/dev/null; sleep 0.5
+
+# ═══════════════════════════════════════════════
 close_app
 
 # ═══════════════════════════════════════════════

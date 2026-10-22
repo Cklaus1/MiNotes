@@ -30,7 +30,14 @@ export default function PropertyEditor({ entityId, entityType, properties, onCha
   const [newKey, setNewKey] = useState("");
   const [newValue, setNewValue] = useState("");
   const [keys, setKeys] = useState<string[]>([]);
-  const [active, setActive] = useState(-1);
+  const [active, setActiveState] = useState(-1);
+  // Keys can arrive faster than renders (↓ then Enter): read the live value.
+  const activeRef = useRef(-1);
+  const setActive = (v: number | ((a: number) => number)) => {
+    const next = typeof v === "function" ? v(activeRef.current) : v;
+    activeRef.current = next;
+    setActiveState(next);
+  };
   const [keyFocused, setKeyFocused] = useState(false);
   const valueRef = useRef<HTMLInputElement>(null);
   const newRef = useRef<HTMLSpanElement>(null);
@@ -157,7 +164,7 @@ export default function PropertyEditor({ entityId, entityType, properties, onCha
               onKeyDown={(e) => {
                 if (e.key === "ArrowDown" && suggestions.length) { e.preventDefault(); setActive((a) => (a + 1) % suggestions.length); }
                 else if (e.key === "ArrowUp" && suggestions.length) { e.preventDefault(); setActive((a) => (a - 1 + suggestions.length) % suggestions.length); }
-                else if ((e.key === "Enter" || e.key === "Tab") && active >= 0 && suggestions[active]) { e.preventDefault(); pick(suggestions[active]); }
+                else if ((e.key === "Enter" || e.key === "Tab") && activeRef.current >= 0 && suggestions[activeRef.current]) { e.preventDefault(); pick(suggestions[activeRef.current]); }
                 else if (e.key === "Enter") { e.preventDefault(); valueRef.current?.focus(); }
                 else if (e.key === "Escape") { e.preventDefault(); onAddingChange(false); }
               }}
