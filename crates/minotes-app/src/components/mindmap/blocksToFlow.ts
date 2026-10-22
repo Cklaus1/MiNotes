@@ -1,6 +1,7 @@
 import { type Node, type Edge, Position } from "@xyflow/react";
 import dagre from "dagre";
 import type { Block } from "../../lib/api";
+import { blockPlainText } from "../../lib/plainText";
 
 export interface MindMapNodeData {
   label: string;
@@ -37,30 +38,20 @@ function extractColor(content: string): string | null {
   return null;
 }
 
-/** Strip markdown formatting to get a clean label */
+/**
+ * A block as a one-line label (mind map nodes, kanban cards and columns): the
+ * first line with text, through the shared plain-text helper (lib/plainText),
+ * so links read as their title (`[[Page|id]]` → Page, `[text](url)` → text),
+ * refs/macros/ids vanish and formatting marks go. A leading TODO/DOING/DONE
+ * keyword is kept (extractTaskLabel drops it).
+ */
 export function extractLabel(content: string, maxLen = 60): string {
-  let text = content.trim();
-  // Strip heading markers
-  text = text.replace(/^#{1,4}\s+/, "");
-  // Strip bold/italic
-  text = text.replace(/\*\*(.+?)\*\*/g, "$1");
-  text = text.replace(/\*(.+?)\*/g, "$1");
-  text = text.replace(/__(.+?)__/g, "$1");
-  text = text.replace(/_(.+?)_/g, "$1");
-  // Strip strikethrough
-  text = text.replace(/~~(.+?)~~/g, "$1");
-  // Strip inline code
-  text = text.replace(/`(.+?)`/g, "$1");
-  // Strip wiki links
-  text = text.replace(/\[\[(.+?)\]\]/g, "$1");
-  // Replace whiteboard embeds with label
-  text = text.replace(/\{\{whiteboard:[^}]+\}\}/g, WHITEBOARD_LABEL);
-  // Strip checkbox markers
-  text = text.replace(/^- \[[ x]\]\s*/, "");
-  // Strip list markers
-  text = text.replace(/^[-*+]\s+/, "");
-  // First line only
-  text = text.split("\n")[0];
+  let text = "";
+  for (const raw of content.replace(/\{\{whiteboard:[^}]+\}\}/g, WHITEBOARD_LABEL).split("\n")) {
+    if (/^\s*```/.test(raw)) continue; // a fence line itself says nothing
+    const { state, text: t } = blockPlainText(raw);
+    if (t || state) { text = state ? (t ? `${state} ${t}` : state) : t; break; }
+  }
   // Truncate
   if (text.length > maxLen) text = text.slice(0, maxLen - 1).trimEnd() + "…";
   return text || "(empty)";
