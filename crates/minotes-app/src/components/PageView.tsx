@@ -1789,6 +1789,8 @@ export default function PageView({
     setSelectionAnchor(null);
   }, [page.id]);
 
+  // Bumped when "Link" turns an unlinked mention into a backlink (refreshes the panel).
+  const [linkVersion, setLinkVersion] = useState(0);
   const [editingTitle, setEditingTitle] = useState(false);
   const [showToc, setShowToc] = useState(false);
   const hasHeadings = blocks.some(b => /^#{1,4}\s+/.test(b.content));
@@ -2184,8 +2186,8 @@ export default function PageView({
                 </div>
               )}
 
-              <BacklinksPanel pageId={page.id} refreshKey={page.title} onPageClick={onPageLinkClick} onBlockClick={handleBlockRefClick} />
-              <UnlinkedRefsPanel pageId={page.id} pageTitle={page.title} onPageClick={onPageLinkClick} />
+              <BacklinksPanel pageId={page.id} refreshKey={`${page.title}#${linkVersion}`} onPageClick={onPageLinkClick} onBlockClick={handleBlockRefClick} />
+              <UnlinkedRefsPanel pageId={page.id} pageTitle={page.title} onPageClick={onPageLinkClick} onBlockClick={handleBlockRefClick} onLinked={() => setLinkVersion((n) => n + 1)} />
             </>
           )}
         </div>

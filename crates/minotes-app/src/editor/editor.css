@@ -565,6 +565,75 @@
 }
 .block-content .ProseMirror .callout > p { margin: 0; }
 
+/* Backlinks / unlinked mentions grouped by page (UX Wave 4) */
+.backlinks-sub { text-transform: none; letter-spacing: 0; font-weight: 400; }
+.backlink-group { margin: 2px 0 8px; }
+.backlink-group-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 0;
+}
+.backlink-group-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.backlink-group-toggle:hover { background: var(--bg-hover, rgba(127, 127, 127, 0.12)); color: var(--text-primary); }
+.backlink-group-header .backlink-page {
+  display: inline;
+  margin: 0;
+  padding: 0 2px;
+  border: none;
+  background: none;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  cursor: pointer;
+}
+.backlink-group-header .backlink-page:hover { text-decoration: underline; }
+.backlink-count {
+  min-width: 18px;
+  padding: 0 6px;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 18px;
+  text-align: center;
+}
+.backlink-group > .backlink-item { margin-left: 22px; }
+.backlinks-more { margin: 4px 0 0 22px; }
+.backlinks-missing { margin: 4px 0 0 22px; font-size: 12px; color: var(--text-muted); }
+.unlinked-refs-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.unlinked-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  border-radius: 6px;
+}
+.unlinked-item:hover { background: rgba(137, 180, 250, 0.08); }
+.unlinked-item .unlinked-highlight { flex: 1; min-width: 0; color: var(--text-primary); line-height: 1.5; }
+.unlinked-link-btn { flex: none; display: inline-flex; align-items: center; gap: 4px; }
+
 /* Settings → Templates (components/TemplatesSettings.tsx) */
 .template-row .settings-row-label { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
 .template-row-count { color: var(--text-muted); font-size: 12px; }

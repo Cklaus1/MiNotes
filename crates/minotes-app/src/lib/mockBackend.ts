@@ -1015,10 +1015,10 @@ const handlers: Record<string, (args: any) => any> = {
     const title = page.title;
     const linked = new Set(backlinkBlocks(pageId).map(b => b.id));
     return Array.from(blocks.values())
-      .filter(b => b.page_id !== pageId && !pageHidden(b.page_id) && asciiLower(b.content).includes(asciiLower(title)))
-      .sort((a, b) => b.created_at.localeCompare(a.created_at))
-      .slice(0, 50)
-      .filter(b => !linked.has(b.id) && !b.content.includes(`[[${title}]]`) && containsWord(b.content, title));
+      .filter(b => b.page_id !== pageId && !pageHidden(b.page_id) && asciiLower(b.content).includes(asciiLower(title)) && !linked.has(b.id))
+      .sort((a, b) => b.created_at.localeCompare(a.created_at) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+      .filter(b => !b.content.includes(`[[${title}]]`) && containsWord(b.content, title))
+      .slice(0, 200);
   },
 
   get_graph_stats: () => {
