@@ -137,8 +137,12 @@ pub fn create_encrypted_notebook(name: String, location: Option<String>, passphr
 pub fn join_encrypted_notebook(remote: String, name: String, location: Option<String>, passphrase: String) -> Result<NotebookInfo, String> {
     let name = name.trim().to_string();
     notebook::validate_name(&name).map_err(|e| e.to_string())?;
-    // The same address rules as every other sync remote (no ext::, no options…).
-    let remote = minotes_core::sync_remote::validate_remote(&remote, &minotes_core::sync_remote::LocalRoots { homes: notebooks::home_roots(), picked: vec![] })
+    // The same address rules as every other sync remote (no ext::, no options,
+    // no password in a URL…). This older command (scripts and the desktop
+    // journeys; the app's dialog uses `join_notebook`) keeps accepting a local
+    // folder anywhere, as before.
+    let any_folder = minotes_core::sync_remote::LocalRoots { homes: notebooks::home_roots(), picked: vec![std::path::PathBuf::from("/")] };
+    let remote = minotes_core::sync_remote::validate_remote(&remote, &any_folder)
         .map_err(|e| minotes_core::sync_remote::user_message(&e))?
         .url;
     let loc = match location.filter(|l| !l.trim().is_empty() && !notebook::is_app_storage()) {
