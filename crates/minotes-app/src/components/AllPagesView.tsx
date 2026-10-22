@@ -77,13 +77,20 @@ export default function AllPagesView({ activePageId, onPageClick, onClose, onTra
   const [menu, setMenu] = useState<{ x: number; y: number; ids: string[]; mode: "actions" | "move" } | null>(null);
   const bodyRef = useRef<HTMLTableSectionElement>(null);
 
+  // Reloads overlap (an outside-write refresh during a bulk action): an answer
+  // older than the one shown is dropped, or a stale list would overwrite it.
+  const loadSeq = useRef(0);
+  const shownSeq = useRef(0);
   const loadData = useCallback(async () => {
+    const seq = ++loadSeq.current;
     try {
       const [allPages, tree, favs] = await Promise.all([
         api.listPages(1000000), // every page (All Pages is the full list)
         api.getFolderTree(),
         api.listFavorites().catch(() => [] as Page[]),
       ]);
+      if (seq < shownSeq.current) return;
+      shownSeq.current = seq;
       setPages(allPages);
       setTreeData(tree);
       setPinnedIds(new Set(favs.map(f => f.id)));

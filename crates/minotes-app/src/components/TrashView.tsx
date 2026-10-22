@@ -58,11 +58,18 @@ export default function TrashView({ kind, onOpenPage, onClose, onChanged }: {
   const [busy, setBusy] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
 
+  // Reloads can overlap (an outside-write refresh): an answer older than the
+  // one shown is dropped.
+  const loadSeq = useRef(0);
+  const shownSeq = useRef(0);
   const load = useCallback(async () => {
+    const seq = ++loadSeq.current;
     try {
       const list: Item[] = isTrash
         ? (await api.listTrash()).map(t => ({ ...t, at: t.deleted_at }))
         : (await api.listArchived()).map(a => ({ ...a, at: a.archived_at }));
+      if (seq < shownSeq.current) return;
+      shownSeq.current = seq;
       setItems(list);
       setError(null);
       setSelected(prev => new Set([...prev].filter(id => list.some(i => i.id === id))));
