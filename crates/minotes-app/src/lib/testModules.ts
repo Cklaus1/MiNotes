@@ -22,6 +22,7 @@ import * as notebooks from "./notebooks";
 import * as theme from "./theme";
 import * as layers from "./layers";
 import * as tooltip from "./tooltip";
+import * as pageNames from "./pageNames";
 import { registerTestApi } from "./testApi";
 
 registerTestApi({
@@ -40,5 +41,6 @@ registerTestApi({
     "/src/lib/theme.ts": theme,
     "/src/lib/layers.ts": layers,
     "/src/lib/tooltip.ts": tooltip,
+    "/src/lib/pageNames.ts": pageNames,
   },
 } as any);

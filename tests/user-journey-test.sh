@@ -4676,7 +4676,7 @@ api "navigateTo('Project Alpha')" >/dev/null; sleep 1.5
 hover88() { ev "(()=>{const el=document.querySelector('$1');if(!el)return 'none';const r=el.getBoundingClientRect();const o={bubbles:true,clientX:r.left+r.width/2,clientY:r.top+r.height/2,pointerType:'mouse'};el.dispatchEvent(new PointerEvent('pointerover',o));el.dispatchEvent(new PointerEvent('pointermove',o));return 'ok'})()" >/dev/null; }
 unhover88() { ev "(()=>{const el=document.querySelector('$1');el?.dispatchEvent(new PointerEvent('pointerout',{bubbles:true,relatedTarget:document.body}));return 1})()" >/dev/null; }
 tip88() { ev "(()=>{const t=document.querySelector('.app-tooltip.visible');return t?t.textContent:'none'})()" | tr -d '"'; }
-BTN88=".page-more-btn"
+BTN88=".sidebar .page-item .page-more-btn"
 
 step "Hovering the page ⋮ button shows the app's tooltip, not the platform's"
 hover88 "$BTN88"; sleep 0.9

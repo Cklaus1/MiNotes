@@ -143,6 +143,8 @@ body {
   opacity: 0.45;
   filter: saturate(0.5);
 }
+/* .btn sets cursor: pointer (a class beats :where); disabled says no. */
+.btn:disabled { cursor: not-allowed; }
 .btn:disabled:hover { background: var(--bg-surface); }
 .btn-primary:disabled:hover { background: var(--accent); }
 .disabled-reason {
