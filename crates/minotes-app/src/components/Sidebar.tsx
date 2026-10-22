@@ -354,9 +354,10 @@ export default function Sidebar({
     const walk = (fs: FolderTree[]) => { for (const f of fs) { f.pages.forEach(p => livePages.set(p.id, p)); walk(f.children ?? []); } };
     walk(treeData.folders);
   }
+  // Pinned pages are already one click away: not listed again here.
   const recentPages = getRecentPages()
     .map(r => livePages.get(r.id))
-    .filter((p): p is Page => !!p)
+    .filter((p): p is Page => !!p && !favorites.some(f => f.id === p.id))
     .slice(0, RECENT_SECTION_SIZE);
 
   // Projects: first 5 visible, rest overflow
