@@ -1,5 +1,6 @@
 import type { Block } from "../../lib/api";
 import { isTitleHeading } from "../mindmap/blocksToFlow";
+import { parseTaskLine, setTaskState } from "../../lib/tasks";
 
 /** Id of the virtual leading column holding top-level blocks that are not sections. */
 export const UNSORTED_ID = "__unsorted__";
@@ -69,4 +70,47 @@ export function buildKanbanModel(blocks: Block[], pageTitle: string, stickyIds: 
   for (const [colId, cards] of cardsByColumn) for (const c of cards) columnOfCard.set(c.id, colId);
 
   return { columns, unsorted, cardsByColumn, columnOfCard };
+}
+
+// ── Group by status ──
+
+export type CardStatus = "todo" | "doing" | "done";
+export const STATUS_COLUMNS: { id: string; status: CardStatus; title: string }[] = [
+  { id: "__status_todo__", status: "todo", title: "TODO" },
+  { id: "__status_doing__", status: "doing", title: "DOING" },
+  { id: "__status_done__", status: "done", title: "DONE" },
+];
+export const statusOfColumn = (columnId: string): CardStatus | null =>
+  STATUS_COLUMNS.find((c) => c.id === columnId)?.status ?? null;
+
+/**
+ * Status board: every task block of the page, at any depth (a TODO/DOING/DONE
+ * marker, a `- [ ]` / `- [x]` checkbox or a `todo:` line on its first line),
+ * in a TODO / DOING / DONE column, in outline order. Moving a card between
+ * columns rewrites that line (lib/tasks.ts setTaskState).
+ */
+export function buildStatusModel(blocks: Block[]): { cardsByColumn: Map<string, Block[]>; columnOfCard: Map<string, string> } {
+  const cardsByColumn = new Map<string, Block[]>(STATUS_COLUMNS.map((c) => [c.id, []]));
+  const columnOfCard = new Map<string, string>();
+  for (const b of blocks) {
+    const task = parseTaskLine(b.content.split("\n")[0] ?? "");
+    if (!task) continue;
+    const col = STATUS_COLUMNS.find((c) => c.status === task.state)!;
+    cardsByColumn.get(col.id)!.push(b);
+    columnOfCard.set(b.id, col.id);
+  }
+  return { cardsByColumn, columnOfCard };
+}
+
+/** `content` with its task state set to `status` (null: no longer a task). */
+export function withStatus(content: string, status: CardStatus | null): string {
+  const first = content.split("\n")[0] ?? "";
+  const task = parseTaskLine(first);
+  if (status === null) {
+    if (!task || task.kind !== "marker") return content;
+    return content.replace(/^(\s*)(TODO|DOING|DONE) /, "$1");
+  }
+  if (task) return setTaskState(content, 0, status) ?? content;
+  const marker = status === "todo" ? "TODO " : status === "doing" ? "DOING " : "DONE ";
+  return marker + content;
 }

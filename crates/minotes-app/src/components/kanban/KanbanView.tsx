@@ -7,9 +7,19 @@ import * as api from "../../lib/api";
 import { confirmDialog } from "../../lib/confirm";
 import { extractLabel, extractTaskLabel } from "../mindmap/blocksToFlow";
 import KanbanColumn from "./KanbanColumn";
-import { buildKanbanModel, UNSORTED_ID, UNSORTED_TITLE } from "./kanbanModel";
+import CardPanel from "./CardPanel";
+import {
+  buildKanbanModel, buildStatusModel, statusOfColumn, withStatus, STATUS_COLUMNS, UNSORTED_ID, UNSORTED_TITLE,
+} from "./kanbanModel";
 import { useEscapeToClose } from "../../lib/escapeStack";
 import { coveredAbove } from "../../lib/layers";
+import { cardBadges, inlineSegments, segmentsText, type Badge } from "../../lib/richText";
+import { localDateKey } from "../../lib/dates";
+import { KANBAN_GROUP_KEY, pageViewProps, setPageViewProp, VIEW_KEY } from "../../lib/pageView";
+import { showToast as appToast } from "../../lib/toast";
+import "../views.css";
+
+type GroupBy = "section" | "status";
 
 /** Block property holding a column's colour (on the column's section block). */
 const KANBAN_COLOR_PROP = "kanban-color";
@@ -53,10 +63,38 @@ export default function KanbanView({ pageId, pageTitle, blocks, onRefreshPage, o
     } catch { return new Set<string>(); }
   });
 
-  const { columns, unsorted, cardsByColumn, columnOfCard } = useMemo(
+  // Remembered per page (page properties, written only when the user changes them).
+  const [groupBy, setGroupByState] = useState<GroupBy>("section");
+  const [opensAsBoard, setOpensAsBoard] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    pageViewProps(pageId, true).then((m) => {
+      if (cancelled) return;
+      setGroupByState(m.get(KANBAN_GROUP_KEY) === "status" ? "status" : "section");
+      setOpensAsBoard(m.get(VIEW_KEY) === "kanban");
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [pageId]);
+  const setGroupBy = useCallback((g: GroupBy) => {
+    setGroupByState(g);
+    setPageViewProp(pageId, KANBAN_GROUP_KEY, g === "status" ? "status" : null)
+      .catch((e) => appToast(`Couldn't remember the grouping: ${e}`));
+  }, [pageId]);
+  const toggleOpensAsBoard = useCallback((on: boolean) => {
+    setOpensAsBoard(on);
+    setPageViewProp(pageId, VIEW_KEY, on ? "kanban" : null)
+      .then(() => appToast(on ? `“${pageTitle}” now opens as a board` : `“${pageTitle}” opens as a page again`))
+      .catch((e) => appToast(`Couldn't save: ${e}`));
+  }, [pageId, pageTitle]);
+  const byStatus = groupBy === "status";
+
+  const sectionModel = useMemo(
     () => buildKanbanModel(blocks, pageTitle, stickyColumnIds),
     [blocks, pageTitle, stickyColumnIds],
   );
+  const statusModel = useMemo(() => buildStatusModel(blocks), [blocks]);
+  const { columns, unsorted } = sectionModel;
+  const { cardsByColumn, columnOfCard } = byStatus ? statusModel : sectionModel;
 
   useEffect(() => {
     if (columns.every((c) => stickyColumnIds.has(c.id))) return;
@@ -68,11 +106,44 @@ export default function KanbanView({ pageId, pageTitle, blocks, onRefreshPage, o
   // What the board renders: the virtual "No section" column (only when it has
   // cards) followed by the real section columns.
   const boardColumns = useMemo(() => {
+    if (byStatus) return STATUS_COLUMNS.map((c) => ({ id: c.id, block: null as Block | null, title: c.title }));
     const list: { id: string; block: Block | null; title: string }[] = [];
     if (unsorted.length > 0) list.push({ id: UNSORTED_ID, block: null, title: UNSORTED_TITLE });
     for (const c of columns) list.push({ id: c.id, block: c, title: extractLabel(c.content, 200) });
     return list;
-  }, [columns, unsorted]);
+  }, [columns, unsorted, byStatus]);
+
+  /** Status board: a card dropped on (or moved to) a column takes its state. */
+  const setCardStatus = useCallback((cardId: string, toColumnId: string) => {
+    const status = statusOfColumn(toColumnId);
+    const card = blocks.find((b) => b.id === cardId);
+    if (!status || !card) return;
+    const next = withStatus(card.content, status);
+    if (next === card.content) return;
+    api.updateBlock(cardId, next).then(onRefreshPage).catch((e) => { appToast(`Couldn't change the status: ${e}`); onRefreshPage(); });
+  }, [blocks, onRefreshPage]);
+
+  // Badges: tags, due dates and properties of every card (one batched call).
+  const cardIdsKey = useMemo(() => [...columnOfCard.keys()].join(","), [columnOfCard]);
+  const [cardProps, setCardProps] = useState<Record<string, api.Property[]>>({});
+  useEffect(() => {
+    let cancelled = false;
+    const ids = cardIdsKey ? cardIdsKey.split(",") : [];
+    if (ids.length === 0) { setCardProps({}); return; }
+    api.getPropertiesBatch(ids).then((p) => { if (!cancelled) setCardProps(p); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [cardIdsKey, blocks]);
+  const badgesByCard = useMemo(() => {
+    const today = localDateKey();
+    const m = new Map<string, Badge[]>();
+    for (const cards of cardsByColumn.values()) {
+      for (const c of cards) {
+        const b = cardBadges(c.content, cardProps[c.id] ?? [], today);
+        if (b.length) m.set(c.id, b);
+      }
+    }
+    return m;
+  }, [cardsByColumn, cardProps]);
 
   const columnRefs = useMemo(() => boardColumns.map(({ id, title }) => ({ id, title })), [boardColumns]);
 
@@ -87,10 +158,11 @@ export default function KanbanView({ pageId, pageTitle, blocks, onRefreshPage, o
   }, [onRefreshPage]);
 
   const handleMoveCardTo = useCallback((block: Block, toColumnId: string) => {
+    if (statusOfColumn(toColumnId)) { setCardStatus(block.id, toColumnId); return; }
     const cards = cardsByColumn.get(toColumnId) ?? [];
     const maxPos = cards.reduce((max, c) => Math.max(max, c.position), 0);
     placeCard(block.id, columnOfCard.get(block.id) ?? null, toColumnId, maxPos + 1);
-  }, [cardsByColumn, columnOfCard, placeCard]);
+  }, [cardsByColumn, columnOfCard, placeCard, setCardStatus]);
 
   const subBlockCounts = useMemo(() => {
     const counts = new Map<string, number>();
@@ -223,6 +295,11 @@ export default function KanbanView({ pageId, pageTitle, blocks, onRefreshPage, o
         const targetCardId = cardTarget?.data.cardId as string | undefined;
         const targetColumnId = (colTarget?.data.columnId as string) ?? sourceColumnId;
         if (!targetColumnId) return;
+        // Status board: the column is the state; the outline order stays as it is.
+        if (statusOfColumn(targetColumnId)) {
+          if (targetColumnId !== sourceColumnId) setCardStatus(cardId, targetColumnId);
+          return;
+        }
 
         const targetCards = cardsByColumn.get(targetColumnId) ?? [];
         let newPosition: number;
@@ -246,7 +323,7 @@ export default function KanbanView({ pageId, pageTitle, blocks, onRefreshPage, o
         placeCard(cardId, sourceColumnId, targetColumnId, newPosition);
       },
     });
-  }, [cardsByColumn, columns, onRefreshPage, placeCard]);
+  }, [cardsByColumn, columns, onRefreshPage, placeCard, setCardStatus]);
 
   // Delete with undo toast
   // Undo recreates the whole card subtree with its ORIGINAL ids, parents,
@@ -279,7 +356,7 @@ export default function KanbanView({ pageId, pageTitle, blocks, onRefreshPage, o
   // Keyboard navigation
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement) return;
+      if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement || (e.target as HTMLElement | null)?.isContentEditable) return;
 
       if ((e.key === "f" && (e.ctrlKey || e.metaKey)) || (e.key === "/" && !focusedCardId)) {
         e.preventDefault();
@@ -317,7 +394,8 @@ export default function KanbanView({ pageId, pageTitle, blocks, onRefreshPage, o
       if (e.key === "n" && !e.ctrlKey && !e.metaKey) {
         e.preventDefault();
         e.stopPropagation();
-        if (card.parent_id) api.createBlock(pageId, "", card.parent_id).then(onRefreshPage).catch(() => {});
+        if (byStatus) api.createBlock(pageId, "TODO ").then(onRefreshPage).catch(() => {});
+        else if (card.parent_id) api.createBlock(pageId, "", card.parent_id).then(onRefreshPage).catch(() => {});
       }
 
       if (e.key === "Escape" && !coveredAbove("panel")) {
@@ -330,7 +408,7 @@ export default function KanbanView({ pageId, pageTitle, blocks, onRefreshPage, o
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [focusedCardId, sidePanelBlockId, blocks, boardColumns, columnOfCard, filteredCardIdsByColumn, pageId, onRefreshPage]);
+  }, [focusedCardId, sidePanelBlockId, blocks, boardColumns, columnOfCard, filteredCardIdsByColumn, pageId, onRefreshPage, byStatus]);
 
   const handleAddColumn = useCallback(async () => {
     try {
@@ -361,7 +439,7 @@ export default function KanbanView({ pageId, pageTitle, blocks, onRefreshPage, o
     for (let i = 0; i < maxCards; i++) {
       const row = boardColumns.map((c) => {
         const cards = cardsByColumn.get(c.id) ?? [];
-        return i < cards.length ? esc(extractLabel(cards[i].content)) : "";
+        return i < cards.length ? esc(segmentsText(inlineSegments(cards[i].content))) : "";
       });
       md += "| " + row.join(" | ") + " |\n";
     }
@@ -376,12 +454,15 @@ export default function KanbanView({ pageId, pageTitle, blocks, onRefreshPage, o
         <p>This page is empty.</p>
         <p>Add your first column to start a kanban board.</p>
         <button className="btn btn-primary" onClick={handleAddColumn}>+ Add Column</button>
+        <button className="btn" onClick={() => setGroupBy("status")} title="Columns TODO / DOING / DONE for the page's tasks">Group by status</button>
       </div>
     );
   }
 
+  const taskCount = statusModel.columnOfCard.size;
+
   return (
-    <div className={`kanban-container${dragging ? " is-dragging" : ""}`}>
+    <div className={`kanban-container${dragging ? " is-dragging" : ""}${byStatus ? " kanban-by-status" : ""}`}>
       <div className="kanban-toolbar">
         <input
           className="kanban-search-input"
@@ -390,6 +471,15 @@ export default function KanbanView({ pageId, pageTitle, blocks, onRefreshPage, o
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
         />
+        <div className="graph-segmented kanban-group-by" role="group" aria-label="Columns">
+          <button className={`btn btn-sm${!byStatus ? " active" : ""}`} aria-pressed={!byStatus} onClick={() => setGroupBy("section")} title="A column per heading (or block with sub-items)">Sections</button>
+          <button className={`btn btn-sm${byStatus ? " active" : ""}`} aria-pressed={byStatus} onClick={() => setGroupBy("status")} title="TODO / DOING / DONE columns for every task on the page; dragging a card changes its state" data-testid="kanban-group-status">Status</button>
+        </div>
+        {byStatus && <span className="kanban-toolbar-note">{taskCount} task{taskCount === 1 ? "" : "s"} on this page</span>}
+        <label className="graph-toggle kanban-open-as-board" title="Open this page as a board from now on (a view:: kanban page property)">
+          <input type="checkbox" checked={opensAsBoard} onChange={(e) => toggleOpensAsBoard(e.target.checked)} />
+          Open as board
+        </label>
         <button className="kanban-toolbar-btn" onClick={handleExport} title="Copy board as markdown table">
           Copy as Table
         </button>
@@ -410,7 +500,7 @@ export default function KanbanView({ pageId, pageTitle, blocks, onRefreshPage, o
             focusedCardId={focusedCardId}
             searchQuery={searchQuery}
             isCollapsed={collapsedColumns.has(col.id)}
-            columnColor={columnColors[col.id] ?? null}
+            columnColor={byStatus ? null : columnColors[col.id] ?? null}
             columnColors={COLUMN_COLORS}
             onSetColumnColor={setColumnColor}
             onToggleCollapse={toggleCollapse}
@@ -420,12 +510,16 @@ export default function KanbanView({ pageId, pageTitle, blocks, onRefreshPage, o
             onDeleteCard={handleDeleteCard}
             onDeleteColumn={handleDeleteColumn}
             onRefresh={onRefreshPage}
+            status={statusOfColumn(col.id)}
+            badgesByCard={badgesByCard}
           />
         ))}
-        <button className="kanban-add-column" onClick={handleAddColumn} aria-label="Add column">
-          <span>+</span>
-          Add column
-        </button>
+        {!byStatus && (
+          <button className="kanban-add-column" onClick={handleAddColumn} aria-label="Add column">
+            <span>+</span>
+            Add column
+          </button>
+        )}
       </div>
 
       {/* Undo toast */}
@@ -438,49 +532,16 @@ export default function KanbanView({ pageId, pageTitle, blocks, onRefreshPage, o
       )}
 
       {sidePanelBlock && (
-        <div className="kanban-side-panel" role="dialog" aria-label="Card details">
-          <div className="kanban-side-header">
-            <span className="kanban-side-title">{extractTaskLabel(sidePanelBlock.content)}</span>
-            <button className="kanban-side-close" onClick={() => setSidePanelBlockId(null)} aria-label="Close">x</button>
-          </div>
-          <div className="kanban-side-body">
-            <label className="kanban-side-label">Content</label>
-            <SidePanelEditor block={sidePanelBlock} onRefresh={onRefreshPage} />
-            {blocks.filter((b) => b.parent_id === sidePanelBlock.id).length > 0 && (
-              <>
-                <label className="kanban-side-label">Sub-blocks</label>
-                <ul className="kanban-side-subblocks">
-                  {blocks
-                    .filter((b) => b.parent_id === sidePanelBlock.id)
-                    .sort((a, b) => a.position - b.position)
-                    .map((sub) => (
-                      <li key={sub.id}>{extractLabel(sub.content)}</li>
-                    ))}
-                </ul>
-              </>
-            )}
-          </div>
-        </div>
+        <CardPanel
+          key={sidePanelBlock.id}
+          block={sidePanelBlock}
+          pageId={pageId}
+          blocks={blocks}
+          onClose={() => setSidePanelBlockId(null)}
+          onRefresh={onRefreshPage}
+          onOpenPage={onOpenPage}
+        />
       )}
     </div>
-  );
-}
-
-function SidePanelEditor({ block, onRefresh }: { block: Block; onRefresh: () => void }) {
-  const [text, setText] = useState(block.content);
-  const savedRef = useRef(block.content);
-
-  useEffect(() => { setText(block.content); savedRef.current = block.content; }, [block.content]);
-
-  const save = useCallback(() => {
-    const trimmed = text.trim();
-    if (trimmed !== savedRef.current.trim()) {
-      savedRef.current = trimmed;
-      api.updateBlock(block.id, trimmed).then(onRefresh).catch(() => {});
-    }
-  }, [text, block.id, onRefresh]);
-
-  return (
-    <textarea className="kanban-side-editor" value={text} onChange={(e) => setText(e.target.value)} onBlur={save} rows={6} aria-label="Card content" />
   );
 }

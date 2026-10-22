@@ -60,6 +60,8 @@ import Icon from "./components/Icon";
 import { isDrawerWidth, isSidebarToggleKey, loadSidebarCollapsed, saveSidebarCollapsed, useDrawerWidth } from "./lib/sidebarLayout";
 import { useLayer } from "./lib/layers";
 import ShortcutsOverlay from "./components/ShortcutsOverlay";
+// UX Wave 4 (views): remembered page views, image lightbox
+import { useRememberedPageView } from "./lib/pageView";
 // ── End import ──
 // ── End AI platform ──
 
@@ -77,6 +79,8 @@ export default function App() {
   const [openPanel, setOpenPanel] = useState<string | null>(null);
   const [canvasMode, setCanvasMode] = useState<CanvasModeType | null>(null);
   const [whiteboardId, setWhiteboardId] = useState<string | null>(null);
+  // A page marked "open as board / mind map" (view:: property) opens in that view.
+  useRememberedPageView(activePage?.page.id, (mode) => setCanvasMode(mode));
   const [pdfViewerPath, setPdfViewerPath] = useState<string | null>(null);
   // Ctrl+P with PDFs opened before: pick from the recent ones or choose a file.
   const [pdfChooser, setPdfChooser] = useState<string[] | null>(null);

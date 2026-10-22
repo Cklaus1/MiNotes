@@ -3,7 +3,8 @@ import { draggable, dropTargetForElements } from "@atlaskit/pragmatic-drag-and-d
 import { attachClosestEdge, extractClosestEdge, type Edge } from "@atlaskit/pragmatic-drag-and-drop-hitbox/closest-edge";
 import type { Block } from "../../lib/api";
 import * as api from "../../lib/api";
-import { extractTaskLabel, detectTodoState } from "../mindmap/blocksToFlow";
+import { detectTodoState } from "../mindmap/blocksToFlow";
+import { inlineSegments, segmentsText, type Badge } from "../../lib/richText";
 import { useEscapeToClose } from "../../lib/escapeStack";
 import Icon from "../Icon";
 
@@ -22,9 +23,11 @@ interface Props {
   onOpenPage: (title: string) => void;
   onDelete: (block: Block) => void;
   onRefresh: () => void;
+  /** Tags, due dates and properties shown under the text (lib/richText cardBadges). */
+  badges?: Badge[];
 }
 
-function KanbanCard({ block, subBlockCount, columnId, columns, onMoveTo, columnColor, isFocused, onFocus, onOpenSidePanel, onOpenPage, onDelete, onRefresh }: Props) {
+function KanbanCard({ block, subBlockCount, columnId, columns, onMoveTo, columnColor, isFocused, onFocus, onOpenSidePanel, onOpenPage, onDelete, onRefresh, badges = [] }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [closestEdge, setClosestEdge] = useState<Edge | null>(null);
@@ -33,20 +36,13 @@ function KanbanCard({ block, subBlockCount, columnId, columns, onMoveTo, columnC
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  // The badge shows the TODO/DOING/DONE state, so the keyword is stripped from
-  // the displayed text (the stored content keeps it).
-  const label = extractTaskLabel(block.content, 240);
+  // Rendered text, not markdown: [[links]] are chips with the page's title,
+  // #tags and properties go to the badges, the TODO/DOING/DONE keyword to the
+  // state badge (the stored content keeps all of it). A cross-notebook
+  // [[Notebook::Page]] chip opens the card (the board can't switch notebooks).
+  const segments = inlineSegments(block.content, { withTags: false });
+  const label = segmentsText(segments) || "(empty)";
   const todoState = detectTodoState(block.content);
-
-  // [[Page]] / [[Page|label]] chips; a cross-notebook [[Notebook::Page]] is shown
-  // but opens the card (the board can't switch notebooks).
-  const wikiLinks: { target: string; label: string }[] = [];
-  const re = /\[\[(.+?)\]\]/g;
-  let m;
-  while ((m = re.exec(block.content)) !== null) {
-    const [target, label] = m[1].split("|");
-    wikiLinks.push({ target: target.trim(), label: (label ?? target).trim() });
-  }
 
   // Escape closes only the context menu, not the board.
   useEscapeToClose(!!contextMenu, () => setContextMenu(null), "menu");
@@ -153,23 +149,28 @@ function KanbanCard({ block, subBlockCount, columnId, columns, onMoveTo, columnC
                 {todoState.toUpperCase()}
               </span>
             )}
-            <span className="kanban-card-text">{label}</span>
-            {wikiLinks.length > 0 && (
-              <div className="kanban-card-links">
-                {wikiLinks.map((l, i) => (
-                  <button
-                    key={i}
-                    type="button"
-                    className="kanban-wiki-link"
-                    title={l.target.includes("::") ? "Open the card" : `Open “${l.target}”`}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (l.target.includes("::")) onOpenSidePanel(block.id);
-                      else onOpenPage(l.target);
-                    }}
-                  >
-                    {l.label}
-                  </button>
+            <span className="kanban-card-text">
+              {segments.length === 0 && <span className="kanban-card-empty">(empty)</span>}
+              {segments.map((seg, i) => seg.kind === "link" ? (
+                <button
+                  key={i}
+                  type="button"
+                  className="kanban-wiki-link"
+                  title={seg.notebook ? "Open the card" : `Open “${seg.target}”`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (seg.notebook) onOpenSidePanel(block.id);
+                    else onOpenPage(seg.target);
+                  }}
+                >
+                  {seg.label}
+                </button>
+              ) : seg.kind === "text" ? <span key={i}>{seg.text}</span> : null)}
+            </span>
+            {badges.length > 0 && (
+              <div className="kanban-card-badges">
+                {badges.map((b, i) => (
+                  <span key={i} className={`kanban-badge kanban-badge-${b.kind}${b.when ? ` is-${b.when}` : ""}`} title={b.title}>{b.label}</span>
                 ))}
               </div>
             )}

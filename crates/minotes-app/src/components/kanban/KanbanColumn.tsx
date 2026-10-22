@@ -5,7 +5,8 @@ import { autoScrollForElements } from "@atlaskit/pragmatic-drag-and-drop-auto-sc
 import type { Block } from "../../lib/api";
 import * as api from "../../lib/api";
 import KanbanCard from "./KanbanCard";
-import { splitHeading } from "./kanbanModel";
+import { splitHeading, withStatus, type CardStatus } from "./kanbanModel";
+import type { Badge } from "../../lib/richText";
 import { useEscapeToClose } from "../../lib/escapeStack";
 
 interface Props {
@@ -31,13 +32,16 @@ interface Props {
   onDeleteCard: (block: Block) => void;
   onDeleteColumn: (column: Block, cardCount: number) => void;
   onRefresh: () => void;
+  /** Group-by-status board: this column is a task state (no block behind it). */
+  status?: CardStatus | null;
+  badgesByCard?: Map<string, Badge[]>;
 }
 
 function KanbanColumn({
   columnId, column, title, cards, allColumns, onMoveCard, subBlockCounts, pageId,
   focusedCardId, searchQuery, isCollapsed, columnColor, columnColors,
   onSetColumnColor, onToggleCollapse, onFocusCard, onOpenSidePanel, onOpenPage,
-  onDeleteCard, onDeleteColumn, onRefresh,
+  onDeleteCard, onDeleteColumn, onRefresh, status = null, badgesByCard,
 }: Props) {
   const colRef = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -129,13 +133,14 @@ function KanbanColumn({
     const text = newCardText.trim();
     setAddingCard(false);
     setNewCardText("");
-    if (text) api.createBlock(pageId, text, column?.id).then(onRefresh).catch(() => {});
-  }, [newCardText, pageId, column, onRefresh]);
+    // A status column's new card is a task in that state, at the end of the page.
+    if (text) api.createBlock(pageId, status ? withStatus(text, status) : text, column?.id).then(onRefresh).catch(() => {});
+  }, [newCardText, pageId, column, onRefresh, status]);
 
   return (
     <>
       {closestEdge === "left" && <div className="kanban-column-drop-indicator" />}
-      <div ref={colRef} className={`kanban-column${isCollapsed ? " collapsed" : ""}${isUnsorted ? " kanban-column-unsorted" : ""}${isDragOver ? " drag-over" : ""}`} data-column-id={columnId} role="group" aria-label={`Column: ${title}`}>
+      <div ref={colRef} className={`kanban-column${isCollapsed ? " collapsed" : ""}${isUnsorted && !status ? " kanban-column-unsorted" : ""}${status ? " kanban-column-status" : ""}${isDragOver ? " drag-over" : ""}`} data-column-id={columnId} data-status={status ?? undefined} role="group" aria-label={`Column: ${title}`}>
         {/* Color accent bar */}
         {columnColor && <div className="kanban-color-bar" style={{ background: columnColor }} />}
 
@@ -157,7 +162,7 @@ function KanbanColumn({
           ) : (
             <span
               className="kanban-column-title"
-              title={isUnsorted ? "Top-level blocks that are not under a section heading" : title}
+              title={status ? `Tasks marked ${title} anywhere on the page — drop a card here to mark it ${title}` : isUnsorted ? "Top-level blocks that are not under a section heading" : title}
               onDoubleClick={startEditTitle}
             >
               {title}
@@ -165,7 +170,7 @@ function KanbanColumn({
           )}
           <div className="kanban-column-actions">
             <span className="kanban-column-count">{cards.length}</span>
-            <button
+            {!status && <button
               className="kanban-col-btn kanban-color-btn"
               onClick={() => setShowColorPicker(!showColorPicker)}
               // No native tooltip while the picker is open: it covered the swatches.
@@ -173,7 +178,7 @@ function KanbanColumn({
               aria-label="Column colour"
               aria-expanded={showColorPicker}
               style={columnColor ? { color: columnColor } : undefined}
-            >●</button>
+            >●</button>}
             <button className="kanban-col-btn" onClick={() => onToggleCollapse(columnId)} title={isCollapsed ? "Expand" : "Collapse"}>
               {isCollapsed ? "+" : "-"}
             </button>
@@ -232,6 +237,7 @@ function KanbanColumn({
                 onOpenPage={onOpenPage}
                 onDelete={onDeleteCard}
                 onRefresh={onRefresh}
+                badges={badgesByCard?.get(card.id)}
               />
             ))}
             {addingCard && (
