@@ -13,6 +13,7 @@ import { promptDialog } from "../lib/confirm";
 import { attachmentMarkdown, storeFile } from "../lib/attachments";
 import { showToast } from "../lib/toast";
 import { errorMessage } from "../lib/errors";
+import { openLanguagePickerAtCaret } from "./codeBlockView";
 
 /** Exported so the editor can tell whether this menu is open (e.g. Escape closes it). */
 export const slashPluginKey = new PluginKey("slashCommands");
@@ -352,13 +353,15 @@ const COMMANDS: SlashMenuItem[] = [
   // ── Advanced ──
   {
     title: "Code Block",
-    description: "Code with syntax highlighting",
+    description: "Code with syntax highlighting; pick the language",
     aliases: ["code", "codeblock", "```", "pre", "snippet"],
     icon: "code",
     group: "Advanced",
     command: ({ editor, range }) => {
       editor.chain().focus().deleteRange(range).toggleCodeBlock().run();
       callbacks(editor)?.save();
+      // Ask for the language (Esc keeps plain text; the label changes it later).
+      setTimeout(() => openLanguagePickerAtCaret(editor), 80);
     },
   },
   {

@@ -22,6 +22,7 @@ import { useIsFlashcard, makeFlashcard, removeFlashcard, FLASHCARD_HINT } from "
 import { showToast } from "../lib/toast";
 import { isRemoteSrc } from "../lib/remoteImages";
 import { getBlockRef, hydrateBlockRefs, requestBlockRefs, subscribeBlockRefs } from "../lib/blockRefs";
+import { copyCode } from "../editor/codeBlockView";
 import "../editor/editor.css";
 
 // Lazy-load CM6 editor — only downloaded when obsidianEditorEnabled
@@ -94,11 +95,13 @@ const TASK_CHECKBOX = 'li[data-type="taskItem"] > label > input[type="checkbox"]
  * classes, so the same CSS), built by editor/staticRender.ts. Links, refs and
  * task checkboxes stay clickable.
  */
-function StaticBlockContent({ content, onPageLinkClick, onBlockRefClick, onToggleTask }: {
+function StaticBlockContent({ content, onPageLinkClick, onBlockRefClick, onToggleTask, onCodeLanguage }: {
   content: string;
   onPageLinkClick: (title: string, shiftKey?: boolean) => void;
   onBlockRefClick?: (blockId: string) => void;
   onToggleTask: (index: number) => void;
+  /** The language button of the index-th code block: open its list in the live editor. */
+  onCodeLanguage: (index: number) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
@@ -108,6 +111,21 @@ function StaticBlockContent({ content, onPageLinkClick, onBlockRefClick, onToggl
   }, [content]);
   const handleClick = (e: React.MouseEvent) => {
     const t = e.target as HTMLElement;
+    // Code block header (editor/codeBlockView.ts): copy here, language in the editor.
+    const copy = t.closest(".code-copy-btn");
+    if (copy) {
+      e.preventDefault();
+      e.stopPropagation();
+      copyCode(copy.closest("pre")?.querySelector("code")?.textContent ?? "");
+      return;
+    }
+    const lang = t.closest(".code-lang-btn");
+    if (lang && ref.current) {
+      e.preventDefault();
+      e.stopPropagation();
+      onCodeLanguage([...ref.current.querySelectorAll(".code-lang-btn")].indexOf(lang));
+      return;
+    }
     const xnb = t.closest(".xnb-link") as HTMLElement | null;
     if (xnb) {
       e.preventDefault();
@@ -530,7 +548,7 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
   const handleBlockMouseDown = (e: React.MouseEvent) => {
     const target = e.target as HTMLElement;
     const inStatic = !activeRef.current && !!target.closest('.block-static');
-    if (target.closest('.block-drag-handle') || target.closest('.block-collapse') ||
+    if (target.closest('.block-drag-handle') || target.closest('.block-collapse') || target.closest('.code-block-header') ||
         target.closest('.block-properties') || target.closest('.prop-add-btn') ||
         target.closest('.whiteboard-indicator') || target.closest('.editor-mode-toggle') ||
         (target.tagName === 'INPUT' && (target as unknown as HTMLInputElement).type === 'checkbox') ||
@@ -570,6 +588,13 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
     const ed = getEd();
     const box = ed?.view.dom.querySelectorAll(TASK_CHECKBOX)[index] as HTMLInputElement | undefined;
     box?.click();
+  };
+
+  // A static code block's language button: mount the editor and open its list there.
+  const handleStaticCodeLanguage = (index: number) => {
+    if (index < 0 || !activate()) return;
+    const btn = getEd()?.view.dom.querySelectorAll(".code-lang-btn")[index] as HTMLButtonElement | undefined;
+    btn?.click();
   };
 
   // Load properties (batched with every other block: lib/blockProperties.ts)
@@ -878,6 +903,7 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
               onPageLinkClick={onPageLinkClick}
               onBlockRefClick={onBlockRefClick}
               onToggleTask={handleStaticToggleTask}
+              onCodeLanguage={handleStaticCodeLanguage}
             />
           )
         ) : (

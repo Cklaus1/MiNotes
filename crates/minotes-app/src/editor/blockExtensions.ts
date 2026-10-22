@@ -13,6 +13,7 @@ import Placeholder from "@tiptap/extension-placeholder";
 import CodeBlockLowlight from "@tiptap/extension-code-block-lowlight";
 import { mergeAttributes } from "@tiptap/core";
 import { codeLanguageLabel } from "./codeLanguage";
+import { codeBlockNodeView } from "./codeBlockView";
 import { TableRow } from "@tiptap/extension-table-row";
 import { MarkdownTable, AlignedTableCell, AlignedTableHeader } from "./tables";
 import Image from "@tiptap/extension-image";
@@ -88,6 +89,10 @@ export function createBlockExtensions(cb: BlockExtensionCallbacks) {
           mergeAttributes(this.options.HTMLAttributes, HTMLAttributes, label ? { "data-language-label": label } : {}),
           ["code", { class: language ? this.options.languageClassPrefix + language : null }, 0],
         ];
+      },
+      // The language dropdown + copy button header (editor/codeBlockView.ts).
+      addNodeView() {
+        return (props: any) => codeBlockNodeView(props);
       },
     }).configure({ lowlight }),
     MarkdownTable.configure({ resizable: true }),

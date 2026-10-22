@@ -708,7 +708,7 @@ H=$(ev "document.querySelectorAll('.ProseMirror')[0]?.innerHTML")
 echo "$H" | grep -qi "<pre\|<code\|hljs\|code-block" && pass "Code block renders" || fail "No code block" "${H:0:60}"
 
 step "The code block is labelled with a clean language name, not a raw class"
-R=$(ev "(()=>{const pre=document.querySelectorAll('.ProseMirror')[0]?.querySelector('pre');if(!pre)return 'no pre';return pre.getAttribute('data-language-label')+'|'+getComputedStyle(pre,'::before').content+'|'+getComputedStyle(pre.querySelector('code'),'::before').content})()" | tr -d '"\\')
+R=$(ev "(()=>{const pre=document.querySelectorAll('.ProseMirror')[0]?.querySelector('pre');if(!pre)return 'no pre';return pre.getAttribute('data-language-label')+'|'+(pre.querySelector('.code-lang-btn')?.textContent??getComputedStyle(pre,'::before').content)+'|'+getComputedStyle(pre.querySelector('code'),'::before').content})()" | tr -d '"\\')
 [[ "$R" == "JavaScript|JavaScript|none" ]] && pass "Code label reads 'JavaScript'" || fail "Code label wrong" "$R"
 
 step "I create an inline code mention"
