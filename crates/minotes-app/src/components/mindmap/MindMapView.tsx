@@ -21,6 +21,9 @@ import { buildMindMapSvg, svgToPng } from "./exportImage";
 import MindMapNode from "./MindMapNode";
 import { saveExport } from "../../lib/exportFile";
 import { coveredAbove } from "../../lib/layers";
+import { MINDMAP_LAYOUT_KEY, pageViewProps, setPageViewProp, VIEW_KEY } from "../../lib/pageView";
+import Icon from "../Icon";
+import "../views.css";
 
 const nodeTypes = { mindmapNode: MindMapNode };
 
@@ -33,6 +36,8 @@ interface Props {
   onClose: () => void;
   onRefreshPage: () => void;
   onRenameTitle?: (newTitle: string) => void;
+  /** Ctrl+click on a [[link]] in a node: open that page (closes the map). */
+  onOpenPage?: (title: string) => void;
 }
 
 // ── Markdown outline export ──
@@ -111,7 +116,7 @@ function autoCollapsed(blocks: Block[]): Set<string> {
 const exportName = (title: string, ext: string) =>
   `mindmap-${title.replace(/[\\/:*?"<>|\s]+/g, "-").replace(/^-+|-+$/g, "") || "page"}.${ext}`;
 
-function MindMapInner({ pageId, pageTitle, isJournal, journalDate, blocks, onClose, onRefreshPage, onRenameTitle }: Props) {
+function MindMapInner({ pageId, pageTitle, isJournal, journalDate, blocks, onClose, onRefreshPage, onRenameTitle, onOpenPage }: Props) {
   // Collapsed branches are shared with the outline and persisted (collapseStore).
   const [collapsedIds, setCollapsedIds] = useState<Set<string>>(
     () => loadCollapsed(pageId, blocks) ?? autoCollapsed(blocks),
@@ -133,7 +138,35 @@ function MindMapInner({ pageId, pageTitle, isJournal, journalDate, blocks, onClo
       return next;
     });
   }, [pageId]);
-  const [direction, setDirection] = useState<LayoutDirection>("LR");
+  const [direction, setDirectionState] = useState<LayoutDirection>("LR");
+  // Layout and "open as mind map" are remembered per page (page properties,
+  // written only when the user picks them — lib/pageView.ts).
+  const [opensAsMap, setOpensAsMap] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    pageViewProps(pageId, true).then((m) => {
+      if (cancelled) return;
+      const l = m.get(MINDMAP_LAYOUT_KEY);
+      if (l === "LR" || l === "TB" || l === "radial") { setDirectionState(l); setTimeout(() => reactFlowRef.current?.fitView(FIT_VIEW), 350); }
+      setOpensAsMap(m.get(VIEW_KEY) === "mindmap");
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [pageId]);
+  const setDirection = useCallback((d: LayoutDirection) => {
+    setDirectionState(d);
+    setPageViewProp(pageId, MINDMAP_LAYOUT_KEY, d === "LR" ? null : d).catch(() => {});
+  }, [pageId]);
+  const toggleOpensAsMap = useCallback((on: boolean) => {
+    setOpensAsMap(on);
+    setPageViewProp(pageId, VIEW_KEY, on ? "mindmap" : null)
+      .then(() => showToast(on ? `“${pageTitle}” now opens as a mind map` : `“${pageTitle}” opens as a page again`))
+      .catch((e) => showToast(`Couldn't save: ${e}`));
+  }, [pageId, pageTitle]);
+  // Search: matching nodes stand out, the rest is dimmed while the box has text.
+  const [query, setQuery] = useState("");
+  const searchRef = useRef<HTMLInputElement>(null);
+  const openPageRef = useRef(onOpenPage);
+  openPageRef.current = onOpenPage;
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [focusSubtreeRoot, setFocusSubtreeRoot] = useState<string | null>(null);
@@ -142,6 +175,8 @@ function MindMapInner({ pageId, pageTitle, isJournal, journalDate, blocks, onClo
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [showMinimap, setShowMinimap] = useState(false);
   const reactFlow = useReactFlow();
+  const reactFlowRef = useRef(reactFlow);
+  reactFlowRef.current = reactFlow;
   const prevNodesRef = useRef<Node[]>([]);
 
   // Blocks filtered by focus mode
@@ -191,6 +226,7 @@ function MindMapInner({ pageId, pageTitle, isJournal, journalDate, blocks, onClo
           onEditEnd: id ? (text: string) => handlersRef.current.editEnd(id, text) : undefined,
           onToggleCollapse: id ? () => handlersRef.current.toggle(id) : undefined,
           onRenameTitle: d.isRoot && canRename ? (t: string) => renameRef.current?.(t) : undefined,
+          onOpenLink: (t: string) => openPageRef.current?.(t),
           isJournal: d.isRoot ? isJournal : undefined,
           journalDate: d.isRoot ? journalDate : undefined,
         },
@@ -432,6 +468,12 @@ function MindMapInner({ pageId, pageTitle, isJournal, journalDate, blocks, onClo
     const handler = (e: KeyboardEvent) => {
       // A dialog, menu or panel over the map gets the keys (and Esc).
       if (coveredAbove("canvas")) return;
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
+        e.preventDefault();
+        searchRef.current?.focus();
+        searchRef.current?.select();
+        return;
+      }
       if (e.key === "Escape") {
         e.preventDefault();
         if (contextMenu) { setContextMenu(null); return; }
@@ -451,7 +493,7 @@ function MindMapInner({ pageId, pageTitle, isJournal, journalDate, blocks, onClo
         return;
       }
 
-      if (!selectedNodeId) return;
+      if (!selectedNodeId || typing) return;
       const nodeData = nodes.find((n) => n.id === selectedNodeId)?.data as unknown as MindMapNodeData | undefined;
 
       if (e.key === "ArrowRight" && selectedNodeId === ROOT_NODE_ID) {
@@ -709,6 +751,32 @@ function MindMapInner({ pageId, pageTitle, isJournal, journalDate, blocks, onClo
     }
   }, [pageTitle, blocks]);
 
+  const matchIds = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return null;
+    const words = q.split(/\s+/);
+    const ids = new Set<string>();
+    for (const n of nodes) {
+      const d = n.data as unknown as MindMapNodeData;
+      const text = `${d.label} ${d.fullContent}`.toLowerCase();
+      if (words.every((w) => text.includes(w))) ids.add(n.id);
+    }
+    return ids;
+  }, [nodes, query]);
+  const shownNodes = useMemo(() => (matchIds
+    ? nodes.map((n) => ({ ...n, data: { ...n.data, match: matchIds.has(n.id) } }))
+    : nodes), [nodes, matchIds]);
+  const matchOrder = useRef(0);
+  /** Enter in the search box: centre the next match. */
+  const nextMatch = useCallback(() => {
+    if (!matchIds || matchIds.size === 0) return;
+    const list = nodes.filter((n) => matchIds.has(n.id));
+    const n = list[matchOrder.current++ % list.length];
+    const w = n.measured?.width ?? 150, h = n.measured?.height ?? 40;
+    userMovedRef.current = true;
+    reactFlow.setCenter(n.position.x + w / 2, n.position.y + h / 2, { zoom: Math.max(reactFlow.getZoom(), 1), duration: 200 });
+  }, [matchIds, nodes, reactFlow]);
+
   // Breadcrumb for focus mode
   const breadcrumbs = useMemo(() => {
     if (!focusSubtreeRoot) return [];
@@ -749,6 +817,31 @@ function MindMapInner({ pageId, pageTitle, isJournal, journalDate, blocks, onClo
           </div>
         )}
 
+        <div className="mindmap-toolbar-group mindmap-search">
+          <Icon name="search" size={14} />
+          <input
+            ref={searchRef}
+            type="search"
+            className="mindmap-search-input"
+            placeholder="Find in map… (Ctrl+F)"
+            aria-label="Find in the mind map"
+            value={query}
+            onChange={(e) => { setQuery(e.target.value); matchOrder.current = 0; }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") { e.preventDefault(); nextMatch(); }
+              if (e.key === "Escape") {
+                e.preventDefault();
+                e.stopPropagation(); // the map's own Escape (close) must not run too
+                if (query) setQuery(""); else searchRef.current?.blur();
+              }
+            }}
+          />
+          {matchIds && <span className="mindmap-search-count" aria-live="polite">{matchIds.size} match{matchIds.size === 1 ? "" : "es"}</span>}
+        </div>
+        <label className="graph-toggle mindmap-open-as" title="Open this page as a mind map from now on (a view:: mindmap page property)">
+          <input type="checkbox" checked={opensAsMap} onChange={(e) => toggleOpensAsMap(e.target.checked)} />
+          Open as mind map
+        </label>
         <div className="mindmap-toolbar-group">
           <button className="btn btn-sm" onClick={fitAll} title="Fit all nodes">
             Fit
@@ -804,7 +897,7 @@ function MindMapInner({ pageId, pageTitle, isJournal, journalDate, blocks, onClo
       </div>
 
       <ReactFlow
-        nodes={nodes}
+        nodes={shownNodes}
         edges={edges}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}

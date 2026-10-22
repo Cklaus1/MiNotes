@@ -126,6 +126,47 @@
   clip: rect(0 0 0 0);
 }
 
+/* ── Mind map ── */
+
+.mindmap-search {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-primary);
+  color: var(--text-muted);
+}
+.mindmap-search:focus-within { border-color: var(--accent); }
+.mindmap-search-input {
+  width: 150px;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 13px;
+  padding: 4px 0;
+}
+.mindmap-search-count { font-size: 12px; color: var(--text-secondary); white-space: nowrap; }
+.mindmap-open-as { font-size: 12px; }
+
+.mm-node.mm-node-radial { max-width: 150px; padding: 5px 10px; }
+.mm-node.mm-node-radial .mm-label { -webkit-line-clamp: 3; line-clamp: 3; }
+.mm-node.mm-match {
+  border-color: var(--warning);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--warning) 45%, transparent);
+}
+.mm-node.mm-dim { opacity: 0.3; }
+.mm-link {
+  color: var(--accent);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  text-underline-offset: 2px;
+}
+.mm-link:hover { text-decoration-color: var(--accent); }
+.mm-tag { color: var(--accent); }
+
 /* ── Kanban ── */
 
 .kanban-wiki-link {

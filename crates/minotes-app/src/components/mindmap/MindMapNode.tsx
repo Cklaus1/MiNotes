@@ -1,6 +1,7 @@
 import { memo, useState, useCallback, useEffect, useRef } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import type { MindMapNodeData } from "./blocksToFlow";
+import { inlineSegments } from "../../lib/richText";
 
 interface ExtendedData extends MindMapNodeData {
   autoEdit?: boolean;
@@ -10,6 +11,37 @@ interface ExtendedData extends MindMapNodeData {
   /** Editing finished (saved or cancelled) with this text. */
   onEditEnd?: (text: string) => void;
   onRenameTitle?: (newTitle: string) => void;
+}
+
+/**
+ * A node's text: [[links]] show the page title (never the raw markdown) and
+ * Ctrl+click (Cmd+click) one to open that page; a plain click still selects
+ * the node and a double-click still edits it.
+ */
+function NodeLabel({ content, fallback, onOpenLink }: { content: string; fallback: string; onOpenLink?: (title: string) => void }) {
+  const segs = inlineSegments(content, { maxLen: 120 });
+  if (segs.length === 0) return <>{fallback}</>;
+  return (
+    <>
+      {segs.map((s, i) => s.kind === "link" ? (
+        <span
+          key={i}
+          className="mm-link"
+          data-target={s.target}
+          title={s.notebook ? `${s.notebook} › ${s.target}` : `Ctrl+click to open “${s.target}”`}
+          onMouseDown={(e) => { if ((e.ctrlKey || e.metaKey) && !s.notebook) { e.stopPropagation(); e.preventDefault(); } }}
+          onClick={(e) => {
+            if (!(e.ctrlKey || e.metaKey) || s.notebook || !onOpenLink) return;
+            e.stopPropagation();
+            e.preventDefault();
+            onOpenLink(s.target);
+          }}
+        >
+          {s.label}
+        </span>
+      ) : s.kind === "tag" ? <span key={i} className="mm-tag">#{s.tag}</span> : <span key={i}>{s.text}</span>)}
+    </>
+  );
 }
 
 function MindMapNodeInner(props: NodeProps) {
@@ -160,7 +192,7 @@ function MindMapNodeInner(props: NodeProps) {
 
   return (
     <div
-      className={`mm-node ${data.isRoot ? "mm-root" : ""} ${selected ? "mm-selected" : ""} ${data.isNew ? "mm-node-enter" : ""}`}
+      className={`mm-node ${data.isRoot ? "mm-root" : ""} ${selected ? "mm-selected" : ""} ${data.isNew ? "mm-node-enter" : ""}${data.radial ? " mm-node-radial" : ""}${data.match === true ? " mm-match" : data.match === false ? " mm-dim" : ""}`}
       data-depth={data.depth}
       data-todo={data.todoState ?? undefined}
       style={data.color && !data.isRoot ? { borderColor: data.color, borderLeftWidth: 3 } : undefined}
@@ -180,7 +212,7 @@ function MindMapNodeInner(props: NodeProps) {
           </span>
         ) : (
           <span className={`mm-label${data.todoState === "done" ? " mm-strikethrough" : ""}`}>
-            {data.label}
+            {data.isRoot ? data.label : <NodeLabel content={data.fullContent} fallback={data.label} onOpenLink={data.onOpenLink} />}
           </span>
         )}
         {/* Collapse/expand badge */}

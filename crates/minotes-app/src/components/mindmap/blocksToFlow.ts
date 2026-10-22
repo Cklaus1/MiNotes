@@ -1,6 +1,7 @@
 import { type Node, type Edge, Position } from "@xyflow/react";
 import dagre from "dagre";
 import type { Block } from "../../lib/api";
+import { inlineSegments, segmentsText } from "../../lib/richText";
 
 export interface MindMapNodeData {
   label: string;
@@ -13,6 +14,12 @@ export interface MindMapNodeData {
   childCount: number;
   color: string | null; // from block property "color:: blue"
   isNew?: boolean; // entrance animation flag
+  /** Radial layout: the node is drawn narrower (.mm-node-radial). */
+  radial?: boolean;
+  /** Search: true = matches, false = dimmed, undefined = no search. */
+  match?: boolean;
+  /** Ctrl+click on a [[link]] in the label opens that page. */
+  onOpenLink?: (title: string) => void;
   onSave?: (text: string) => void;
   onToggleCollapse?: () => void;
 }
@@ -134,11 +141,18 @@ const NODE_TWO_LINE_HEIGHT = 58;
 /** Longest label kept in the DOM; CSS clamps what is actually visible. */
 const NODE_LABEL_MAX = 120;
 
-function nodeBox(label: string, extra: number, minWidth: number): { width: number; height: number } {
+/** Radial maps are dense: narrower nodes that may wrap to a third line
+ *  (keep in sync with .mm-node-radial in components/views.css). */
+export const RADIAL_NODE_MAX_WIDTH = 150;
+const NODE_THREE_LINE_HEIGHT = 76;
+
+function nodeBox(label: string, extra: number, minWidth: number, radial = false): { width: number; height: number } {
   const natural = label.length * NODE_CHAR_WIDTH + 32 + extra;
+  const max = radial ? RADIAL_NODE_MAX_WIDTH : NODE_MAX_WIDTH;
+  const lines = natural <= max ? 1 : !radial || natural <= max * 2 - 40 ? 2 : 3;
   return {
-    width: Math.min(NODE_MAX_WIDTH, Math.max(minWidth, natural)),
-    height: natural > NODE_MAX_WIDTH ? NODE_TWO_LINE_HEIGHT : NODE_LINE_HEIGHT,
+    width: Math.min(max, Math.max(Math.min(minWidth, max), natural)),
+    height: lines === 1 ? NODE_LINE_HEIGHT : lines === 2 ? NODE_TWO_LINE_HEIGHT : NODE_THREE_LINE_HEIGHT,
   };
 }
 
@@ -377,9 +391,9 @@ export function blocksToFlow(
     const isCollapsed = collapsedIds.has(block.id);
     const todoState = detectTodoState(block.content);
     // The status icon already says TODO/DOING/DONE — don't repeat it in the text.
-    const label = extractTaskLabel(block.content, NODE_LABEL_MAX);
+    const label = segmentsText(inlineSegments(block.content, { maxLen: NODE_LABEL_MAX })) || "(empty)";
     const hasChildren = (childrenMap.get(block.id)?.length ?? 0) > 0;
-    const box = nodeBox(label, (todoState ? 18 : 0) + (hasChildren ? 26 : 0), 100);
+    const box = nodeBox(label, (todoState ? 18 : 0) + (hasChildren ? 26 : 0), 100, isRadial);
 
     g.setNode(block.id, box);
     g.setEdge(parentNodeId, block.id);
@@ -399,6 +413,7 @@ export function blocksToFlow(
         collapsed: isCollapsed,
         childCount: countDescendants(block.id, childrenMap),
         color: extractColor(block.content),
+        radial: isRadial || undefined,
       } satisfies MindMapNodeData,
       position: { x: 0, y: 0 },
       sourcePosition: sourcePos,

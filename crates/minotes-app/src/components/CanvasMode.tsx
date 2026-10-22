@@ -86,6 +86,7 @@ export default function CanvasMode({
             onClose={onClose}
             onRefreshPage={onRefreshPage}
             onRenameTitle={onRenameTitle}
+            onOpenPage={(title) => { onPageClick(title); onClose(); }}
           />
         );
       case "draw":
