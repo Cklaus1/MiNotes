@@ -53,28 +53,28 @@ Average **5.2 / 10** across 72 features. Nothing scores 10; the best is 9
 | Multi-block selection | 4 | Works via Escape + Shift+arrows; Tab leaks focus; Ctrl+A → Backspace silently wipes the page |
 | Drag reorder | 3 | **Fixed** (`6675717`: outline order after a drop, text drag image, drop as a child) — Saved correctly, but the outline renders scrambled until reload; white-square drag image |
 | Collapse / expand | 2 | **Fixed** (`3b45b43`, C-11) — Toggle can't be clicked (covered by other controls); collapsed blocks look like leaves |
-| Inline formatting | 5 | Bold/italic/code/strike fine; **highlight is lost on save** |
-| Bubble toolbar | 5 | Works; clipped under the header on the first block; ambiguous "H"; no link button |
-| Headings | 7 | Work every way; bullet misaligned on large headings |
-| Slash commands | 5 | **Fixed** (`cac18f6`: prefix/alias/fuzzy matching, Enter on No results closes, visible divider, Numbered List; icons/groups are Wave 3/4) — Exact-substring matching (`/h2` finds nothing); invisible divider; missing common commands |
+| Inline formatting | 5 | Bold/italic/code/strike fine; **highlight is lost on save** (**fixed** in Wave 1) |
+| Bubble toolbar | 5 | **Fixed** (`518ebf6`: flips below the selection when the header leaves no room, stays above the next blocks, Link button, highlighter icon) — Works; clipped under the header on the first block; ambiguous "H"; no link button |
+| Headings | 7 | **Fixed** (`518ebf6`: bullets centred on the first line, ±1 px) — Work every way; bullet misaligned on large headings |
+| Slash commands | 5 | **Fixed** (`cac18f6`: prefix/alias/fuzzy matching, Enter on No results closes, visible divider, Numbered List; icons/groups are Wave 3/4; `a372b2f`: icons, groups, one-line descriptions, ↑↓/Home/End/PgUp/PgDn/Tab, callout, image, file, date with natural language, link, block reference, embed) — Exact-substring matching (`/h2` finds nothing); invisible divider; missing common commands |
 | Wiki links `[[` | 7 | Good autocomplete and creation; no `]]` auto-close |
 | Block references / transclusion `((` | 3 | **Fixed** (`9e370f7` parse, `50a636d` C-12: live chip text, card only for `{{embed ((uuid))}}`, page names in the picker) — Raw `((uuid))` after any reload; content shown twice; stale until reload |
 | TODO / DOING / DONE | 7 | **Fixed** (`e271c67`: DONE struck through and dimmed, room after the badge) — Ctrl+Enter cycles with coloured badges; DONE not struck through |
 | TODO badge / "All TODOs" | 2–3 | **Fixed** (`0edbc9c`: a live Tasks view, see C-8) — Writes a real page of raw `{{todo:pending}}` markup (both reviewers) |
 | Tables | 7 | Tab between cells, clean markdown; columns resize while typing |
-| Code blocks | 5 | Highlighting works; no language picker; typed fence + Enter saves escaped text (**fixed**, `01d33e6`) |
-| Quotes / callouts | 6 | Quote fine; no callout block |
-| Templates | 4 | Six built-in, flat; no user templates |
+| Code blocks | 5 | **Fixed** (`e448642`: the language label is a dropdown that rewrites the fence, a copy button, `/code` asks for the language) — Highlighting works; no language picker; typed fence + Enter saves escaped text (**fixed**, `01d33e6`) |
+| Quotes / callouts | 6 | **Fixed** (`a372b2f`: `> [!note]` / `[!warning]` / `[!tip]` callouts, Obsidian syntax, round-trip tested; `/callout`, or type `> [!note] `) — Quote fine; no callout block |
+| Templates | 4 | **Fixed** (`f32d58a`: Save as template from a page or a block subtree, nested, `{{date}} {{time}} {{title}} {{cursor}}`…, in the / menu, rename/delete in Settings; built-ins nested) — Six built-in, flat; no user templates |
 | Flashcards + review | 7 | Nice keyboard flow; dialog jumps on reveal; no next-interval hints |
-| Page and block properties | 5 | Work, but tiny inputs; page properties hidden; typed `key:: value` not recognised |
+| Page and block properties | 5 | **Fixed** (`97631a4`: real-sized fields with key autocomplete, page properties as a row under the title, typed `key:: value` becomes a block property) — Work, but tiny inputs; page properties hidden; typed `key:: value` not recognised |
 | Page title rename | 7 | References rewritten; layout shift; panels go stale |
-| Backlinks + unlinked references | 4 | **Partly fixed** (`72064ad`: rich rows, a click opens and highlights the block, refresh after a rename; grouping/paging and "Link" are Wave 4) — Raw markdown rows, 203 items flat, jumps to page not block, no "Link" action |
+| Backlinks + unlinked references | 4 | **Fixed** (`72064ad`: rich rows, a click opens and highlights the block, refresh after a rename; `5db41d5`: grouped by page with counts, 50 rows then Show more, unlinked mentions by page with a one-click undoable Link) — Raw markdown rows, 203 items flat, jumps to page not block, no "Link" action |
 | Undo / redo | 5 | Works; structural undo needs Escape first; stray empty block; no feedback |
 | Paste | 4 | Plain lines → blocks good; pasted markdown mangled (**fixed**, `01d33e6`, C-6); Wikipedia preview empty |
-| Large page (1,200 blocks) | 6 | Typing fine; ~10 s to open (no virtualisation) |
+| Large page (1,200 blocks) | 6 | **Fixed** (`659ef1d`: windowed above 300 blocks — desktop, 1,200: 0.1–0.4 s and ~1k DOM nodes instead of 0.8–10 s and 13k; 5,000: 0.2–0.4 s instead of 100–134 s, typing 3 ms/key instead of 85 ms) — Typing fine; ~10 s to open (no virtualisation) |
 | Empty page | 7 | Clear placeholder; inconsistent wording |
 | Hashtags `#tag` | 1 | **Typing `#urgent ` saves as `[tag]t`** (data corruption) |
-| Themes / narrow window | 7 | **Partly fixed** (`aff6c6a`: the sidebar collapses, a drawer below 900 px; faint bullets not touched) — Both themes coherent; faint light-theme bullets; sidebar can't collapse |
+| Themes / narrow window | 7 | **Fixed** (`aff6c6a`: the sidebar collapses, a drawer below 900 px; `518ebf6`: light-theme bullets in the muted text colour) — Both themes coherent; faint light-theme bullets; sidebar can't collapse |
 
 ### Navigation, organisation, notebooks
 
@@ -298,6 +298,67 @@ Ctrl+Shift+\, remembered in localStorage) and is a drawer below 900 px.
 Journeys: browser 85–91 (21 of their 31 assertions fail on `3a307a7`),
 desktop D19. Not done: a custom option list for selects; slash-menu icons
 (Wave 4); the light theme's faint bullets.
+
+**Wave 4 notes — editor (2026-10-21).** Eight items, each its own commit on top
+of `571a120`. (1) `a372b2f`: the / menu has the app's icons, six groups (Basic,
+Lists, Media, Links & dates, Advanced, Templates; headers only without a query),
+one-line descriptions (search words moved to `keywords`) and ↑↓ / Home / End /
+PgUp / PgDn (a group) / Tab. New: callouts — `> [!note] …` (Obsidian/GitHub
+syntax, `editor/CalloutNode.ts`: a markdown-it core rule turns such a quote into
+`div[data-callout]`; typing `[!warning] ` at the start of a quote converts it),
+Image / File (a native file picker → attachment), Link (`promptDialog`), Date
+(today; `/date next friday` keeps the menu open across spaces and shows the day
+it means; `/tomorrow`, `/fri`, `/+3d` put the day first; "Pick a date…" asks
+with a live hint — `lib/naturalDate.ts`, deterministic, inserts
+`[[Journal/YYYY-MM-DD]]`; "next friday" = the first Friday after today), Block
+reference and Embed (open the `((` picker; the embed flag rides on the editor's
+storage). No inline query exists, so no /query. (2) `e448642`: code blocks are a
+plain-DOM node view (`editor/codeBlockView.ts`, so the static renderer draws the
+same header): the language label is a filterable dropdown that rewrites the
+fence (saved at once), a copy button; `/code` opens the list (Esc = plain
+text). (3) `f32d58a`: user templates are stored by the existing template
+backend; the format is the outline text `apply_template` already read (indent =
+nesting) plus `\ ` continuation lines and `{{blank}}` (core + mock read both
+now); placeholders `{{date}} {{time}} {{title}} {{yesterday}} {{tomorrow}}
+{{cursor}}`; inserting goes through the structured-paste path (nesting, order,
+caret at `{{cursor}}`); the backend has no rename, so rename = create + delete.
+(4) `5db41d5`: backlinks are grouped by page (collapsible, counts, the header
+opens the page); the first 50 rows render, then Show more per page; unlinked
+mentions are grouped with plain-text rows and a Link button that wraps the
+first whole-word mention outside links/code/macros (`lib/linkMention.ts`) — an
+`update` undo entry + an Undo toast. Found on the way: core (and the mock) cut
+the unlinked list to 50 *before* dropping already-linked blocks, so a page with
+50+ backlinks showed no unlinked mentions (test fails on the old code); linked
+blocks are now excluded in SQL, limit 200. (5) `659ef1d`: above 300 visible
+blocks the list is windowed (`lib/blockWindow.ts`): the blocks within 1,200 px
+of the viewport plus the edited and the dragged block, spacers sized by
+measured heights (average for never-shown ones), the scroll corrected when a
+newly shown block above the viewport differs from its estimate (no scroll
+anchoring in WebKitGTK); focus / arrows / reveal / keyboard selection / the
+test API move the window first. Measured on the desktop app (Xvfb, software
+rendering, 3 runs; `before` = the same build with the old progressive full
+render via `localStorage minotes-window-threshold`): 1,200 blocks (+120
+children) — first block 92–611 ms → 111–363 ms, all rendered 0.8–10.4 s → done
+at first paint, 13,425 → ~1,000 DOM nodes, typing 17 ms (max 33) → 3 ms (max
+14) per key; 5,000 (+500) — 100–134 s to render, stalls up to 2.3 s, 55k nodes,
+85 ms per key → 0.2–0.4 s, stalls ≤ 0.25 s, ~1k nodes, 3 ms (max 17) per key.
+Browser Ctrl+F can't see blocks outside the window (no in-app find exists).
+(6) `97631a4`: one `PropertyEditor` for blocks and pages — real-sized fields,
+the key autocompletes from the keys in use (`list_property_keys`, most used
+first), page properties are a row under the title; a typed `key:: value` line
+(the F-7 key rule, outside fences) leaves the text on save and becomes a block
+property (`useBlockEditor` `transformSave`: the editor shows what is stored), so
+the markdown copy writes it as the indented property line. (7) `518ebf6`:
+bullets centred on the first line (±1 px, headings too), light-theme bullets in
+the muted colour; the bubble toolbar flips below when the header leaves no room
+and stays above the next blocks; Link and a highlighter icon. Ctrl+K is the
+palette and Ctrl+Shift+K the kanban, so the link has no shortcut. (8)
+`d4c59ab`: card / column / mind-map labels go through `lib/plainText` (only the
+label helper changed). Tests: vitest (callout round trip incl. typed, code
+header, slash menu, dates, templates, link mention, window maths, typed
+properties, card labels — 26 tests and 5 test files fail on `571a120`), browser
+journeys 102–108 (32 of 37 assertions fail on `571a120`), desktop D22 (real
+keys and mouse).
 
 ## 4. Patterns behind the scores
 
