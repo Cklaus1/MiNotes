@@ -4840,7 +4840,7 @@ step "The page I came from is marked (you are here) and labelled; 220+ pages lay
 R=$(ev "(()=>{const c=$G109;const n=c.__minotesGraph.nodes().find(x=>x.current);const l=c.__minotesGraph.labels().some(x=>x.id==='$N100');return c.dataset.nodes+'|'+c.dataset.current+'|'+(n&&n.id)+'|'+l+'|'+c.dataset.layoutMs})()" | tr -d '"')
 IFS='|' read -r NN CUR CURN LBL MS <<< "$R"
 [[ "$NN" -ge 220 && "$CUR" == "$N100" && "$CURN" == "$N100" && "$LBL" == "true" ]] && pass "You are here: $T109 n100 ringed and labelled among $NN pages" || fail "You are here" "$R"
-[[ "$MS" -lt 3000 ]] 2>/dev/null && pass "Layout of $NN pages settled in $MS ms" || fail "Graph layout too slow" "$MS ms for $NN pages"
+[[ "$MS" =~ ^[0-9]+$ && "$MS" -lt 3000 ]] 2>/dev/null && pass "Layout of $NN pages settled in $MS ms" || fail "Graph layout too slow" "$MS ms for $NN pages"
 ss "109-graph-here"
 
 step "Local graph: only the pages 1 link away, then 2 links away (remembered)"
