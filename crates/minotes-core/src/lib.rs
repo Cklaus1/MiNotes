@@ -21,3 +21,4 @@ pub mod repo;
 pub mod search;
 pub mod sync_encrypted;
 pub mod sync_manager;
+pub mod sync_remote;

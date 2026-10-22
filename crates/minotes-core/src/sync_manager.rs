@@ -229,6 +229,18 @@ pub struct HeldDeletions {
     /// Pages in the notebook for "34 of 50": not journal days, not in the
     /// Trash or the Archive (as the sidebar and All Pages count them).
     pub total_pages: usize,
+    /// Every held page and folder, for the review list (open one, keep some).
+    #[serde(default)]
+    pub items: Vec<HeldItem>,
+}
+
+/// One held deletion in the review list.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct HeldItem {
+    pub id: Uuid,
+    pub title: String,
+    /// "page", "journal" or "folder".
+    pub kind: &'static str,
 }
 
 /// Pages/folders an export must leave out while their deletion is held.
@@ -296,6 +308,7 @@ fn refresh_held(db: &Database, dir: &Path) -> Result<()> {
 fn held_summary(db: &Database, dir: &Path) -> Result<Option<HeldDeletions>> {
     let Some(h) = read_state(dir).held else { return Ok(None) };
     let mut titles = Vec::new();
+    let mut items = Vec::new();
     let mut journals = 0usize;
     for id in &h.page_ids {
         let Some(p) = db.get_page(id)? else { continue };
@@ -303,15 +316,16 @@ fn held_summary(db: &Database, dir: &Path) -> Result<Option<HeldDeletions>> {
             journals += 1;
         }
         if titles.len() < 20 {
-            titles.push(p.title);
+            titles.push(p.title.clone());
         }
+        items.push(HeldItem { id: *id, title: p.title, kind: if p.is_journal { "journal" } else { "page" } });
     }
     for id in &h.folder_ids {
-        if titles.len() >= 20 {
-            break;
-        }
         if let Some(f) = db.get_folder(id)? {
-            titles.push(format!("{}/", f.name));
+            if titles.len() < 20 {
+                titles.push(format!("{}/", f.name));
+            }
+            items.push(HeldItem { id: *id, title: f.name, kind: "folder" });
         }
     }
     // Counted like the sidebar and All Pages count: pages, not journal days
@@ -329,6 +343,7 @@ fn held_summary(db: &Database, dir: &Path) -> Result<Option<HeldDeletions>> {
         folders: h.folder_ids.len(),
         titles,
         total_pages,
+        items,
     }))
 }
 
@@ -338,18 +353,34 @@ fn held_summary(db: &Database, dir: &Path) -> Result<Option<HeldDeletions>> {
 ///
 /// Callers serialise this with sync cycles (hold `mirror::FS_LOCK`, then the DB).
 pub fn resolve_held_deletions_in_dir(db: &Database, dir: &Path, move_to_trash: bool) -> Result<usize> {
+    resolve_held_deletions_keeping(db, dir, move_to_trash, &HashSet::new())
+}
+
+/// [`resolve_held_deletions_in_dir`] with a partial keep: with `move_to_trash`,
+/// everything held except `keep` goes to the Trash; the kept ones stay (and the
+/// next export writes them back, so the other device gets them again).
+pub fn resolve_held_deletions_keeping(db: &Database, dir: &Path, move_to_trash: bool, keep: &HashSet<Uuid>) -> Result<usize> {
     let mut st = read_state(dir);
     let Some(h) = st.held.take() else { return Ok(0) };
     let mut n = 0;
     if move_to_trash {
         db.tx(|| {
-            for id in &h.folder_ids {
+            // A kept page inside a trashed folder would go with it: keep the folder.
+            let mut keep_folders: HashSet<Uuid> = keep.clone();
+            for id in keep {
+                let mut f = db.get_page(id)?.and_then(|p| p.folder_id);
+                while let Some(fid) = f {
+                    keep_folders.insert(fid);
+                    f = db.get_folder(&fid)?.and_then(|x| x.parent_id);
+                }
+            }
+            for id in h.folder_ids.iter().filter(|id| !keep_folders.contains(id)) {
                 if db.get_folder(id)?.is_some() {
                     db.trash_folder(id)?;
                     n += 1;
                 }
             }
-            for id in &h.page_ids {
+            for id in h.page_ids.iter().filter(|id| !keep.contains(id)) {
                 if db.get_page(id)?.is_some() && !db.is_trashed(id)? {
                     db.trash_page(id)?;
                     n += 1;
@@ -365,6 +396,11 @@ pub fn resolve_held_deletions_in_dir(db: &Database, dir: &Path, move_to_trash: b
 /// [`resolve_held_deletions_in_dir`] for a notebook's sync dir.
 pub fn resolve_held_deletions(db: &Database, key: &str, move_to_trash: bool) -> Result<usize> {
     resolve_held_deletions_in_dir(db, &sync_dir_for_notebook(key), move_to_trash)
+}
+
+/// [`resolve_held_deletions_keeping`] for a notebook's sync dir.
+pub fn resolve_held_deletions_partial(db: &Database, key: &str, keep: &HashSet<Uuid>) -> Result<usize> {
+    resolve_held_deletions_keeping(db, &sync_dir_for_notebook(key), true, keep)
 }
 
 pub(crate) fn ensure_gitignore(dir: &Path) {
@@ -852,6 +888,92 @@ pub fn disable_sync(key: &str) -> Result<()> {
     Ok(())
 }
 
+// ── Remote setup from the app (UX Wave 4; see `sync_remote`) ──
+
+/// The remote changed (or went): "Last synced" and the last error were about
+/// the old one.
+fn forget_remote_outcome(key: &str) -> Result<()> {
+    let mut config = read_config(key);
+    config.last_sync = None;
+    config.last_error = None;
+    config.last_error_kind = None;
+    write_config(key, &config)
+}
+
+/// "Set up sync" for a notebook without a remote: test the address, then
+/// `git init` (if needed) + `remote add origin` + turn sync on (flush, pull —
+/// a remote that already has notes is merged in — import, push). If turning
+/// sync on fails, the remote is removed again and sync left as it was.
+pub fn setup_sync_with<G, F>(key: &str, raw_url: &str, roots: &crate::sync_remote::LocalRoots, lock_db: F) -> Result<GitSyncStatus>
+where
+    G: Deref<Target = Database>,
+    F: Fn() -> Result<G>,
+{
+    if !git_cmd::git_available() {
+        return Err(Error::Git("Git is not installed".to_string()));
+    }
+    let dir = sync_dir_for_notebook(key);
+    let (v, check) = crate::sync_remote::usable_remote(raw_url, roots, &dir)?;
+    {
+        let _guard = SYNC_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        if !git_cmd::is_git_repo(&dir) {
+            git_cmd::init_repo(&dir)?;
+        }
+        if git_cmd::has_remote(&dir) {
+            return Err(Error::InvalidInput("This notebook already has a sync remote — change it instead".into()));
+        }
+        // A new repo follows the remote's branch (an older repo may use "master").
+        if let Some(b) = check.default_branch.as_deref().filter(|b| *b != "main") {
+            if git_cmd::rev_parse_head(&dir)?.is_none() {
+                let _ = git_cmd::run_git(&dir, &["symbolic-ref", "HEAD", &format!("refs/heads/{b}")]);
+            }
+        }
+        git_cmd::set_remote_url(&dir, &v.url)?;
+    }
+    let was_enabled = read_config(key).enabled;
+    match enable_sync_with(key, lock_db) {
+        Ok(status) => Ok(status),
+        Err(e) => {
+            let _guard = SYNC_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+            let _ = git_cmd::remove_remote(&dir);
+            if !was_enabled {
+                let _ = disable_sync(key);
+            }
+            Err(e)
+        }
+    }
+}
+
+/// Point the notebook's sync at another remote (tested first). "Last synced"
+/// starts over; the next sync pulls from and pushes to the new one.
+pub fn change_remote(key: &str, raw_url: &str, roots: &crate::sync_remote::LocalRoots) -> Result<GitSyncStatus> {
+    let dir = sync_dir_for_notebook(key);
+    let (v, _) = crate::sync_remote::usable_remote(raw_url, roots, &dir)?;
+    {
+        let _guard = SYNC_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        if !git_cmd::is_git_repo(&dir) {
+            return Err(Error::InvalidInput("Sync isn't set up for this notebook yet — use Set up sync".into()));
+        }
+        git_cmd::set_remote_url(&dir, &v.url)?;
+    }
+    forget_remote_outcome(key)?;
+    get_sync_status(key)
+}
+
+/// Stop sending this notebook anywhere: remove the remote. Sync stays on and
+/// keeps committing in the sync folder (history), like before a remote was set.
+pub fn remove_sync_remote(key: &str) -> Result<GitSyncStatus> {
+    let dir = sync_dir_for_notebook(key);
+    {
+        let _guard = SYNC_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        if git_cmd::is_git_repo(&dir) {
+            git_cmd::remove_remote(&dir)?;
+        }
+    }
+    forget_remote_outcome(key)?;
+    get_sync_status(key)
+}
+
 /// Phase 1: flush the markdown mirror (a full pass: export DB → filesystem,
 /// pruning stale files) and commit. Needs the DB. Sync does not export on its own:
 /// the mirror writes the files, sync commits them.
@@ -916,11 +1038,13 @@ fn pull_with_resolve(sync_dir: &Path) -> Result<u32> {
                 }
                 let [base, theirs, local] = git_cmd::conflict_stages(sync_dir, file)?;
                 if let Some(theirs) = theirs {
+                    let device = git_cmd::rebase_onto(sync_dir).and_then(|o| git_cmd::device_of_last_change(sync_dir, &o, file));
                     merges.push(crate::sync_encrypted::PendingMerge {
                         path: file.to_string(),
                         base,
                         theirs,
                         local_deleted: local.is_none(),
+                        device,
                     });
                 }
                 git_cmd::keep_local_side(sync_dir, file)
@@ -945,9 +1069,9 @@ fn apply_page_merges(db: &Database, sync_dir: &Path, r: &mut SyncResult) -> Resu
     if st.merges.is_empty() {
         return Ok(());
     }
-    let host = git_cmd::get_hostname();
     let mut left = Vec::new();
     for m in std::mem::take(&mut st.merges) {
+        let host = crate::sync_encrypted::other_device(m.device.clone());
         let res = (|| -> Result<()> {
             let theirs = git_cmd::blob_text(sync_dir, &m.theirs)?.ok_or_else(|| Error::Git(format!("missing blob {}", m.theirs)))?;
             let base = match &m.base {
@@ -1114,9 +1238,13 @@ fn apply_import_opts(db: &Database, sync_dir: &Path, pending: &PendingImport, mu
 /// is not marked imported and the next cycle retries.
 fn merge_skipped_pages(db: &Database, sync_dir: &Path, pending: &PendingImport, r: &mut SyncResult) {
     let skipped = std::mem::take(&mut r.skipped_pages);
-    let host = git_cmd::get_hostname();
+    let range = match &pending.base {
+        Some(b) => format!("{b}..{}", pending.head),
+        None => pending.head.clone(),
+    };
     for (id, rel) in skipped {
         let key = rel.to_string_lossy().replace('\\', "/");
+        let host = crate::sync_encrypted::other_device(git_cmd::device_of_last_change(sync_dir, &range, &key));
         if let Some(changed) = &pending.changed_paths {
             if !changed.iter().any(|c| *c == key) {
                 continue; // the pull didn't touch it: nothing remote to absorb
@@ -1985,6 +2113,45 @@ mod tests {
         assert!(r.held_deletions.is_none());
         assert!(b.join("P0.md").exists(), "kept pages are exported again");
         assert!(!db_b.is_trashed(&ids[0]).unwrap());
+    }
+
+    // UX Wave 4: the review lists every held item (ids, to open one) and a
+    // partial keep trashes the rest; kept pages come back on the other device.
+    #[test]
+    fn test_partial_keep_of_held_deletions() {
+        if !git_cmd::git_available() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let (_remote, a, b) = setup_remote_and_devices(tmp.path());
+        let db_a = Database::open_in_memory().unwrap();
+        let db_b = Database::open_in_memory().unwrap();
+        let mut ids = Vec::new();
+        for i in 0..25 {
+            ids.push(db_a.create_page(&format!("N{i:02}"), None, false, None, "user").unwrap().id);
+        }
+        let f = db_a.create_folder("Proj", None, None, None, "user").unwrap();
+        db_a.move_page_to_folder(&ids[0], Some(&f.id), "user").unwrap();
+        cycle(&a, &db_a);
+        cycle(&b, &db_b);
+        for id in &ids[..22] {
+            db_a.trash_page(id).unwrap();
+        }
+        cycle(&a, &db_a);
+        let held = cycle(&b, &db_b).held_deletions.expect("held");
+        assert_eq!(held.items.len(), 22, "every held page, not only the first 20 titles");
+        assert!(held.items.iter().any(|i| i.id == ids[21] && i.title == "N21" && i.kind == "page"));
+        // Keep N00 (in a project) and N05.
+        let keep: HashSet<Uuid> = [ids[0], ids[5]].into_iter().collect();
+        let n = resolve_held_deletions_keeping(&db_b, &b, true, &keep).unwrap();
+        assert_eq!(n, 20, "20 pages trashed, the 2 kept ones stay");
+        assert!(!db_b.is_trashed(&ids[0]).unwrap() && !db_b.is_trashed(&ids[5]).unwrap());
+        assert!(db_b.is_trashed(&ids[1]).unwrap() && db_b.is_trashed(&ids[21]).unwrap());
+        assert!(db_b.get_folder(&f.id).unwrap().is_some());
+        assert!(cycle(&b, &db_b).held_deletions.is_none());
+        assert!(b.join("N05.md").exists(), "a kept page is exported again");
+        cycle(&a, &db_a);
+        assert!(a.join("N05.md").exists(), "and reaches the other device again");
     }
 
     // P0: an import failure is a failed sync (not "success"), and is retried.

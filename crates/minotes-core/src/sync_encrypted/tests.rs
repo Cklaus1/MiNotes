@@ -201,6 +201,47 @@ fn edits_to_different_blocks_merge_per_block_and_same_block_keeps_both() {
     }
 }
 
+// UX Wave 4: an encrypted notebook's conflict copy is an ordinary page once
+// decrypted — it compares block by block (paired by id) and resolves like a
+// plain one; the resolution and the trashed copy sync, still encrypted.
+#[test]
+fn conflict_copies_compare_and_resolve_in_encrypted_notebooks() {
+    if !git_cmd::git_available() {
+        return;
+    }
+    let h = FakeHome::new();
+    let remote = bare_remote(h.path());
+    let a = device_a(h.path(), &remote);
+    let p = a.db.create_page("Vaultplan", None, false, None, "user").unwrap();
+    let x = a.db.create_block(&p.id, "kiwi base", None, None, "user").unwrap();
+    a.db.create_block(&p.id, "kiwi steady", None, None, "user").unwrap();
+    assert!(a.sync(true).success);
+    let b = device_b(h.path(), &remote);
+    assert!(b.sync(true).success);
+    a.db.update_block(&x.id, Some("kiwi by A"), "user").unwrap();
+    b.db.update_block(&x.id, Some("kiwi by B"), "user").unwrap();
+    assert!(a.sync(false).success);
+    assert!(b.sync(false).success);
+    let copy = b.db.list_pages(Some(1000)).unwrap().into_iter().find(|t| t.title.starts_with("Vaultplan (conflict from ")).expect("copy");
+    let cmp = b.db.conflict_compare(&copy.id).unwrap();
+    assert!(cmp.exact, "paired by id after decryption");
+    assert_eq!(cmp.rows.len(), 1, "{:?}", cmp.rows);
+    assert_eq!(cmp.rows[0].mine.as_ref().unwrap().content, "kiwi by B");
+    assert_eq!(cmp.rows[0].theirs.as_ref().unwrap().content, "kiwi by A");
+    let choices = vec![crate::repo::conflicts::ConflictChoice { key: cmp.rows[0].key.clone(), choice: crate::repo::conflicts::Choice::Theirs }];
+    b.db.resolve_conflict(&copy.id, &choices).unwrap();
+    assert_eq!(b.texts("Vaultplan"), ["kiwi by A", "kiwi steady"]);
+    assert!(b.sync(false).success);
+    assert!(a.sync(false).success);
+    assert_eq!(a.texts("Vaultplan"), ["kiwi by A", "kiwi steady"]);
+    if let Some(c) = a.db.get_page(&copy.id).unwrap() {
+        assert!(a.db.is_trashed(&c.id).unwrap(), "the copy is trashed on A too");
+    }
+    for repo in [a.dir(), b.dir(), remote.clone()] {
+        assert_no_plaintext(&repo, &["kiwi"]);
+    }
+}
+
 #[test]
 fn deleting_a_page_moves_it_to_the_other_devices_trash() {
     if !git_cmd::git_available() {

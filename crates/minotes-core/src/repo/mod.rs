@@ -1,6 +1,7 @@
 pub mod aliases;
 pub mod archive;
 pub mod blocks;
+pub mod conflicts;
 pub mod cards;
 pub mod crdt;
 pub mod events;

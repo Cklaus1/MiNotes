@@ -434,6 +434,72 @@ fn conflict_copy_path(dir: &Path, rel_file: &str, host: &str) -> Option<PathBuf>
     None
 }
 
+/// The commit a stopped `pull --rebase` is replaying onto (the upstream side).
+pub(crate) fn rebase_onto(dir: &Path) -> Option<String> {
+    let g = dir.join(".git");
+    ["rebase-merge/onto", "rebase-apply/onto"]
+        .iter()
+        .find_map(|p| std::fs::read_to_string(g.join(p)).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// The device named in a MiNotes commit subject ("sync: <host> @ <time>").
+pub(crate) fn device_of_subject(subject: &str) -> Option<String> {
+    let rest = subject.trim().strip_prefix("sync: ")?;
+    let (host, _) = rest.rsplit_once(" @ ")?;
+    let host = host.trim();
+    (!host.is_empty() && host.len() <= 100).then(|| host.to_string())
+}
+
+/// Which device last changed `path` in `revs` (a commit, or a range like
+/// `a..b`), from MiNotes' commit subjects: the newest commit made on ANOTHER
+/// host if there is one, else the newest one. None when no commit there names
+/// a device (hand-made commits). Conflict copies are named after it — never
+/// after this machine, which only *noticed* the conflict.
+pub(crate) fn device_of_last_change(dir: &Path, revs: &str, path: &str) -> Option<String> {
+    let (out, _, ok) = run_git(dir, &["log", "-n", "20", "--format=%s", revs, "--", path]).ok()?;
+    if !ok {
+        return None;
+    }
+    let devices: Vec<String> = out.lines().filter_map(device_of_subject).collect();
+    let me = get_hostname();
+    devices.iter().find(|d| **d != me).or(devices.first()).cloned()
+}
+
+/// `git ls-remote --symref <url> HEAD refs/heads/*` from an empty scratch
+/// directory (no repo config applies), with the usual safety options and
+/// `timeout`. Returns (stdout, stderr, ok) or the watchdog's error.
+pub(crate) fn ls_remote(url: &str, timeout: Duration) -> Result<(String, String, bool)> {
+    let scratch = std::env::temp_dir().join(format!("minotes-ls-remote-{}", uuid::Uuid::now_v7().simple()));
+    std::fs::create_dir_all(&scratch).map_err(|e| Error::Git(format!("Cannot create a scratch folder: {e}")))?;
+    let r = run_git_timeout(&scratch, &["ls-remote", "--symref", url, "HEAD", "refs/heads/*"], timeout);
+    let _ = std::fs::remove_dir_all(&scratch);
+    r
+}
+
+/// Point `origin` at `url` (adding it if missing).
+pub fn set_remote_url(dir: &Path, url: &str) -> Result<()> {
+    let args: [&str; 4] = if has_remote(dir) { ["remote", "set-url", "origin", url] } else { ["remote", "add", "origin", url] };
+    let (_, stderr, ok) = run_git(dir, &args)?;
+    if !ok {
+        return Err(Error::Git(format!("Could not set the sync remote: {}", stderr.trim())));
+    }
+    Ok(())
+}
+
+/// Remove `origin` (no-op when there is none).
+pub fn remove_remote(dir: &Path) -> Result<()> {
+    if !has_remote(dir) {
+        return Ok(());
+    }
+    let (_, stderr, ok) = run_git(dir, &["remote", "remove", "origin"])?;
+    if !ok {
+        return Err(Error::Git(format!("Could not remove the sync remote: {}", stderr.trim())));
+    }
+    Ok(())
+}
+
 /// Get the system hostname for commit messages.
 pub fn get_hostname() -> String {
     hostname::get()
