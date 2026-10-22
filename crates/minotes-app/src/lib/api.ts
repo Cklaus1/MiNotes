@@ -844,6 +844,8 @@ export interface OgMetadata {
   title: string;
   description: string;
   image: string;
+  /** The page's declared icon (absolute web address), "" when none. Remote: loaded only when allowed. */
+  favicon?: string;
 }
 
 export const fetchOgMetadata = (url: string) =>
@@ -1221,6 +1223,8 @@ export async function storeAttachment(name: string, mime: string, bytes: Uint8Ar
 /** Store the files the OS just dropped on the window (desktop only). */
 export const storeDroppedFiles = () => invoke<Attachment[]>("store_dropped_files");
 export const openAttachment = (hash: string) => invoke<void>("open_attachment", { hash });
+/** Show a stored attachment in the file manager (desktop; never opens it). */
+export const revealAttachment = (hash: string) => invoke<void>("reveal_attachment", { hash });
 export const getAttachment = (hash: string) => invoke<Attachment | null>("get_attachment", { hash });
 
 export type ImportSourceKind = "obsidian" | "markdown" | "evernote";

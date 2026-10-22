@@ -202,6 +202,21 @@ pub fn open_attachment(app: AppHandle, hash: String) -> Result<(), String> {
     tauri_plugin_opener::open_path(&file, None::<&str>).map_err(|e| e.to_string())
 }
 
+/// Show a stored attachment in the system file manager (never opens or runs
+/// it). Encrypted notebooks keep attachments inside the database, so there is
+/// no file to show — the app offers Open (a temporary copy) instead.
+#[tauri::command]
+pub fn reveal_attachment(app: AppHandle, hash: String) -> Result<(), String> {
+    if let Some(state) = app.try_state::<AppState>() {
+        if state.session.lock().map(|s| s.notebook.is_encrypted()).unwrap_or(false) {
+            return Err("This notebook is encrypted: its attachments live inside it, not in a folder".into());
+        }
+    }
+    let dir = store_dir(&app).ok_or("not ready")?;
+    let file = attachments::find_file(&dir, &hash).ok_or("Attachment not found")?;
+    tauri_plugin_opener::reveal_item_in_dir(&file).map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::is_safe_to_open;

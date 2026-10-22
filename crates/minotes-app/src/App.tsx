@@ -62,6 +62,7 @@ import { useLayer } from "./lib/layers";
 import ShortcutsOverlay from "./components/ShortcutsOverlay";
 // UX Wave 4 (views): remembered page views, image lightbox
 import { useRememberedPageView } from "./lib/pageView";
+import MediaHost from "./components/MediaHost";
 // ── End import ──
 // ── End AI platform ──
 
@@ -1297,6 +1298,7 @@ export default function App() {
       <ImportMount onOpenPage={openPage} onRefresh={refresh} />
       {/* ── End import ── */}
       <ShortcutsOverlay />
+      <MediaHost />
       {/* ── AI platform ── */}
       <AiMount key={notebookKey} activePageId={activePage?.page.id ?? null} onOpenPage={openPage} />
       {/* ── End AI platform ── */}

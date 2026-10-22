@@ -50,6 +50,8 @@ export const REMOTE_IMAGES_CHANGED = "minotes-remote-images-changed";
 
 let notebookKey = "";
 const sessionPages = new Set<string>();
+/** Single images the user clicked to load (this session), whatever the page policy. */
+const onceUrls = new Set<string>();
 
 export function remoteImageMode(): RemoteImageMode {
   const m = getSettings().remoteImages;
@@ -170,10 +172,15 @@ function consider(el: HTMLElement) {
   const src = el.getAttribute("data-remote-src") ?? "";
   const state = el.getAttribute("data-remote-state");
   if (state === "loaded" || state === "loading") return;
-  if (!isRemoteSrc(src) || !isAllowed(scopeOf(el))) {
+  const once = onceUrls.has(src.trim()) && remoteImageMode() !== "never";
+  if (!isRemoteSrc(src) || (!once && !isAllowed(scopeOf(el)))) {
     if (state !== "blocked") {
       el.setAttribute("data-remote-state", "blocked");
-      if (!el.title) el.title = `Remote image from ${remoteHost(src)} — not loaded`;
+      if (!el.title) {
+        el.title = remoteImageMode() === "never"
+          ? `Remote image from ${remoteHost(src)} — not loaded (remote images are off)`
+          : `Remote image from ${remoteHost(src)} — click to load just this one`;
+      }
       notify();
     }
     return;
@@ -238,4 +245,35 @@ export function installRemoteImages(): void {
     if (key) { notebookKey = key; changed(); } else refreshNotebook();
   });
   window.addEventListener("minotes-settings-changed", () => changed());
+
+  // Clicking a blocked placeholder loads just that image, once (this page
+  // view) — not a policy change. "Never" means never: it points to Settings.
+  // Capture phase, so the click doesn't also start editing the block.
+  const placeholderAt = (t: EventTarget | null) => {
+    const el = (t as HTMLElement | null)?.closest?.(".remote-img") as HTMLElement | null;
+    const st = el?.getAttribute("data-remote-state");
+    return el && (st === "blocked" || st === "error") ? el : null;
+  };
+  document.addEventListener("mousedown", (e) => {
+    if (e.button === 0 && placeholderAt(e.target)) { e.preventDefault(); e.stopPropagation(); }
+  }, true);
+  document.addEventListener("click", (e) => {
+    const el = placeholderAt(e.target);
+    if (!el || e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (remoteImageMode() === "never") {
+      void import("./toast").then(({ showToast }) => showToast("Remote images are off — Settings → Privacy to change that"));
+      return;
+    }
+    loadOnce(el);
+  }, true);
+}
+
+/** Load this one placeholder's image now, whatever the page's policy (a click). */
+export function loadOnce(el: HTMLElement): void {
+  onceUrls.add((el.getAttribute("data-remote-src") ?? "").trim());
+  el.removeAttribute("data-remote-state");
+  el.title = "";
+  consider(el);
 }

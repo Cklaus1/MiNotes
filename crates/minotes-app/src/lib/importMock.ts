@@ -119,6 +119,8 @@ export function createImportMockHandlers(m: H): H {
     store_attachment: ({ name, mime, bytes }: { name: string; mime: string; bytes: Uint8Array }) => store(name, mime, bytes),
     store_dropped_files: () => [],
     open_attachment: () => undefined,
+    // Browser mode has no file manager: remember the request (tests read it).
+    reveal_attachment: ({ hash }: { hash: string }) => { (window as any).__minotesRevealed = hash; return undefined; },
     get_attachment: ({ hash }: { hash: string }) => attachments.get(hash) ?? null,
     import_detect: ({ path }: { path: string }) => ({
       kind: /\.enex$/i.test(path) ? "evernote" : /markdown|md-folder/i.test(path) ? "markdown" : "obsidian",
