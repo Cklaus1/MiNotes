@@ -27,6 +27,7 @@ import { confirmDialog, plural, promptDialog } from "../lib/confirm";
 import { errorMessage } from "../lib/errors";
 import { suggestLinks, type LinkSuggestion } from "../lib/linkSuggestions";
 import { prefetchBlockProperties } from "../lib/blockProperties";
+import { estimateHeight, prefixHeights, windowPlan, windowRange, windowThreshold } from "../lib/blockWindow";
 import { registerFlush } from "../lib/pendingEdits";
 import { getSettingsCached } from "../lib/cachedSettings";
 import RemoteImageBar from "./RemoteImageBar";
@@ -79,6 +80,19 @@ export default function PageView({
   const renderLimitRef = useRef(renderLimit);
   renderLimitRef.current = renderLimit;
   const sliceRef = useRef({ size: 150, startedAt: 0 });
+  // Windowing of big pages (see "Windowing" below): the rendered block range.
+  const [win, setWin] = useState({ pageId: pageTree.page.id, start: 0, end: INITIAL_RENDER });
+  const winStart = win.pageId === page.id ? win.start : 0;
+  const winEnd = win.pageId === page.id ? win.end : INITIAL_RENDER;
+  const winRef = useRef({ start: winStart, end: winEnd });
+  winRef.current = { start: winStart, end: winEnd };
+  const pageIdRef = useRef(page.id);
+  pageIdRef.current = page.id;
+  /** Measured height of every block that has been on screen (by id). */
+  const heightsRef = useRef(new Map<string, number>());
+  const scrollerRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const [dragPinId, setDragPinId] = useState<string | null>(null);
 
   // Optimistic edits not yet confirmed by a fetched tree. A refresh (e.g. the delayed
   // [[link]] refresh, or a sync import) may carry a tree read BEFORE these edits
@@ -382,7 +396,7 @@ export default function PageView({
       }, 30);
       return () => clearTimeout(timer);
     }
-  }, [focusBlockId, blocks, renderLimit]);
+  }, [focusBlockId, blocks, renderLimit, winStart, winEnd]);
   const focusBlockAt = (id: string, pos: FocusPosition) => {
     focusCaretRef.current = { id, pos };
     setFocusBlockId(id);
@@ -1257,6 +1271,11 @@ export default function PageView({
   // Progressive rendering: after each commit, schedule the next slice until every
   // visible block is in the DOM; slice size adapts to keep each one ~SLICE_BUDGET_MS.
   const visibleCount = filteredVisibleBlocks.length;
+  // Above the threshold the list is windowed instead (lib/blockWindow.ts).
+  const threshold = useMemo(() => windowThreshold(), []);
+  const windowed = visibleCount > threshold;
+  const windowedRef = useRef(windowed);
+  windowedRef.current = windowed;
   useLayoutEffect(() => {
     const sl = sliceRef.current;
     if (sl.startedAt) {
@@ -1266,7 +1285,7 @@ export default function PageView({
     }
   }, [renderLimit]);
   useEffect(() => {
-    if (renderLimit >= visibleCount) return;
+    if (renderLimit >= visibleCount || windowed) return;
     const pageId = page.id;
     const t = setTimeout(() => {
       sliceRef.current.startedAt = performance.now();
@@ -1276,15 +1295,77 @@ export default function PageView({
       }));
     }, 0);
     return () => clearTimeout(t);
-  }, [renderLimit, visibleCount, page.id]);
-  /** Make sure the block is rendered (big pages render progressively). True if it wasn't. */
+  }, [renderLimit, visibleCount, page.id, windowed]);
+  /** Make sure the block is rendered (big pages render progressively, or windowed). True if it wasn't. */
   const ensureRendered = (id: string): boolean => {
     const idx = visibleRef.current.findIndex(b => b.id === id || b.id === rid(id));
+    if (windowedRef.current) {
+      if (idx < 0 || blockRefs.current.has(rid(id)) || blockRefs.current.has(id)) return false;
+      const { start, end } = winRef.current;
+      if (idx >= start && idx < end) return false;
+      // Jump the window to the block; scrolling to it (focus / reveal) follows.
+      setWin({ pageId: page.id, start: Math.max(0, Math.floor((idx - 20) / 20) * 20), end: Math.min(visibleRef.current.length, idx + 40) });
+      return true;
+    }
     if (idx < renderLimitRef.current) return false;
     const pageId = page.id;
     setRenderState({ pageId, limit: idx + INITIAL_RENDER });
     return true;
   };
+  /** ensureRendered, committed now (test API calls that need the block at once). */
+  const ensureRenderedNow = (id: string) => { flushSync(() => { ensureRendered(id); }); };
+
+  // ── Windowing (lib/blockWindow.ts): a page with more than windowThreshold()
+  // visible blocks renders only the blocks near the viewport (plus the block
+  // being edited and the one being dragged); spacers keep the scroll height. ──
+
+  const updateWindow = useCallback(() => {
+    if (!windowedRef.current) return;
+    const sc = scrollerRef.current, list = listRef.current;
+    if (!sc || !list) return;
+    const listTop = list.getBoundingClientRect().top - sc.getBoundingClientRect().top + sc.scrollTop;
+    const y0 = sc.scrollTop - listTop;
+    const ids = visibleRef.current.map(b => b.id);
+    const prefix = prefixHeights(ids, heightsRef.current, estimateHeight(heightsRef.current));
+    const [s, e] = windowRange(prefix, y0, y0 + sc.clientHeight);
+    const cur = winRef.current;
+    if (s !== cur.start || e !== cur.end) setWin({ pageId: pageIdRef.current, start: s, end: e });
+  }, []);
+
+  useEffect(() => {
+    if (!windowed) return;
+    const sc = scrollerRef.current;
+    if (!sc) return;
+    let raf = 0;
+    const schedule = () => { if (!raf) raf = requestAnimationFrame(() => { raf = 0; updateWindow(); }); };
+    sc.addEventListener("scroll", schedule, { passive: true });
+    window.addEventListener("resize", schedule);
+    updateWindow();
+    return () => {
+      sc.removeEventListener("scroll", schedule);
+      window.removeEventListener("resize", schedule);
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, [windowed, page.id, updateWindow, visibleCount]);
+
+  // The dragged block stays rendered while the window moves under the pointer.
+  useEffect(() => {
+    const list = listRef.current;
+    if (!list || !windowed) return;
+    const start = (e: DragEvent) => {
+      const id = (e.target as HTMLElement | null)?.closest?.("[data-block-id]")?.getAttribute("data-block-id");
+      if (id) setDragPinId(id);
+    };
+    const end = () => setDragPinId(null);
+    list.addEventListener("dragstart", start);
+    list.addEventListener("dragend", end);
+    list.addEventListener("drop", end);
+    return () => {
+      list.removeEventListener("dragstart", start);
+      list.removeEventListener("dragend", end);
+      list.removeEventListener("drop", end);
+    };
+  }, [windowed]);
 
   // Active path: set via DOM to avoid re-rendering blocks (which steals focus in WebKitGTK)
   useEffect(() => {
@@ -1300,8 +1381,26 @@ export default function PageView({
 
   // Register block-level test API
   useEffect(() => {
+    /** Block N's handle, rendering it first on a windowed page. */
+    const handleAt = (blockIndex: number): BlockItemHandle | null => {
+      const block = filteredVisibleBlocks[blockIndex];
+      if (!block) return null;
+      if (!blockRefs.current.get(block.id) && windowedRef.current) ensureRenderedNow(block.id);
+      return blockRefs.current.get(block.id) ?? null;
+    };
     registerTestApi({
       typeInBlock: (blockIndex: number, text: string) => {
+        if (windowedRef.current) {
+          // Windowed: DOM order is not block order; find the block by id.
+          const block = filteredVisibleBlocks[blockIndex];
+          const ref = handleAt(blockIndex);
+          if (!block || !ref?.ensureEditor()) return false;
+          const ed = document.querySelector(`[data-block-id="${CSS.escape(block.id)}"] .ProseMirror`) as HTMLElement | null;
+          if (!ed) return false;
+          ed.focus();
+          document.execCommand('insertText', false, text);
+          return true;
+        }
         let el = document.querySelectorAll('.ProseMirror')[blockIndex];
         if (!el) return false;
         // A block that isn't being edited renders statically: mount its editor first.
@@ -1330,7 +1429,7 @@ export default function PageView({
       getBlocks: () => filteredVisibleBlocks.map((b, i) => ({ index: i, content: b.content })),
       pressEnterInBlock: (blockIndex: number) => {
         const block = filteredVisibleBlocks[blockIndex];
-        const ref = block ? blockRefs.current.get(block.id) : null;
+        const ref = handleAt(blockIndex);
         if (!ref) return false;
         ref.focus();
         // Queried after focus(): a static block's editor was only just mounted.
@@ -1342,7 +1441,7 @@ export default function PageView({
       // i.e. the same code path as the real key (Tab, Escape, Enter...).
       pressKeyInBlock: (blockIndex: number, key: string, mods: { shift?: boolean; ctrl?: boolean; alt?: boolean; focus?: boolean } = {}) => {
         const block = filteredVisibleBlocks[blockIndex];
-        const ref = block ? blockRefs.current.get(block.id) : null;
+        const ref = handleAt(blockIndex);
         if (!ref) return false;
         let el = document.querySelector(`[data-block-id="${CSS.escape(block.id)}"] .ProseMirror`);
         if (!el) return false;
@@ -1378,27 +1477,26 @@ export default function PageView({
       // Follow a ((block ref)) — the click handler of a block ref / transclusion.
       openBlockRef: (blockId: string) => { handleBlockRefClick(blockId); return true; },
       focusBlock: (blockIndex: number) => {
-        const block = filteredVisibleBlocks[blockIndex];
-        const ref = block ? blockRefs.current.get(block.id) : null;
+        const ref = handleAt(blockIndex);
         if (ref) { ref.focus(); return true; }
         return false;
       },
+      /** Windowing: how many blocks are in the DOM, and whether the page is windowed. */
+      getRenderedBlockCount: () => document.querySelectorAll('.block-list > .block[data-block-id]').length,
+      isWindowed: () => windowedRef.current,
       getBlockCount: () => filteredVisibleBlocks.length,
       // The following drive the SAME code paths as the keyboard handlers
       // (ProseMirror ignores synthetic CDP key events).
       splitBlockAt: (blockIndex: number, offset: number) => {
-        const block = filteredVisibleBlocks[blockIndex];
-        const ref = block ? blockRefs.current.get(block.id) : null;
+        const ref = handleAt(blockIndex);
         return ref ? ref.splitAt(offset) : false;
       },
       mergeWithPrevious: (blockIndex: number) => {
-        const block = filteredVisibleBlocks[blockIndex];
-        const ref = block ? blockRefs.current.get(block.id) : null;
+        const ref = handleAt(blockIndex);
         return ref ? ref.mergeWithPrevious() : false;
       },
       toggleTodoInBlock: (blockIndex: number) => {
-        const block = filteredVisibleBlocks[blockIndex];
-        const ref = block ? blockRefs.current.get(block.id) : null;
+        const ref = handleAt(blockIndex);
         if (!ref) return false;
         ref.toggleTodo();
         return true;
@@ -1423,14 +1521,12 @@ export default function PageView({
       getSelectedCount: () => selectedBlockIds.size,
       // Table structure command at the cursor in block N (toolbar / context-menu path).
       tableAction: (blockIndex: number, action: string) => {
-        const block = filteredVisibleBlocks[blockIndex];
-        const ref = block ? blockRefs.current.get(block.id) : null;
+        const ref = handleAt(blockIndex);
         return ref ? ref.tableAction(action as any) : false;
       },
       // Make / remove block N's flashcard (context-menu path).
       setFlashcard: (blockIndex: number, on: boolean) => {
-        const block = filteredVisibleBlocks[blockIndex];
-        const ref = block ? blockRefs.current.get(block.id) : null;
+        const ref = handleAt(blockIndex);
         return ref ? ref.setFlashcard(on) : Promise.resolve(false);
       },
       toggleCheckbox: (blockIndex: number, itemIndex: number = 0) => {
@@ -1708,7 +1804,11 @@ export default function PageView({
           setSelectedBlockIds(new Set([list[next].id]));
           setSelectionAnchor(next);
         }
-        list[next] && document.querySelector(`[data-block-id="${CSS.escape(list[next].id)}"]`)?.scrollIntoView({ block: "nearest" });
+        if (list[next]) {
+          const id = list[next].id;
+          const scroll = () => document.querySelector(`[data-block-id="${CSS.escape(id)}"]`)?.scrollIntoView({ block: "nearest" });
+          if (ensureRenderedRef.current(id)) setTimeout(scroll, 30); else scroll();
+        }
       }
       if (e.key === "Enter" && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey && selectedBlockIds.size === 1) {
         e.preventDefault();
@@ -1756,6 +1856,8 @@ export default function PageView({
     return () => window.removeEventListener("keydown", handler);
   }, [filteredVisibleBlocks, copyPageToClipboard]);
 
+  const ensureRenderedRef = useRef(ensureRendered);
+  ensureRenderedRef.current = ensureRendered;
   const selectedCountRef = useRef(0);
   selectedCountRef.current = selectedBlockIds.size;
 
@@ -1820,7 +1922,7 @@ export default function PageView({
   // render limit — not on the many other PageView state changes (save indicator,
   // active block, suggestions). BlockItem is memoized and ignores callback props,
   // so the handlers below read live state through refs.
-  const blockListItems = useMemo(() => filteredVisibleBlocks.slice(0, renderLimit).map((block, idx) => (
+  const renderBlockItem = (block: Block, idx: number) => (
     <BlockItem
       key={renderKeyRef.current.get(block.id) ?? block.id}
       ref={refFor(block.id)}
@@ -1872,8 +1974,46 @@ export default function PageView({
       onInsertTemplate={handleInsertTemplateLive}
       onSaveAsTemplate={handleSaveBlockTemplateLive}
     />
+  );
+  const blockListItems = useMemo(() => {
+    if (!windowed) return filteredVisibleBlocks.slice(0, renderLimit).map((block, idx) => renderBlockItem(block, idx));
+    // Windowed: the blocks near the viewport + the edited / dragged one; spacers between.
+    const pinned: number[] = [];
+    for (const id of [activeBlockId, dragPinId]) {
+      if (!id) continue;
+      const i = filteredVisibleBlocks.findIndex(b => b.id === id || b.id === rid(id));
+      if (i >= 0) pinned.push(i);
+    }
+    const ids = filteredVisibleBlocks.map(b => b.id);
+    const prefix = prefixHeights(ids, heightsRef.current, estimateHeight(heightsRef.current));
+    return windowPlan(filteredVisibleBlocks.length, winStart, winEnd, pinned).map((part) => part.kind === "block"
+      ? renderBlockItem(filteredVisibleBlocks[part.index], part.index)
+      : <div key={`gap-${part.from}`} className="block-gap" aria-hidden="true" data-gap={`${part.from}-${part.to}`} style={{ height: prefix[part.to] - prefix[part.from] }} />);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  )), [filteredVisibleBlocks, renderLimit, selectedBlockIds, blockTreeInfo, collapsedBlocks]);
+  }, [filteredVisibleBlocks, renderLimit, selectedBlockIds, blockTreeInfo, collapsedBlocks, windowed, winStart, winEnd, activeBlockId, dragPinId]);
+
+  // Windowed: remember each shown block's height (for its spacer later), and keep
+  // the view still when a block shown for the first time above it isn't as tall
+  // as the spacer guessed (no native scroll anchoring in WebKitGTK).
+  useLayoutEffect(() => {
+    if (!windowed) return;
+    const list = listRef.current, sc = scrollerRef.current;
+    if (!list || !sc) return;
+    const est = estimateHeight(heightsRef.current);
+    const top = sc.getBoundingClientRect().top;
+    let shift = 0;
+    for (const child of list.children) {
+      const el = child as HTMLElement;
+      const id = el.dataset.blockId;
+      if (!id) continue;
+      const h = el.offsetHeight;
+      const prev = heightsRef.current.get(id);
+      if (prev === undefined && el.getBoundingClientRect().bottom <= top) shift += h - est;
+      if (prev === undefined || Math.abs(prev - h) > 0.5) heightsRef.current.set(id, h);
+    }
+    if (Math.abs(shift) >= 1) sc.scrollTop += shift;
+  }, [windowed, blockListItems]);
+
 
   return (
     <div className="page-view-wrapper">
@@ -2115,8 +2255,8 @@ export default function PageView({
         </div>
       )}
 
-      <div className="content view-content markdown-source-view">
-        <div className={`block-list ${getSettingsCached().fullTreeMode ? 'tree-mode' : ''}`}>
+      <div ref={scrollerRef} className={`content view-content markdown-source-view${windowed ? " is-windowed" : ""}`}>
+        <div ref={listRef} className={`block-list ${getSettingsCached().fullTreeMode ? 'tree-mode' : ''}`}>
           {blockListItems}
 
           {!zoomedBlockId && (

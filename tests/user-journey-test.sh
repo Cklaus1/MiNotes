@@ -2886,7 +2886,7 @@ R=$(ev "(async()=>{const api=await import('/src/lib/api.ts');let p;try{p=(await 
 api "navigateTo('Getting Started')" > /dev/null; sleep 2
 
 step "I open it: the first blocks paint quickly and the UI never freezes long"
-R=$(ev "(async()=>{const M=window.__MINOTES__;const t0=performance.now();let first=null,last=t0,stall=0;M.navigateTo('Big58');await new Promise(res=>{const tick=()=>{const n=performance.now();stall=Math.max(stall,n-last);last=n;const el=document.querySelector('.block-list .block .ProseMirror');if(first===null&&el&&el.textContent.includes('big58 start'))first=n-t0;if(document.querySelectorAll('.block-list .block').length>=1000||n-t0>60000)return res();setTimeout(tick,0)};setTimeout(tick,0)});return JSON.stringify({first:Math.round(first),all:Math.round(performance.now()-t0),stall:Math.round(stall),editors:document.querySelectorAll('.block-list .ProseMirror[contenteditable=\"true\"]').length})})()")
+R=$(ev "(async()=>{const M=window.__MINOTES__;const t0=performance.now();let first=null,last=t0,stall=0;M.navigateTo('Big58');await new Promise(res=>{const tick=()=>{const n=performance.now();stall=Math.max(stall,n-last);last=n;const el=document.querySelector('.block-list .block .ProseMirror');if(first===null&&el&&el.textContent.includes('big58 start'))first=n-t0;if(document.querySelectorAll('.block-list .block').length>=1000||(M.isWindowed?.()&&first!==null&&n-t0>first+1500)||n-t0>60000)return res();setTimeout(tick,0)};setTimeout(tick,0)});return JSON.stringify({first:Math.round(first),all:Math.round(performance.now()-t0),stall:Math.round(stall),editors:document.querySelectorAll('.block-list .ProseMirror[contenteditable=\"true\"]').length})})()")
 R=$(echo "$R" | sed 's/^"//; s/"$//; s/\\"/"/g')
 FIRST=$(echo "$R" | python3 -c 'import json,sys; print(json.load(sys.stdin)["first"])' 2>/dev/null)
 STALL=$(echo "$R" | python3 -c 'import json,sys; print(json.load(sys.stdin)["stall"])' 2>/dev/null)
@@ -2904,7 +2904,7 @@ ev "document.activeElement?.blur()" > /dev/null; sleep 1.5
 UI=$(api "getBlockContent(900)" | tr -d '"')
 DB=$(ev "(async()=>{const api=await import('/src/lib/api.ts');const t=await api.getPageTree('Big58');return t.blocks.filter(b=>b.content.includes('EDIT58')).map(b=>b.content).join('|')})()" | tr -d '"')
 [[ "$FI" == "900" && "$UI" == *"EDIT58" && "$DB" == *"Line 900 "*"EDIT58"* ]] && pass "Deep edit saved (focused=$FI)" || fail "Deep edit failed" "focused=$FI ui=$UI db=$DB"
-VIS=$(ev "document.querySelectorAll('.block-list .block')[900]?.querySelector('.ProseMirror')?.textContent" | tr -d '"')
+VIS=$(ev "(()=>{const id=window.__MINOTES__.getBlockTree()[900]?.id;return document.querySelector('.block-list .block[data-block-id=\"'+id+'\"] .ProseMirror')?.textContent})()" | tr -d '"')
 [[ "$VIS" == *"EDIT58"* ]] && pass "The edited block shows the new text" || fail "Edited block not shown" "$VIS"
 
 ss "59-big-page"

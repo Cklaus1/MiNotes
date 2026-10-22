@@ -62,8 +62,11 @@ if (!window.__sc) {
   // Open a page; `marker` is the unique text its first block starts with.
   sc.open = (name, title, marker, expect) => sc.watch(name, () => T().navigateTo(title),
     () => firstBlockText().includes(marker),
-    () => firstBlockText().includes(marker) && document.querySelectorAll(".block-list .block").length >= expect,
-    { extra: () => ({ blocks: document.querySelectorAll(".block-list .block").length, editors: document.querySelectorAll(".block-list .ProseMirror").length }) });
+    // A windowed big page (lib/blockWindow.ts) never has all its blocks in the
+    // DOM: it is done when the blocks around the viewport are there.
+    () => firstBlockText().includes(marker) && (document.querySelectorAll(".block-list .block").length >= expect
+      || (!!T().isWindowed?.() && document.querySelectorAll(".block-list .block").length >= Math.min(expect, 20))),
+    { extra: () => ({ blocks: document.querySelectorAll(".block-list .block").length, editors: document.querySelectorAll(".block-list .ProseMirror").length, windowed: !!T().isWindowed?.() }) });
   // Open the heavily-linked page and wait for the Backlinks panel to list n items.
   sc.hub = (name, title, marker, n) => sc.watch(name, () => T().navigateTo(title),
     () => firstBlockText().includes(marker),

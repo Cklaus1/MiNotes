@@ -565,6 +565,10 @@
 }
 .block-content .ProseMirror .callout > p { margin: 0; }
 
+/* Windowed big pages (lib/blockWindow.ts): PageView corrects the scroll itself */
+.content.is-windowed { overflow-anchor: none; }
+.block-list > .block-gap { width: 100%; pointer-events: none; }
+
 /* Backlinks / unlinked mentions grouped by page (UX Wave 4) */
 .backlinks-sub { text-transform: none; letter-spacing: 0; font-weight: 400; }
 .backlink-group { margin: 2px 0 8px; }
