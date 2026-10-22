@@ -1561,6 +1561,12 @@ const handlers: Record<string, (args: any) => any> = {
   },
 
   // Properties of many entities in one call; only entities with properties appear.
+  list_property_keys: ({ prefix, limit }: { prefix?: string | null; limit?: number }) => {
+    const counts = new Map<string, number>();
+    const pre = asciiLower(prefix ?? "");
+    for (const list of properties.values()) for (const p of list) if (asciiLower(p.key).startsWith(pre)) counts.set(p.key, (counts.get(p.key) ?? 0) + 1);
+    return [...counts.entries()].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1)).slice(0, Math.min(limit ?? 50, 500)).map(([k]) => k);
+  },
   get_properties_batch: ({ entityIds }: { entityIds: string[] }) => {
     const out: Record<string, unknown[]> = {};
     for (const id of entityIds) {

@@ -397,6 +397,10 @@ export const getProperties = (entityId: string) =>
 export const getPropertiesBatch = (entityIds: string[]) =>
   invoke<Record<string, Property[]>>("get_properties_batch", { entityIds });
 
+/** Property keys in use, most used first (key autocomplete); `prefix` narrows it. */
+export const listPropertyKeys = (prefix?: string, limit = 50) =>
+  invoke<string[]>("list_property_keys", { prefix: prefix || null, limit });
+
 export const deleteProperty = (entityId: string, key: string) =>
   invoke<boolean>("delete_property", { entityId, key });
 

@@ -33,6 +33,7 @@ import { getSettingsCached } from "../lib/cachedSettings";
 import RemoteImageBar from "./RemoteImageBar";
 import { hasOpenLayer } from "../lib/layers";
 import Icon from "./Icon";
+import PropertyEditor from "./PropertyEditor";
 
 /**
  * Big pages render progressively: the first INITIAL_RENDER blocks at once, the
@@ -197,10 +198,6 @@ export default function PageView({
   const [zoomedBlockId, setZoomedBlockId] = useState<string | null>(null);
   const [showProps, setShowProps] = useState(false);
   const [addingProp, setAddingProp] = useState(false);
-  const [newKey, setNewKey] = useState("");
-  const [newValue, setNewValue] = useState("");
-  const [editingProp, setEditingProp] = useState<string | null>(null);
-  const [editValue, setEditValue] = useState("");
   const [aliases, setAliases] = useState<string[]>([]);
   const [addingAlias, setAddingAlias] = useState(false);
   const [newAlias, setNewAlias] = useState("");
@@ -290,10 +287,12 @@ export default function PageView({
     api.getProperties(page.id).then(props => {
       if (cancelled) return;
       setPageProps(props);
-      if (props.length > 0) setShowProps(true);
     }).catch(() => {});
     return () => { cancelled = true; };
   }, [page.id]);
+
+  // A half-typed new page property doesn't follow us to another page.
+  useEffect(() => { setAddingProp(false); }, [page.id]);
 
   // Load aliases
   useEffect(() => {
@@ -479,51 +478,6 @@ export default function PageView({
       await api.removeAlias(alias);
       setAliases(prev => prev.filter(a => a !== alias));
     } catch {}
-  };
-
-  const handleAddPageProp = async () => {
-    const k = newKey.trim();
-    const v = newValue.trim();
-    if (!k) return;
-    try {
-      await api.setProperty(page.id, "page", k, v);
-    } catch (e) {
-      // Refused by the backend (invalid key/value): say why, add nothing.
-      showToast(`Property not saved: ${propError(e)}`);
-      return;
-    }
-    const props = await api.getProperties(page.id).catch(() => null);
-    if (props) setPageProps(props);
-    setNewKey("");
-    setNewValue("");
-    setAddingProp(false);
-  };
-
-  const savingPropRef = useRef<string | null>(null);
-  const handleUpdatePageProp = async (key: string) => {
-    // Enter saves and closes the input; the blur that may follow must not save again.
-    if (savingPropRef.current === key) return;
-    savingPropRef.current = key;
-    setTimeout(() => { savingPropRef.current = null; }, 0);
-    setEditingProp(null);
-    try {
-      await api.setProperty(page.id, "page", key, editValue.trim());
-    } catch (e) {
-      // Refused: the row keeps its old value.
-      showToast(`Property not saved: ${propError(e)}`);
-      return;
-    }
-    const props = await api.getProperties(page.id).catch(() => null);
-    if (props) setPageProps(props);
-  };
-
-  const handleDeletePageProp = async (key: string) => {
-    try {
-      await api.deleteProperty(page.id, key);
-      setPageProps(prev => prev.filter(p => p.key !== key));
-    } catch (e) {
-      showToast(`Property not deleted: ${propError(e)}`);
-    }
   };
 
   const formatDate = (iso: string) => {
@@ -2101,6 +2055,21 @@ export default function PageView({
 
       <RemoteImageBar pageId={page.id} blocks={blocks} onRewriteBlock={handleBlockUpdate} />
 
+      {/* Page properties: a compact, editable row under the title (UX Wave 4: they
+          used to be hidden in the info panel). Shown when the page has some, or
+          while adding one (the info panel's "Add property"). */}
+      {(pageProps.length > 0 || addingProp) && (
+        <PropertyEditor
+          entityId={page.id}
+          entityType="page"
+          properties={pageProps}
+          onChange={setPageProps}
+          adding={addingProp}
+          onAddingChange={setAddingProp}
+          variant="page"
+        />
+      )}
+
       {/* Show existing aliases inline (compact, no add button — use ⚙ properties to add) */}
       {aliases.length > 0 && (
         <div className="page-aliases">
@@ -2134,6 +2103,14 @@ export default function PageView({
             </button>
             <button
               className="page-export-btn"
+              data-testid="info-add-property"
+              onClick={() => setAddingProp(true)}
+              title="Add a property to this page (shown under the title)"
+            >
+              <Icon name="plus" size={13} /> Add property
+            </button>
+            <button
+              className="page-export-btn"
               data-testid="save-page-template"
               onClick={() => { void saveAsTemplate(null); }}
               title="Save this page's blocks as a template you can insert with /"
@@ -2141,70 +2118,8 @@ export default function PageView({
               <Icon name="template" size={13} /> Save as template
             </button>
           </div>
-          <div className="page-properties-header">
-            <span className="page-properties-label">Properties</span>
-            <button
-              className="page-prop-add-btn"
-              onClick={() => setAddingProp(true)}
-              title="Add property"
-            >
-              +
-            </button>
-          </div>
-          <div className="page-properties-list">
-            {pageProps.map(prop => (
-              <div key={prop.key} className="page-prop-row">
-                <span className="prop-key">{prop.key}</span>
-                {editingProp === prop.key ? (
-                  <input
-                    className="prop-edit-input page-prop-input"
-                    value={editValue}
-                    onChange={e => setEditValue(e.target.value)}
-                    onBlur={() => handleUpdatePageProp(prop.key)}
-                    onKeyDown={e => {
-                      if (e.key === "Enter") handleUpdatePageProp(prop.key);
-                      if (e.key === "Escape") setEditingProp(null);
-                    }}
-                    autoFocus
-                  />
-                ) : (
-                  <span
-                    className="prop-value"
-                    onClick={() => { setEditingProp(prop.key); setEditValue(prop.value ?? ""); }}
-                  >
-                    {prop.value || "—"}
-                  </span>
-                )}
-                <span className="prop-delete" onClick={() => handleDeletePageProp(prop.key)}>×</span>
-              </div>
-            ))}
-            {addingProp && (
-              <div className="page-prop-row">
-                <input
-                  className="prop-edit-input"
-                  placeholder="key"
-                  value={newKey}
-                  onChange={e => setNewKey(e.target.value)}
-                  onKeyDown={e => {
-                    if (e.key === "Escape") setAddingProp(false);
-                  }}
-                  autoFocus
-                />
-                <input
-                  className="prop-edit-input page-prop-input"
-                  placeholder="value"
-                  value={newValue}
-                  onChange={e => setNewValue(e.target.value)}
-                  onKeyDown={e => {
-                    if (e.key === "Enter") handleAddPageProp();
-                    if (e.key === "Escape") setAddingProp(false);
-                  }}
-                />
-              </div>
-            )}
-          </div>
           {/* Aliases section inside properties panel */}
-          <div className="page-properties-header" style={{ marginTop: 8 }}>
+          <div className="page-properties-header">
             <span className="page-properties-label">Aliases</span>
             <button
               className="page-prop-add-btn"

@@ -100,6 +100,7 @@ describe("markdown → doc → markdown is identical", () => {
     ["bullet list", "- one\n- two", ["bulletList", "listItem"]],
     ["ordered list", "1. one\n2. two", ["orderedList", "listItem"]],
     ["multi-line block", "line one\nline two", ["hardBreak"]],
+    ["typed property line (becomes a property on save)", "Fix the bug\nstatus:: doing", ["hardBreak"]],
     ["snake_case word", "call do_the_thing now", []],
     ["hex colour is not a tag", "colour #f0f0f0 here", []],
     ["anchor in a word is not a tag", "page.html#section and a#b", []],
