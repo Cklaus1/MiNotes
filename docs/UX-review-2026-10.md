@@ -82,18 +82,18 @@ Average **5.2 / 10** across 72 features. Nothing scores 10; the best is 9
 |---|---|---|
 | First run / empty notebook | 6 | Good Getting Started page; new notebooks open bare and silent |
 | Projects / folder tree | 3 | **Fixed** (`8cbd704`: any depth, no limit, Move to… the whole tree, projects into projects, New sub-project) — **Subfolders can never be expanded** — nested pages unreachable; max 2 open projects |
-| Pinned / recent / TODO badge | 3 | **Fixed** (`44393ca`: pinned pages stay in their project, archived/trashed pages leave Recent; `0edbc9c`: Tasks view) — Pinning works; TODO badge materialises the "All TODOs" page |
+| Pinned / recent / TODO badge | 3 | **Fixed** (`44393ca`: pinned pages stay in their project, archived/trashed pages leave Recent; `0edbc9c`: Tasks view; Wave 4 `18f2356`: a Recent section in the sidebar — optional, collapsible, remembered, live pages only) — Pinning works; TODO badge materialises the "All TODOs" page |
 | Journal | 6 | **Fixed** (`d132ce9`: same header on empty days, buttons lead it; open day marked in the calendar; Alt+↑/↓) — Calendar with dots; Prev/Next jump position on empty days; no day shortcuts |
-| All Pages | 6 | Sort and filter; no actions, no path, stray scrollbar, sidebar hidden |
-| Trash and Archive | 3 | Delete has Undo, but **Empty trash and ✕ are permanent with no confirm**, and ✕ is clipped off-screen |
-| Search palette (Ctrl+K) | 5 | **Partly fixed** (`a0b0fd8`: plain-text block results with their page, word-by-word title match, visible checkbox; fuzzy ranking is Wave 4) — Fast and keyboard-friendly; raw markup/UUIDs in results; no fuzzy matching |
-| Command palette (`>`) | 4 | Only 10 commands |
-| Cross-notebook `[[NB::Page]]` links | 7 | Clear states; a locked target is a dead end; no way back |
+| All Pages | 6 | **Fixed** (`18f2356`: a main-pane view — the sidebar stays; project path, created and modified with the time, Pages / Journals / All, row ⋮ and bulk actions on ticked rows — move to a project, pin, archive, trash with Undo; ↑/↓, Space, Enter, Del; a thin drawn scrollbar instead of WebKitGTK's outlined overlay thumb) — Sort and filter; no actions, no path, stray scrollbar, sidebar hidden |
+| Trash and Archive | 3 | **Fixed** (`f2673b4`: confirm with counts, ✕ visible; `18f2356`: Trash and Archive are main-pane views with a preview of the page, the deletion/archive date and time, multi-select Restore / Unarchive / Delete permanently with counted confirmations, Empty trash; the sidebar entries open them) — Delete has Undo, but **Empty trash and ✕ are permanent with no confirm**, and ✕ is clipped off-screen |
+| Search palette (Ctrl+K) | 5 | **Fixed** (`a0b0fd8`: plain-text block results with their page, word-by-word title match, visible checkbox; `18f2356`: typo-tolerant ranking — "roadmp" / "raodmap" find Roadmap — highlighted matches in titles and snippets, Pages / Blocks / Journals / Other notebooks sections, Tab-cycled filters, a key-hint row; ~30 ms per keystroke at 5,000 pages in the browser journey) — Fast and keyboard-friendly; raw markup/UUIDs in results; no fuzzy matching |
+| Command palette (`>`) | 4 | **Fixed** (`18f2356`: 40 commands from one registry — every app action with its shortcut; fuzzy ranking, recently run commands first; Switch notebook / Move page ask a second choice in the palette) — Only 10 commands |
+| Cross-notebook `[[NB::Page]]` links | 7 | **Fixed** (`18f2356`: a locked target offers "Unlock and open" — the in-app passphrase prompt, then the page; a missing page in an existing notebook asks "Create page in <Notebook>"; Back returns to the source notebook) — Clear states; a locked target is a dead end; no way back |
 | Notebook switcher / New notebook / encryption | 7 | **Fixed** (`3b9c8b1`: disabled buttons in the notebook dialogs look disabled and say why; `4e09469`: a switch shows a busy pill at once, holds input and ends with “Opened …”) — Excellent copy and recovery flow; disabled buttons look enabled; 5–10 s switches with no progress |
 | Manage notebooks | 6 | **Fixed** (`efd9451`: rows keep their order, errors clear, Open per row, lock badge, quiet Delete) — Safe delete; list re-sorts after rename (the next click hit the wrong notebook) |
 | Unlock / recovery / Lock now | 7 | **Fixed** (`4e09469`: lock and unlock show progress at once and end with a toast) — Clear; lock takes ~5 s with no feedback |
 | Settings → Security | 7 | **Fixed** (`8ec2aff`: the app's own selects, both themes) — Complete and honest; unreadable dropdowns |
-| Shortcuts (help + do they work) | 5 | **Partly fixed** (`52217c5`: Ctrl+/ and the palette open the list; `b100798`: Ctrl+N opens the in-app New page field; back/forward is Wave 4) — Full list buried in Settings; Ctrl+N opens a native `prompt()`; no back/forward |
+| Shortcuts (help + do they work) | 5 | **Fixed** (`52217c5`: Ctrl+/ and the palette open the list; `b100798`: Ctrl+N opens the in-app New page field; `18f2356`: back / forward — Ctrl+[ / Ctrl+], the mouse's back/forward buttons, toolbar arrows — across pages, views and notebooks) — Full list buried in Settings; Ctrl+N opens a native `prompt()`; no back/forward |
 | Window title | 2 | **Fixed** (`fad7c73`: "Page — Notebook — MiNotes", "Locked — Notebook — MiNotes") — Always "MiNotes" |
 | Narrow window (800 / 600 px) | 4 | **Partly fixed** (`aff6c6a`: collapsible sidebar, a drawer below 900 px; the ≤768 px Menu tab is unchanged — not reachable on the desktop) — Sidebar can't collapse; 600 px layout's Menu tab does nothing |
 | Theme and contrast | 6 | **Fixed** (`33a1581` the `--text-muted` cycle, `8ec2aff` selects/checkboxes/radios, `e3c1ac5`+`660a0fa` the app's tooltip, `f3cb932` remaining fixed colours) — Clean; tooltips cover menus; native dropdowns unreadable in dark theme |
@@ -299,6 +299,54 @@ Journeys: browser 85–91 (21 of their 31 assertions fail on `3a307a7`),
 desktop D19. Not done: a custom option list for selects; slash-menu icons
 (Wave 4); the light theme's faint bullets.
 
+**Wave 4 notes — navigation (2026-10-21).** All seven items in `18f2356`
+(plus `43b0581`: Recent leaves out pinned pages; `911bb28`: an older reload
+never overwrites a newer list — on the real backend the outside-write refresh
+of the first page moved could land after the bulk move's own reload).
+(1) Back / forward (`lib/navHistory.ts`): one history of pages, journal days,
+the main views (Tasks, All Pages, Trash, Archive, Graph) and notebooks. App
+reports where the user is and performs a step; the history, the keys and a
+step waiting for its notebook live outside App, because the lock gate unmounts
+App — Back into a locked notebook shows its unlock screen, and unlocking lands
+on the page, not today's journal. Keys: Ctrl+[ / Ctrl+] (free in the app and
+the editor; Alt+←/→ already zoom blocks), the mouse's back/forward
+buttons (X buttons 8/9 arrive as DOM buttons 3/4; the webview's own history is
+suppressed), arrows in the sidebar's action bar (floating next to "Show
+sidebar" while it is hidden). Places passed on the way during a step (a
+switch's landing on the journal) are not recorded; the landing of a switch the
+user made is a place like any other. A page that went to the Trash or was
+deleted is not reopened by Back (a toast says so). (2) Commands come from one
+registry (`lib/commands.ts`; the app's 40 in `lib/appCommands.ts`), each with
+its shortcut hint; Switch notebook and Move page ask their second choice in the
+palette; "Move Page to Trash" is labelled "Delete Page" so that "move page"
+finds only the move. (3) Ranking (`lib/fuzzy.ts`): exact > prefix > word start
+> inside a word > words in any order > letters in order ("roadmp", "gtd") >
+one typo per word (two from 8 letters; swaps count once); keywords count only
+as whole words, half a tier down; recently run commands first among equals.
+Search: Pages / Blocks / Journals / Other notebooks sections (journal days and
+blocks on journal days under Journals), Tab-cycled filters, highlighted titles
+and snippets cut around the first hit, a key-hint row, the "Create page" row
+kept. Measured: 24–33 ms from a keystroke to the drawn results with 5,000+
+pages in the browser journey (ranking alone 5–15 ms in `fuzzy.test.ts`); the
+palette is now as tall as its results. (4) Trash and Archive are main-pane
+views (preview, date and time, multi-select, counted confirmations; Archive
+has Unarchive and Open). (5) All Pages moved from the canvas overlay to the
+main pane (the sidebar stays; the canvas tab still works); the "stray
+scrollbar" was WebKitGTK's overlay thumb drawn as an outline, now a thin drawn
+scrollbar like the sidebar's. A move or pin keeps the rows ticked; archive and
+trash clear them. (6) Recent in the sidebar: the last 5 live pages, collapsible
+and hideable (palette), remembered on this device. (7) A chip into a locked
+notebook: "Unlock and open" (the app's passphrase prompt; a wrong passphrase
+asks again; Cancel leaves the unlock screen, Back returns); a not-found chip in
+an existing notebook asks "Create page in <Notebook>" first. Journeys: browser
+96–101, desktop D21 (real keys and mouse buttons, palette typing, real clicks;
+checked in the database); existing journeys 62, 66, 84, D8 and the All Pages
+Esc step follow the new views and the asking not-found chip. On the base
+`571a120` the new browser journeys fail 38 of their 39 assertions (the one
+that passes is the kept "Create page" row). Not done: back/forward per pane (the right sidebar has
+none); a history list (long-press); the canvas's own Pages tab still shows the
+old table without bulk actions.
+
 ## 4. Patterns behind the scores
 
 1. **The markdown round trip is the weak seam.** Tags, highlights, block
@@ -355,6 +403,10 @@ for every canvas; an icon set instead of emoji; the app's own modal for
 Ctrl+N and Ctrl+P instead of `prompt()`.
 
 ### Wave 4 — the features that make it feel complete (M/L)
+Navigation part done 2026-10-21 (back/forward, the full command palette,
+fuzzy search with sections and highlights, Trash/Archive and All Pages views,
+Recent, cross-notebook chip actions — see "Wave 4 notes — navigation").
+
 Sync setup in the app (remote field or "join existing", Test connection,
 "Sync now", status chip, real error view) and a conflict compare view ·
 navigation history (back/forward), a window title with page and notebook, a
