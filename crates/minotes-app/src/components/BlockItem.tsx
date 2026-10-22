@@ -3,7 +3,7 @@ import { attachmentHash, openAttachment } from "../lib/attachments";
 import { flushSync } from "react-dom";
 import { EditorContent, type Editor } from "@tiptap/react";
 import { Selection, TextSelection } from "@tiptap/pm/state";
-import type { Block, Property, OgMetadata } from "../lib/api";
+import type { Block, Property } from "../lib/api";
 import * as api from "../lib/api";
 import { useBlockEditor } from "../editor";
 import type { PastedBlock } from "../editor/pasteMarkdown";
@@ -20,7 +20,7 @@ import TableToolbar from "../editor/TableToolbar";
 import { runTableAction, isInTable, type TableAction } from "../editor/tables";
 import { useIsFlashcard, makeFlashcard, removeFlashcard, FLASHCARD_HINT } from "../lib/cards";
 import { showToast } from "../lib/toast";
-import { isRemoteSrc } from "../lib/remoteImages";
+import LinkPreviewCard from "./LinkPreviewCard";
 import { getBlockRef, hydrateBlockRefs, requestBlockRefs, subscribeBlockRefs } from "../lib/blockRefs";
 import "../editor/editor.css";
 
@@ -297,7 +297,6 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
   // Feature 8: Link Preview state
   // "loading" until the backend answers; "failed" when the fetch failed or the page
   // has nothing to show (the card then says so instead of repeating the URL).
-  const [ogMeta, setOgMeta] = useState<OgMetadata | "loading" | "failed" | null>(null);
   const linkPreviewMatch = block.content.match(/^\{\{link-preview:(https?:\/\/[^}]+)\}\}$/);
   const linkPreviewUrl = linkPreviewMatch ? linkPreviewMatch[1] : null;
 
@@ -579,16 +578,6 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
     return () => { cancelled = true; };
   }, [block.id]);
 
-  // Feature 8: Fetch OG metadata for link preview blocks
-  useEffect(() => {
-    if (!linkPreviewUrl) { setOgMeta(null); return; }
-    let cancelled = false;
-    setOgMeta("loading");
-    api.fetchOgMetadata(linkPreviewUrl)
-      .then((m) => { if (!cancelled) setOgMeta(m.title || m.description ? m : "failed"); })
-      .catch(() => { if (!cancelled) setOgMeta("failed"); });
-    return () => { cancelled = true; };
-  }, [linkPreviewUrl]);
 
   // Listen for settings changes
   useEffect(() => {
@@ -828,46 +817,9 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
             </div>
           );
         }
-        // Feature 8: Link Preview Card — loading / loaded / unavailable states.
+        // Feature 8: Link Preview Card (components/LinkPreviewCard.tsx).
         if (linkPreviewUrl) {
-          const meta = typeof ogMeta === "object" ? ogMeta : null;
-          const state = meta ? "loaded" : ogMeta === "failed" ? "failed" : "loading";
-          let domain = linkPreviewUrl;
-          try { domain = new URL(linkPreviewUrl).hostname.replace(/^www\./, ""); } catch { /* keep the URL */ }
-          return (
-            <a
-              className={`link-preview-card link-preview-${state}`}
-              data-preview-state={state}
-              href={linkPreviewUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              title={linkPreviewUrl}
-            >
-              {/* Remote images are never loaded by the webview: a placeholder that
-                  lib/remoteImages fills through the backend once allowed. */}
-              {meta && isRemoteSrc(meta.image) && (
-                <span className="remote-img link-preview-image" data-remote-src={meta.image} data-alt="" />
-              )}
-              <div className="link-preview-body">
-                {state === "loading" ? (
-                  <>
-                    <div className="link-preview-skeleton" aria-hidden="true" />
-                    <div className="link-preview-status">Loading preview…</div>
-                  </>
-                ) : state === "failed" ? (
-                  <div className="link-preview-status">Preview unavailable · open link</div>
-                ) : (
-                  <>
-                    <div className="link-preview-title">{meta!.title || domain}</div>
-                    {meta!.description && (
-                      <div className="link-preview-description">{meta!.description}</div>
-                    )}
-                  </>
-                )}
-                <div className="link-preview-url"><span className="link-preview-domain">{domain}</span></div>
-              </div>
-            </a>
-          );
+          return <LinkPreviewCard url={linkPreviewUrl} onReplace={(md) => onUpdate(block.id, md)} />;
         }
         return editorMode === "minotes" ? (
           active ? (

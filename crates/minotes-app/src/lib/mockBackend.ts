@@ -1553,6 +1553,7 @@ const handlers: Record<string, (args: any) => any> = {
       description: "A brief description of the linked page content.",
       // Pages whose URL asks for one get an og:image (remote: blocked until allowed).
       image: /[?&]og-image\b/.test(url) ? new URL("/og-image.png", url).href : "",
+      favicon: new URL("/favicon.png", url).href,
     };
   },
 

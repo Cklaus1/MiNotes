@@ -1163,6 +1163,48 @@ struct OgMetadata {
     title: String,
     description: String,
     image: String,
+    /// The page's declared icon (`<link rel="icon" …>`), absolute; "" when none.
+    /// Read from the HTML already fetched — the card loads it, like the image,
+    /// only through `fetch_remote_image` and only when remote images are allowed.
+    favicon: String,
+}
+
+/// The first `<link rel="icon">` / `"shortcut icon"` / `"apple-touch-icon"`
+/// href in `html` (attributes in any order, either quote), resolved against
+/// `base`. Only http(s) results; data: and other schemes are dropped.
+fn extract_favicon(html: &str, base: &reqwest::Url) -> String {
+    let link_re = regex::Regex::new(r#"(?is)<link\b[^>]*>"#).unwrap();
+    let rel_re = regex::Regex::new(r#"(?is)\brel\s*=\s*["']([^"']*)["']"#).unwrap();
+    let href_re = regex::Regex::new(r#"(?is)\bhref\s*=\s*["']([^"']+)["']"#).unwrap();
+    for tag in link_re.find_iter(html) {
+        let tag = tag.as_str();
+        let Some(rel) = rel_re.captures(tag).map(|c| c[1].to_ascii_lowercase()) else { continue };
+        if !rel.split_whitespace().any(|r| r == "icon" || r == "apple-touch-icon") {
+            continue;
+        }
+        let Some(href) = href_re.captures(tag).map(|c| c[1].trim().to_string()) else { continue };
+        if let Ok(u) = base.join(&href) {
+            if u.scheme() == "https" || u.scheme() == "http" {
+                return u.to_string();
+            }
+        }
+    }
+    String::new()
+}
+
+#[cfg(test)]
+mod og_tests {
+    use super::extract_favicon;
+
+    #[test]
+    fn favicon_from_link_tags() {
+        let base = reqwest::Url::parse("https://example.com/a/b.html").unwrap();
+        assert_eq!(extract_favicon(r#"<link rel="icon" href="/fav.png">"#, &base), "https://example.com/fav.png");
+        assert_eq!(extract_favicon(r#"<link href='i.ico' rel='shortcut icon'>"#, &base), "https://example.com/a/i.ico");
+        assert_eq!(extract_favicon(r#"<link rel="stylesheet" href="x.css"><link rel="apple-touch-icon" href="https://cdn.x/t.png">"#, &base), "https://cdn.x/t.png");
+        assert_eq!(extract_favicon(r#"<link rel="icon" href="data:image/png;base64,AAA">"#, &base), "");
+        assert_eq!(extract_favicon("<html></html>", &base), "");
+    }
 }
 
 #[tauri::command]
@@ -1238,7 +1280,8 @@ async fn fetch_og_inner(url: &str) -> std::result::Result<OgMetadata, Box<dyn st
     if !image.is_empty() {
         image = resp_url.join(&image).map(|u| u.to_string()).unwrap_or_default();
     }
-    Ok(OgMetadata { title, description, image })
+    let favicon = extract_favicon(&html, &resp_url);
+    Ok(OgMetadata { title, description, image, favicon })
 }
 
 // ── Feature 9: Get single block by ID ──
@@ -1832,6 +1875,7 @@ pub fn run() {
             import_commands::store_attachment,
             import_commands::store_dropped_files,
             import_commands::open_attachment,
+            import_commands::reveal_attachment,
             import_commands::get_attachment,
             import_commands::import_detect,
             import_commands::import_scan,
