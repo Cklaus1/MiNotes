@@ -1623,6 +1623,14 @@ fn get_properties_batch(
     Ok(out)
 }
 // ── End perf ──
+
+/// Property keys in use, most used first (the property editor's key autocomplete).
+#[tauri::command]
+fn list_property_keys(state: State<'_, AppState>, prefix: Option<String>, limit: Option<usize>) -> Result<Vec<String>, String> {
+    let db = state.db_guard()?;
+    db.list_property_keys(prefix.as_deref(), limit.unwrap_or(50).min(500)).map_err(|e| e.to_string())
+}
+
 /// The notebook to open at startup: the active one, unless its folder is
 /// missing — then the default legacy notebook, with a notice (never an empty
 /// replacement in the missing folder's place).
@@ -1843,6 +1851,7 @@ pub fn run() {
             // ── End AI platform ──
             // ── Perf ──
             get_properties_batch,
+            list_property_keys,
             // ── End perf ──
             // ── Notebooks ──
             cross_notebook::search_other_notebooks,

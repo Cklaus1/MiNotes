@@ -27,6 +27,10 @@ export interface MiNotesTestApi {
   /** Id of the whiteboard open in Draw mode (null when Draw isn't open). */
   getOpenWhiteboardId: () => string | null;
   getBlockCount: () => number;
+  /** Blocks in the DOM (a windowed big page renders only those near the viewport). */
+  getRenderedBlockCount: () => number;
+  /** The page has more blocks than the window threshold (lib/blockWindow.ts). */
+  isWindowed: () => boolean;
   isPanelOpen: (name: string) => boolean;
   toggleCheckbox: (blockIndex: number, itemIndex?: number) => boolean;
   /** Put the cursor at a text offset in block N and split there (Enter-key path). */

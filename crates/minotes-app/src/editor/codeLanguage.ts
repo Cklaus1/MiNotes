@@ -24,3 +24,28 @@ export function codeLanguageLabel(language: string | null | undefined): string |
   if (!id) return null;
   return LANGUAGE_NAMES[id.toLowerCase()] ?? id;
 }
+
+/**
+ * The languages the code-block dropdown offers (fence ids lowlight's common set
+ * highlights), "" = plain text. Any other fence id still works when typed.
+ */
+export const CODE_LANGUAGES: readonly string[] = [
+  "", "bash", "c", "cpp", "csharp", "css", "diff", "go", "graphql", "html", "ini", "java",
+  "javascript", "json", "kotlin", "lua", "makefile", "markdown", "php", "python", "r",
+  "ruby", "rust", "scss", "sql", "swift", "typescript", "xml", "yaml",
+];
+
+/** Dropdown entries matching a filter (id or name), plain text first when it matches. */
+export function filterCodeLanguages(filter: string, current?: string | null): { id: string; label: string }[] {
+  const q = filter.trim().toLowerCase();
+  const all = CODE_LANGUAGES.map((id) => ({ id, label: id ? codeLanguageLabel(id)! : "Plain text" }));
+  const cur = (current ?? "").trim();
+  if (cur && !CODE_LANGUAGES.includes(cur)) all.splice(1, 0, { id: cur, label: codeLanguageLabel(cur)! });
+  if (!q) return all;
+  const hits = all.filter((l) => l.id.startsWith(q) || l.label.toLowerCase().startsWith(q));
+  const more = all.filter((l) => !hits.includes(l) && (l.id.includes(q) || l.label.toLowerCase().includes(q)));
+  const out = [...hits, ...more];
+  // A fence id we don't list (e.g. "elixir") can still be used as typed.
+  if (/^[a-z0-9+#._-]+$/.test(q) && !out.some((l) => l.id === q)) out.push({ id: q, label: `Use “${q}”` });
+  return out;
+}

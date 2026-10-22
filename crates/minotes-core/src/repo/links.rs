@@ -71,8 +71,13 @@ impl Database {
         Ok(links)
     }
 
+    /// Most unlinked mentions returned (newest first); the app shows them 50 at a time.
+    pub const UNLINKED_LIMIT: usize = 200;
+
     /// Find blocks that mention a page's title in their content but are NOT
     /// already linked to it via [[wiki links]]. Returns blocks from other pages only.
+    /// Linked blocks are excluded in SQL, before the limit: a page with many
+    /// backlinks used to lose its older unlinked mentions behind them.
     pub fn get_unlinked_references(&self, page_id: &Uuid) -> Result<Vec<crate::models::Block>> {
         // Get the page title
         let page = self.get_page(page_id)?
@@ -97,8 +102,8 @@ impl Database {
              WHERE content LIKE ?1 ESCAPE '\\'
                AND page_id != ?2
                AND page_id NOT IN (SELECT id FROM hidden_pages)
-             ORDER BY created_at DESC
-             LIMIT 50",
+               AND id NOT IN (SELECT from_block FROM links WHERE to_page = ?2)
+             ORDER BY created_at DESC, id",
             crate::repo::trash::hidden_pages_cte()
         ))?;
         let rows = stmt.query_map(
@@ -141,6 +146,9 @@ impl Database {
                     && contains_word(&block.content, title)
                 {
                     results.push(block);
+                    if results.len() >= Self::UNLINKED_LIMIT {
+                        break;
+                    }
                 }
             }
         }
@@ -320,5 +328,20 @@ mod tests {
         let refs = db.get_unlinked_references(&target.id).unwrap();
         assert_eq!(refs.len(), 1);
         assert_eq!(refs[0].id, hit.id);
+    }
+
+    #[test]
+    fn test_unlinked_mention_not_hidden_behind_many_backlinks() {
+        // 60 blocks that already link to the page are newer than the one plain
+        // mention; the old LIMIT 50 (before dropping linked blocks) lost it.
+        let db = Database::open_in_memory().unwrap();
+        let target = db.create_page("Hub", None, false, None, "user").unwrap();
+        let other = db.create_page("Other", None, false, None, "user").unwrap();
+        let mention = db.create_block(&other.id, "ask the hub team", None, None, "user").unwrap();
+        for i in 0..60 {
+            db.create_block(&other.id, &format!("note {i} about [[Hub]]"), None, None, "user").unwrap();
+        }
+        let refs = db.get_unlinked_references(&target.id).unwrap();
+        assert_eq!(refs.iter().map(|b| b.id).collect::<Vec<_>>(), vec![mention.id]);
     }
 }

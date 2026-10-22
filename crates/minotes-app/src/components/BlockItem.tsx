@@ -13,6 +13,9 @@ import { claimEditor, forgetEditor, requestEditorSweep, type EditorOwner } from 
 import { renderBlockStatic, staticRootClass } from "../editor/staticRender";
 import { followNotebookLinkElement, hydrateNotebookLinks } from "../lib/crossNotebook";
 import BlockContextMenu from "./BlockContextMenu";
+import PropertyEditor from "./PropertyEditor";
+import { extractTypedProperties } from "../lib/typedProperties";
+import { notePropertyKey } from "../lib/propertyKeys";
 import { WHITEBOARD_REGEX, hasWhiteboardData } from "../lib/whiteboardUtils";
 import WhiteboardThumbnail from "./WhiteboardThumbnail";
 import BubbleToolbar from "../editor/BubbleToolbar";
@@ -22,6 +25,7 @@ import { useIsFlashcard, makeFlashcard, removeFlashcard, FLASHCARD_HINT } from "
 import { showToast } from "../lib/toast";
 import LinkPreviewCard from "./LinkPreviewCard";
 import { getBlockRef, hydrateBlockRefs, requestBlockRefs, subscribeBlockRefs } from "../lib/blockRefs";
+import { copyCode } from "../editor/codeBlockView";
 import "../editor/editor.css";
 
 // Lazy-load CM6 editor — only downloaded when obsidianEditorEnabled
@@ -85,8 +89,6 @@ function ActiveBlockEditor({ bridge, options, onTableAction }: {
   );
 }
 
-const propError = (e: unknown) => String((e as any)?.message ?? e);
-
 const TASK_CHECKBOX = 'li[data-type="taskItem"] > label > input[type="checkbox"]';
 
 /**
@@ -94,11 +96,13 @@ const TASK_CHECKBOX = 'li[data-type="taskItem"] > label > input[type="checkbox"]
  * classes, so the same CSS), built by editor/staticRender.ts. Links, refs and
  * task checkboxes stay clickable.
  */
-function StaticBlockContent({ content, onPageLinkClick, onBlockRefClick, onToggleTask }: {
+function StaticBlockContent({ content, onPageLinkClick, onBlockRefClick, onToggleTask, onCodeLanguage }: {
   content: string;
   onPageLinkClick: (title: string, shiftKey?: boolean) => void;
   onBlockRefClick?: (blockId: string) => void;
   onToggleTask: (index: number) => void;
+  /** The language button of the index-th code block: open its list in the live editor. */
+  onCodeLanguage: (index: number) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
@@ -108,6 +112,21 @@ function StaticBlockContent({ content, onPageLinkClick, onBlockRefClick, onToggl
   }, [content]);
   const handleClick = (e: React.MouseEvent) => {
     const t = e.target as HTMLElement;
+    // Code block header (editor/codeBlockView.ts): copy here, language in the editor.
+    const copy = t.closest(".code-copy-btn");
+    if (copy) {
+      e.preventDefault();
+      e.stopPropagation();
+      copyCode(copy.closest("pre")?.querySelector("code")?.textContent ?? "");
+      return;
+    }
+    const lang = t.closest(".code-lang-btn");
+    if (lang && ref.current) {
+      e.preventDefault();
+      e.stopPropagation();
+      onCodeLanguage([...ref.current.querySelectorAll(".code-lang-btn")].indexOf(lang));
+      return;
+    }
     const xnb = t.closest(".xnb-link") as HTMLElement | null;
     if (xnb) {
       e.preventDefault();
@@ -223,6 +242,10 @@ interface Props {
   onShiftClick?: (blockId: string) => void;
   onOpenWhiteboard?: (whiteboardId: string) => void;
   onDragReorder?: (draggedBlockId: string, targetBlockId: string, position: DropPosition) => void;
+  /** A template from the `/` menu (its text); `intoEmpty`: it replaces this block. */
+  onInsertTemplate?: (blockId: string, text: string, intoEmpty: boolean) => void;
+  /** Block menu: save this block and its children as a template. */
+  onSaveAsTemplate?: (blockId: string) => void;
 }
 
 /** The block being dragged by its handle (set on dragstart, cleared on drop/dragend). */
@@ -257,7 +280,7 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
   block, depth = 0, hasChildren = false, isLastSibling = false, isOnActivePath = false, onFocusBlock, onBlurBlock, dataBlockId, selected = false, onUpdate, onDelete, onPageLinkClick,
   onBlockRefClick, onEnter, canEnter, onBackspaceAtStart, onArrowUp, onArrowDown, onPasteMultiline, onPasteBlocks,
   onIndent, onOutdent, onEscape, onDuplicate, onToggleCollapse, onSetCollapsed, onSetAllCollapsed, collapsed = false, hiddenCount = 0,
-  onZoomIn, onShiftClick, onOpenWhiteboard, onDragReorder,
+  onZoomIn, onShiftClick, onOpenWhiteboard, onDragReorder, onInsertTemplate, onSaveAsTemplate,
 }, ref) => {
   const settings = getSettingsCached();
   const [editorMode, setEditorMode] = useState<"minotes" | "obsidian">(
@@ -265,10 +288,6 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
   );
   const [properties, setProperties] = useState<Property[]>([]);
   const [addingProp, setAddingProp] = useState(false);
-  const [newKey, setNewKey] = useState("");
-  const [newValue, setNewValue] = useState("");
-  const [editingProp, setEditingProp] = useState<string | null>(null);
-  const [editValue, setEditValue] = useState("");
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [dropPosition, setDropPosition] = useState<DropPosition | null>(null);
   const isCard = useIsFlashcard(block.id);
@@ -394,6 +413,14 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
     onEscape: onEscape ? () => onEscape(block.id) : undefined,
     onSetCollapsed: onSetCollapsed ? (c) => onSetCollapsed(block.id, c) : undefined,
     onMakeFlashcard: () => { void setFlashcard(true); },
+    onInsertTemplate: onInsertTemplate ? (text, intoEmpty) => onInsertTemplate(block.id, text, intoEmpty) : undefined,
+    // Typed `key:: value` lines leave the text and become block properties.
+    transformSave: (markdown) => {
+      const { content, properties: typed } = extractTypedProperties(markdown);
+      if (!typed.length) return markdown;
+      void applyTypedProperties(typed);
+      return content;
+    },
     onSlashCommand: (newMarkdown: string) => {
       // Save to backend + update local state (triggers re-render → setContent)
       onUpdate(block.id, newMarkdown);
@@ -529,7 +556,7 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
   const handleBlockMouseDown = (e: React.MouseEvent) => {
     const target = e.target as HTMLElement;
     const inStatic = !activeRef.current && !!target.closest('.block-static');
-    if (target.closest('.block-drag-handle') || target.closest('.block-collapse') ||
+    if (target.closest('.block-drag-handle') || target.closest('.block-collapse') || target.closest('.code-block-header') ||
         target.closest('.block-properties') || target.closest('.prop-add-btn') ||
         target.closest('.whiteboard-indicator') || target.closest('.editor-mode-toggle') ||
         (target.tagName === 'INPUT' && (target as unknown as HTMLInputElement).type === 'checkbox') ||
@@ -571,6 +598,32 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
     box?.click();
   };
 
+  // The block's id can still be a temporary one (just created by Enter): wait for the real one.
+  const blockIdRef = useRef(block.id);
+  blockIdRef.current = block.id;
+  const applyTypedProperties = async (typed: { key: string; value: string }[]) => {
+    for (let i = 0; i < 50 && blockIdRef.current.startsWith("tmp-"); i++) await new Promise((r) => setTimeout(r, 100));
+    const id = blockIdRef.current;
+    if (id.startsWith("tmp-")) { showToast("Property not saved: the block isn't saved yet"); return; }
+    for (const { key, value } of typed) {
+      try {
+        await api.setProperty(id, "block", key, value);
+        notePropertyKey(key);
+      } catch (e) {
+        showToast(`Property “${key}” not saved: ${String((e as any)?.message ?? e)}`);
+      }
+    }
+    const props = await api.getProperties(id).catch(() => null);
+    if (props && blockIdRef.current === id) setProperties(props);
+  };
+
+  // A static code block's language button: mount the editor and open its list there.
+  const handleStaticCodeLanguage = (index: number) => {
+    if (index < 0 || !activate()) return;
+    const btn = getEd()?.view.dom.querySelectorAll(".code-lang-btn")[index] as HTMLButtonElement | undefined;
+    btn?.click();
+  };
+
   // Load properties (batched with every other block: lib/blockProperties.ts)
   useEffect(() => {
     let cancelled = false;
@@ -594,51 +647,6 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
   const handleCM6Save = (content: string) => {
     if (content !== block.content.trim()) {
       onUpdate(block.id, content);
-    }
-  };
-
-  const handleAddProperty = async () => {
-    const k = newKey.trim();
-    const v = newValue.trim();
-    if (!k) return;
-    try {
-      await api.setProperty(block.id, "block", k, v);
-    } catch (e) {
-      // Refused by the backend (invalid key/value): say why, add nothing.
-      showToast(`Property not saved: ${propError(e)}`);
-      return;
-    }
-    const props = await api.getProperties(block.id).catch(() => null);
-    if (props) setProperties(props);
-    setNewKey("");
-    setNewValue("");
-    setAddingProp(false);
-  };
-
-  const savingPropRef = useRef<string | null>(null);
-  const handleUpdateProperty = async (key: string) => {
-    // Enter saves and closes the input; the blur that may follow must not save again.
-    if (savingPropRef.current === key) return;
-    savingPropRef.current = key;
-    setTimeout(() => { savingPropRef.current = null; }, 0);
-    setEditingProp(null);
-    try {
-      await api.setProperty(block.id, "block", key, editValue.trim());
-    } catch (e) {
-      // Refused: the chip keeps its old value.
-      showToast(`Property not saved: ${propError(e)}`);
-      return;
-    }
-    const props = await api.getProperties(block.id).catch(() => null);
-    if (props) setProperties(props);
-  };
-
-  const handleDeleteProperty = async (key: string) => {
-    try {
-      await api.deleteProperty(block.id, key);
-      setProperties(prev => prev.filter(p => p.key !== key));
-    } catch (e) {
-      showToast(`Property not deleted: ${propError(e)}`);
     }
   };
 
@@ -830,6 +838,7 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
               onPageLinkClick={onPageLinkClick}
               onBlockRefClick={onBlockRefClick}
               onToggleTask={handleStaticToggleTask}
+              onCodeLanguage={handleStaticCodeLanguage}
             />
           )
         ) : (
@@ -846,69 +855,15 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
         </div>
       )}
 
-      {/* Properties */}
-      {(properties.length > 0 || addingProp) && (
-        <div className="block-properties">
-          {properties.map(prop => (
-            <span key={prop.key} className="prop-chip">
-              <span className="prop-key">{prop.key}</span>
-              {editingProp === prop.key ? (
-                <input
-                  className="prop-edit-input"
-                  value={editValue}
-                  onChange={e => setEditValue(e.target.value)}
-                  onBlur={() => handleUpdateProperty(prop.key)}
-                  onKeyDown={e => {
-                    if (e.key === "Enter") handleUpdateProperty(prop.key);
-                    if (e.key === "Escape") setEditingProp(null);
-                  }}
-                  autoFocus
-                />
-              ) : (
-                <span
-                  className="prop-value"
-                  onClick={() => { setEditingProp(prop.key); setEditValue(prop.value ?? ""); }}
-                >
-                  {prop.value || "—"}
-                </span>
-              )}
-              <span className="prop-delete" onClick={() => handleDeleteProperty(prop.key)}>×</span>
-            </span>
-          ))}
-          {addingProp && (
-            <span className="prop-chip prop-chip-new">
-              <input
-                className="prop-edit-input"
-                placeholder="key"
-                value={newKey}
-                onChange={e => setNewKey(e.target.value)}
-                onKeyDown={e => {
-                  if (e.key === "Enter") {
-                    (e.target as HTMLElement).nextElementSibling
-                      ?.querySelector("input")
-                      ?.focus();
-                  }
-                  if (e.key === "Escape") { setAddingProp(false); setNewKey(""); setNewValue(""); }
-                }}
-                autoFocus
-              />
-              <span>
-                <input
-                  className="prop-edit-input"
-                  placeholder="value"
-                  value={newValue}
-                  onChange={e => setNewValue(e.target.value)}
-                  onKeyDown={e => {
-                    if (e.key === "Enter") handleAddProperty();
-                    if (e.key === "Escape") { setAddingProp(false); setNewKey(""); setNewValue(""); }
-                  }}
-                />
-              </span>
-              <span className="prop-delete" onClick={() => { setAddingProp(false); setNewKey(""); setNewValue(""); }}>×</span>
-            </span>
-          )}
-        </div>
-      )}
+      {/* Properties (typed `key:: value` lines become these too) */}
+      <PropertyEditor
+        entityId={block.id}
+        entityType="block"
+        properties={properties}
+        onChange={setProperties}
+        adding={addingProp}
+        onAddingChange={setAddingProp}
+      />
       {isCard && (
         <span className="flashcard-indicator" title={FLASHCARD_HINT + " (right-click to remove)"} aria-label="Flashcard" role="img">
           <svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true">
@@ -944,6 +899,7 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
           isFlashcard={isCard}
           onToggleFlashcard={() => { void setFlashcard(!isCard); }}
           onTableAction={menuInTable ? (action) => { handleTableAction(action); } : undefined}
+          onSaveAsTemplate={onSaveAsTemplate ? () => onSaveAsTemplate(block.id) : undefined}
         />
       )}
     </div>

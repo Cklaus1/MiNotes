@@ -56,6 +56,25 @@ impl Database {
         Ok(prop)
     }
 
+    /// Property keys in use (pages and blocks), most used first, for the key
+    /// autocomplete of the property editor. `prefix` (case-insensitive) narrows it.
+    pub fn list_property_keys(&self, prefix: Option<&str>, limit: usize) -> Result<Vec<String>> {
+        let pattern = format!(
+            "{}%",
+            prefix.unwrap_or("").replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+        );
+        let mut stmt = self.conn.prepare(
+            "SELECT key FROM properties WHERE key LIKE ?1 ESCAPE '\\'
+             GROUP BY key ORDER BY COUNT(*) DESC, key LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![pattern, limit as i64], |row| row.get::<_, String>(0))?;
+        let mut keys = Vec::new();
+        for row in rows {
+            keys.push(row.map_err(Error::Database)?);
+        }
+        Ok(keys)
+    }
+
     pub fn get_properties(&self, entity_id: &Uuid) -> Result<Vec<Property>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, entity_id, entity_type, key, value, value_type, created_at, updated_at
@@ -390,6 +409,21 @@ mod tests {
         assert!(err(db.set_property(&page, "page", "x", "v", "made-up-type", "u")).contains("Unknown property value type"));
         let keys: Vec<_> = db.get_properties(&page).unwrap().into_iter().map(|p| p.key).collect();
         assert_eq!(keys, ["b", "c", "d", "n", "w"]);
+    }
+
+    #[test]
+    fn test_list_property_keys_most_used_first() {
+        let (db, page, _) = setup();
+        let p2 = db.create_page("Other keys", None, false, None, "u").unwrap().id;
+        db.set_property(&page, "page", "status", "a", "text", "u").unwrap();
+        db.set_property(&p2, "page", "status", "b", "text", "u").unwrap();
+        db.set_property(&page, "page", "owner", "c", "text", "u").unwrap();
+        db.set_property(&page, "page", "st_ar", "d", "text", "u").unwrap();
+        assert_eq!(db.list_property_keys(None, 10).unwrap(), ["status", "owner", "st_ar"]);
+        assert_eq!(db.list_property_keys(Some("ST"), 10).unwrap(), ["status", "st_ar"]);
+        // `_` is not a wildcard.
+        assert_eq!(db.list_property_keys(Some("st_"), 10).unwrap(), ["st_ar"]);
+        assert_eq!(db.list_property_keys(None, 1).unwrap(), ["status"]);
     }
 
     #[test]

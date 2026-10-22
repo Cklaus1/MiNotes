@@ -50,10 +50,17 @@ interface UseBlockEditorOptions {
   onEscape?: () => void;
   onSlashCommand?: (newMarkdown: string) => void;
   onTagClick?: (tag: string) => void;
+  /** A template from the `/` menu: its text (lib/templates.ts); `intoEmpty`: replace this block. */
+  onInsertTemplate?: (text: string, intoEmpty: boolean) => void;
   /** `/flashcard`: make this block a flashcard. */
   onMakeFlashcard?: () => void;
   /** Ctrl+Up folds this block's children, Ctrl+Down unfolds them. */
   onSetCollapsed?: (collapsed: boolean) => void;
+  /**
+   * Last step before a save: may rewrite what is stored (typed `key:: value`
+   * lines become properties). When it changes the text, the editor is set to it.
+   */
+  transformSave?: (markdown: string) => string;
 }
 
 export function useBlockEditor({
@@ -76,6 +83,8 @@ export function useBlockEditor({
   onTagClick,
   onMakeFlashcard,
   onSetCollapsed,
+  onInsertTemplate,
+  transformSave,
 }: UseBlockEditorOptions) {
   const onSaveRef = useRef(onSave);
   // NOT a mirror of the `content` prop — this tracks the last markdown the editor
@@ -101,6 +110,8 @@ export function useBlockEditor({
   const onTagClickRef = useRef(onTagClick);
   const onMakeFlashcardRef = useRef(onMakeFlashcard);
   const onSetCollapsedRef = useRef(onSetCollapsed);
+  const onInsertTemplateRef = useRef(onInsertTemplate);
+  const transformSaveRef = useRef(transformSave);
   const editorInstanceRef = useRef<any>(null);
   const skipSyncRef = useRef(false);
   const slashActiveRef = useRef(false);
@@ -129,6 +140,8 @@ export function useBlockEditor({
   onTagClickRef.current = onTagClick;
   onMakeFlashcardRef.current = onMakeFlashcard;
   onSetCollapsedRef.current = onSetCollapsed;
+  onInsertTemplateRef.current = onInsertTemplate;
+  transformSaveRef.current = transformSave;
 
   // Slash callbacks are set per-editor instance after creation (see useEffect below)
 
@@ -212,7 +225,18 @@ export function useBlockEditor({
 
   /** Record a save we performed ourselves: marks it as the last-produced markdown. */
   const commitSave = (raw: string) => {
-    const markdown = storable(raw);
+    let markdown = storable(raw);
+    const transformed = transformSaveRef.current?.(markdown);
+    if (transformed !== undefined && transformed !== markdown) {
+      markdown = transformed;
+      // What is stored is what the editor shows (e.g. a `key:: value` line left
+      // the text and became a property chip).
+      const ed = editorInstanceRef.current;
+      if (ed && !ed.isDestroyed && getMarkdown() !== markdown) {
+        applyingExternalRef.current = true;
+        try { ed.commands.setContent(markdown, { emitUpdate: false }); } finally { applyingExternalRef.current = false; }
+      }
+    }
     contentRef.current = markdown;
     dirtyRef.current = false;
     skipSyncRef.current = true;
@@ -350,7 +374,7 @@ export function useBlockEditor({
             const node = $from.node(d);
             const name = node.type.name;
             if (name === "listItem" || name === "taskItem" || name === "codeBlock" ||
-                name === "table" || name === "blockquote" || name === "bulletList" ||
+                name === "table" || name === "blockquote" || name === "callout" || name === "bulletList" ||
                 name === "orderedList" || name === "taskList") {
               isInsideSpecialNode = true;
               break;
@@ -632,9 +656,11 @@ export function useBlockEditor({
             slashActiveRef.current = false;
           }, 20);
         },
-        // Template callback: insert remaining lines as new blocks
-        (lines: string[]) => {
-          onPasteMultilineRef.current?.(lines);
+        // Template callback: PageView builds the blocks (placeholders, nesting, caret).
+        (text: string, intoEmpty: boolean) => {
+          slashActiveRef.current = true;
+          onInsertTemplateRef.current?.(text, intoEmpty);
+          setTimeout(() => { slashActiveRef.current = false; }, 100);
         },
         () => onMakeFlashcardRef.current?.(),
       );
@@ -678,7 +704,8 @@ export function useBlockEditor({
       const ed = editorInstanceRef.current;
       if (!ed || !dirtyRef.current) return;
       try {
-        const markdown = withoutBlobImages(((ed.storage as any).markdown?.getMarkdown() ?? "").trim());
+        const raw = withoutBlobImages(((ed.storage as any).markdown?.getMarkdown() ?? "").trim());
+        const markdown = transformSaveRef.current?.(raw) ?? raw;
         if (markdown !== contentRef.current.trim()) {
           contentRef.current = markdown;
           onSaveRef.current(markdown);

@@ -115,29 +115,35 @@ impl Database {
         // so multi-line code in templates is preserved intact.
         // Leading indentation is outline nesting: a line indented deeper than the
         // previous one becomes its child (any consistent unit: 2/4 spaces, tabs).
+        // A line starting with `\ ` continues the block above (a block with line
+        // breaks); `{{blank}}` is an empty block (the app's "Save as template"
+        // writes both, lib/templates.ts).
         let lines: Vec<&str> = template.content.lines().collect();
-        let mut blocks = Vec::new();
-        // (indent width, block id) of the open ancestors, innermost last.
-        let mut stack: Vec<(usize, Uuid)> = Vec::new();
         let indent_of = |l: &str| -> usize {
             l.chars()
                 .take_while(|c| *c == ' ' || *c == '\t')
                 .map(|c| if c == '\t' { 4 } else { 1 })
                 .sum()
         };
+        // (indent width, content) per block, in order.
+        let mut parsed: Vec<(usize, String)> = Vec::new();
         let mut i = 0;
         while i < lines.len() {
             let line = lines[i];
             let trimmed = line.trim_start();
-            if !line.trim().is_empty() {
-                let indent = indent_of(line);
-                while stack.last().is_some_and(|(w, _)| *w >= indent) {
-                    stack.pop();
-                }
+            if line.trim().is_empty() {
+                i += 1;
+                continue;
             }
-            let parent = stack.last().map(|(_, id)| *id);
+            let indent = indent_of(line);
+            if (trimmed == "\\" || trimmed.starts_with("\\ ")) && !parsed.is_empty() {
+                let last = parsed.last_mut().expect("checked");
+                last.1.push('\n');
+                last.1.push_str(trimmed.get(2..).unwrap_or("").trim_end());
+                i += 1;
+                continue;
+            }
             if trimmed.starts_with("```") {
-                let indent = indent_of(line);
                 let mut buf = String::from(trimmed);
                 i += 1;
                 while i < lines.len() {
@@ -147,19 +153,25 @@ impl Database {
                     i += 1;
                     if closes { break; }
                 }
-                let block = self.create_block(page_id, &buf, parent.as_ref(), None, actor)?;
-                stack.push((indent, block.id));
-                blocks.push(block);
+                parsed.push((indent, buf));
                 continue;
             }
-            if line.trim().is_empty() {
-                i += 1;
-                continue;
-            }
-            let block = self.create_block(page_id, trimmed.trim_end(), parent.as_ref(), None, actor)?;
-            stack.push((indent_of(line), block.id));
-            blocks.push(block);
+            let content = trimmed.trim_end();
+            parsed.push((indent, if content == "{{blank}}" { String::new() } else { content.to_string() }));
             i += 1;
+        }
+
+        let mut blocks = Vec::new();
+        // (indent width, block id) of the open ancestors, innermost last.
+        let mut stack: Vec<(usize, Uuid)> = Vec::new();
+        for (indent, content) in parsed {
+            while stack.last().is_some_and(|(w, _)| *w >= indent) {
+                stack.pop();
+            }
+            let parent = stack.last().map(|(_, id)| *id);
+            let block = self.create_block(page_id, &content, parent.as_ref(), None, actor)?;
+            stack.push((indent, block.id));
+            blocks.push(block);
         }
 
         self.emit_event(
@@ -240,6 +252,20 @@ mod tests {
         let blocks = db.apply_template(&page.id, "T", "user").unwrap();
         assert_eq!(blocks.len(), 3);
         assert_eq!(blocks[0].content, "Line 1");
+    }
+
+    #[test]
+    fn test_apply_template_continuation_lines_and_blank_blocks() {
+        // The app's "Save as template" format (lib/templates.ts templateFromBlocks).
+        let db = Database::open_in_memory().unwrap();
+        let content = "## Section\n  line one\n  \\ line two\n  {{blank}}\nEnd";
+        db.create_template("Multi", None, content, "user").unwrap();
+        let page = db.create_page("P", None, false, None, "user").unwrap();
+        let blocks = db.apply_template(&page.id, "Multi", "user").unwrap();
+        let got: Vec<(&str, bool)> = blocks.iter().map(|b| (b.content.as_str(), b.parent_id.is_some())).collect();
+        assert_eq!(got, vec![("## Section", false), ("line one\nline two", true), ("", true), ("End", false)]);
+        assert_eq!(blocks[1].parent_id, Some(blocks[0].id));
+        assert_eq!(blocks[2].parent_id, Some(blocks[0].id));
     }
 
     #[test]

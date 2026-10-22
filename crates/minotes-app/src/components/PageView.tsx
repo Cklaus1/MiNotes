@@ -12,6 +12,7 @@ import { mergeMarkdown } from "../editor/mergeBlocks";
 import type { PastedBlock } from "../editor/pasteMarkdown";
 import { noteBlockContent, refreshShownBlockRefs } from "../lib/blockRefs";
 import { caretAfterMarkdown } from "../editor/staticRender";
+import { fillTemplate, saveUserTemplate, templateFromBlocks, templateNameTaken, refreshUserTemplates } from "../lib/templates";
 import BacklinksPanel from "./BacklinksPanel";
 import UnlinkedRefsPanel from "./UnlinkedRefsPanel";
 import LinkPreview from "./LinkPreview";
@@ -22,15 +23,17 @@ import TableOfContents from "./TableOfContents";
 import { downloadHtml, printPage } from "../lib/exportPage";
 import { extractTags } from "../lib/tagExtractor";
 import { showToast, showUndoToast } from "../lib/toast";
-import { confirmDialog, plural } from "../lib/confirm";
+import { confirmDialog, plural, promptDialog } from "../lib/confirm";
 import { errorMessage } from "../lib/errors";
 import { suggestLinks, type LinkSuggestion } from "../lib/linkSuggestions";
 import { prefetchBlockProperties } from "../lib/blockProperties";
+import { estimateHeight, prefixHeights, windowPlan, windowRange, windowThreshold } from "../lib/blockWindow";
 import { registerFlush } from "../lib/pendingEdits";
 import { getSettingsCached } from "../lib/cachedSettings";
 import RemoteImageBar from "./RemoteImageBar";
 import { hasOpenLayer } from "../lib/layers";
 import Icon from "./Icon";
+import PropertyEditor from "./PropertyEditor";
 
 /**
  * Big pages render progressively: the first INITIAL_RENDER blocks at once, the
@@ -78,6 +81,22 @@ export default function PageView({
   const renderLimitRef = useRef(renderLimit);
   renderLimitRef.current = renderLimit;
   const sliceRef = useRef({ size: 150, startedAt: 0 });
+  // Windowing of big pages (see "Windowing" below): the rendered block range.
+  const [win, setWin] = useState({ pageId: pageTree.page.id, start: 0, end: INITIAL_RENDER });
+  const winStart = win.pageId === page.id ? win.start : 0;
+  const winEnd = win.pageId === page.id ? win.end : INITIAL_RENDER;
+  const winRef = useRef({ start: winStart, end: winEnd });
+  winRef.current = { start: winStart, end: winEnd };
+  const pageIdRef = useRef(page.id);
+  pageIdRef.current = page.id;
+  /** Measured height of every block that has been on screen (by id). */
+  const heightsRef = useRef(new Map<string, number>());
+  const scrollerRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const [dragPinId, setDragPinId] = useState<string | null>(null);
+  // The block just made by Enter: rendered at once even past the window's edge
+  // (it takes the focus in the same keystroke).
+  const [enterPinId, setEnterPinId] = useState<string | null>(null);
 
   // Optimistic edits not yet confirmed by a fetched tree. A refresh (e.g. the delayed
   // [[link]] refresh, or a sync import) may carry a tree read BEFORE these edits
@@ -182,10 +201,6 @@ export default function PageView({
   const [zoomedBlockId, setZoomedBlockId] = useState<string | null>(null);
   const [showProps, setShowProps] = useState(false);
   const [addingProp, setAddingProp] = useState(false);
-  const [newKey, setNewKey] = useState("");
-  const [newValue, setNewValue] = useState("");
-  const [editingProp, setEditingProp] = useState<string | null>(null);
-  const [editValue, setEditValue] = useState("");
   const [aliases, setAliases] = useState<string[]>([]);
   const [addingAlias, setAddingAlias] = useState(false);
   const [newAlias, setNewAlias] = useState("");
@@ -275,10 +290,12 @@ export default function PageView({
     api.getProperties(page.id).then(props => {
       if (cancelled) return;
       setPageProps(props);
-      if (props.length > 0) setShowProps(true);
     }).catch(() => {});
     return () => { cancelled = true; };
   }, [page.id]);
+
+  // A half-typed new page property doesn't follow us to another page.
+  useEffect(() => { setAddingProp(false); }, [page.id]);
 
   // Load aliases
   useEffect(() => {
@@ -368,8 +385,21 @@ export default function PageView({
 
   // Execute focus when focusBlockId changes (optionally at a remembered caret).
   const focusCaretRef = useRef<{ id: string; pos: FocusPosition } | null>(null);
+  const focusWaitRef = useRef<{ id: string; since: number } | null>(null);
   useEffect(() => {
     if (focusBlockId !== null) {
+      // A block just created on the backend (a template, a paste) that the page
+      // hasn't loaded yet: wait for the refreshed tree (this effect re-runs on
+      // every blocks change), at most a few seconds.
+      const id = rid(focusBlockId);
+      if (!blocks.some(b => b.id === id || b.id === focusBlockId)) {
+        if (focusWaitRef.current?.id !== focusBlockId) focusWaitRef.current = { id: focusBlockId, since: Date.now() };
+        if (Date.now() - focusWaitRef.current.since < 5000) {
+          const t = setTimeout(() => onRefreshPageRef.current(), 400);
+          return () => clearTimeout(t);
+        }
+      }
+      focusWaitRef.current = null;
       // Not rendered yet (progressive rendering of a big page): render everything first.
       if (!blockRefs.current.has(rid(focusBlockId)) && ensureRendered(focusBlockId)) return;
       // Small delay to ensure refs are mounted after render
@@ -381,7 +411,7 @@ export default function PageView({
       }, 30);
       return () => clearTimeout(timer);
     }
-  }, [focusBlockId, blocks, renderLimit]);
+  }, [focusBlockId, blocks, renderLimit, winStart, winEnd]);
   const focusBlockAt = (id: string, pos: FocusPosition) => {
     focusCaretRef.current = { id, pos };
     setFocusBlockId(id);
@@ -464,51 +494,6 @@ export default function PageView({
       await api.removeAlias(alias);
       setAliases(prev => prev.filter(a => a !== alias));
     } catch {}
-  };
-
-  const handleAddPageProp = async () => {
-    const k = newKey.trim();
-    const v = newValue.trim();
-    if (!k) return;
-    try {
-      await api.setProperty(page.id, "page", k, v);
-    } catch (e) {
-      // Refused by the backend (invalid key/value): say why, add nothing.
-      showToast(`Property not saved: ${propError(e)}`);
-      return;
-    }
-    const props = await api.getProperties(page.id).catch(() => null);
-    if (props) setPageProps(props);
-    setNewKey("");
-    setNewValue("");
-    setAddingProp(false);
-  };
-
-  const savingPropRef = useRef<string | null>(null);
-  const handleUpdatePageProp = async (key: string) => {
-    // Enter saves and closes the input; the blur that may follow must not save again.
-    if (savingPropRef.current === key) return;
-    savingPropRef.current = key;
-    setTimeout(() => { savingPropRef.current = null; }, 0);
-    setEditingProp(null);
-    try {
-      await api.setProperty(page.id, "page", key, editValue.trim());
-    } catch (e) {
-      // Refused: the row keeps its old value.
-      showToast(`Property not saved: ${propError(e)}`);
-      return;
-    }
-    const props = await api.getProperties(page.id).catch(() => null);
-    if (props) setPageProps(props);
-  };
-
-  const handleDeletePageProp = async (key: string) => {
-    try {
-      await api.deleteProperty(page.id, key);
-      setPageProps(prev => prev.filter(p => p.key !== key));
-    } catch (e) {
-      showToast(`Property not deleted: ${propError(e)}`);
-    }
   };
 
   const formatDate = (iso: string) => {
@@ -635,6 +620,7 @@ export default function PageView({
       // Progressive rendering: one more block, one more rendered (the new block
       // must exist now to take focus, even at the edge of the rendered range).
       setRenderState(st => ({ pageId: page.id, limit: (st.pageId === page.id ? st.limit : INITIAL_RENDER) + 1 }));
+      if (windowedRef.current) setEnterPinId(tempId);
     });
     // Same keystroke: the next key event already goes to the new block.
     blockRefs.current.get(tempId)?.focus("start");
@@ -820,9 +806,19 @@ export default function PageView({
     if (first) handleBlockUpdate(blockId, first.content);
     const siblings = intoEmpty ? rest : items;
     const positions = positionsAfter(current, block, siblings.length);
+    // A template's {{cursor}}: that block gets the caret, at that offset.
+    let caret: { id: string; pos: number } | null = null;
+    const caretAt = (id: string, n: PastedBlock) => {
+      if (n.cursor === undefined || caret) return;
+      const before = n.content.slice(0, n.cursor);
+      // Markdown drops a trailing space: step over it when text follows.
+      const space = /\s$/.test(before) && n.content.slice(n.cursor).trim() ? 1 : 0;
+      caret = { id, pos: caretAfterMarkdown(before) + space };
+    };
     const createTree = async (nodes: PastedBlock[], parent: string): Promise<void> => {
       for (const n of nodes) {
         const created = await api.createBlock(page.id, n.content, parent);
+        caretAt(created.id, n);
         if (n.children.length) await createTree(n.children, created.id);
       }
     };
@@ -830,11 +826,13 @@ export default function PageView({
     try {
       lastId = await enqueue(async () => {
         const realParent = parentId ? rid(parentId) : undefined;
+        if (first) caretAt(blockId, first);
         if (first?.children.length) await createTree(first.children, rid(blockId));
         let last: string | null = first ? rid(blockId) : null;
         for (let i = 0; i < siblings.length; i++) {
           let created = await api.createBlock(page.id, siblings[i]!.content, realParent);
           if (positions) created = await api.reorderBlock(created.id, realParent, positions[i]);
+          caretAt(created.id, siblings[i]!);
           if (siblings[i]!.children.length) await createTree(siblings[i]!.children, created.id);
           last = created.id;
         }
@@ -845,8 +843,62 @@ export default function PageView({
       showToast(`Paste incomplete: ${errorMessage(e)}`);
     }
     onRefreshPage();
-    if (lastId) setFocusBlockId(lastId);
+    const target = caret as { id: string; pos: number } | null;
+    if (target) focusBlockAt(target.id, target.pos);
+    else if (lastId) setFocusBlockId(lastId);
   };
+
+  // A template from the / menu: placeholders filled for this page, then the same
+  // path as a structured paste (nesting, order, caret at {{cursor}}).
+  const handleInsertTemplate = (blockId: string, text: string, intoEmpty: boolean) => {
+    const tree = fillTemplate(text, { title: page.title });
+    if (!tree.length) return;
+    void handlePasteBlocks(blockId, tree, intoEmpty);
+  };
+
+  /** Save a page's blocks (or one block's subtree) as a user template. */
+  const saveAsTemplate = async (rootId: string | null) => {
+    const all = localBlocksRef.current;
+    let picked = all;
+    if (rootId) {
+      const ids = new Set([rootId]);
+      picked = all.filter((b) => {
+        if (b.id === rootId) return true;
+        if (b.parent_id && ids.has(b.parent_id)) { ids.add(b.id); return true; }
+        return false;
+      });
+    }
+    const byId = new Map(all.map(x => [x.id, x]));
+    const depthOf = (b: Block) => { let d = 0; let p = b.parent_id; while (p && d < 1000) { d++; p = byId.get(p)?.parent_id; } return d; };
+    const text = templateFromBlocks(picked.map((b) => ({ content: b.content, depth: depthOf(b) })));
+    if (!text.trim()) { showToast("Nothing to save: the blocks are empty"); return; }
+    await refreshUserTemplates();
+    const first = picked[0]?.content.replace(/^#+\s*/, "").split("\n")[0].slice(0, 40).trim();
+    const name = await promptDialog({
+      title: "Save as template",
+      message: rootId ? "This block and its children become a template. Insert it with / in any block." : `The blocks of “${page.title}” become a template. Insert it with / in any block.`,
+      label: "Template name",
+      defaultValue: rootId ? first || "My template" : page.title,
+      confirmLabel: "Save template",
+    });
+    if (!name) return;
+    if (templateNameTaken(name)) {
+      const ok = await confirmDialog({ title: "Replace the template?", message: `A template named “${name}” already exists. Replace it with these blocks?`, confirmLabel: "Replace" });
+      if (!ok) return;
+    }
+    try {
+      await saveUserTemplate(name, text, rootId ? undefined : `From “${page.title}”`);
+      showToast(`Template “${name}” saved — type /${name.split(/\s+/)[0].toLowerCase()} to use it`);
+    } catch (e) {
+      showToast(`Template not saved: ${errorMessage(e)}`);
+    }
+  };
+  const insertTemplateRef = useRef(handleInsertTemplate);
+  insertTemplateRef.current = handleInsertTemplate;
+  const handleInsertTemplateLive = useCallback((id: string, text: string, intoEmpty: boolean) => insertTemplateRef.current(id, text, intoEmpty), []);
+  const saveAsTemplateRef = useRef(saveAsTemplate);
+  saveAsTemplateRef.current = saveAsTemplate;
+  const handleSaveBlockTemplateLive = useCallback((id: string) => { void saveAsTemplateRef.current(id); }, []);
 
   // UX-002: Block indent/outdent. Applied locally first (and the editor refocused
   // at the same caret in the same keystroke — a moved DOM node loses focus), then
@@ -1191,6 +1243,11 @@ export default function PageView({
   // Progressive rendering: after each commit, schedule the next slice until every
   // visible block is in the DOM; slice size adapts to keep each one ~SLICE_BUDGET_MS.
   const visibleCount = filteredVisibleBlocks.length;
+  // Above the threshold the list is windowed instead (lib/blockWindow.ts).
+  const threshold = useMemo(() => windowThreshold(), []);
+  const windowed = visibleCount > threshold;
+  const windowedRef = useRef(windowed);
+  windowedRef.current = windowed;
   useLayoutEffect(() => {
     const sl = sliceRef.current;
     if (sl.startedAt) {
@@ -1200,7 +1257,7 @@ export default function PageView({
     }
   }, [renderLimit]);
   useEffect(() => {
-    if (renderLimit >= visibleCount) return;
+    if (renderLimit >= visibleCount || windowed) return;
     const pageId = page.id;
     const t = setTimeout(() => {
       sliceRef.current.startedAt = performance.now();
@@ -1210,15 +1267,77 @@ export default function PageView({
       }));
     }, 0);
     return () => clearTimeout(t);
-  }, [renderLimit, visibleCount, page.id]);
-  /** Make sure the block is rendered (big pages render progressively). True if it wasn't. */
+  }, [renderLimit, visibleCount, page.id, windowed]);
+  /** Make sure the block is rendered (big pages render progressively, or windowed). True if it wasn't. */
   const ensureRendered = (id: string): boolean => {
     const idx = visibleRef.current.findIndex(b => b.id === id || b.id === rid(id));
+    if (windowedRef.current) {
+      if (idx < 0 || blockRefs.current.has(rid(id)) || blockRefs.current.has(id)) return false;
+      const { start, end } = winRef.current;
+      if (idx >= start && idx < end) return false;
+      // Jump the window to the block; scrolling to it (focus / reveal) follows.
+      setWin({ pageId: page.id, start: Math.max(0, Math.floor((idx - 20) / 20) * 20), end: Math.min(visibleRef.current.length, idx + 40) });
+      return true;
+    }
     if (idx < renderLimitRef.current) return false;
     const pageId = page.id;
     setRenderState({ pageId, limit: idx + INITIAL_RENDER });
     return true;
   };
+  /** ensureRendered, committed now (test API calls that need the block at once). */
+  const ensureRenderedNow = (id: string) => { flushSync(() => { ensureRendered(id); }); };
+
+  // ── Windowing (lib/blockWindow.ts): a page with more than windowThreshold()
+  // visible blocks renders only the blocks near the viewport (plus the block
+  // being edited and the one being dragged); spacers keep the scroll height. ──
+
+  const updateWindow = useCallback(() => {
+    if (!windowedRef.current) return;
+    const sc = scrollerRef.current, list = listRef.current;
+    if (!sc || !list) return;
+    const listTop = list.getBoundingClientRect().top - sc.getBoundingClientRect().top + sc.scrollTop;
+    const y0 = sc.scrollTop - listTop;
+    const ids = visibleRef.current.map(b => b.id);
+    const prefix = prefixHeights(ids, heightsRef.current, estimateHeight(heightsRef.current));
+    const [s, e] = windowRange(prefix, y0, y0 + sc.clientHeight);
+    const cur = winRef.current;
+    if (s !== cur.start || e !== cur.end) setWin({ pageId: pageIdRef.current, start: s, end: e });
+  }, []);
+
+  useEffect(() => {
+    if (!windowed) return;
+    const sc = scrollerRef.current;
+    if (!sc) return;
+    let raf = 0;
+    const schedule = () => { if (!raf) raf = requestAnimationFrame(() => { raf = 0; updateWindow(); }); };
+    sc.addEventListener("scroll", schedule, { passive: true });
+    window.addEventListener("resize", schedule);
+    updateWindow();
+    return () => {
+      sc.removeEventListener("scroll", schedule);
+      window.removeEventListener("resize", schedule);
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, [windowed, page.id, updateWindow, visibleCount]);
+
+  // The dragged block stays rendered while the window moves under the pointer.
+  useEffect(() => {
+    const list = listRef.current;
+    if (!list || !windowed) return;
+    const start = (e: DragEvent) => {
+      const id = (e.target as HTMLElement | null)?.closest?.("[data-block-id]")?.getAttribute("data-block-id");
+      if (id) setDragPinId(id);
+    };
+    const end = () => setDragPinId(null);
+    list.addEventListener("dragstart", start);
+    list.addEventListener("dragend", end);
+    list.addEventListener("drop", end);
+    return () => {
+      list.removeEventListener("dragstart", start);
+      list.removeEventListener("dragend", end);
+      list.removeEventListener("drop", end);
+    };
+  }, [windowed]);
 
   // Active path: set via DOM to avoid re-rendering blocks (which steals focus in WebKitGTK)
   useEffect(() => {
@@ -1234,8 +1353,26 @@ export default function PageView({
 
   // Register block-level test API
   useEffect(() => {
+    /** Block N's handle, rendering it first on a windowed page. */
+    const handleAt = (blockIndex: number): BlockItemHandle | null => {
+      const block = filteredVisibleBlocks[blockIndex];
+      if (!block) return null;
+      if (!blockRefs.current.get(block.id) && windowedRef.current) ensureRenderedNow(block.id);
+      return blockRefs.current.get(block.id) ?? null;
+    };
     registerTestApi({
       typeInBlock: (blockIndex: number, text: string) => {
+        if (windowedRef.current) {
+          // Windowed: DOM order is not block order; find the block by id.
+          const block = filteredVisibleBlocks[blockIndex];
+          const ref = handleAt(blockIndex);
+          if (!block || !ref?.ensureEditor()) return false;
+          const ed = document.querySelector(`[data-block-id="${CSS.escape(block.id)}"] .ProseMirror`) as HTMLElement | null;
+          if (!ed) return false;
+          ed.focus();
+          document.execCommand('insertText', false, text);
+          return true;
+        }
         let el = document.querySelectorAll('.ProseMirror')[blockIndex];
         if (!el) return false;
         // A block that isn't being edited renders statically: mount its editor first.
@@ -1264,7 +1401,7 @@ export default function PageView({
       getBlocks: () => filteredVisibleBlocks.map((b, i) => ({ index: i, content: b.content })),
       pressEnterInBlock: (blockIndex: number) => {
         const block = filteredVisibleBlocks[blockIndex];
-        const ref = block ? blockRefs.current.get(block.id) : null;
+        const ref = handleAt(blockIndex);
         if (!ref) return false;
         ref.focus();
         // Queried after focus(): a static block's editor was only just mounted.
@@ -1276,7 +1413,7 @@ export default function PageView({
       // i.e. the same code path as the real key (Tab, Escape, Enter...).
       pressKeyInBlock: (blockIndex: number, key: string, mods: { shift?: boolean; ctrl?: boolean; alt?: boolean; focus?: boolean } = {}) => {
         const block = filteredVisibleBlocks[blockIndex];
-        const ref = block ? blockRefs.current.get(block.id) : null;
+        const ref = handleAt(blockIndex);
         if (!ref) return false;
         let el = document.querySelector(`[data-block-id="${CSS.escape(block.id)}"] .ProseMirror`);
         if (!el) return false;
@@ -1312,27 +1449,26 @@ export default function PageView({
       // Follow a ((block ref)) — the click handler of a block ref / transclusion.
       openBlockRef: (blockId: string) => { handleBlockRefClick(blockId); return true; },
       focusBlock: (blockIndex: number) => {
-        const block = filteredVisibleBlocks[blockIndex];
-        const ref = block ? blockRefs.current.get(block.id) : null;
+        const ref = handleAt(blockIndex);
         if (ref) { ref.focus(); return true; }
         return false;
       },
+      /** Windowing: how many blocks are in the DOM, and whether the page is windowed. */
+      getRenderedBlockCount: () => document.querySelectorAll('.block-list > .block[data-block-id]').length,
+      isWindowed: () => windowedRef.current,
       getBlockCount: () => filteredVisibleBlocks.length,
       // The following drive the SAME code paths as the keyboard handlers
       // (ProseMirror ignores synthetic CDP key events).
       splitBlockAt: (blockIndex: number, offset: number) => {
-        const block = filteredVisibleBlocks[blockIndex];
-        const ref = block ? blockRefs.current.get(block.id) : null;
+        const ref = handleAt(blockIndex);
         return ref ? ref.splitAt(offset) : false;
       },
       mergeWithPrevious: (blockIndex: number) => {
-        const block = filteredVisibleBlocks[blockIndex];
-        const ref = block ? blockRefs.current.get(block.id) : null;
+        const ref = handleAt(blockIndex);
         return ref ? ref.mergeWithPrevious() : false;
       },
       toggleTodoInBlock: (blockIndex: number) => {
-        const block = filteredVisibleBlocks[blockIndex];
-        const ref = block ? blockRefs.current.get(block.id) : null;
+        const ref = handleAt(blockIndex);
         if (!ref) return false;
         ref.toggleTodo();
         return true;
@@ -1357,14 +1493,12 @@ export default function PageView({
       getSelectedCount: () => selectedBlockIds.size,
       // Table structure command at the cursor in block N (toolbar / context-menu path).
       tableAction: (blockIndex: number, action: string) => {
-        const block = filteredVisibleBlocks[blockIndex];
-        const ref = block ? blockRefs.current.get(block.id) : null;
+        const ref = handleAt(blockIndex);
         return ref ? ref.tableAction(action as any) : false;
       },
       // Make / remove block N's flashcard (context-menu path).
       setFlashcard: (blockIndex: number, on: boolean) => {
-        const block = filteredVisibleBlocks[blockIndex];
-        const ref = block ? blockRefs.current.get(block.id) : null;
+        const ref = handleAt(blockIndex);
         return ref ? ref.setFlashcard(on) : Promise.resolve(false);
       },
       toggleCheckbox: (blockIndex: number, itemIndex: number = 0) => {
@@ -1642,7 +1776,11 @@ export default function PageView({
           setSelectedBlockIds(new Set([list[next].id]));
           setSelectionAnchor(next);
         }
-        list[next] && document.querySelector(`[data-block-id="${CSS.escape(list[next].id)}"]`)?.scrollIntoView({ block: "nearest" });
+        if (list[next]) {
+          const id = list[next].id;
+          const scroll = () => document.querySelector(`[data-block-id="${CSS.escape(id)}"]`)?.scrollIntoView({ block: "nearest" });
+          if (ensureRenderedRef.current(id)) setTimeout(scroll, 30); else scroll();
+        }
       }
       if (e.key === "Enter" && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey && selectedBlockIds.size === 1) {
         e.preventDefault();
@@ -1690,6 +1828,8 @@ export default function PageView({
     return () => window.removeEventListener("keydown", handler);
   }, [filteredVisibleBlocks, copyPageToClipboard]);
 
+  const ensureRenderedRef = useRef(ensureRendered);
+  ensureRenderedRef.current = ensureRendered;
   const selectedCountRef = useRef(0);
   selectedCountRef.current = selectedBlockIds.size;
 
@@ -1723,6 +1863,8 @@ export default function PageView({
     setSelectionAnchor(null);
   }, [page.id]);
 
+  // Bumped when "Link" turns an unlinked mention into a backlink (refreshes the panel).
+  const [linkVersion, setLinkVersion] = useState(0);
   const [editingTitle, setEditingTitle] = useState(false);
   const [showToc, setShowToc] = useState(false);
   const hasHeadings = blocks.some(b => /^#{1,4}\s+/.test(b.content));
@@ -1752,7 +1894,7 @@ export default function PageView({
   // render limit — not on the many other PageView state changes (save indicator,
   // active block, suggestions). BlockItem is memoized and ignores callback props,
   // so the handlers below read live state through refs.
-  const blockListItems = useMemo(() => filteredVisibleBlocks.slice(0, renderLimit).map((block, idx) => (
+  const renderBlockItem = (block: Block, idx: number) => (
     <BlockItem
       key={renderKeyRef.current.get(block.id) ?? block.id}
       ref={refFor(block.id)}
@@ -1801,9 +1943,49 @@ export default function PageView({
       onShiftClick={handleShiftClickLive}
       onOpenWhiteboard={onOpenWhiteboard}
       onDragReorder={handleDragReorderLive}
+      onInsertTemplate={handleInsertTemplateLive}
+      onSaveAsTemplate={handleSaveBlockTemplateLive}
     />
+  );
+  const blockListItems = useMemo(() => {
+    if (!windowed) return filteredVisibleBlocks.slice(0, renderLimit).map((block, idx) => renderBlockItem(block, idx));
+    // Windowed: the blocks near the viewport + the edited / dragged one; spacers between.
+    const pinned: number[] = [];
+    for (const id of [activeBlockId, dragPinId, enterPinId]) {
+      if (!id) continue;
+      const i = filteredVisibleBlocks.findIndex(b => b.id === id || b.id === rid(id));
+      if (i >= 0) pinned.push(i);
+    }
+    const ids = filteredVisibleBlocks.map(b => b.id);
+    const prefix = prefixHeights(ids, heightsRef.current, estimateHeight(heightsRef.current));
+    return windowPlan(filteredVisibleBlocks.length, winStart, winEnd, pinned).map((part) => part.kind === "block"
+      ? renderBlockItem(filteredVisibleBlocks[part.index], part.index)
+      : <div key={`gap-${part.from}`} className="block-gap" aria-hidden="true" data-gap={`${part.from}-${part.to}`} style={{ height: prefix[part.to] - prefix[part.from] }} />);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  )), [filteredVisibleBlocks, renderLimit, selectedBlockIds, blockTreeInfo, collapsedBlocks]);
+  }, [filteredVisibleBlocks, renderLimit, selectedBlockIds, blockTreeInfo, collapsedBlocks, windowed, winStart, winEnd, activeBlockId, dragPinId, enterPinId]);
+
+  // Windowed: remember each shown block's height (for its spacer later), and keep
+  // the view still when a block shown for the first time above it isn't as tall
+  // as the spacer guessed (no native scroll anchoring in WebKitGTK).
+  useLayoutEffect(() => {
+    if (!windowed) return;
+    const list = listRef.current, sc = scrollerRef.current;
+    if (!list || !sc) return;
+    const est = estimateHeight(heightsRef.current);
+    const top = sc.getBoundingClientRect().top;
+    let shift = 0;
+    for (const child of list.children) {
+      const el = child as HTMLElement;
+      const id = el.dataset.blockId;
+      if (!id) continue;
+      const h = el.offsetHeight;
+      const prev = heightsRef.current.get(id);
+      if (prev === undefined && el.getBoundingClientRect().bottom <= top) shift += h - est;
+      if (prev === undefined || Math.abs(prev - h) > 0.5) heightsRef.current.set(id, h);
+    }
+    if (Math.abs(shift) >= 1) sc.scrollTop += shift;
+  }, [windowed, blockListItems]);
+
 
   return (
     <div className="page-view-wrapper">
@@ -1891,6 +2073,21 @@ export default function PageView({
 
       <RemoteImageBar pageId={page.id} blocks={blocks} onRewriteBlock={handleBlockUpdate} />
 
+      {/* Page properties: a compact, editable row under the title (UX Wave 4: they
+          used to be hidden in the info panel). Shown when the page has some, or
+          while adding one (the info panel's "Add property"). */}
+      {(pageProps.length > 0 || addingProp) && (
+        <PropertyEditor
+          entityId={page.id}
+          entityType="page"
+          properties={pageProps}
+          onChange={setPageProps}
+          adding={addingProp}
+          onAddingChange={setAddingProp}
+          variant="page"
+        />
+      )}
+
       {/* Show existing aliases inline (compact, no add button — use ⚙ properties to add) */}
       {aliases.length > 0 && (
         <div className="page-aliases">
@@ -1922,71 +2119,25 @@ export default function PageView({
             >
               ↗ Export
             </button>
-          </div>
-          <div className="page-properties-header">
-            <span className="page-properties-label">Properties</span>
             <button
-              className="page-prop-add-btn"
+              className="page-export-btn"
+              data-testid="info-add-property"
               onClick={() => setAddingProp(true)}
-              title="Add property"
+              title="Add a property to this page (shown under the title)"
             >
-              +
+              <Icon name="plus" size={13} /> Add property
+            </button>
+            <button
+              className="page-export-btn"
+              data-testid="save-page-template"
+              onClick={() => { void saveAsTemplate(null); }}
+              title="Save this page's blocks as a template you can insert with /"
+            >
+              <Icon name="template" size={13} /> Save as template
             </button>
           </div>
-          <div className="page-properties-list">
-            {pageProps.map(prop => (
-              <div key={prop.key} className="page-prop-row">
-                <span className="prop-key">{prop.key}</span>
-                {editingProp === prop.key ? (
-                  <input
-                    className="prop-edit-input page-prop-input"
-                    value={editValue}
-                    onChange={e => setEditValue(e.target.value)}
-                    onBlur={() => handleUpdatePageProp(prop.key)}
-                    onKeyDown={e => {
-                      if (e.key === "Enter") handleUpdatePageProp(prop.key);
-                      if (e.key === "Escape") setEditingProp(null);
-                    }}
-                    autoFocus
-                  />
-                ) : (
-                  <span
-                    className="prop-value"
-                    onClick={() => { setEditingProp(prop.key); setEditValue(prop.value ?? ""); }}
-                  >
-                    {prop.value || "—"}
-                  </span>
-                )}
-                <span className="prop-delete" onClick={() => handleDeletePageProp(prop.key)}>×</span>
-              </div>
-            ))}
-            {addingProp && (
-              <div className="page-prop-row">
-                <input
-                  className="prop-edit-input"
-                  placeholder="key"
-                  value={newKey}
-                  onChange={e => setNewKey(e.target.value)}
-                  onKeyDown={e => {
-                    if (e.key === "Escape") setAddingProp(false);
-                  }}
-                  autoFocus
-                />
-                <input
-                  className="prop-edit-input page-prop-input"
-                  placeholder="value"
-                  value={newValue}
-                  onChange={e => setNewValue(e.target.value)}
-                  onKeyDown={e => {
-                    if (e.key === "Enter") handleAddPageProp();
-                    if (e.key === "Escape") setAddingProp(false);
-                  }}
-                />
-              </div>
-            )}
-          </div>
           {/* Aliases section inside properties panel */}
-          <div className="page-properties-header" style={{ marginTop: 8 }}>
+          <div className="page-properties-header">
             <span className="page-properties-label">Aliases</span>
             <button
               className="page-prop-add-btn"
@@ -2037,8 +2188,8 @@ export default function PageView({
         </div>
       )}
 
-      <div className="content view-content markdown-source-view">
-        <div className={`block-list ${getSettingsCached().fullTreeMode ? 'tree-mode' : ''}`}>
+      <div ref={scrollerRef} className={`content view-content markdown-source-view${windowed ? " is-windowed" : ""}`}>
+        <div ref={listRef} className={`block-list ${getSettingsCached().fullTreeMode ? 'tree-mode' : ''}`}>
           {blockListItems}
 
           {!zoomedBlockId && (
@@ -2108,8 +2259,8 @@ export default function PageView({
                 </div>
               )}
 
-              <BacklinksPanel pageId={page.id} refreshKey={page.title} onPageClick={onPageLinkClick} onBlockClick={handleBlockRefClick} />
-              <UnlinkedRefsPanel pageId={page.id} pageTitle={page.title} onPageClick={onPageLinkClick} />
+              <BacklinksPanel pageId={page.id} refreshKey={`${page.title}#${linkVersion}`} onPageClick={onPageLinkClick} onBlockClick={handleBlockRefClick} />
+              <UnlinkedRefsPanel pageId={page.id} pageTitle={page.title} onPageClick={onPageLinkClick} onBlockClick={handleBlockRefClick} onLinked={() => setLinkVersion((n) => n + 1)} />
             </>
           )}
         </div>

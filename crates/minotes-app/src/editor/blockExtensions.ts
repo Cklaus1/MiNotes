@@ -13,6 +13,9 @@ import Placeholder from "@tiptap/extension-placeholder";
 import CodeBlockLowlight from "@tiptap/extension-code-block-lowlight";
 import { mergeAttributes } from "@tiptap/core";
 import { codeLanguageLabel } from "./codeLanguage";
+import { codeBlockNodeView } from "./codeBlockView";
+import { imageNodeView } from "./imageView";
+import { DOMSerializer } from "@tiptap/pm/model";
 import { TableRow } from "@tiptap/extension-table-row";
 import { MarkdownTable, AlignedTableCell, AlignedTableHeader } from "./tables";
 import Image from "@tiptap/extension-image";
@@ -26,6 +29,7 @@ import { PageLinkSuggestion } from "./PageLinkSuggestion";
 import { BlockRefSuggestion } from "./BlockRefSuggestion";
 import { TaskListInputRule } from "./taskListInputRule";
 import { TodoKeyword } from "./todoKeyword";
+import { CalloutNode } from "./CalloutNode";
 // ── Import / attachments ──
 import { displaySrc } from "../lib/attachments";
 // ── End import ──
@@ -88,6 +92,10 @@ export function createBlockExtensions(cb: BlockExtensionCallbacks) {
           ["code", { class: language ? this.options.languageClassPrefix + language : null }, 0],
         ];
       },
+      // The language dropdown + copy button header (editor/codeBlockView.ts).
+      addNodeView() {
+        return (props: any) => codeBlockNodeView(props);
+      },
     }).configure({ lowlight }),
     MarkdownTable.configure({ resizable: true }),
     TableRow,
@@ -129,6 +137,7 @@ export function createBlockExtensions(cb: BlockExtensionCallbacks) {
       },
     }).configure({ nested: true }),
     HighlightMark,
+    CalloutNode,
     // ── Import / attachments: `attachment:<hash>/<name>` srcs are served by the
     // attachment protocol; the stored markdown keeps the reference. ──
     Image.extend({
@@ -177,6 +186,13 @@ export function createBlockExtensions(cb: BlockExtensionCallbacks) {
             ["span", { class: "remote-img-alt" }, alt || "Image"],
             ["span", { class: "remote-img-host" }, remoteHost(src)]],
         ];
+      },
+      // Resize handles; the width is `|N` at the end of the alt (editor/imageView.ts).
+      addNodeView() {
+        return (props: any) => imageNodeView(props, () => ({
+          dom: DOMSerializer.fromSchema(props.editor.schema).serializeNode(props.node) as HTMLElement,
+          ignoreMutation: () => true,
+        } as any));
       },
     }).configure({ inline: false, allowBase64: true }),
     Typography,

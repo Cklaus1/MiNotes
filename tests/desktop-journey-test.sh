@@ -41,7 +41,7 @@ echo "════════════════════════�
 echo "  MiNotes Desktop Journeys (real app, real backend)"
 echo "═══════════════════════════════════════════════"
 
-rm -rf "$STATE"/{persist,devA,devB,nbook,outside,xnb,zip8,barrier10,trust10,rimg,img10,remote.git,enc13,enc13-tmp,enc13-keychain,enc14a,enc14b,enc14c,enc14-tmp,remote14.git,w1,w1-files,w2,j17a,j17b,t17,remote17.git,remote17.git.moved,w18,w19,w23,d20a,w21} "$STATE/results.tsv"
+rm -rf "$STATE"/{persist,devA,devB,nbook,outside,xnb,zip8,barrier10,trust10,rimg,img10,remote.git,enc13,enc13-tmp,enc13-keychain,enc14a,enc14b,enc14c,enc14-tmp,remote14.git,w1,w1-files,w2,j17a,j17b,t17,remote17.git,remote17.git.moved,w18,w19,w23,d20a,w21,w22,big22} "$STATE/results.tsv"
 if [[ -z "$DESKTOP_NO_BUILD" ]]; then
   "$DC" up --webdriver --profile persist >/dev/null || { echo "build/launch failed"; exit 1; }
 else
@@ -2061,6 +2061,115 @@ is "Two restored, one still in the Trash (database)" "$(db w21 "select count(*) 
 is "…and gone from the list" "$(ev "[...document.querySelectorAll('[data-testid=trash-item]')].map(e=>e.textContent).filter(t=>t.includes('Bin21')).length")" "1"
 "$DC" key Escape; sleep 0.4
 is "Esc closes the Trash view" "$(ev "!!document.querySelector('[data-testid=trash-view]')")" "false"
+journey "D22. The editor under real keys and mouse (UX review Wave 4)"
+# Real X input (xdotool): the / menu by keyboard (a heading, a callout, a
+# natural-language date), the code-language dropdown, a user template saved from
+# a block's right-click menu and inserted with /, "Link" on an unlinked mention,
+# a typed key:: value, and a 5,000-block page that opens at once and types smoothly.
+# ═══════════════════════════════════════════════
+A22="const api=await import('/src/lib/api.ts');"
+X22="localhost:${DESKTOP_CHECK_DISPLAY:-97}"
+xy22() { ev "(()=>{const e=$1;if(!e)return '';const r=e.getBoundingClientRect();return Math.round(r.left+Math.min(r.width/2,60))+' '+Math.round(r.top+r.height/2)})()"; }
+rclick22() { local xy; xy=$(xy22 "$1"); [[ -n "$xy" ]] && "$DC" click $xy >/dev/null; }
+rmenu22() { local xy; xy=$(xy22 "$1"); [[ -n "$xy" ]] && DISPLAY="$X22" xdotool mousemove $xy click 3; }
+blk22() { echo "document.querySelector('.block-list > .block[data-block-id=\"$(api "getBlockTree()[$1].id")\"] .block-content')"; }
+S22=$(date +%s)
+# The 5,000-block page goes in through the CLI (a markdown import) before the app opens.
+device w22 || true
+"$DC" down >/dev/null 2>&1
+mkdir -p "$STATE/big22"
+python3 -c "
+import sys
+with open(sys.argv[1], 'w') as f:
+    for i in range(5000):
+        f.write('- ' + ('big22 start ' if i == 0 else '') + 'Row %d with **bold** and [[Getting Started]]\n' % i)
+" "$STATE/big22/Big22.md"
+echo "w22" > "$STATE/profile"; "$DC" cli import dir "$STATE/big22" >/dev/null 2>&1
+device w22 keep || true
+waitfor "window.__MINOTES__ && !!window.__MINOTES__.navigateTo" 30
+ev "(async()=>{$A22 const p=await api.createPage('Slash22 $S22');for(let i=0;i<3;i++)await api.createBlock(p.id,'');return 1})()" >/dev/null
+api "navigateTo('Slash22 $S22')" >/dev/null; waitfor "window.__MINOTES__.getCurrentPage()==='Slash22 $S22'" 10; sleep 1
+
+step "The / menu by keyboard: ↓ ↓ Enter picks Heading 3; /warn Enter makes a warning callout"
+rclick22 "$(blk22 0)"; sleep 0.4
+"$DC" type "Plan for today /"; sleep 0.8
+is "The menu shows its groups" "$(ev "[...document.querySelectorAll('.slash-menu-group')].map(e=>e.textContent).slice(0,2).join('|')")" "Basic|Lists"
+"$DC" key Down; sleep 0.2; "$DC" key Down; sleep 0.2; "$DC" key Return; sleep 1.2
+rclick22 "$(blk22 1)"; sleep 0.4
+"$DC" type "Mind the gap /warn"; sleep 0.8; "$DC" key Return; sleep 1
+"$DC" key Escape; sleep 1.5
+is "Heading 3 saved" "$(db w22 "select content from blocks where content like '%Plan for today%'")" "### Plan for today"
+is "Warning callout saved as > [!warning]" "$(db w22 "select content from blocks where content like '%Mind the gap%'")" "> [!warning] Mind the gap"
+is "…and drawn as a callout" "$(ev "document.querySelector('.block-list .callout-warning')?.getAttribute('data-callout-label')||'none'")" "Warning"
+"$DC" shot "d22-callout" >/dev/null
+
+step "/date next friday (typed) links the coming Friday's journal page"
+NF22=$(ev "(()=>{const d=new Date();const n=new Date(d.getFullYear(),d.getMonth(),d.getDate()+(((5-d.getDay()+7)%7)||7));return n.getFullYear()+'-'+String(n.getMonth()+1).padStart(2,'0')+'-'+String(n.getDate()).padStart(2,'0')})()")
+rclick22 "$(blk22 2)"; sleep 0.4
+"$DC" type "Ship it /date next friday"; sleep 0.9
+is "The menu offers that day" "$(ev "document.querySelector('.slash-menu-item-title')?.textContent||'none'")" "Date: $NF22"
+"$DC" key Return; sleep 0.8; "$DC" key Escape; sleep 1.5
+is "Saved as a journal link" "$(db w22 "select content from blocks where content like 'Ship it%'")" "Ship it [[Journal/$NF22]]"
+
+step "The code block's language label is a dropdown (real click, type, Enter)"
+ev "(async()=>{$A22 const p=await api.createPage('Code22 $S22');await api.createBlock(p.id,'\`\`\`python\nprint(22)\n\`\`\`');return 1})()" >/dev/null
+api "navigateTo('Code22 $S22')" >/dev/null; waitfor "!!document.querySelector('.block-list .code-lang-btn')" 10; sleep 0.5
+rclick22 "document.querySelector('.block-list .code-lang-btn')"; sleep 0.8
+is "The language list is open with its filter focused" "$(ev "document.activeElement?.className||''")" "code-lang-filter"
+"$DC" type "rust"; sleep 0.3; "$DC" key Return; sleep 1; "$DC" key Escape; sleep 1.5
+is "The fence language changed in the database" "$(db w22 "select substr(content,1,7) from blocks where content like '%print(22)%'")" '```rust'
+"$DC" shot "d22-code" >/dev/null
+
+step "Save a block and its children as a template (right-click menu), then insert it with /"
+ev "(async()=>{$A22 const p=await api.createPage('Tpl22 $S22');const a=await api.createBlock(p.id,'## Checklist22');await api.createBlock(p.id,'TODO pack',a.id);await api.createBlock(p.id,'TODO book',a.id);const q=await api.createPage('Use22 $S22');await api.createBlock(q.id,'');return 1})()" >/dev/null
+api "navigateTo('Tpl22 $S22')" >/dev/null; waitfor "window.__MINOTES__.getCurrentPage()==='Tpl22 $S22'" 10; sleep 1
+rmenu22 "$(blk22 0)"; sleep 0.8
+rclick22 "document.querySelector('[data-action=save-template]')"; sleep 0.8
+"$DC" key ctrl+a; "$DC" type "Pack22"; "$DC" key Return; sleep 1.5
+is "Stored as a template" "$(db w22 "select replace(content, char(10), '/') from templates where name='Pack22'")" "## Checklist22/  TODO pack/  TODO book"
+api "navigateTo('Use22 $S22')" >/dev/null; waitfor "window.__MINOTES__.getCurrentPage()==='Use22 $S22'" 10; sleep 1
+rclick22 "$(blk22 0)"; sleep 0.4
+"$DC" type "/pack22"; sleep 1.2; "$DC" key Return; sleep 2.5
+"$DC" key Escape; sleep 1
+is "Inserted nested: two children under the heading" "$(db w22 "select count(*) from blocks c join blocks p on c.parent_id=p.id join pages g on p.page_id=g.id where g.title='Use22 $S22' and p.content='## Checklist22'")" "2"
+"$DC" shot "d22-template" >/dev/null
+
+step "Link on an unlinked mention (real click) wraps it in [[ ]]"
+ev "(async()=>{$A22 await api.createPage('Hub22 $S22');const m=await api.createPage('Mention22 $S22');await api.createBlock(m.id,'call hub22 $S22 today');return 1})()" >/dev/null
+api "navigateTo('Hub22 $S22')" >/dev/null; waitfor "!!document.querySelector('.unlinked-refs-toggle-btn')" 15
+ev "document.querySelector('.unlinked-refs')?.scrollIntoView({block:'center'})" >/dev/null; sleep 0.5
+rclick22 "document.querySelector('.unlinked-refs-toggle-btn')"; sleep 0.8
+waitfor "!!document.querySelector('[data-testid=unlinked-link]')" 10 || rclick22 "document.querySelector('.unlinked-refs-toggle-btn')"
+ev "document.querySelector('[data-testid=unlinked-link]')?.scrollIntoView({block:'center'})" >/dev/null; sleep 0.5
+rclick22 "document.querySelector('[data-testid=unlinked-link]')"; sleep 1.5
+is "The mention is a link now" "$(db w22 "select content from blocks where content like 'call %$S22%'")" "call [[hub22 $S22]] today"
+waitfor "(document.querySelector('.backlinks h4')?.textContent||'').startsWith('Backlinks (1)')" 10 && pass "The backlinks list it" || fail "Backlinks after Link" "$(ev "document.querySelector('.backlinks h4')?.textContent||'none'")"
+"$DC" shot "d22-link" >/dev/null
+
+step "A typed key:: value line becomes a block property"
+ev "(async()=>{$A22 const p=await api.createPage('Prop22 $S22');await api.createBlock(p.id,'');return 1})()" >/dev/null
+api "navigateTo('Prop22 $S22')" >/dev/null; waitfor "window.__MINOTES__.getCurrentPage()==='Prop22 $S22'" 10; sleep 1
+rclick22 "$(blk22 0)"; sleep 0.4
+"$DC" type "Ship the release"; "$DC" key shift+Return; "$DC" type "status:: done"; sleep 0.3
+"$DC" key Escape; sleep 1.5
+is "The text has no property line" "$(db w22 "select content from blocks b join pages g on b.page_id=g.id where g.title='Prop22 $S22'")" "Ship the release"
+is "…and the block has the property" "$(db w22 "select p.key||'='||p.value from properties p join blocks b on p.entity_id=b.id join pages g on b.page_id=g.id where g.title='Prop22 $S22'")" "status=done"
+is "…shown as a chip" "$(ev "document.querySelector('.block-list .block-properties .prop-chip')?.innerText.replace(/\\s+/g,' ').trim()||'none'")" "status done ×"
+
+step "A 5,000-block page opens at once (windowed) and typing deep inside it is smooth"
+api "navigateTo('Getting Started')" >/dev/null; sleep 1.5
+R=$(ev "(async()=>{const M=window.__MINOTES__;const t0=performance.now();let first=null,last=t0,stall=0;M.navigateTo('Big22');await new Promise(res=>{const tick=()=>{const n=performance.now();stall=Math.max(stall,n-last);last=n;const el=document.querySelector('.block-list .block .ProseMirror');if(first===null&&el&&el.textContent.includes('big22 start'))first=n-t0;if((first!==null&&n-t0>first+1500)||n-t0>30000)return res();setTimeout(tick,0)};setTimeout(tick,0)});return Math.round(first)+'|'+Math.round(stall)+'|'+M.isWindowed()+'|'+M.getRenderedBlockCount()+'|'+M.getBlockCount()})()")
+IFS='|' read -r F22 ST22 W22 RC22 BC22 <<< "$R"
+[[ "$W22" == "true" && "$BC22" == "5000" && "$RC22" -lt 250 && "$F22" -lt 2000 && "$ST22" -lt 1000 ]] 2>/dev/null && pass "Opened: first block ${F22} ms, longest stall ${ST22} ms, $RC22 of $BC22 blocks in the DOM" || fail "5,000-block page open" "$R"
+api "focusBlock(2750)" >/dev/null; sleep 1.2
+ev "(()=>{const ed=document.activeElement.closest('.ProseMirror');window.__k22={list:[]};const k=window.__k22;window.addEventListener('keydown',e=>{if(e.key.length===1){k.cur={down:performance.now(),frame:null};k.list.push(k.cur)}},true);k.mo=new MutationObserver(()=>{const c=k.cur;if(c&&c.frame===null){c.frame=-1;requestAnimationFrame(()=>{c.frame=performance.now()-c.down})}});k.mo.observe(ed,{childList:true,subtree:true,characterData:true});return 1})()" >/dev/null
+"$DC" key End; "$DC" type " smooth22 typing in a big page"; sleep 1
+R=$(ev "(()=>{const f=window.__k22.list.map(c=>c.frame).filter(x=>x>0);return f.length+'|'+Math.round(Math.max(...f))+'|'+Math.round(f.reduce((a,b)=>a+b,0)/f.length)})()")
+IFS='|' read -r K22 MX22 AV22 <<< "$R"
+"$DC" key Escape; sleep 1.5
+is "Every key landed in the deep block (database)" "$(db w22 "select count(*) from blocks where content like 'Row 2750 %smooth22 typing in a big page'")" "1"
+[[ "$K22" -ge 25 && "$MX22" -lt 150 ]] 2>/dev/null && pass "$K22 keys, frame after each key: avg ${AV22} ms, max ${MX22} ms" || fail "Typing latency in the big page" "$R"
+"$DC" shot "d22-big-page" >/dev/null
 
 # ═══════════════════════════════════════════════
 echo ""

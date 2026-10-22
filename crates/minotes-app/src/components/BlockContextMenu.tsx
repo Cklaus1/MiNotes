@@ -20,6 +20,8 @@ interface Props {
   collapsed?: boolean;
   onSetCollapsed?: (collapsed: boolean) => void;
   onSetAllCollapsed?: (collapsed: boolean) => void;
+  /** Save this block and its children as a template (lib/templates.ts). */
+  onSaveAsTemplate?: () => void;
 }
 
 export default function BlockContextMenu({
@@ -38,6 +40,7 @@ export default function BlockContextMenu({
   collapsed,
   onSetCollapsed,
   onSetAllCollapsed,
+  onSaveAsTemplate,
 }: Props) {
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -166,6 +169,16 @@ export default function BlockContextMenu({
         >
           {isFlashcard ? "Remove flashcard" : "Make flashcard"}
           {!isFlashcard && <span className="block-context-menu-hint">question = this block, answer = children</span>}
+        </button>
+      )}
+      {onSaveAsTemplate && (
+        <button
+          className="block-context-menu-item"
+          data-action="save-template"
+          onClick={() => { onClose(); onSaveAsTemplate(); }}
+        >
+          Save as template…
+          <span className="block-context-menu-hint">this block and its children</span>
         </button>
       )}
       <div className="block-context-menu-sep" />
