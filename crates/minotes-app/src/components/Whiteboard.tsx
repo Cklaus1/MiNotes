@@ -9,6 +9,10 @@ import { isRemoteSrc } from "../lib/remoteImages";
 import { useAppTheme } from "../lib/theme";
 import { coveredAbove } from "../lib/layers";
 import Icon from "./Icon";
+import {
+  connectorEnds, dropDanglingAttachments, elementsInRect, normRect, reattachArrows, shapeAt, shapeRect,
+  snapToGuides, unionRect, type BoardShapes, type ElementRef, type Guides, type Rect, type ShapeType,
+} from "../lib/whiteboardGeometry";
 
 interface StickyNote {
   id: string;
@@ -84,7 +88,15 @@ interface Arrow {
   x2: number;
   y2: number;
   color: string;
+  /** Connector ends: the shapes the arrow is attached to (it follows them). */
+  from?: { type: ShapeType; id: string } | null;
+  to?: { type: ShapeType; id: string } | null;
 }
+
+/** A stroke's id: its own, or (old boards) its index. */
+const lineKey = (l: { id?: string }, i: number) => l.id ?? String(i);
+type Sel = { type: "note" | "text" | "arrow" | "box" | "image" | "line"; id: string };
+const selKey = (e: { type: string; id: string }) => `${e.type}:${e.id}`;
 
 interface Box {
   id: string;
@@ -198,6 +210,16 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
   const [mode, setMode] = useState<Mode>("select");
   const [selectedElement, setSelectedElement] = useState<{ type: "note" | "text" | "arrow" | "box" | "image" | "line"; id: string } | null>(null);
   const draggingElementRef = useRef<{ type: string; id: string; offsetX: number; offsetY: number } | null>(null);
+  // Multi-selection (rubber band, Shift+click): 2+ elements, moved / deleted together.
+  const [multiSel, setMultiSel] = useState<Sel[]>([]);
+  const multiSelRef = useRef<Sel[]>([]);
+  multiSelRef.current = multiSel;
+  const marqueeRef = useRef<{ x0: number; y0: number; x1: number; y1: number; additive: boolean } | null>(null);
+  const groupDragRef = useRef<{ startX: number; startY: number; base: Snapshot; members: Sel[]; moved: boolean } | null>(null);
+  // Alignment guides shown while a drag is snapped (world coordinates).
+  const guidesRef = useRef<Guides | null>(null);
+  // Arrow tool: the shape under the pointer (the end will attach to it).
+  const arrowTargetRef = useRef<{ type: ShapeType; id: string } | null>(null);
   const [textSize, setTextSize] = useState<"S" | "M" | "L">("M");
   const [textStyle, setTextStyle] = useState<"callout" | "plain" | "sticky">("callout");
   // Default ink: the text colour — light on a dark canvas, dark on a light one.
@@ -282,6 +304,10 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
   const boxesRef = useRef(boxes);
   boxesRef.current = boxes;
   const loadedImagesRef = useRef<Map<string, HTMLImageElement>>(new Map());
+  const boardShapes = useCallback((): BoardShapes => ({
+    notes: notesRef.current, boxes: boxesRef.current, images: imagesRef.current, texts: textsRef.current,
+    arrows: arrowsRef.current, lines: linesRef.current,
+  }), []);
   const arrowDrawRef = useRef<{ active: boolean; x1: number; y1: number; x2: number; y2: number }>({ active: false, x1: 0, y1: 0, x2: 0, y2: 0 });
   const boxDrawRef = useRef<{ active: boolean; x: number; y: number; w: number; h: number }>({ active: false, x: 0, y: 0, w: 0, h: 0 });
 
@@ -524,10 +550,18 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
       drawArrow(ctx, arrow.x1, arrow.y1, arrow.x2, arrow.y2, ink(arrow.color));
     }
 
-    // Draw in-progress arrow
+    // Draw in-progress arrow (and the shape its end will attach to)
     if (arrowDrawRef.current.active) {
       const a = arrowDrawRef.current;
       drawArrow(ctx, a.x1, a.y1, a.x2, a.y2, ink(drawColor));
+    }
+    const target = arrowTargetRef.current ? shapeRect(boardShapes(), arrowTargetRef.current) : null;
+    if (target) {
+      ctx.strokeStyle = isDark ? "#89b4fa" : "#1e66f5";
+      ctx.lineWidth = 2 / cam.zoom;
+      ctx.setLineDash([3 / cam.zoom, 3 / cam.zoom]);
+      ctx.strokeRect(target.x - 4, target.y - 4, target.w + 8, target.h + 8);
+      ctx.setLineDash([]);
     }
 
     // Draw text elements (plain + callout)
@@ -616,6 +650,40 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
       }
     }
 
+    // Multi-selection: a box around each member
+    const accent = isDark ? "#89b4fa" : "#1e66f5";
+    for (const m of multiSelRef.current) {
+      const r = shapeRect(boardShapes(), m);
+      if (!r) continue;
+      ctx.strokeStyle = accent;
+      ctx.lineWidth = 1.5 / cam.zoom;
+      ctx.setLineDash([4 / cam.zoom, 4 / cam.zoom]);
+      ctx.strokeRect(r.x - 3, r.y - 3, r.w + 6, r.h + 6);
+      ctx.setLineDash([]);
+    }
+    // Alignment guides
+    const guides = guidesRef.current;
+    if (guides) {
+      ctx.strokeStyle = isDark ? "#f38ba8" : "#d20f39";
+      ctx.lineWidth = 1 / cam.zoom;
+      const left = -cam.x / cam.zoom, top = -cam.y / cam.zoom;
+      const right = (w - cam.x) / cam.zoom, bottom = (h - cam.y) / cam.zoom;
+      ctx.beginPath();
+      for (const gx of guides.x) { ctx.moveTo(gx, top); ctx.lineTo(gx, bottom); }
+      for (const gy of guides.y) { ctx.moveTo(left, gy); ctx.lineTo(right, gy); }
+      ctx.stroke();
+    }
+    // Rubber band
+    const mq = marqueeRef.current;
+    if (mq) {
+      const r = normRect(mq.x0, mq.y0, mq.x1, mq.y1);
+      ctx.fillStyle = isDark ? "rgba(137,180,250,0.08)" : "rgba(30,102,245,0.08)";
+      ctx.fillRect(r.x, r.y, r.w, r.h);
+      ctx.strokeStyle = accent;
+      ctx.lineWidth = 1 / cam.zoom;
+      ctx.strokeRect(r.x, r.y, r.w, r.h);
+    }
+
     // Draw selection bounding box
     const sel = selectedElementRef.current;
     if (sel) {
@@ -645,8 +713,7 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
           sw = Math.abs(a.x2 - a.x1) + 10; sh = Math.abs(a.y2 - a.y1) + 10; found = true;
         }
       } else if (sel.type === "line") {
-        const idx = parseInt(sel.id);
-        const line = linesRef.current[idx];
+        const line = linesRef.current.find((l, i) => lineKey(l, i) === sel.id);
         if (line && line.points.length > 0) {
           let lMinX = Infinity, lMinY = Infinity, lMaxX = -Infinity, lMaxY = -Infinity;
           for (const pt of line.points) {
@@ -666,7 +733,7 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
     }
 
     ctx.restore();
-  }, [drawColor]);
+  }, [drawColor, boardShapes]);
 
   // Text wrapping helper
   function drawArrow(ctx: CanvasRenderingContext2D, x1: number, y1: number, x2: number, y2: number, color: string) {
@@ -747,7 +814,16 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
   // Mark redraw needed when state changes
   useEffect(() => {
     requestRedraw();
-  }, [notes, lines, texts, arrows, boxes, images, selectedElement, effectiveBg, requestRedraw]);
+  }, [notes, lines, texts, arrows, boxes, images, selectedElement, multiSel, effectiveBg, requestRedraw]);
+
+  // Connectors follow their shapes: whenever a shape moves, resizes or goes,
+  // attached arrow ends are put back on its border (or released).
+  useEffect(() => {
+    setArrows((prev) => {
+      const b = { notes, boxes, images, texts, arrows: prev, lines };
+      return reattachArrows(dropDanglingAttachments(prev, b), b);
+    });
+  }, [notes, boxes, images, texts, lines]);
 
   // ── Persistence: dirty flag + debounced save to the DB ──
   // Saves only happen when something actually changed (content, canvas
@@ -889,8 +965,28 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
     const drag = draggingElementRef.current;
     pendingDragRef.current = null;
     if (!pending || !drag) return;
-    const { nx, ny } = pending;
+    let { nx, ny } = pending;
     const id = drag.id;
+    // Alignment guides: snap a dragged shape to the other shapes' edges / centres.
+    if (drag.type === "note" || drag.type === "box" || drag.type === "image" || drag.type === "text") {
+      const b = boardShapes();
+      const r = shapeRect(b, { type: drag.type, id });
+      if (r) {
+        // A text's box starts `pad` before its anchor point.
+        const te = drag.type === "text" ? textsRef.current.find((t) => t.id === id) : undefined;
+        const offX = te ? te.x - r.x : 0;
+        const offY = te ? te.y - r.y : 0;
+        const moving: Rect = { x: nx - offX, y: ny - offY, w: r.w, h: r.h };
+        const others = (["note", "box", "image", "text"] as const).flatMap((t) =>
+          (t === "note" ? b.notes : t === "box" ? b.boxes : t === "image" ? b.images : b.texts)
+            .filter((e) => !(t === drag.type && e.id === id))
+            .map((e) => shapeRect(b, { type: t, id: e.id }))
+            .filter((x): x is Rect => !!x));
+        const snap = snapToGuides(moving, others, 6 / cameraRef.current.zoom);
+        nx += snap.dx; ny += snap.dy;
+        guidesRef.current = snap.guides.x.length || snap.guides.y.length ? snap.guides : null;
+      }
+    }
     if (drag.type === "note") {
       setNotes((prev) => prev.map((n) => n.id === id ? { ...n, x: nx, y: ny } : n));
     } else if (drag.type === "text") {
@@ -905,12 +1001,12 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
         if (a.id !== id) return a;
         const dx = nx - Math.min(a.x1, a.x2);
         const dy = ny - Math.min(a.y1, a.y2);
-        return { ...a, x1: a.x1 + dx, y1: a.y1 + dy, x2: a.x2 + dx, y2: a.y2 + dy };
+        // Moved by hand: the arrow lets go of its shapes.
+        return { ...a, x1: a.x1 + dx, y1: a.y1 + dy, x2: a.x2 + dx, y2: a.y2 + dy, from: null, to: null };
       }));
     } else if (drag.type === "line") {
-      const idx = parseInt(id);
       setLines((prev) => prev.map((l, i) => {
-        if (i !== idx) return l;
+        if (lineKey(l, i) !== id) return l;
         let minX = Infinity, minY = Infinity;
         for (const pt of l.points) { minX = Math.min(minX, pt.x); minY = Math.min(minY, pt.y); }
         const dx = nx - minX, dy = ny - minY;
@@ -918,7 +1014,7 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
       }));
     }
     requestRedraw();
-  }, [requestRedraw]);
+  }, [requestRedraw, boardShapes]);
 
   const queueDrag = useCallback((world: { x: number; y: number }) => {
     const drag = draggingElementRef.current;
@@ -936,6 +1032,65 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
   }, [applyPendingDrag]);
 
   useEffect(() => () => { if (dragRafRef.current !== null) cancelAnimationFrame(dragRafRef.current); }, []);
+
+  /** Move every member of `members` by (dx, dy) from their positions in `base`. */
+  const applyGroupOffset = useCallback((members: Sel[], base: Snapshot, dx: number, dy: number) => {
+    const has = (t: string) => new Set(members.filter((m) => m.type === t).map((m) => m.id));
+    const ns = has("note"), ts = has("text"), bs = has("box"), is = has("image"), as = has("arrow"), ls = has("line");
+    if (ns.size) setNotes(base.notes.map((n) => ns.has(n.id) ? { ...n, x: n.x + dx, y: n.y + dy } : n));
+    if (ts.size) setTexts(base.texts.map((t) => ts.has(t.id) ? { ...t, x: t.x + dx, y: t.y + dy } : t));
+    if (bs.size) setBoxes(base.boxes.map((b) => bs.has(b.id) ? { ...b, x: b.x + dx, y: b.y + dy } : b));
+    if (is.size) setImages(base.images.map((b) => is.has(b.id) ? { ...b, x: b.x + dx, y: b.y + dy } : b));
+    if (as.size) setArrows(base.arrows.map((a) => as.has(a.id) ? { ...a, x1: a.x1 + dx, y1: a.y1 + dy, x2: a.x2 + dx, y2: a.y2 + dy } : a));
+    if (ls.size) setLines(base.lines.map((l, i) => ls.has(lineKey(l, i)) ? { ...l, points: l.points.map((p) => ({ x: p.x + dx, y: p.y + dy })) } : l));
+  }, []);
+
+  /** Group drag to world point (x, y), snapped to the shapes outside the group. */
+  const moveGroupTo = useCallback((x: number, y: number) => {
+    const g = groupDragRef.current;
+    if (!g) return;
+    let dx = x - g.startX, dy = y - g.startY;
+    if (!g.moved && Math.hypot(dx, dy) * cameraRef.current.zoom < 3) return;
+    g.moved = true;
+    const baseBoard: BoardShapes = { ...g.base };
+    const inGroup = new Set(g.members.map(selKey));
+    const rects = g.members.map((m) => shapeRect(baseBoard, m)).filter((r): r is Rect => !!r);
+    const box = unionRect(rects);
+    if (box) {
+      const others = (["note", "box", "image", "text"] as const).flatMap((t) =>
+        (t === "note" ? baseBoard.notes : t === "box" ? baseBoard.boxes : t === "image" ? baseBoard.images : baseBoard.texts)
+          .filter((e) => !inGroup.has(`${t}:${e.id}`))
+          .map((e) => shapeRect(baseBoard, { type: t, id: e.id }))
+          .filter((r): r is Rect => !!r));
+      const snap = snapToGuides({ ...box, x: box.x + dx, y: box.y + dy }, others, 6 / cameraRef.current.zoom);
+      dx += snap.dx; dy += snap.dy;
+      guidesRef.current = snap.guides.x.length || snap.guides.y.length ? snap.guides : null;
+    }
+    applyGroupOffset(g.members, g.base, dx, dy);
+    requestRedraw();
+  }, [applyGroupOffset, requestRedraw]);
+
+  /** Select a set of elements: one → the single selection, 2+ → the group. */
+  const selectSet = useCallback((list: Sel[]) => {
+    const uniq = [...new Map(list.map((e) => [selKey(e), e])).values()];
+    if (uniq.length <= 1) { setMultiSel([]); setSelectedElement(uniq[0] ?? null); }
+    else { setSelectedElement(null); setMultiSel(uniq); }
+  }, []);
+
+  const snapshotNow = (): Snapshot => ({
+    notes: notesRef.current, lines: linesRef.current, images: imagesRef.current,
+    texts: textsRef.current, arrows: arrowsRef.current, boxes: boxesRef.current,
+  });
+
+  /** A new arrow; an end drawn on a shape is attached to it and placed on its border. */
+  const makeArrow = useCallback((a: { x1: number; y1: number; x2: number; y2: number }, color: string): Arrow => {
+    const b = boardShapes();
+    let from = shapeAt(b, a.x1, a.y1);
+    let to = shapeAt(b, a.x2, a.y2);
+    if (from && to && selKey(from) === selKey(to)) { from = null; to = null; } // within one shape: a plain arrow
+    const arrow: Arrow = { id: "arr-" + Date.now(), x1: a.x1, y1: a.y1, x2: a.x2, y2: a.y2, color, from, to };
+    return from || to ? { ...arrow, ...connectorEnds(arrow, b) } : arrow;
+  }, [boardShapes]);
 
   const handleMouseDown = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -1017,16 +1172,31 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
 
         // Select mode — unified hit test for all elements
         const hit = findElementAt(world.x, world.y);
+        const current: Sel[] = multiSelRef.current.length ? multiSelRef.current : selectedElementRef.current ? [selectedElementRef.current] : [];
+        if (hit && e.shiftKey) {
+          // Shift+click adds to / removes from the selection.
+          const k = selKey(hit);
+          const next = current.some((c) => selKey(c) === k) ? current.filter((c) => selKey(c) !== k) : [...current, { type: hit.type, id: hit.id }];
+          selectSet(next);
+          return;
+        }
+        if (hit && multiSelRef.current.some((m) => selKey(m) === selKey(hit))) {
+          // Pressing on a member of the group drags the whole group.
+          groupDragRef.current = { startX: world.x, startY: world.y, base: snapshotNow(), members: multiSelRef.current, moved: false };
+          return;
+        }
         if (hit) {
+          setMultiSel([]);
           setSelectedElement({ type: hit.type, id: hit.id });
           draggingElementRef.current = { type: hit.type, id: hit.id, offsetX: world.x - hit.x, offsetY: world.y - hit.y };
           return;
         }
-        // Click empty space → deselect
-        setSelectedElement(null);
+        // Empty space: a rubber band (Shift adds to the selection); a plain click deselects.
+        marqueeRef.current = { x0: world.x, y0: world.y, x1: world.x, y1: world.y, additive: e.shiftKey };
+        if (!e.shiftKey) { setSelectedElement(null); setMultiSel([]); }
       }
     },
-    [mode, screenToWorld, findNoteAt, findElementAt, textStyle, textSize, drawColor, noteColor]
+    [mode, screenToWorld, findNoteAt, findElementAt, textStyle, textSize, drawColor, noteColor, selectSet]
   );
 
   const handleMouseMove = useCallback(
@@ -1060,8 +1230,15 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
         const world = screenToWorld(sx, sy);
         arrowDrawRef.current.x2 = world.x;
         arrowDrawRef.current.y2 = world.y;
+        arrowTargetRef.current = shapeAt(boardShapes(), world.x, world.y);
         requestRedraw();
         return;
+      }
+      if (mode === "arrow") {
+        // Before pressing: show which shape the arrow would start on.
+        const world = screenToWorld(sx, sy);
+        const t = shapeAt(boardShapes(), world.x, world.y);
+        if ((t && selKey(t)) !== (arrowTargetRef.current && selKey(arrowTargetRef.current))) { arrowTargetRef.current = t; requestRedraw(); }
       }
 
       // Box drawing
@@ -1073,12 +1250,28 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
         return;
       }
 
+      // Rubber band
+      if (marqueeRef.current) {
+        const world = screenToWorld(sx, sy);
+        marqueeRef.current.x1 = world.x;
+        marqueeRef.current.y1 = world.y;
+        requestRedraw();
+        return;
+      }
+
+      // Group drag
+      if (groupDragRef.current) {
+        const world = screenToWorld(sx, sy);
+        moveGroupTo(world.x, world.y);
+        return;
+      }
+
       // Dragging any element — coalesced to one state update per frame
       if (draggingElementRef.current) {
         queueDrag(screenToWorld(sx, sy));
       }
     },
-    [screenToWorld, requestRedraw, queueDrag]
+    [screenToWorld, requestRedraw, queueDrag, mode, boardShapes, moveGroupTo]
   );
 
   const handleMouseUp = useCallback(
@@ -1101,15 +1294,16 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
         drawingRef.current = { active: false, points: [] };
       }
 
-      // End arrow
+      // End arrow — an end drawn on a shape attaches to it (a connector)
       if (arrowDrawRef.current.active) {
         const a = arrowDrawRef.current;
         const dist = Math.sqrt((a.x2 - a.x1) ** 2 + (a.y2 - a.y1) ** 2);
         if (dist > 10) {
-          setArrows((prev) => [...prev, { id: "arr-" + Date.now(), x1: a.x1, y1: a.y1, x2: a.x2, y2: a.y2, color: drawColor }]);
+          setArrows((prev) => [...prev, makeArrow(a, drawColor)]);
           changed = true;
         }
         arrowDrawRef.current = { active: false, x1: 0, y1: 0, x2: 0, y2: 0 };
+        arrowTargetRef.current = null;
       }
 
       // End box
@@ -1132,10 +1326,30 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
         changed = true;
       }
 
+      // End rubber band: select what it covers
+      const mq = marqueeRef.current;
+      if (mq) {
+        marqueeRef.current = null;
+        const r = normRect(mq.x0, mq.y0, mq.x1, mq.y1);
+        if (r.w * cameraRef.current.zoom > 3 || r.h * cameraRef.current.zoom > 3) {
+          const found = elementsInRect(boardShapes(), r) as Sel[];
+          const before: Sel[] = mq.additive ? (multiSelRef.current.length ? multiSelRef.current : selectedElementRef.current ? [selectedElementRef.current] : []) : [];
+          selectSet([...before, ...found]);
+        }
+        requestRedraw();
+      }
+
+      // End group drag
+      if (groupDragRef.current) {
+        if (groupDragRef.current.moved) changed = true;
+        groupDragRef.current = null;
+      }
+      if (guidesRef.current) { guidesRef.current = null; requestRedraw(); }
+
       // Auto-save after every interaction
       if (changed) setTimeout(saveNow, 50);
     },
-    [drawColor, saveNow, flushDrag]
+    [drawColor, saveNow, flushDrag, boardShapes, selectSet, requestRedraw, makeArrow]
   );
 
   // --- Touch event support ---
@@ -1262,10 +1476,11 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
         const a = arrowDrawRef.current;
         const dist = Math.sqrt((a.x2 - a.x1) ** 2 + (a.y2 - a.y1) ** 2);
         if (dist > 10) {
-          setArrows((prev) => [...prev, { id: "arr-" + Date.now(), x1: a.x1, y1: a.y1, x2: a.x2, y2: a.y2, color: drawColor }]);
+          setArrows((prev) => [...prev, makeArrow(a, drawColor)]);
           changed = true;
         }
         arrowDrawRef.current = { active: false, x1: 0, y1: 0, x2: 0, y2: 0 };
+        arrowTargetRef.current = null;
       }
 
       if (boxDrawRef.current.active) {
@@ -1284,10 +1499,11 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
         draggingElementRef.current = null;
         changed = true;
       }
+      guidesRef.current = null;
 
       if (changed) setTimeout(saveNow, 50);
     },
-    [drawColor, saveNow, flushDrag]
+    [drawColor, saveNow, flushDrag, makeArrow]
   );
 
   const handleDoubleClick = useCallback(
@@ -1738,6 +1954,8 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
           finishTextEdit();
         } else if (contextMenu) {
           setContextMenu(null);
+        } else if (multiSel.length) {
+          setMultiSel([]);
         } else if (selectedElement) {
           setSelectedElement(null);
         } else if (mode !== "select") {
@@ -1749,7 +1967,7 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
         return;
       }
       // Quick mode switch (only when not editing)
-      if (!editingNote && !editingTextId) {
+      if (!editingNote && !editingTextId && !e.ctrlKey && !e.metaKey && !e.altKey) {
         if (e.key === "s" || e.key === "S") setMode("select");
         if (e.key === "t" || e.key === "T") setMode("text");
         if (e.key === "a" || e.key === "A") setMode("arrow");
@@ -1778,6 +1996,36 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
           }
         }
       }
+      // Group: arrow keys move it, Delete removes it
+      if (multiSel.length && !editingNote && !editingTextId) {
+        if (e.key === "ArrowUp" || e.key === "ArrowDown" || e.key === "ArrowLeft" || e.key === "ArrowRight") {
+          e.preventDefault();
+          const step = e.shiftKey ? 10 : 1;
+          applyGroupOffset(multiSel, snapshotNow(), e.key === "ArrowLeft" ? -step : e.key === "ArrowRight" ? step : 0, e.key === "ArrowUp" ? -step : e.key === "ArrowDown" ? step : 0);
+          setTimeout(saveNow, 200);
+          return;
+        }
+        if (e.key === "Delete" || e.key === "Backspace") {
+          e.preventDefault();
+          const gone = new Set(multiSel.map(selKey));
+          setNotes((prev) => prev.filter((n) => !gone.has(`note:${n.id}`)));
+          setTexts((prev) => prev.filter((t) => !gone.has(`text:${t.id}`)));
+          setArrows((prev) => prev.filter((a) => !gone.has(`arrow:${a.id}`)));
+          setBoxes((prev) => prev.filter((b) => !gone.has(`box:${b.id}`)));
+          setImages((prev) => prev.filter((i) => !gone.has(`image:${i.id}`)));
+          setLines((prev) => prev.filter((l, i) => !gone.has(`line:${lineKey(l, i)}`)));
+          setMultiSel([]);
+          setTimeout(saveNow, 50);
+          return;
+        }
+      }
+      // Ctrl+A selects everything on the board
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a" && !editingNote && !editingTextId) {
+        e.preventDefault();
+        const all = elementsInRect(boardShapes(), { x: -1e9, y: -1e9, w: 2e9, h: 2e9 }) as Sel[];
+        selectSet(all);
+        return;
+      }
       // Arrow keys — move selected element (1px, or 10px with Shift)
       if (selectedElement && !editingNote && !editingTextId &&
           (e.key === "ArrowUp" || e.key === "ArrowDown" || e.key === "ArrowLeft" || e.key === "ArrowRight")) {
@@ -1790,10 +2038,9 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
         else if (type === "text") setTexts((prev) => prev.map((t) => t.id === id ? { ...t, x: t.x + dx, y: t.y + dy } : t));
         else if (type === "box") setBoxes((prev) => prev.map((b) => b.id === id ? { ...b, x: b.x + dx, y: b.y + dy } : b));
         else if (type === "image") setImages((prev) => prev.map((img) => img.id === id ? { ...img, x: img.x + dx, y: img.y + dy } : img));
-        else if (type === "arrow") setArrows((prev) => prev.map((a) => a.id === id ? { ...a, x1: a.x1 + dx, y1: a.y1 + dy, x2: a.x2 + dx, y2: a.y2 + dy } : a));
+        else if (type === "arrow") setArrows((prev) => prev.map((a) => a.id === id ? { ...a, x1: a.x1 + dx, y1: a.y1 + dy, x2: a.x2 + dx, y2: a.y2 + dy, from: null, to: null } : a));
         else if (type === "line") {
-          const idx = parseInt(id);
-          setLines((prev) => prev.map((l, i) => i === idx ? { ...l, points: l.points.map((p) => ({ x: p.x + dx, y: p.y + dy })) } : l));
+          setLines((prev) => prev.map((l, i) => lineKey(l, i) === id ? { ...l, points: l.points.map((p) => ({ x: p.x + dx, y: p.y + dy })) } : l));
         }
         setTimeout(saveNow, 200);
       }
@@ -1805,7 +2052,7 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
         else if (type === "arrow") setArrows((prev) => prev.filter((a) => a.id !== id));
         else if (type === "box") setBoxes((prev) => prev.filter((b) => b.id !== id));
         else if (type === "image") setImages((prev) => prev.filter((i) => i.id !== id));
-        else if (type === "line") setLines((prev) => prev.filter((_, idx) => String(idx) !== id));
+        else if (type === "line") setLines((prev) => prev.filter((l, idx) => lineKey(l, idx) !== id));
         setSelectedElement(null);
         setTimeout(saveNow, 50);
       }
@@ -1822,7 +2069,22 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [handleClose, editingNote, editingTextId, finishEdit, contextMenu, saveNow, selectedElement, mode, undo, redo]);
+  }, [handleClose, editingNote, editingTextId, finishEdit, contextMenu, saveNow, selectedElement, multiSel, mode, undo, redo, applyGroupOffset, boardShapes, selectSet]);
+
+  // For tests and tooling: the board's elements and selection.
+  useEffect(() => {
+    const el = containerRef.current as unknown as { __minotesBoard?: unknown } | null;
+    if (!el) return;
+    el.__minotesBoard = {
+      data: () => ({ ...boardShapes() }),
+      selection: () => (multiSelRef.current.length ? multiSelRef.current : selectedElementRef.current ? [selectedElementRef.current] : []).map(selKey),
+      toScreen: (x: number, y: number) => {
+        const r = canvasRef.current!.getBoundingClientRect();
+        const cam = cameraRef.current;
+        return { x: r.left + x * cam.zoom + cam.x, y: r.top + y * cam.zoom + cam.y };
+      },
+    };
+  }, [boardShapes]);
 
   // Compute editing note screen position
   const editScreenPos = (() => {
@@ -1848,7 +2110,7 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
             <button
               key={m}
               className={`btn btn-sm ${mode === m ? "btn-primary" : ""}`}
-              onClick={() => setMode(m)}
+              onClick={() => { setMode(m); arrowTargetRef.current = null; requestRedraw(); }}
               title={`${m.charAt(0).toUpperCase() + m.slice(1)} (${m[0].toUpperCase()})`}
             >
               {m.charAt(0).toUpperCase() + m.slice(1)}
@@ -1857,6 +2119,24 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
         </div>
 
         {/* ── Contextual controls per tool ── */}
+
+        {/* Group selection (Select mode) */}
+        {mode === "select" && multiSel.length > 1 && (
+          <div className="whiteboard-toolbar-group" data-testid="wb-multi">
+            <span className="whiteboard-toolbar-label">{multiSel.length} selected</span>
+            <button className="btn btn-sm" onClick={() => {
+              const gone = new Set(multiSel.map(selKey));
+              setNotes((prev) => prev.filter((n) => !gone.has(`note:${n.id}`)));
+              setTexts((prev) => prev.filter((t) => !gone.has(`text:${t.id}`)));
+              setArrows((prev) => prev.filter((a) => !gone.has(`arrow:${a.id}`)));
+              setBoxes((prev) => prev.filter((b) => !gone.has(`box:${b.id}`)));
+              setImages((prev) => prev.filter((i) => !gone.has(`image:${i.id}`)));
+              setLines((prev) => prev.filter((l, i) => !gone.has(`line:${lineKey(l, i)}`)));
+              setMultiSel([]);
+              setTimeout(saveNow, 50);
+            }} title="Delete the selection (Delete)"><Icon name="trash" size={13} /> Delete</button>
+          </div>
+        )}
 
         {/* Selected element info (Select mode) */}
         {mode === "select" && selectedElement && (
@@ -1876,7 +2156,7 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
                       if (type === "text") setTexts((prev) => prev.map((t) => t.id === id ? { ...t, color: c } : t));
                       else if (type === "arrow") setArrows((prev) => prev.map((a) => a.id === id ? { ...a, color: c } : a));
                       else if (type === "box") setBoxes((prev) => prev.map((b) => b.id === id ? { ...b, color: c } : b));
-                      else if (type === "line") setLines((prev) => prev.map((l, i) => String(i) === id ? { ...l, color: c } : l));
+                      else if (type === "line") setLines((prev) => prev.map((l, i) => lineKey(l, i) === id ? { ...l, color: c } : l));
                       setTimeout(saveNow, 50);
                     }}
                   />

@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { getCachedWhiteboard, loadWhiteboard, type StoredWhiteboard } from "../lib/whiteboardUtils";
+import { isRemoteSrc } from "../lib/remoteImages";
 
 const THUMB_W = 80;
 const THUMB_H = 52;
@@ -19,6 +20,24 @@ function drawPlaceholder(ctx: CanvasRenderingContext2D) {
   ctx.stroke(new Path2D("M12 20h9"));
   ctx.stroke(new Path2D("M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"));
   ctx.restore();
+}
+
+// Decoded board images, shared by every thumbnail (keyed by the data URL).
+const decoded = new Map<string, HTMLImageElement>();
+const MAX_DECODED = 60;
+
+/** The decoded image for `src`, or null while it loads (`onReady` runs once it has). */
+function thumbImage(src: string | undefined, onReady: () => void): HTMLImageElement | null {
+  if (!src || !src.startsWith("data:image/") || isRemoteSrc(src)) return null;
+  const hit = decoded.get(src);
+  if (hit) return hit.complete && hit.naturalWidth > 0 ? hit : null;
+  const el = new Image();
+  el.onload = onReady;
+  el.onerror = () => decoded.delete(src);
+  el.src = src;
+  decoded.set(src, el);
+  if (decoded.size > MAX_DECODED) decoded.delete(decoded.keys().next().value as string);
+  return null;
 }
 
 /** Render a thumbnail from already-parsed whiteboard data (null = never saved). */
@@ -143,10 +162,19 @@ function renderThumbnail(canvas: HTMLCanvasElement, data: StoredWhiteboard | nul
       ctx.globalAlpha = 1;
     }
 
-    // Draw images — outline with icon indicator
+    // Draw images: the picture itself once decoded (embedded data: URLs only —
+    // a web address is never loaded); until then an outlined placeholder.
+    let drawn = 0;
     for (const img of images) {
       const ix = tx(img.x), iy = ty(img.y);
       const iw = img.width * scale, ih = img.height * scale;
+      const el = thumbImage(img.dataUrl, () => renderThumbnail(canvas, data));
+      if (el) {
+        ctx.drawImage(el, ix, iy, iw, ih);
+        drawn++;
+        canvas.dataset.imagesDrawn = String(drawn);
+        continue;
+      }
       ctx.strokeStyle = "#7287a8";
       ctx.lineWidth = 1;
       ctx.strokeRect(ix, iy, iw, ih);
