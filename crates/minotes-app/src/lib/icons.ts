@@ -47,6 +47,12 @@ const ICONS = {
   journal: ["M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20", "M8 7h8"],
   sidebar: ["r:3,3,18,18,2", "M9 3v18"],
   keyboard: ["r:2,5,20,14,2", "M6 9h.01", "M10 9h.01", "M14 9h.01", "M18 9h.01", "M6 13h.01", "M18 13h.01", "M8 16h8"],
+  // Navigation (UX Wave 4): back / forward, restore, unlock.
+  "arrow-left": ["M19 12H5", "M12 19l-7-7 7-7"],
+  "arrow-right": ["M5 12h14", "M12 5l7 7-7 7"],
+  "rotate-ccw": ["M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8", "M3 3v5h5"],
+  unlock: ["r:3,11,18,11,2", "M7 11V7a5 5 0 0 1 9.9-1"],
+  command: ["M15 6v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3"],
 } as const;
 
 export type IconName = keyof typeof ICONS;

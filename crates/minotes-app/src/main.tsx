@@ -7,9 +7,12 @@ import LockGate from "./components/LockGate";
 import "./styles.css";
 import "./lib/testModules";
 import { installTooltips } from "./lib/tooltip";
+import { installNavHistory } from "./lib/navHistory";
 
 // The app's own tooltip for every `title` (lib/tooltip.ts): never over a menu.
 installTooltips();
+// Back / forward keys and mouse buttons, also on the unlock screen (lib/navHistory.ts).
+installNavHistory();
 
 class ErrorBoundary extends React.Component<
   { children: React.ReactNode },

@@ -12,10 +12,14 @@ import { useEscapeToClose } from "../lib/escapeStack";
 import { folderNameConflict } from "../lib/folderNames";
 import { errorMessage } from "../lib/errors";
 import { pageTitleConflict } from "../lib/pageNames";
-import { confirmDialog, plural } from "../lib/confirm";
+import { plural } from "../lib/confirm";
 import SyncChip from "./SyncChip";
 import { NEW_PAGE_FIELD_EVENT } from "../lib/newPage";
 import Icon from "./Icon";
+import NavButtons from "./NavButtons";
+import { getRecentPages } from "../lib/recentFiles";
+import { RECENT_SECTION_SIZE, setRecentSectionOpen, useRecentSection } from "../lib/sidebarRecent";
+import "./navigation.css";
 function formatJournalDate(dateStr: string): string {
   try {
     const [y, m, d] = dateStr.split("-").map(Number);
@@ -105,12 +109,17 @@ interface Props {
   onReviewClick?: () => void;
   activeMode: "graph" | "mindmap" | "whiteboard" | "kanban" | "pages" | null;
   refreshKey: number;
+  /** Open the Trash / Archive views in the main pane. */
+  onTrashClick?: () => void;
+  onArchiveClick?: () => void;
+  /** The main-pane view shown (marks Trash / Archive / Pages as current). */
+  activeView?: string | null;
 }
 
 export default function Sidebar({
   activePage, stats, onPageClick, onCreatePage, onDeletePage,
   onJournalClick, onSearchClick, onGraphClick, onMindmapClick, onWhiteboardClick, onKanbanClick, onPagesClick, onSettingsClick, onFolderSettings, onTodoBadgeClick, tasksOpen, selectedJournalDate, activeMode, refreshKey,
-  onReviewClick, onToggleSidebar,
+  onReviewClick, onToggleSidebar, onTrashClick, onArchiveClick, activeView,
 }: Props) {
   const [newTitle, setNewTitle] = useState("");
   const [showCreate, setShowCreate] = useState(false);
@@ -123,10 +132,9 @@ export default function Sidebar({
   const [favorites, setFavorites] = useState<Page[]>([]);
   const [showAllPinned, setShowAllPinned] = useState(false);
   const [trashItems, setTrashItems] = useState<api.TrashItem[]>([]);
-  const [showTrash, setShowTrash] = useState(false);
   const [archivedItems, setArchivedItems] = useState<api.ArchiveItem[]>([]);
-  const [showArchived, setShowArchived] = useState(false);
   const [pendingTodos, setPendingTodos] = useState(0);
+  const recentSection = useRecentSection();
   const [srs, setSrs] = useState<api.SrsStats | null>(null);
   // settings.ai.todoExtraction gates the TODO badge; updates live via the
   // minotes-settings-changed event (no reload needed).
@@ -170,8 +178,6 @@ export default function Sidebar({
     const onSwitch = () => {
       setExpandedProjectIds(loadExpandedIds());
       setAllCollapsed(false);
-      setShowTrash(false);
-      setShowArchived(false);
       setShowCreate(false);
       setShowFolderCreate(false);
       setShowCalendar(false);
@@ -340,6 +346,19 @@ export default function Sidebar({
   const pinnedIds = new Set(favorites.map(f => f.id));
   const showQuickAccess = favorites.length > 0;
 
+  // Recent: pages opened lately that are still live (not trashed or archived —
+  // only live pages are in the tree), newest first.
+  const livePages = new Map<string, Page>();
+  if (treeData) {
+    treeData.root_pages.forEach(p => livePages.set(p.id, p));
+    const walk = (fs: FolderTree[]) => { for (const f of fs) { f.pages.forEach(p => livePages.set(p.id, p)); walk(f.children ?? []); } };
+    walk(treeData.folders);
+  }
+  const recentPages = getRecentPages()
+    .map(r => livePages.get(r.id))
+    .filter((p): p is Page => !!p)
+    .slice(0, RECENT_SECTION_SIZE);
+
   // Projects: first 5 visible, rest overflow
   const allProjects = treeData?.folders ?? [];
   const folderList = flattenFolders(allProjects);
@@ -360,6 +379,7 @@ export default function Sidebar({
         <button className="sidebar-gear-btn" onClick={onSettingsClick} title="Settings (Ctrl+,)" aria-label="Settings"><Icon name="settings" /></button>
       </div>
       <div className="sidebar-actions-bar">
+        <NavButtons />
         <button className="btn btn-sm" onClick={onSearchClick} title="Search (Ctrl+K)" style={{ flex: 1 }}>
           <Icon name="search" size={14} /> Search
         </button>
@@ -484,6 +504,37 @@ export default function Sidebar({
         )}
         {/* Spacing after Pinned section */}
         {showQuickAccess && <div className="sidebar-section-gap" />}
+
+        {/* -- Recent (optional, collapsible, remembered; never trashed/archived pages) -- */}
+        {recentSection.shown && recentPages.length > 0 && (
+          <div className="sidebar-recent" data-testid="sidebar-recent">
+            <button
+              type="button"
+              className="sidebar-section-title sidebar-recent-toggle"
+              aria-expanded={recentSection.open}
+              onClick={() => setRecentSectionOpen(!recentSection.open)}
+              title={recentSection.open ? "Collapse Recent" : "Show recent pages"}
+              data-testid="sidebar-recent-toggle"
+            >
+              <Icon name="clock" size={13} /> Recent
+              <span className="sidebar-section-chevron" aria-hidden>{recentSection.open ? "▾" : "▸"}</span>
+            </button>
+            {recentSection.open && recentPages.map(page => (
+              <DraggablePage
+                key={`recent-${page.id}`}
+                page={page}
+                activePage={activePage}
+                depth={0}
+                onPageClick={onPageClick}
+                onDeletePage={onDeletePage}
+                onRefresh={loadTree}
+                folderList={folderList}
+                pinnedPage={pinnedIds.has(page.id)}
+              />
+            ))}
+            <div className="sidebar-section-gap" />
+          </div>
+        )}
 
         {/* TODO badge */}
         {todoExtraction && pendingTodos > 0 && (
@@ -641,125 +692,30 @@ export default function Sidebar({
         {/* System states: Archived + Trash */}
         <div className="sidebar-system-states">
           <div className="stats-modes-divider" />
+          {/* Archive and Trash open their views in the main pane (preview,
+              multi-select, restore / delete permanently). */}
           {archivedItems.length > 0 && (
-            <>
-              <div
-                className="sidebar-system-item"
-                onClick={() => setShowArchived(v => !v)}
-              >
-                <span><Icon name="archive" size={14} /> Archived ({archivedItems.length})</span>
-                <span className="sidebar-section-chevron">{showArchived ? "\u25B4" : "\u25BE"}</span>
-              </div>
-              {showArchived && (
-                <div className="sidebar-trash-list">
-                  {archivedItems.map(item => (
-                    <div key={item.id} className="page-item sidebar-trash-item">
-                      <span>
-                        {item.item_type === "folder" ? <><Icon name="folder" size={13} />{" "}</> : ""}
-                        {displayTitle({ title: item.title })}
-                        {item.item_type === "folder" && item.page_count > 0 && (
-                          <span className="folder-count"> ({item.page_count})</span>
-                        )}
-                      </span>
-                      <span className="sidebar-trash-actions">
-                        <button
-                          className="sidebar-trash-action-btn"
-                          title="Restore"
-                          onClick={async e => {
-                            e.stopPropagation();
-                            if (item.item_type === "folder") {
-                              await api.unarchiveFolder(item.id);
-                            } else {
-                              await api.unarchivePage(item.id);
-                            }
-                            loadTree();
-                          }}
-                        >&#8634;</button>
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </>
+            <button
+              type="button"
+              className={`sidebar-system-item${activeView === "archive" ? " active" : ""}`}
+              onClick={onArchiveClick}
+              aria-pressed={activeView === "archive"}
+              title="Archive: archived pages and projects"
+              data-testid="sidebar-archive"
+            >
+              <span><Icon name="archive" size={14} /> Archived ({archivedItems.length})</span>
+            </button>
           )}
-          <div
-            className="sidebar-system-item"
-            onClick={() => setShowTrash(v => !v)}
+          <button
+            type="button"
+            className={`sidebar-system-item${activeView === "trash" ? " active" : ""}`}
+            onClick={onTrashClick}
+            aria-pressed={activeView === "trash"}
+            title="Trash: restore or delete permanently"
+            data-testid="sidebar-trash"
           >
             <span><Icon name="trash" size={14} /> Trash{trashItems.length > 0 ? ` (${trashItems.length})` : ""}</span>
-            {trashItems.length > 0 && (
-              <span className="sidebar-section-chevron">{showTrash ? "\u25B4" : "\u25BE"}</span>
-            )}
-          </div>
-          {showTrash && trashItems.length > 0 && (
-            <div className="sidebar-trash-list">
-              {trashItems.map(item => (
-                <div key={item.id} className="page-item sidebar-trash-item" data-testid="trash-item">
-                  <span className="sidebar-trash-title" title={displayTitle({ title: item.title })}>
-                    {item.item_type === "folder" ? <Icon name="folder" size={13} /> : ""} {displayTitle({ title: item.title })}
-                    {item.item_type === "folder" && item.page_count > 0 && (
-                      <span className="folder-count"> ({item.page_count})</span>
-                    )}
-                  </span>
-                  <span className="sidebar-trash-actions">
-                    <button
-                      className="sidebar-trash-action-btn"
-                      title="Restore"
-                      aria-label={`Restore ${displayTitle({ title: item.title })}`}
-                      onClick={async e => {
-                        e.stopPropagation();
-                        await api.restoreFromTrash(item.id, item.item_type);
-                        loadTree();
-                      }}
-                    >&#8634;</button>
-                    <button
-                      className="sidebar-trash-action-btn danger"
-                      title="Delete permanently"
-                      aria-label={`Delete ${displayTitle({ title: item.title })} permanently`}
-                      data-testid="trash-delete"
-                      onClick={async e => {
-                        e.stopPropagation();
-                        const name = displayTitle({ title: item.title });
-                        const what = item.item_type === "folder"
-                          ? `The project and the ${plural(item.page_count, "page")} in it are deleted for good.`
-                          : "The page and all its blocks are deleted for good.";
-                        if (!(await confirmDialog({
-                          title: `Delete “${name}” permanently?`,
-                          message: `${what} This can't be undone.`,
-                          confirmLabel: "Delete permanently",
-                          danger: true,
-                        }))) return;
-                        await api.permanentlyDelete(item.id, item.item_type);
-                        loadTree();
-                      }}
-                    ><Icon name="x" size={13} /></button>
-                  </span>
-                </div>
-              ))}
-              {trashItems.length > 1 && (
-                <button
-                  type="button"
-                  className="page-item sidebar-more-pages sidebar-empty-trash"
-                  data-testid="empty-trash"
-                  onClick={async () => {
-                    const pages = trashItems.reduce((n, t) => n + (t.item_type === "folder" ? t.page_count : 1), 0);
-                    const projects = trashItems.filter(t => t.item_type === "folder").length;
-                    const parts = [plural(pages, "page"), projects ? plural(projects, "project") : ""].filter(Boolean).join(" and ");
-                    if (!(await confirmDialog({
-                      title: `Empty the trash?`,
-                      message: `${parts} in the trash ${pages + projects === 1 ? "is" : "are"} deleted for good. This can't be undone.`,
-                      confirmLabel: `Delete ${plural(trashItems.length, "item")}`,
-                      danger: true,
-                    }))) return;
-                    await api.emptyTrash();
-                    loadTree();
-                  }}
-                >
-                  Empty trash
-                </button>
-              )}
-            </div>
-          )}
+          </button>
         </div>
 
         {/* Tools */}

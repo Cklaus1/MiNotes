@@ -8,7 +8,8 @@ export const SHORTCUT_GROUPS: Array<{ title: string; items: Array<[string, strin
   {
     title: "Anywhere (also while editing a block)",
     items: [
-      ["Ctrl+K", "Search; type > for commands"],
+      ["Ctrl+K", "Search (Tab: pages / blocks / journals); type > for commands"],
+      ["Ctrl+[ / Ctrl+]", "Back / forward (pages, views, notebooks); also the mouse's back / forward buttons"],
       ["Ctrl+J", "Today's journal"],
       ["Alt+↑ / Alt+↓", "Previous / next journal day"],
       ["Ctrl+N", "New page"],
@@ -55,6 +56,16 @@ export const SHORTCUT_GROUPS: Array<{ title: string; items: Array<[string, strin
       ["/", "Insert menu (headings, todo, table, whiteboard…)"],
       ["[[", "Link to a page"],
       ["Alt+→ / Alt+←", "Zoom into the block / back out"],
+    ],
+  },
+  {
+    title: "All Pages, Trash and Archive",
+    items: [
+      ["↑ / ↓", "Move between rows"],
+      ["Space", "Tick the row (Shift+↑/↓, Shift+click: a range)"],
+      ["Ctrl+A", "Tick every row"],
+      ["Enter", "Open the page (All Pages)"],
+      ["Del", "Move to Trash (All Pages) / delete permanently (Trash)"],
     ],
   },
   {

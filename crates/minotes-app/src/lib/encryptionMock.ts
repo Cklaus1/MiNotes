@@ -79,6 +79,7 @@ export function createEncryptionMockHandlers(h: Handlers): Handlers {
   const baseSession = h.get_notebook_session;
   const baseSwitch = h.switch_notebook;
   const baseDelete = h.delete_notebook;
+  const baseResolve = h.resolve_notebook_links;
 
   return {
     list_notebooks: (a: any) => (baseList(a) as any[]).map(decorate),
@@ -101,6 +102,11 @@ export function createEncryptionMockHandlers(h: Handlers): Handlers {
       enc.delete(a.key);
       return r;
     },
+    // Core: a link into a locked notebook is "unavailable" with the detail "locked".
+    resolve_notebook_links: (a: any) => (baseResolve(a) as any[]).map(t =>
+      t.notebook_key && !t.current && stateOf(t.notebook_key)?.locked
+        ? { ...t, status: "unavailable", page_id: null, page_title: null, detail: "locked" }
+        : t),
     create_encrypted_notebook: ({ name, location, passphrase }: { name: string; location?: string | null; passphrase: string }) => {
       checkStrength(passphrase ?? "");
       const nb = h.create_notebook({ name, location });

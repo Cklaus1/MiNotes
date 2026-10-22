@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, useMemo } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo, useSyncExternalStore, type ReactNode } from "react";
 import * as api from "../lib/api";
 import { getRecentPages } from "../lib/recentFiles";
 import { getSettings, updateSettings } from "../lib/settings";
@@ -6,17 +6,23 @@ import { openInNotebook } from "../lib/crossNotebook";
 import { setPendingReveal } from "../lib/pendingReveal";
 import { blockPlainText } from "../lib/plainText";
 import "./tasks.css";
+import "./navigation.css";
 import { useLayer } from "../lib/layers";
 import Icon from "./Icon";
 import { useDialogFocus } from "../lib/dialogFocus";
-import { OPEN_SHORTCUTS_EVENT } from "../lib/shortcuts";
+import { highlightParts, rankByFuzzy, snippetAround, type Range } from "../lib/fuzzy";
+import {
+  commandsRevision, listCommands, noteCommandRun, rankCommands, recentCommandIds, subscribeCommands,
+  type ListedCommand, type PickItem,
+} from "../lib/commands";
 
 function formatTitle(title: string, isJournal?: boolean, journalDate?: string): string {
   const dateStr = journalDate ?? (title.startsWith("Journal/") ? title.slice(8) : null);
   if ((isJournal || title.startsWith("Journal/")) && dateStr) {
     try {
       const [y, m, d] = dateStr.split("-").map(Number);
-      return new Date(y, m - 1, d).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+      const dt = new Date(y, m - 1, d);
+      if (!isNaN(dt.getTime())) return dt.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric" });
     } catch { /* fall through */ }
   }
   return title;
@@ -25,71 +31,55 @@ function formatTitle(title: string, isJournal?: boolean, journalDate?: string): 
 interface Props {
   open: boolean;
   onClose: () => void;
-  onPageClick: (title: string) => void;
-  onToggleTheme?: () => void;
-  onNewPage?: () => void;
-  /** Create a page with this title and open it ("Create page" action for unmatched queries). */
+  onPageClick: (id: string) => void;
+  /** Create a page with this title and open it ("Create page" row for unmatched queries). */
   onCreatePage?: (title: string) => void;
-  onJournal?: () => void;
-  onGraph?: () => void;
-  onQuery?: () => void;
-  onReview?: () => void;
-  /** Page versions (local snapshots — not git sync). */
-  onSync?: () => void;
-  /** Git sync now. */
-  onSyncNow?: () => void;
-  onAskAi?: () => void;
-  onAiSettings?: () => void;
-  /** Dev builds only (unsafe stub): the command is hidden without it. */
-  onObsidianPlugins?: () => void;
-  onCssManager?: () => void;
-  onSettings?: () => void;
 }
 
-interface SearchResult {
-  block: api.Block;
-  pageTitle?: string;
-}
+type Filter = "all" | "pages" | "blocks" | "journals";
+const FILTERS: Array<[Filter, string]> = [["all", "All"], ["pages", "Pages"], ["blocks", "Blocks"], ["journals", "Journals"]];
 
-/** A hit in another notebook (page title or block), labelled with the notebook. */
-interface OtherHit {
+/** One selectable row; sections group them under a header. */
+interface Row {
   key: string;
-  notebookKey: string;
-  notebookName: string;
-  pageId: string;
-  blockId?: string;
-  text: string;
-  pageTitle: string;
+  className: string;
+  content: ReactNode;
+  title?: string;
+  testId?: string;
+  data?: Record<string, string>;
+  disabled?: string;
+  run: () => void;
+}
+interface Section {
+  key: string;
+  /** Header text (none for the "Create page" row). */
+  title?: ReactNode;
+  testId?: string;
+  rows: Row[];
+  /** Rendered after the rows (a note). */
+  after?: ReactNode;
 }
 
-function flattenOthers(r: api.CrossSearch | null): OtherHit[] {
-  if (!r) return [];
-  const out: OtherHit[] = [];
-  for (const nb of r.results) {
-    for (const p of nb.pages) {
-      out.push({ key: `${nb.notebook_key}:p:${p.id}`, notebookKey: nb.notebook_key, notebookName: nb.notebook_name, pageId: p.id, text: formatTitle(p.title, p.is_journal), pageTitle: p.title });
-    }
-    for (const b of nb.blocks) {
-      out.push({ key: `${nb.notebook_key}:b:${b.block.id}`, notebookKey: nb.notebook_key, notebookName: nb.notebook_name, pageId: b.block.page_id, blockId: b.block.id, text: blockPlainText(b.block.content).text || "(empty block)", pageTitle: formatTitle(b.page_title) });
-    }
-  }
-  return out;
+/** Text with the matched parts marked. */
+function Hl({ text, ranges }: { text: string; ranges: readonly Range[] }) {
+  if (!ranges.length) return <>{text}</>;
+  return (
+    <>
+      {highlightParts(text, ranges).map((p, i) =>
+        p.hit ? <mark key={i} className="palette-hit">{p.text}</mark> : <span key={i}>{p.text}</span>)}
+    </>
+  );
 }
 
-interface Command {
-  id: string;
-  label: string;
-  shortcut?: string;
-  action: () => void;
-}
+const PAGE_LIMIT = { all: 6, focused: 60 };
+const BLOCK_LIMIT = { all: 8, focused: 40 };
 
-export default function SearchPanel({
-  open, onClose, onPageClick,
-  onToggleTheme, onNewPage, onCreatePage, onJournal, onGraph, onQuery, onReview, onSync, onSyncNow, onAskAi, onAiSettings, onObsidianPlugins, onCssManager, onSettings,
-}: Props) {
+export default function SearchPanel({ open, onClose, onPageClick, onCreatePage }: Props) {
   const [query, setQuery] = useState("");
-  const [results, setResults] = useState<SearchResult[]>([]);
-  // The query `results` belongs to — the "Create page" action waits for it so Enter
+  const [filter, setFilter] = useState<Filter>("all");
+  const [results, setResults] = useState<api.Block[]>([]);
+  const [blockPages, setBlockPages] = useState<Map<string, { title: string; journal: boolean }>>(new Map());
+  // The query `results` belongs to — the "Create page" row waits for it so Enter
   // on a half-finished search never creates a page instead of opening a result.
   const [searchedQuery, setSearchedQuery] = useState("");
   const [pages, setPages] = useState<api.Page[]>([]);
@@ -97,6 +87,7 @@ export default function SearchPanel({
   pagesRef.current = pages;
   const [selectedIndex, setSelectedIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
+  const resultsRef = useRef<HTMLDivElement>(null);
   // "All notebooks": also search every other notebook (read-only, in the backend).
   const [allNotebooks, setAllNotebooks] = useState(() => getSettings().searchAllNotebooks);
   const [others, setOthers] = useState<api.CrossSearch | null>(null);
@@ -105,43 +96,19 @@ export default function SearchPanel({
   // Pages that can be shown (not trashed/archived, also not via their project):
   // Recent lists only these. Null until loaded.
   const [visibleIds, setVisibleIds] = useState<Set<string> | null>(null);
+  // A command that asks for one more choice (notebook, project…).
+  const [picker, setPicker] = useState<{ cmd: ListedCommand; items: PickItem[] | null } | null>(null);
+  const commandsVersion = useSyncExternalStore(subscribeCommands, commandsRevision, commandsRevision);
 
-  const isCommandMode = query.startsWith(">");
-  const commandQuery = isCommandMode ? query.slice(1).trim().toLowerCase() : "";
-
-  const commands = useMemo<Command[]>(() => [
-    { id: "toggle-theme", label: "Toggle Theme", shortcut: "Ctrl+Shift+T", action: () => onToggleTheme?.() },
-    { id: "new-page", label: "New Page", shortcut: "Ctrl+N", action: () => onNewPage?.() },
-    { id: "journal", label: "Open Today's Journal", shortcut: "Ctrl+J", action: () => onJournal?.() },
-    { id: "graph", label: "Open Graph View", shortcut: "Ctrl+G", action: () => onGraph?.() },
-    { id: "query", label: "Open SQL Query Panel", shortcut: "Ctrl+Q", action: () => onQuery?.() },
-    { id: "review", label: "Open Flashcard Review", shortcut: "Ctrl+R", action: () => onReview?.() },
-    { id: "sync-now", label: "Sync Now", action: () => onSyncNow?.() },
-    { id: "sync", label: "Page Versions", action: () => onSync?.() },
-    { id: "ask-ai", label: "Ask AI", shortcut: "Ctrl+Shift+A", action: () => onAskAi?.() },
-    { id: "ai-settings", label: "AI Settings", action: () => onAiSettings?.() },
-    ...(onObsidianPlugins ? [{ id: "obsidian-plugins", label: "Obsidian Plugins (dev)", action: () => onObsidianPlugins() }] : []),
-    { id: "css-snippets", label: "CSS Snippets", action: () => onCssManager?.() },
-    { id: "settings", label: "Settings", shortcut: "Ctrl+,", action: () => onSettings?.() },
-    { id: "shortcuts", label: "Keyboard Shortcuts", shortcut: "Ctrl+/", action: () => { window.dispatchEvent(new Event(OPEN_SHORTCUTS_EVENT)); } },
-  ], [onToggleTheme, onNewPage, onJournal, onGraph, onQuery, onReview, onSync, onSyncNow, onAskAi, onAiSettings, onObsidianPlugins, onCssManager, onSettings]);
-
-  const filteredCommands = useMemo(() => {
-    if (!isCommandMode) return [];
-    if (!commandQuery) return commands;
-    // Labels that start with the query first (">settings" runs Settings, not AI Settings).
-    const starts = (c: Command) => (c.label.toLowerCase().startsWith(commandQuery) ? 0 : 1);
-    return commands.filter(c => {
-      const words = commandQuery.split(/\s+/);
-      const label = c.label.toLowerCase();
-      return words.every(w => label.includes(w));
-    }).sort((a, b) => starts(a) - starts(b));
-  }, [isCommandMode, commandQuery, commands]);
+  const isCommandMode = !picker && query.startsWith(">");
+  const commandQuery = isCommandMode ? query.slice(1).trim() : "";
 
   useEffect(() => {
     if (open) {
       inputRef.current?.focus();
       setQuery("");
+      setFilter("all");
+      setPicker(null);
       setResults([]);
       setSearchedQuery("");
       setSelectedIndex(0);
@@ -157,8 +124,6 @@ export default function SearchPanel({
       }).catch(() => setVisibleIds(null));
     }
   }, [open]);
-
-  const recent = visibleIds ? getRecentPages().filter(r => visibleIds.has(r.id)).slice(0, 5) : [];
 
   const doSearch = useCallback(async (q: string) => {
     latestQuery.current = q;
@@ -179,18 +144,17 @@ export default function SearchPanel({
       setOthers(null);
     }
     try {
-      const blocks = await api.search(q, 20);
-      // Every block result names its page (like cross-notebook ones): titles
-      // from the page list, the rest in one call.
-      const titles = new Map(pagesRef.current.map(p => [p.id, formatTitle(p.title, p.is_journal, p.journal_date)]));
-      const missing = blocks.filter(b => !titles.has(b.page_id)).map(b => b.id);
+      const blocks = await api.search(q, 40);
+      // Every block result names its page: titles from the page list, the rest in one call.
+      const byId = new Map(pagesRef.current.map(p => [p.id, { title: formatTitle(p.title, p.is_journal, p.journal_date), journal: p.is_journal }]));
+      const missing = blocks.filter(b => !byId.has(b.page_id)).map(b => b.id);
       if (missing.length) {
         const withPages = await api.getBlocks(missing).catch(() => [] as api.BlockWithPage[]);
-        for (const b of withPages) titles.set(b.page_id, formatTitle(b.page_title));
+        for (const b of withPages) byId.set(b.page_id, { title: formatTitle(b.page_title), journal: b.page_title.startsWith("Journal/") });
       }
       if (latestQuery.current !== q) return;
-      setResults(blocks.map(b => ({ block: b, pageTitle: titles.get(b.page_id) })));
-      setSelectedIndex(0);
+      setBlockPages(byId);
+      setResults(blocks);
     } catch {
       setResults([]);
     }
@@ -198,136 +162,298 @@ export default function SearchPanel({
   }, [allNotebooks]);
 
   useEffect(() => {
-    if (isCommandMode) return;
-    const timer = setTimeout(() => doSearch(query), 150);
+    if (isCommandMode || picker) return;
+    const timer = setTimeout(() => doSearch(query), 120);
     return () => clearTimeout(timer);
-  }, [query, doSearch, isCommandMode]);
+  }, [query, doSearch, isCommandMode, picker]);
 
-  // Page titles match word by word in any order ("lisbon travel" finds
-  // "Travel — Lisbon 2027"); titles containing the query as typed come first.
-  // (Fuzzy ranking is UX Wave 4.)
-  const filteredPages = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (isCommandMode || !q) return [];
-    const words = q.split(/\s+/).filter(Boolean);
-    const hits = pages.filter(p => {
-      const t = formatTitle(p.title, p.is_journal, p.journal_date).toLowerCase() + " " + p.title.toLowerCase();
-      return words.every(w => t.includes(w));
-    });
-    const exact = (p: api.Page) => (p.title.toLowerCase().includes(q) ? 0 : 1);
-    return hits.sort((a, b) => exact(a) - exact(b)).slice(0, 5);
-  }, [pages, query, isCommandMode]);
+  // ── Ranking (lib/fuzzy.ts): prefix > word start > inside a word > words in any order > letters in order > typos ──
+  const q = query.trim();
+  const searching = !isCommandMode && !picker && q.length > 0;
+  const rankedPages = useMemo(() => {
+    if (!searching) return { pages: [], journals: [] };
+    const plain = pages.filter(p => !p.is_journal);
+    const journals = pages.filter(p => p.is_journal);
+    return {
+      pages: rankByFuzzy(plain, q, p => p.title, { limit: PAGE_LIMIT.focused }),
+      // A day is found by its date as shown ("oct 17") or as written (2026-10-17).
+      journals: rankByFuzzy(journals, q, p => `${formatTitle(p.title, true, p.journal_date)} · ${p.journal_date ?? p.title}`, { limit: PAGE_LIMIT.focused }),
+    };
+  }, [pages, q, searching]);
 
-  // "Create page “<query>”": offered once the search for this query has settled and
-  // no page has exactly that title. It is the last item, so with no results it is
-  // the selected one and Enter creates + opens the page.
-  const createTitle = query.trim();
-  const canCreate = !!onCreatePage && !isCommandMode && createTitle.length >= 2 &&
+  const recent = !query && !picker && visibleIds ? getRecentPages().filter(r => visibleIds.has(r.id)).slice(0, 6) : [];
+
+  const createTitle = q;
+  const canCreate = !!onCreatePage && searching && (filter === "all" || filter === "pages") && createTitle.length >= 2 &&
     searchedQuery === query &&
     !pages.some(p => p.title.toLowerCase() === createTitle.toLowerCase());
-  const otherHits = isCommandMode || !allNotebooks ? [] : flattenOthers(others);
-  const createIndex = filteredPages.length + results.length + otherHits.length;
-  const openOther = (h: OtherHit) => {
-    onClose();
-    openInNotebook({ key: h.notebookKey, pageId: h.pageId, blockId: h.blockId });
-  };
-  const toggleAllNotebooks = () => {
-    const next = !allNotebooks;
-    updateSettings({ searchAllNotebooks: next });
-    setAllNotebooks(next);
-    inputRef.current?.focus();
-  };
-  const createFromQuery = () => { onCreatePage?.(createTitle); onClose(); };
-  /** A block result opens its page at that block. */
-  const openBlock = (r: SearchResult) => {
-    setPendingReveal(r.block.id);
-    onPageClick(r.block.page_id);
-    onClose();
+
+  const close = onClose;
+  const openPage = (id: string) => { onPageClick(id); close(); };
+  const openBlock = (b: api.Block) => { setPendingReveal(b.id); onPageClick(b.page_id); close(); };
+  const runCommand = (cmd: ListedCommand) => {
+    noteCommandRun(cmd.id);
+    if (cmd.pick) {
+      const pick = cmd.pick;
+      setPicker({ cmd, items: null });
+      setQuery("");
+      setSelectedIndex(0);
+      Promise.resolve(pick.items()).then(
+        items => setPicker(p => (p && p.cmd.id === cmd.id ? { cmd, items } : p)),
+        () => setPicker(p => (p && p.cmd.id === cmd.id ? { cmd, items: [] } : p)),
+      );
+      inputRef.current?.focus();
+      return;
+    }
+    // Close the palette FIRST: many commands open another panel through the
+    // same "which panel is open" state, and closing afterwards would clear it.
+    close();
+    void cmd.run?.();
   };
 
-  // Close the palette FIRST: many commands open another panel through the same
-  // "which panel is open" state, and closing afterwards would clear it again.
-  const runCommand = (cmd: Command) => {
-    onClose();
-    cmd.action();
+  // ── The rows, in sections ──
+  const sections: Section[] = useMemo(() => {
+    void commandsVersion;
+    const out: Section[] = [];
+    if (picker) {
+      const items = picker.items ?? [];
+      const ranked = rankByFuzzy(items, q, i => i.label, {});
+      out.push({
+        key: "pick", title: picker.cmd.label.replace(/…$/, ""), rows: ranked.map(({ item, match }) => ({
+          key: `pick:${item.id}`,
+          className: "command-palette-item command-palette-pick",
+          disabled: item.disabled,
+          title: item.disabled,
+          testId: "palette-pick-item",
+          content: <><span className="palette-label"><Hl text={item.label} ranges={match.ranges} /></span>{item.detail && <span className="palette-detail">{item.detail}</span>}</>,
+          run: () => { if (item.disabled) return; close(); void picker.cmd.pick!.onPick(item); },
+        })),
+      });
+      return out;
+    }
+    if (isCommandMode) {
+      const recentIds = recentCommandIds();
+      const cmds = listCommands();
+      const ranked = rankCommands(cmds, commandQuery, recentIds);
+      out.push({
+        key: "commands", title: "Commands", rows: ranked.map(({ cmd, ranges }) => ({
+          key: `cmd:${cmd.id}`,
+          className: "command-palette-item command-palette-command",
+          data: { commandId: cmd.id },
+          testId: "palette-command",
+          content: <>
+            <span className="palette-label"><Hl text={cmd.label} ranges={ranges} /></span>
+            {!commandQuery && recentIds.includes(cmd.id) && <span className="palette-detail">recent</span>}
+            {cmd.shortcut && <span className="shortcut-hint">{cmd.shortcut}</span>}
+          </>,
+          run: () => runCommand(cmd),
+        })),
+      });
+      return out;
+    }
+    if (!query) {
+      if (recent.length) {
+        out.push({
+          key: "recent", title: <><Icon name="clock" size={12} /> Recent</>, rows: recent.map(r => ({
+            key: `recent:${r.id}`, className: "command-palette-item command-palette-recent",
+            content: formatTitle(r.title), run: () => openPage(r.id),
+          })),
+        });
+      }
+      return out;
+    }
+    const focused = filter !== "all";
+    const pageRows: Row[] = (filter === "all" || filter === "pages")
+      ? rankedPages.pages.slice(0, focused ? PAGE_LIMIT.focused : PAGE_LIMIT.all).map(({ item: p, match }) => ({
+        key: `page:${p.id}`, className: "command-palette-item command-palette-page",
+        data: { pageId: p.id },
+        content: <><Icon name="page" size={13} className="palette-icon" /><span className="palette-label"><Hl text={p.title} ranges={match.ranges} /></span></>,
+        run: () => openPage(p.id),
+      }))
+      : [];
+    const blockRow = (b: api.Block): Row => {
+      const plain = blockPlainText(b.content);
+      const snip = snippetAround(plain.text || "(empty block)", q);
+      const where = blockPages.get(b.page_id)?.title;
+      return {
+        key: `block:${b.id}`, className: "command-palette-item command-palette-block",
+        title: where ? `Go to this block in ${where}` : "Go to this block",
+        content: <>
+          {plain.state && <span className={`tasks-state tasks-state-${plain.state.toLowerCase()} command-palette-state`}>{plain.state}</span>}
+          <span className="result-content"><Hl text={snip.text} ranges={snip.ranges} /></span>
+          {where && <span className="command-palette-block-page">{where}</span>}
+        </>,
+        run: () => openBlock(b),
+      };
+    };
+    const isJournalBlock = (b: api.Block) => !!blockPages.get(b.page_id)?.journal;
+    const blockRows: Row[] = (filter === "all" || filter === "blocks")
+      ? results.filter(b => !isJournalBlock(b)).slice(0, focused ? BLOCK_LIMIT.focused : BLOCK_LIMIT.all).map(blockRow)
+      : [];
+    const journalRows: Row[] = (filter === "all" || filter === "journals")
+      ? [
+        ...rankedPages.journals.slice(0, focused ? PAGE_LIMIT.focused : 4).map(({ item: p, match }) => {
+          const label = formatTitle(p.title, true, p.journal_date);
+          return {
+            key: `journal:${p.id}`, className: "command-palette-item command-palette-page command-palette-journal",
+            data: { pageId: p.id },
+            content: <><Icon name="calendar" size={13} className="palette-icon" /><span className="palette-label"><Hl text={label} ranges={match.ranges.filter(([s]) => s < label.length)} /></span></>,
+            run: () => openPage(p.id),
+          };
+        }),
+        ...results.filter(isJournalBlock).slice(0, focused ? BLOCK_LIMIT.focused : 4).map(blockRow),
+      ]
+      : [];
+    if (pageRows.length) out.push({ key: "pages", title: "Pages", testId: "search-section-pages", rows: pageRows });
+    if (blockRows.length) out.push({ key: "blocks", title: "Blocks", testId: "search-section-blocks", rows: blockRows });
+    if (journalRows.length) out.push({ key: "journals", title: "Journals", testId: "search-section-journals", rows: journalRows });
+    if (filter === "all" && allNotebooks && others) {
+      for (const nb of others.results) {
+        const rows: Row[] = [
+          ...nb.pages.map(p => {
+            const label = formatTitle(p.title, p.is_journal);
+            const m = rankByFuzzy([label], q, s => s)[0]?.match;
+            return {
+              key: `${nb.notebook_key}:p:${p.id}`, className: "command-palette-item command-palette-other",
+              testId: "search-other-result", data: { notebookKey: nb.notebook_key }, title: `Open in notebook ${nb.notebook_name}`,
+              content: <><span className="xnb-badge">{nb.notebook_name}</span><span className="result-content"><Hl text={label} ranges={m?.ranges ?? []} /></span></>,
+              run: () => { close(); openInNotebook({ key: nb.notebook_key, pageId: p.id }); },
+            };
+          }),
+          ...nb.blocks.map(b => {
+            const snip = snippetAround(blockPlainText(b.block.content).text || "(empty block)", q);
+            return {
+              key: `${nb.notebook_key}:b:${b.block.id}`, className: "command-palette-item command-palette-other",
+              testId: "search-other-result", data: { notebookKey: nb.notebook_key }, title: `Open in notebook ${nb.notebook_name}`,
+              content: <>
+                <span className="xnb-badge">{nb.notebook_name}</span>
+                <span className="result-content"><Hl text={snip.text} ranges={snip.ranges} /></span>
+                <span className="command-palette-other-page">{formatTitle(b.page_title)}</span>
+              </>,
+              run: () => { close(); openInNotebook({ key: nb.notebook_key, pageId: b.block.page_id, blockId: b.block.id }); },
+            };
+          }),
+        ];
+        if (rows.length) {
+          out.push({
+            key: `nb:${nb.notebook_key}`,
+            title: <>Other notebooks · <span data-testid="search-notebook-section">In notebook {nb.notebook_name}</span></>,
+            testId: "search-section-other",
+            rows,
+          });
+        }
+      }
+    }
+    if (canCreate) {
+      out.push({
+        key: "create", rows: [{
+          key: "create", className: "command-palette-item command-palette-create",
+          title: "Create a new page with this title",
+          content: <span><span className="command-palette-create-plus">+</span> Create page &ldquo;{createTitle}&rdquo;</span>,
+          run: () => { onCreatePage?.(createTitle); close(); },
+        }],
+      });
+    }
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [picker, isCommandMode, commandQuery, query, q, filter, rankedPages, results, blockPages, allNotebooks, others, canCreate, recent.map(r => r.id).join(), commandsVersion]);
+
+  const rows = useMemo(() => sections.flatMap(s => s.rows), [sections]);
+  const sel = Math.min(selectedIndex, Math.max(rows.length - 1, 0));
+
+  // Reset the selection when what is listed changes kind.
+  useEffect(() => { setSelectedIndex(0); }, [isCommandMode, commandQuery, filter, picker?.cmd.id, q]);
+  // With no results but a "Create page" row, that row is the one Enter runs.
+  useEffect(() => {
+    if (canCreate && rows.length === 1) setSelectedIndex(0);
+  }, [canCreate, rows.length]);
+  // Keep the selected row in view.
+  useEffect(() => {
+    resultsRef.current?.querySelector(".command-palette-item.selected")?.scrollIntoView({ block: "nearest" });
+  }, [sel, rows.length]);
+
+  const cycleFilter = (dir: 1 | -1) => {
+    const i = FILTERS.findIndex(([f]) => f === filter);
+    setFilter(FILTERS[(i + dir + FILTERS.length) % FILTERS.length][0]);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (isCommandMode) {
-      const total = filteredCommands.length;
-      if (e.key === "ArrowDown") {
-        e.preventDefault();
-        setSelectedIndex(i => Math.min(i + 1, total - 1));
-      } else if (e.key === "ArrowUp") {
-        e.preventDefault();
-        setSelectedIndex(i => Math.max(i - 1, 0));
-      } else if (e.key === "Enter") {
-        e.preventDefault();
-        if (selectedIndex < filteredCommands.length) runCommand(filteredCommands[selectedIndex]);
-      }
-      return;
-    }
-
-    // Empty query: the arrows and Enter work on Recent.
-    if (!query && recent.length > 0 && ["ArrowDown", "ArrowUp", "Enter"].includes(e.key)) {
-      e.preventDefault();
-      if (e.key === "ArrowDown") setSelectedIndex(i => Math.min(i + 1, recent.length - 1));
-      else if (e.key === "ArrowUp") setSelectedIndex(i => Math.max(i - 1, 0));
-      else { onPageClick(recent[Math.min(selectedIndex, recent.length - 1)].id); onClose(); }
-      return;
-    }
-    const total = filteredPages.length + results.length + otherHits.length + (canCreate ? 1 : 0);
     if (e.key === "ArrowDown") {
       e.preventDefault();
-      setSelectedIndex(i => Math.min(i + 1, total - 1));
+      setSelectedIndex(Math.min(sel + 1, rows.length - 1));
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
-      setSelectedIndex(i => Math.max(i - 1, 0));
+      setSelectedIndex(Math.max(sel - 1, 0));
     } else if (e.key === "Enter") {
       e.preventDefault();
-      if (selectedIndex < filteredPages.length) {
-        onPageClick(filteredPages[selectedIndex].id);
-        onClose();
-      } else {
-        const blockIdx = selectedIndex - filteredPages.length;
-        const otherIdx = blockIdx - results.length;
-        if (blockIdx < results.length) {
-          openBlock(results[blockIdx]);
-        } else if (otherIdx < otherHits.length) {
-          openOther(otherHits[otherIdx]);
-        } else if (canCreate) {
-          createFromQuery();
-        }
-      }
+      // Enter before the search for this query settled never creates a page.
+      const row = rows[sel];
+      if (row && !(row.key === "create" && searchedQuery !== query)) row.run();
+    } else if (e.key === "Tab" && !isCommandMode && !picker) {
+      e.preventDefault();
+      cycleFilter(e.shiftKey ? -1 : 1);
+    } else if (e.key === "Backspace" && picker && !query) {
+      e.preventDefault();
+      setPicker(null);
+      setQuery(">");
     }
   };
 
   // Esc closes the palette when it is the topmost layer (lib/layers.ts).
   useLayer(open, "dialog", onClose);
 
-  // Reset selection when switching modes or filtering changes
-  useEffect(() => {
-    setSelectedIndex(0);
-  }, [isCommandMode, commandQuery]);
+  const toggleAllNotebooks = () => {
+    const next = !allNotebooks;
+    updateSettings({ searchAllNotebooks: next });
+    setAllNotebooks(next);
+    inputRef.current?.focus();
+  };
 
   const paletteRef = useRef<HTMLDivElement>(null);
   useDialogFocus(paletteRef, open);
 
   if (!open) return null;
 
+  const placeholder = picker ? picker.cmd.pick!.placeholder
+    : isCommandMode ? "Type a command…"
+    : "Search pages and blocks… (type > for commands)";
+  const nothing = rows.length === 0;
+  let index = 0;
+
   return (
     <div className="command-palette-overlay" onClick={onClose}>
-      <div ref={paletteRef} className="command-palette" role="dialog" aria-modal="true" aria-label="Search" onClick={e => e.stopPropagation()}>
+      <div ref={paletteRef} className="command-palette" role="dialog" aria-modal="true" aria-label={isCommandMode || picker ? "Commands" : "Search"} onClick={e => e.stopPropagation()}>
         <input
           ref={inputRef}
           className="command-palette-input"
-          placeholder={isCommandMode ? "Type a command..." : "Search pages and blocks... (type > for commands)"}
+          placeholder={placeholder}
           value={query}
           onChange={e => setQuery(e.target.value)}
           onKeyDown={handleKeyDown}
+          aria-label={placeholder}
+          role="combobox"
+          aria-expanded="true"
+          aria-controls="command-palette-results"
         />
-        {!isCommandMode && (
+        {!isCommandMode && !picker && (
           <div className="command-palette-scope">
+            <div className="palette-filters" role="tablist" aria-label="Show">
+              {FILTERS.map(([f, label]) => (
+                <button
+                  key={f}
+                  type="button"
+                  role="tab"
+                  tabIndex={-1}
+                  aria-selected={filter === f}
+                  className={`palette-filter${filter === f ? " active" : ""}`}
+                  onMouseDown={e => e.preventDefault()}
+                  onClick={() => { setFilter(f); inputRef.current?.focus(); }}
+                  data-testid={`search-filter-${f}`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
             <label title="Also search every other notebook (read-only)">
               <input
                 type="checkbox"
@@ -340,127 +466,59 @@ export default function SearchPanel({
             {allNotebooks && othersLoading && <span className="command-palette-scope-note">Searching other notebooks…</span>}
           </div>
         )}
-        <div className="command-palette-results">
-          {isCommandMode ? (
-            <>
-              <div className="command-palette-section">Commands</div>
-              {filteredCommands.map((cmd, i) => (
-                <div
-                  key={cmd.id}
-                  className={`command-palette-item ${i === selectedIndex ? "selected" : ""}`}
-                  onClick={() => runCommand(cmd)}
-                  style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}
-                >
-                  <span>{cmd.label}</span>
-                  {cmd.shortcut && <span className="shortcut-hint">{cmd.shortcut}</span>}
-                </div>
-              ))}
-              {filteredCommands.length === 0 && (
-                <div className="command-palette-empty">No matching commands</div>
-              )}
-            </>
-          ) : (
-            <>
-              {!query && recent.length > 0 && (
-                <>
-                  <div className="command-palette-section"><Icon name="clock" size={12} /> Recent</div>
-                  {recent.map((r, i) => (
-                    <div
-                      key={r.id}
-                      className={`command-palette-item ${i === selectedIndex ? "selected" : ""}`}
-                      onClick={() => { onPageClick(r.id); onClose(); }}
-                    >
-                      {formatTitle(r.title)}
-                    </div>
-                  ))}
-                </>
-              )}
-              {filteredPages.length > 0 && (
-                <>
-                  {filteredPages.map((page, i) => (
-                    <div
-                      key={page.id}
-                      className={`command-palette-item command-palette-page ${i === selectedIndex ? "selected" : ""}`}
-                      onClick={() => { onPageClick(page.id); onClose(); }}
-                    >
-                      {formatTitle(page.title, page.is_journal, page.journal_date)}
-                    </div>
-                  ))}
-                </>
-              )}
-              {results.length > 0 && (
-                <>
-                  <div className="command-palette-section">Blocks</div>
-                  {results.map((r, i) => {
-                    const plain = blockPlainText(r.block.content);
-                    return (
-                      <div
-                        key={r.block.id}
-                        className={`command-palette-item command-palette-block ${i + filteredPages.length === selectedIndex ? "selected" : ""}`}
-                        onClick={() => openBlock(r)}
-                        title={r.pageTitle ? `Go to this block in ${r.pageTitle}` : "Go to this block"}
-                      >
-                        {plain.state && <span className={`tasks-state tasks-state-${plain.state.toLowerCase()} command-palette-state`}>{plain.state}</span>}
-                        <span className="result-content">{plain.text || "(empty block)"}</span>
-                        {r.pageTitle && <span className="command-palette-block-page">{r.pageTitle}</span>}
-                      </div>
-                    );
-                  })}
-                </>
-              )}
-              {otherHits.length > 0 && (() => {
-                let lastNb = "";
-                const base = filteredPages.length + results.length;
-                return otherHits.map((h, i) => {
-                  const header = h.notebookKey !== lastNb;
-                  lastNb = h.notebookKey;
-                  return (
-                    <div key={h.key}>
-                      {header && (
-                        <div className="command-palette-section" data-testid="search-notebook-section">
-                          In notebook {h.notebookName}
-                        </div>
-                      )}
-                      <div
-                        className={`command-palette-item command-palette-other ${base + i === selectedIndex ? "selected" : ""}`}
-                        data-testid="search-other-result"
-                        data-notebook-key={h.notebookKey}
-                        onClick={() => openOther(h)}
-                        title={`Open in notebook ${h.notebookName}`}
-                      >
-                        <span className="xnb-badge">{h.notebookName}</span>
-                        <span className="result-content">{h.text}</span>
-                        {h.blockId && <span className="command-palette-other-page">{h.pageTitle}</span>}
-                      </div>
-                    </div>
-                  );
-                });
-              })()}
-              {allNotebooks && others && others.skipped.length > 0 && query.length >= 2 && (
-                <div className="command-palette-note" data-testid="search-skipped">
-                  Skipped: {others.skipped.map(s => `${s.notebook_name} (${s.label})`).join(", ")}
-                </div>
-              )}
-              {query.length >= 2 && filteredPages.length === 0 && results.length === 0 && otherHits.length === 0 && (
-                <div className="command-palette-empty">No results for &ldquo;{createTitle}&rdquo;</div>
-              )}
-              {canCreate && (
-                <div
-                  className={`command-palette-item command-palette-create ${createIndex === selectedIndex ? "selected" : ""}`}
-                  onClick={createFromQuery}
-                  title="Create a new page with this title"
-                >
-                  <span><span className="command-palette-create-plus">+</span> Create page &ldquo;{createTitle}&rdquo;</span>
-                  {createIndex === selectedIndex && <span className="shortcut-hint">Enter</span>}
-                </div>
-              )}
-              {query.length < 2 && filteredPages.length === 0 && (
-                <div className="command-palette-empty">
-                  Type to search... or <strong>&gt;</strong> for commands
-                </div>
-              )}
-            </>
+        <div className="command-palette-results" id="command-palette-results" role="listbox" ref={resultsRef}>
+          {sections.map(s => (
+            <div key={s.key} className="command-palette-group" data-testid={s.testId}>
+              {s.title && <div className="command-palette-section">{s.title}</div>}
+              {s.rows.map(r => {
+                const i = index++;
+                const dataAttrs = Object.fromEntries(Object.entries(r.data ?? {}).map(([k, v]) => [`data-${k.replace(/[A-Z]/g, c => "-" + c.toLowerCase())}`, v]));
+                return (
+                  <div
+                    key={r.key}
+                    role="option"
+                    aria-selected={i === sel}
+                    aria-disabled={r.disabled ? true : undefined}
+                    className={`${r.className}${i === sel ? " selected" : ""}${r.disabled ? " disabled" : ""}`}
+                    onMouseDown={e => e.preventDefault()}
+                    onClick={r.run}
+                    title={r.title}
+                    data-testid={r.testId}
+                    {...dataAttrs}
+                  >
+                    {r.content}
+                    {r.key === "create" && i === sel && <span className="shortcut-hint">Enter</span>}
+                  </div>
+                );
+              })}
+            </div>
+          ))}
+          {!isCommandMode && !picker && allNotebooks && others && others.skipped.length > 0 && query.length >= 2 && (
+            <div className="command-palette-note" data-testid="search-skipped">
+              Skipped: {others.skipped.map(s => `${s.notebook_name} (${s.label})`).join(", ")}
+            </div>
           )}
+          {picker && picker.items === null && <div className="command-palette-empty">Loading…</div>}
+          {picker && picker.items !== null && nothing && <div className="command-palette-empty">Nothing matches</div>}
+          {isCommandMode && nothing && <div className="command-palette-empty">No matching commands</div>}
+          {searching && q.length >= 2 && searchedQuery === query && rows.filter(r => r.key !== "create").length === 0 && (
+            <div className="command-palette-empty">
+              No {filter === "all" ? "results" : FILTERS.find(([f]) => f === filter)![1].toLowerCase()} for &ldquo;{createTitle}&rdquo;
+            </div>
+          )}
+          {!query && !picker && recent.length === 0 && (
+            <div className="command-palette-empty">
+              Type to search… or <strong>&gt;</strong> for commands
+            </div>
+          )}
+        </div>
+        <div className="command-palette-hints" aria-hidden="true" data-testid="palette-hints">
+          <span><kbd>↑</kbd><kbd>↓</kbd> select</span>
+          <span><kbd>Enter</kbd> {isCommandMode ? "run" : "open"}</span>
+          {!isCommandMode && !picker && <span><kbd>Tab</kbd> filter</span>}
+          {!isCommandMode && !picker && <span><kbd>&gt;</kbd> commands</span>}
+          {picker && <span><kbd>Backspace</kbd> back</span>}
+          <span><kbd>Esc</kbd> close</span>
         </div>
       </div>
     </div>
