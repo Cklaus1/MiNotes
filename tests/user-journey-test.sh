@@ -4821,6 +4821,286 @@ R=$(ev "(async()=>{const links=[...document.querySelectorAll('[data-testid=setti
 api "closePanel()" >/dev/null
 
 # ═══════════════════════════════════════════════
+journey "109. Graph: you are here, local graph, search, filters, colours and arrow keys (UX Wave 4)"
+# ═══════════════════════════════════════════════
+A109="const api=await import('/src/lib/api.ts');"
+T109="G109x$(date +%s)"
+api "closePanel()" >/dev/null; press "Escape"; sleep 0.3
+ev "localStorage.removeItem('minotes-graph-local');localStorage.removeItem('minotes-graph-color-by');localStorage.removeItem('minotes-graph-hide-unlinked')" >/dev/null
+step "A notebook of 220 linked pages: a chain, a shortcut every 5th page, a project of 20, #odd/#even tags"
+R=$(ev "(async()=>{$A109 const f=await api.createFolder('Proj109 $T109');const ps=[];for(let i=0;i<220;i++)ps.push(await api.createPage('$T109 n'+i));for(let i=0;i<220;i++){const l=[];if(i>0)l.push('[[$T109 n'+(i-1)+']]');if(i%5===0&&i+7<220)l.push('[[$T109 n'+(i+7)+']]');await api.createBlock(ps[i].id,'Note '+(i%2?'#odd109':'#even109')+' '+l.join(' '));if(i<20)await api.movePageToFolder(ps[i].id,f.id)}const o=await api.createPage('$T109 orphan');return f.id+'|'+ps[100].id+'|'+ps[107].id+'|'+ps[0].id+'|'+ps[150].id})()" | tr -d '"')
+IFS='|' read -r F109 N100 N107 N0 N150 <<< "$R"
+[[ -n "$N100" && -n "$N107" ]] && pass "Seeded (project $F109)" || fail "Seed 109" "$R"
+api "navigateTo('$T109 n100')" >/dev/null; sleep 1.2
+ev "document.activeElement?.blur()" >/dev/null; press "Control+g"; sleep 1
+for _ in $(seq 1 30); do N=$(ev "document.querySelector('.graph-view canvas')?.dataset.nodes||0" | tr -d '"'); [[ "$N" -ge 200 ]] 2>/dev/null && break; sleep 0.5; done
+G109="document.querySelector('.graph-view canvas')"
+
+step "The page I came from is marked (you are here) and labelled; 220+ pages lay out fast"
+R=$(ev "(()=>{const c=$G109;const n=c.__minotesGraph.nodes().find(x=>x.current);const l=c.__minotesGraph.labels().some(x=>x.id==='$N100');return c.dataset.nodes+'|'+c.dataset.current+'|'+(n&&n.id)+'|'+l+'|'+c.dataset.layoutMs})()" | tr -d '"')
+IFS='|' read -r NN CUR CURN LBL MS <<< "$R"
+[[ "$NN" -ge 220 && "$CUR" == "$N100" && "$CURN" == "$N100" && "$LBL" == "true" ]] && pass "You are here: $T109 n100 ringed and labelled among $NN pages" || fail "You are here" "$R"
+[[ "$MS" -lt 3000 ]] 2>/dev/null && pass "Layout of $NN pages settled in $MS ms" || fail "Graph layout too slow" "$MS ms for $NN pages"
+ss "109-graph-here"
+
+step "Local graph: only the pages 1 link away, then 2 links away (remembered)"
+ev "document.querySelector('.graph-local-btn')?.click()" >/dev/null; sleep 1
+R1=$(ev "$G109.dataset.nodes" | tr -d '"')
+ev "(()=>{const s=document.querySelector('.graph-local-depth');s.value='2';s.dispatchEvent(new Event('change',{bubbles:true}));return 1})()" >/dev/null; sleep 1
+R2=$(ev "$G109.dataset.nodes+'|'+localStorage.getItem('minotes-graph-local')" | tr -d '"')
+[[ "$R1" == "4" && "$R2" == "8|2" ]] && pass "Depth 1: 4 pages, depth 2: 8 pages, depth remembered ($R2)" || fail "Local graph" "depth1=$R1 depth2=$R2"
+ss "109-graph-local"
+
+step "Search highlights a page by title; Enter picks it for the keyboard"
+ev "(()=>{const i=document.querySelector('.graph-search-input');const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;set.call(i,'n107');i.dispatchEvent(new Event('input',{bubbles:true}));i.focus();return 1})()" >/dev/null; sleep 0.5
+R=$(ev "$G109.dataset.matches+'|'+$G109.__minotesGraph.nodes().filter(n=>n.match).map(n=>n.title).join(',')" | tr -d '"')
+[[ "$R" == "1|$T109 n107" ]] && pass "One match: n107 ($R)" || fail "Graph search" "$R"
+press "Enter"; sleep 0.5
+R=$(ev "$G109.dataset.selected+'|'+(document.activeElement===$G109)" | tr -d '"')
+[[ "$R" == "$N107|true" ]] && pass "Enter selected n107 and moved focus to the graph" || fail "Search Enter" "$R"
+
+step "Arrow keys move between linked pages; Enter opens one"
+NB109=$(ev "(async()=>{$A109 const d=await api.getGraphData();return d.edges.filter(e=>e.source==='$N107'||e.target==='$N107').map(e=>e.source==='$N107'?e.target:e.source).join(',')})()" | tr -d '"')
+MOVED=""
+for k in ArrowRight ArrowLeft ArrowDown ArrowUp; do
+  press "$k"; sleep 0.3
+  S=$(ev "$G109.dataset.selected" | tr -d '"')
+  [[ "$S" != "$N107" && -n "$S" ]] && { MOVED="$S"; break; }
+done
+[[ -n "$MOVED" && "$NB109" == *"$MOVED"* ]] && pass "$k moved to a linked page" || fail "Arrow keys" "selected=$MOVED neighbours=$NB109"
+TT=$(ev "$G109.__minotesGraph.nodes().find(n=>n.id==='$MOVED')?.title||''" | tr -d '"')
+press "Enter"; sleep 1.5
+R=$(ev "!!document.querySelector('.graph-view')+'|'+window.__MINOTES__.getCurrentPage()" | tr -d '"')
+[[ "$R" == "false|"*"$TT"* && -n "$TT" ]] && pass "Enter opened “$TT”" || fail "Enter on a node" "$R (expected $TT)"
+
+step "Filters: a project, a tag, orphans only — and colour by project with a legend"
+ev "document.activeElement?.blur()" >/dev/null; press "Control+g"; sleep 1
+for _ in $(seq 1 20); do N=$(ev "document.querySelector('.graph-view canvas')?.dataset.nodes||0" | tr -d '"'); [[ "$N" -ge 1 ]] 2>/dev/null && break; sleep 0.5; done
+ev "[...document.querySelectorAll('.graph-segmented .btn')].find(b=>b.textContent==='All')?.click()" >/dev/null; sleep 1
+SEL109="(cls,v)=>{const s=document.querySelector(cls);s.value=v;s.dispatchEvent(new Event('change',{bubbles:true}));return s.value}"
+ev "($SEL109)('.graph-show','all')" >/dev/null; ev "($SEL109)('.graph-filter-project','$F109')" >/dev/null; sleep 1
+R1=$(ev "$G109.dataset.nodes" | tr -d '"')
+ev "($SEL109)('.graph-filter-project','')" >/dev/null; ev "($SEL109)('.graph-filter-tag','odd109')" >/dev/null; sleep 1
+R2=$(ev "$G109.dataset.nodes" | tr -d '"')
+ev "($SEL109)('.graph-filter-tag','')" >/dev/null; ev "($SEL109)('.graph-show','orphans')" >/dev/null; sleep 1
+R3=$(ev "$G109.dataset.nodes+'|'+$G109.__minotesGraph.nodes().some(n=>n.title==='$T109 orphan')+'|'+$G109.__minotesGraph.nodes().some(n=>n.title==='$T109 n5')" | tr -d '"')
+[[ "$R1" == "20" && "$R2" == "110" && "$R3" == *"|true|false" ]] && pass "Project: $R1 pages, #odd109: $R2 pages, orphans only: ${R3%%|*} (no linked page)" || fail "Graph filters" "project=$R1 tag=$R2 orphans=$R3"
+ev "($SEL109)('.graph-show','all')" >/dev/null; ev "($SEL109)('.graph-color-by','project')" >/dev/null; sleep 1
+R=$(ev "(()=>{const ns=$G109.__minotesGraph.nodes();const a=ns.find(n=>n.id==='$N0'),b=ns.find(n=>n.id==='$N150');const lg=document.querySelector('[data-testid=graph-legend]');return (a&&a.color)+'|'+(b&&b.color)+'|'+!!(lg&&lg.textContent.includes('Proj109'))})()" | tr -d '"')
+IFS='|' read -r CA CB LG <<< "$R"
+[[ -n "$CA" && "$CA" != "null" && "$CA" != "$CB" && "$LG" == "true" ]] && pass "Coloured by project ($CA vs $CB), legend names Proj109" || fail "Colour by project" "$R"
+ss "109-graph-colours"
+ev "localStorage.removeItem('minotes-graph-local');localStorage.removeItem('minotes-graph-color-by');localStorage.removeItem('minotes-graph-hide-unlinked')" >/dev/null
+press "Escape"; sleep 0.5
+
+# ═══════════════════════════════════════════════
+journey "110. Kanban: group by status, a drop changes the task, the card panel edits for real (UX Wave 4)"
+# ═══════════════════════════════════════════════
+A110="const api=await import('/src/lib/api.ts');"
+K110="Board110 $(date +%s)"
+R=$(ev "(async()=>{$A110 const p=await api.createPage('$K110');const h=await api.createBlock(p.id,'## Sprint110');const a=await api.createBlock(p.id,'TODO Plan110 with [[Getting Started]] #k110',h.id);await api.setProperty(a.id,'block','due','2026-01-02');const b=await api.createBlock(p.id,'DOING Build110',h.id);const c=await api.createBlock(p.id,'DONE Ship110',b.id);await api.createBlock(p.id,'- [ ] Check110');await api.createBlock(p.id,'Plain110 note',h.id);return p.id+'|'+a.id+'|'+b.id})()" | tr -d '"')
+IFS='|' read -r P110 C110A C110B <<< "$R"
+api "navigateTo('$K110')" >/dev/null; sleep 1.2
+ev "document.activeElement?.blur()" >/dev/null; press "Control+Shift+k"; sleep 1.5
+for _ in $(seq 1 10); do N=$(ev "document.querySelectorAll('.kanban-card').length" | tr -d '"'); [[ "$N" -ge 3 ]] 2>/dev/null && break; sleep 0.5; done
+
+step "Cards read as text: a link is a chip with the page title, tags and the due date are badges"
+R=$(ev "(()=>{const c=[...document.querySelectorAll('.kanban-card')].find(x=>x.textContent.includes('Plan110'));if(!c)return 'missing';const t=c.querySelector('.kanban-card-text').textContent;const chip=c.querySelector('.kanban-card-text .kanban-wiki-link')?.textContent;const b=[...c.querySelectorAll('.kanban-badge')].map(x=>x.textContent).join(',');return (t.includes('[[')||t.includes('#k110'))+'|'+chip+'|'+b})()" | tr -d '"')
+[[ "$R" == "false|Getting Started|Due 2026-01-02"*"#k110"* ]] && pass "No raw markdown; chip + badges ($R)" || fail "Card rendering" "$R"
+
+step "Group by status: TODO / DOING / DONE columns with every task on the page (remembered)"
+ev "document.querySelector('[data-testid=kanban-group-status]')?.click()" >/dev/null; sleep 1.2
+COUNT110="['todo','doing','done'].map(s=>{const c=document.querySelector('.kanban-column[data-status='+s+']');return c?[...c.querySelectorAll('.kanban-card')].map(x=>x.textContent.match(/(Plan|Build|Ship|Check)110/)?.[1]).join('+'):'none'}).join(',')"
+R=$(ev "$COUNT110" | tr -d '"')
+G=$(ev "(async()=>{$A110 const p=await api.getProperties('$P110');return p.find(x=>x.key==='kanban-group')?.value||''})()" | tr -d '"')
+[[ "$R" == "Plan+Check,Build,Ship" && "$G" == "status" ]] && pass "Columns: $R; kanban-group:: $G" || fail "Group by status" "$R / $G"
+ss "110-kanban-status"
+
+step "Dragging a DOING card onto DONE marks the task DONE in the page"
+R=$(ev "(async()=>{const card=[...document.querySelectorAll('.kanban-card')].find(c=>c.textContent.includes('Build110'));const head=document.querySelector('.kanban-column[data-status=done] .kanban-column-header');if(!card||!head)return 'missing';const dt=new DataTransfer();const at=(el)=>{const r=el.getBoundingClientRect();return {clientX:r.left+r.width/2,clientY:r.top+r.height/2}};const fire=(el,type)=>el.dispatchEvent(new DragEvent(type,{bubbles:true,cancelable:true,dataTransfer:dt,...at(el)}));fire(card,'dragstart');await new Promise(r=>setTimeout(r,50));fire(head,'dragenter');fire(head,'dragover');await new Promise(r=>setTimeout(r,80));fire(head,'drop');fire(card,'dragend');await new Promise(r=>setTimeout(r,1500));$A110 const t=await api.getPageTree('$K110');return t.blocks.find(b=>b.id==='$C110B')?.content||'gone'})()" | tr -d '"')
+R2=$(ev "$COUNT110" | tr -d '"')
+[[ "$R" == "DONE Build110" && "$R2" == "Plan+Check,,Build+Ship" ]] && pass "Stored: '$R'; columns now $R2" || fail "Status drop" "$R / $R2"
+
+step "The card panel: the block editor, status, properties, sub-items"
+ev "(()=>{const c=[...document.querySelectorAll('.kanban-card')].find(x=>x.textContent.includes('Plan110'));c.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,clientX:200,clientY:200}));setTimeout(()=>[...document.querySelectorAll('.kanban-ctx-menu button')].find(b=>b.textContent==='Open')?.click(),100);return 1})()" >/dev/null; sleep 1
+R=$(ev "(()=>{const p=document.querySelector('.kanban-card-panel');return !!p+'|'+!!p?.querySelector('.kanban-card-editor-rich .ProseMirror')+'|'+(p?.querySelector('.kanban-status-opt.active')?.textContent||'')+'|'+(p?.querySelector('.kanban-side-prop[data-key=due]')?.textContent||'')})()" | tr -d '"')
+[[ "$R" == "true|true|TODO|due2026-01-02" ]] && pass "Panel: rich editor, status TODO, due property ($R)" || fail "Card panel" "$R"
+ev "[...document.querySelectorAll('.kanban-card-panel .kanban-status-opt')].find(b=>b.textContent==='DOING')?.click()" >/dev/null; sleep 1.2
+ev "(()=>{const f=document.querySelector('.kanban-side-prop-add');const [k,v]=f.querySelectorAll('input');const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;set.call(k,'owner');k.dispatchEvent(new Event('input',{bubbles:true}));set.call(v,'Ana');v.dispatchEvent(new Event('input',{bubbles:true}));setTimeout(()=>f.querySelector('button').click(),100);return 1})()" >/dev/null; sleep 1.2
+ev "document.querySelector('.kanban-side-add-child')?.click()" >/dev/null; sleep 1.2
+R=$(ev "(async()=>{$A110 const t=await api.getPageTree('$K110');const a=t.blocks.find(b=>b.id==='$C110A');const kids=t.blocks.filter(b=>b.parent_id==='$C110A').length;const p=await api.getProperties('$C110A');return a.content+'|'+(p.find(x=>x.key==='owner')?.value||'')+'|'+kids+'|'+document.querySelectorAll('.kanban-side-children .ProseMirror').length})()" | tr -d '"')
+[[ "$R" == "DOING Plan110 with [[Getting Started]] #k110|Ana|1|1" ]] && pass "Status → DOING, owner:: Ana, a sub-item in its own editor ($R)" || fail "Card panel edits" "$R"
+ss "110-kanban-panel"
+# Focus is in the new sub-item's editor: the first Esc leaves it, the next closes the panel only.
+press "Escape"; sleep 0.5
+R1=$(ev "!!document.querySelector('.kanban-card-panel')+'|'+!!document.querySelector('.kanban-card-panel .ProseMirror-focused')" | tr -d '"')
+press "Escape"; sleep 0.5
+R=$(ev "!!document.querySelector('.kanban-card-panel')+'|'+!!document.querySelector('.kanban-container')" | tr -d '"')
+[[ "$R1" == "true|false" && "$R" == "false|true" ]] && pass "Esc left the editor ($R1), then closed the panel only ($R)" || fail "Esc on the card panel" "$R1 / $R"
+
+step "“Open as board” is remembered: the page opens as a board next time"
+ev "document.querySelector('.kanban-open-as-board input')?.click()" >/dev/null; sleep 1
+V=$(ev "(async()=>{$A110 const p=await api.getProperties('$P110');return p.find(x=>x.key==='view')?.value||''})()" | tr -d '"')
+ev "document.querySelector('.canvas-back-btn')?.click()" >/dev/null; sleep 0.5
+api "navigateTo('Getting Started')" >/dev/null; sleep 1.2
+R1=$(ev "!!document.querySelector('.kanban-container')" | tr -d '"')
+api "navigateTo('$K110')" >/dev/null; sleep 2
+R2=$(ev "!!document.querySelector('.kanban-container')+'|'+!!document.querySelector('.kanban-column[data-status=todo]')" | tr -d '"')
+[[ "$V" == "kanban" && "$R1" == "false" && "$R2" == "true|true" ]] && pass "view:: kanban; reopening the page shows the status board" || fail "Open as board" "view=$V other=$R1 back=$R2"
+ev "document.querySelector('.kanban-open-as-board input')?.click()" >/dev/null; sleep 0.8
+ev "document.querySelector('.canvas-back-btn')?.click()" >/dev/null; sleep 0.5
+
+# ═══════════════════════════════════════════════
+journey "111. Mind map: Ctrl+click a link, find highlights, the layout is remembered (UX Wave 4)"
+# ═══════════════════════════════════════════════
+A111="const api=await import('/src/lib/api.ts');"
+M111="Map111 $(date +%s)"
+R=$(ev "(async()=>{$A111 const p=await api.createPage('$M111');const a=await api.createBlock(p.id,'Alpha111 see [[Getting Started]]');for(const t of ['Beta111 branch','Gamma111 branch','Delta111 with a long label that has to wrap in the radial layout']){const b=await api.createBlock(p.id,t,a.id);await api.createBlock(p.id,t.split(' ')[0]+' leaf',b.id)}return p.id})()" | tr -d '"')
+P111="$R"
+api "navigateTo('$M111')" >/dev/null; sleep 1.2
+ev "document.activeElement?.blur()" >/dev/null; press "Control+m"; sleep 2.5
+for _ in $(seq 1 10); do N=$(ev "document.querySelectorAll('.mm-node').length" | tr -d '"'); [[ "$N" -ge 8 ]] 2>/dev/null && break; sleep 0.5; done
+
+step "Node text shows the link's page title (no [[ ]]), as a link"
+R=$(ev "(()=>{const n=[...document.querySelectorAll('.mm-node')].find(x=>x.textContent.includes('Alpha111'));return (n?n.textContent.includes('[['):'missing')+'|'+(n?.querySelector('.mm-link')?.textContent||'')})()" | tr -d '"')
+[[ "$R" == "false|Getting Started" ]] && pass "Alpha111 node: link shown as “Getting Started”" || fail "Mind map link text" "$R"
+
+step "Find: matching nodes highlighted, the rest dimmed"
+ev "(()=>{const i=document.querySelector('.mindmap-search-input');const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;set.call(i,'gamma111');i.dispatchEvent(new Event('input',{bubbles:true}));return 1})()" >/dev/null; sleep 0.6
+R=$(ev "document.querySelectorAll('.mm-node.mm-match').length+'|'+document.querySelectorAll('.mm-node.mm-dim').length+'|'+[...document.querySelectorAll('.mm-node.mm-match')].map(n=>n.textContent).join(',')" | tr -d '"')
+[[ "$R" == 2\|*Gamma111* ]] && pass "Find 'gamma111': $R" || fail "Mind map find" "$R"
+ss "111-mindmap-find"
+ev "(()=>{const i=document.querySelector('.mindmap-search-input');const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;set.call(i,'');i.dispatchEvent(new Event('input',{bubbles:true}));return 1})()" >/dev/null; sleep 0.3
+
+step "Radial layout: narrower nodes, remembered for this page"
+ev "(()=>{const b=[...document.querySelectorAll('.mindmap-toolbar .btn-sm')].find(b=>b.textContent.includes('Layout'));b&&b.click();setTimeout(()=>{const r=[...document.querySelectorAll('.mindmap-dropdown button')].find(x=>x.textContent.includes('Radial'));r&&r.click()},300);return 1})()" >/dev/null; sleep 2
+R=$(ev "(async()=>{$A111 const p=await api.getProperties('$P111');const ns=[...document.querySelectorAll('.mm-node.mm-node-radial')];return (p.find(x=>x.key==='mindmap-layout')?.value||'')+'|'+ns.length+'|'+Math.max(...ns.map(n=>n.offsetWidth))})()" | tr -d '"')
+IFS='|' read -r LAY NR MW <<< "$R"
+[[ "$LAY" == "radial" && "$NR" -ge 7 && "$MW" -le 152 ]] 2>/dev/null && pass "mindmap-layout:: radial, $NR radial nodes, widest $MW px" || fail "Radial nodes" "$R"
+press "Escape"; sleep 0.5
+ev "document.activeElement?.blur()" >/dev/null; press "Control+m"; sleep 2.5
+R=$(ev "document.querySelectorAll('.mm-node.mm-node-radial').length" | tr -d '"')
+[[ "$R" -ge 7 ]] 2>/dev/null && pass "Reopened in radial ($R nodes)" || fail "Layout not remembered" "$R"
+
+step "Ctrl+click on the link opens the page"
+ev "(()=>{const l=[...document.querySelectorAll('.mm-link')].find(x=>x.textContent==='Getting Started');const o={bubbles:true,cancelable:true,ctrlKey:true,button:0};l.dispatchEvent(new MouseEvent('mousedown',o));l.dispatchEvent(new MouseEvent('mouseup',o));l.dispatchEvent(new MouseEvent('click',o));return 1})()" >/dev/null; sleep 1.5
+R=$(ev "!!document.querySelector('.mindmap-overlay')+'|'+window.__MINOTES__.getCurrentPage()" | tr -d '"')
+[[ "$R" == "false|"*"Getting Started"* ]] && pass "Opened Getting Started, the map closed" || fail "Ctrl+click link" "$R"
+
+# ═══════════════════════════════════════════════
+journey "112. Whiteboard: connectors stay attached, rubber-band selection, images in the thumbnail (UX Wave 4)"
+# ═══════════════════════════════════════════════
+A112="const api=await import('/src/lib/api.ts');"
+W112="Board112 $(date +%s)"
+ev "(async()=>{$A112 const p=await api.createPage('$W112');await api.createBlock(p.id,'Drawing below');return 1})()" >/dev/null
+api "navigateTo('$W112')" >/dev/null; sleep 1.2
+ev "document.activeElement?.blur()" >/dev/null; press "Control+w"; sleep 1.5
+WB112="(()=>{const c=document.querySelector('.whiteboard-canvas');const r=c.getBoundingClientRect();const ev=(t,x,y,o={})=>c.dispatchEvent(new MouseEvent(t,{bubbles:true,cancelable:true,clientX:r.left+x,clientY:r.top+y,button:0,...o}));const sleep=ms=>new Promise(r=>setTimeout(r,ms));const drag=async(x0,y0,x1,y1,o={})=>{ev('mousedown',x0,y0,o);for(let i=1;i<=6;i++){ev('mousemove',x0+(x1-x0)*i/6,y0+(y1-y0)*i/6,o);await sleep(25)}ev('mouseup',x1,y1,o);await sleep(120)};const tool=n=>[...document.querySelectorAll('.whiteboard-toolbar button')].find(b=>b.textContent===n).click();const B=document.querySelector('.whiteboard').__minotesBoard;return {drag,tool,B,sleep}})()"
+
+step "An arrow drawn from one box to another attaches to both"
+R=$(ev "(async()=>{const {drag,tool,B,sleep}=$WB112;tool('Box');await sleep(80);await drag(100,100,200,180);await drag(400,250,500,330);tool('Arrow');await sleep(80);await drag(150,140,450,290);tool('Select');await sleep(80);const d=B.data();const a=d.arrows[0];return d.boxes.length+'|'+(a&&a.from&&a.from.type)+'|'+(a&&a.to&&a.to.id===d.boxes[1].id)})()" | tr -d '"')
+[[ "$R" == "2|box|true" ]] && pass "Two boxes, the arrow attached from box to box ($R)" || fail "Connector attach" "$R"
+
+step "Moving a box keeps the arrow attached (its end follows the box's border)"
+R=$(ev "(async()=>{const {drag,B,sleep}=$WB112;const before=B.data().arrows[0];await drag(480,320,480,520);await sleep(300);const d=B.data();const a=d.arrows[0],b=d.boxes[1];const on=a.x2>=b.x-5&&a.x2<=b.x+b.width+5&&a.y2>=b.y-5&&a.y2<=b.y+b.height+5;return Math.round(b.y-250)+'|'+Math.round(a.y2-before.y2)+'|'+on+'|'+(a.to&&a.to.id===b.id)})()" | tr -d '"')
+IFS='|' read -r DY AY ON ST <<< "$R"
+[[ "$DY" -ge 150 && "$AY" -ge 100 && "$ON" == "true" && "$ST" == "true" ]] 2>/dev/null && pass "Box moved ${DY} px, arrow end followed (${AY} px) and sits on its border" || fail "Connector follows" "$R"
+ss "112-whiteboard-connector"
+
+step "Rubber band selects both boxes and the arrow; Shift+click toggles; the group moves and deletes together"
+R=$(ev "(async()=>{const {drag,B,sleep}=$WB112;await drag(60,60,600,620);await sleep(150);const s1=B.selection().length;const c=document.querySelector('.whiteboard-canvas');const r=c.getBoundingClientRect();const o={bubbles:true,cancelable:true,button:0,shiftKey:true};c.dispatchEvent(new MouseEvent('mousedown',{...o,clientX:r.left+150,clientY:r.top+105}));c.dispatchEvent(new MouseEvent('mouseup',{...o,clientX:r.left+150,clientY:r.top+105}));await sleep(150);const s2=B.selection().length;c.dispatchEvent(new MouseEvent('mousedown',{...o,clientX:r.left+150,clientY:r.top+105}));c.dispatchEvent(new MouseEvent('mouseup',{...o,clientX:r.left+150,clientY:r.top+105}));await sleep(150);const s3=B.selection().length;const b0=B.data().boxes.map(b=>[b.x,b.y]);await drag(150,105,250,155);await sleep(200);const b1=B.data().boxes.map(b=>[b.x,b.y]);const moved=b1.map((p,i)=>Math.round(p[0]-b0[i][0])+','+Math.round(p[1]-b0[i][1])).join(' ');return s1+'|'+s2+'|'+s3+'|'+moved+'|'+(document.querySelector('[data-testid=wb-multi]')?.textContent||'')})()" | tr -d '"')
+IFS='|' read -r S1 S2 S3 MV TB <<< "$R"
+[[ "$S1" == "3" && "$S2" == "2" && "$S3" == "3" && "$MV" =~ ^(9[0-9]|10[0-9]),(4[0-9]|5[0-9])\ (9[0-9]|10[0-9]),(4[0-9]|5[0-9])$ && "$TB" == "3 selected"* ]] && pass "Band: $S1, Shift+click: $S2 then $S3; group moved by $MV" || fail "Multi-select" "$R"
+press "Delete"; sleep 0.5
+R=$(ev "(()=>{const d=document.querySelector('.whiteboard').__minotesBoard.data();return d.boxes.length+'|'+d.arrows.length})()" | tr -d '"')
+press "Control+z"; sleep 0.5
+R2=$(ev "(()=>{const d=document.querySelector('.whiteboard').__minotesBoard.data();return d.boxes.length+'|'+d.arrows.length})()" | tr -d '"')
+[[ "$R" == "0|0" && "$R2" == "2|1" ]] && pass "Delete removed the group ($R), Ctrl+Z brought it back ($R2)" || fail "Group delete/undo" "$R / $R2"
+press "Escape"; sleep 0.3; press "Escape"; sleep 1
+
+step "A board with a picture shows the picture in the page's thumbnail"
+R=$(ev "(async()=>{$A112 const c=document.createElement('canvas');c.width=60;c.height=40;const x=c.getContext('2d');x.fillStyle='#e64553';x.fillRect(0,0,60,40);const url=c.toDataURL('image/png');const id='wb-t112'+Date.now().toString(36);await api.saveWhiteboard(id,JSON.stringify({notes:[],lines:[],images:[{id:'img1',x:0,y:0,width:120,height:80,dataUrl:url}],texts:[],arrows:[],boxes:[],camera:{x:0,y:0,zoom:1},nextNoteId:1}));const t=await api.getPageTree('$W112');await api.createBlock(t.page.id,'{{whiteboard:'+id+'}}');return id})()" | tr -d '"')
+api "navigateTo('Getting Started')" >/dev/null; sleep 0.8; api "navigateTo('$W112')" >/dev/null; sleep 2.5
+R2=$(ev "(()=>{const c=[...document.querySelectorAll('.whiteboard-thumbnail')].pop();if(!c)return 'none';const p=c.getContext('2d').getImageData(40,26,1,1).data;return (c.dataset.imagesDrawn||'0')+'|'+p[0]+','+p[1]+','+p[2]})()" | tr -d '"')
+[[ "$R2" == 1\|2[0-9][0-9],* ]] && pass "Thumbnail draws the image ($R2)" || fail "Thumbnail image" "$R2"
+
+# ═══════════════════════════════════════════════
+journey "113. Images and files: lightbox, width syntax, file chips, one remote image on click (UX Wave 4)"
+# ═══════════════════════════════════════════════
+A113="const api=await import('/src/lib/api.ts');"
+I113="Media113 $(date +%s)"
+ev "(async()=>{const s=await import('/src/lib/settings.ts');s.updateSettings({remoteImages:'ask'});const ri=await import('/src/lib/remoteImages.ts');ri.setNotebookAlways(false);return 1})()" >/dev/null
+R=$(ev "(async()=>{$A113 const mk=async(col,w,h)=>{const c=document.createElement('canvas');c.width=w;c.height=h;const x=c.getContext('2d');x.fillStyle=col;x.fillRect(0,0,w,h);const b=await new Promise(r=>c.toBlob(r,'image/png'));return new Uint8Array(await b.arrayBuffer())};const a1=await api.storeAttachment('pic113.png','image/png',await mk('#1e66f5',400,200));const a2=await api.storeAttachment('two113.png','image/png',await mk('#40a02b',300,300));const f=await api.storeAttachment('report113.pdf','application/pdf',new Uint8Array(15000));const p=await api.createPage('$I113');await api.createBlock(p.id,'Intro113 text');await api.createBlock(p.id,'![pic113|200](attachment:'+a1.hash+'/pic113.png)');await api.createBlock(p.id,'![two113](attachment:'+a2.hash+'/two113.png)');await api.createBlock(p.id,'See [report113.pdf](attachment:'+f.hash+'/report113.pdf) now');await api.createBlock(p.id,'![far113](https://images.example.org/far113.png) and ![near113](https://images.example.org/near113.png)');return f.hash})()" | tr -d '"')
+H113="$R"
+api "navigateTo('$I113')" >/dev/null; sleep 2
+ev "document.activeElement?.blur()" >/dev/null; sleep 0.5
+
+step "![alt|200](…) shows the image 200 px wide (the alt is just “pic113”)"
+R=$(ev "(()=>{const i=[...document.querySelectorAll('.block-static img')].find(x=>x.alt==='pic113');return i?i.dataset.width+'|'+Math.round(i.getBoundingClientRect().width):'missing'})()" | tr -d '"')
+[[ "$R" == "200|200" ]] && pass "Width 200 ($R)" || fail "Image width syntax" "$R"
+
+step "Clicking an image opens the lightbox; arrows step through the page's images; Esc closes only it"
+ev "(()=>{const i=[...document.querySelectorAll('.block-static img')].find(x=>x.alt==='pic113');const r=i.getBoundingClientRect();const o={bubbles:true,cancelable:true,button:0,clientX:r.left+10,clientY:r.top+10};i.dispatchEvent(new MouseEvent('mousedown',o));i.dispatchEvent(new MouseEvent('mouseup',o));i.dispatchEvent(new MouseEvent('click',o));return 1})()" >/dev/null; sleep 0.8
+R1=$(ev "(()=>{const l=document.querySelector('[data-testid=lightbox]');return !!l+'|'+(l?.querySelector('.lightbox-caption')?.textContent||'')+'|'+(l?.querySelector('.lightbox-count')?.textContent||'')+'|'+!!document.querySelector('.block-editor-prosemirror.ProseMirror-focused')})()" | tr -d '"')
+ss "113-lightbox"
+press "ArrowRight"; sleep 0.4
+R2=$(ev "document.querySelector('[data-testid=lightbox] .lightbox-caption')?.textContent||''" | tr -d '"')
+press "Escape"; sleep 0.6
+R3=$(ev "!!document.querySelector('[data-testid=lightbox]')+'|'+window.__MINOTES__.getCurrentPage()" | tr -d '"')
+[[ "$R1" == "true|pic113|1 / 2|false" && "$R2" == "two113" && "$R3" == "false|"*"$I113"* ]] && pass "Lightbox: $R1 → $R2; Esc closed it, the page stays" || fail "Lightbox" "$R1 / $R2 / $R3"
+
+step "A stored file is a chip (icon, name, type · size) with Open / Show in folder"
+R=$(ev "(()=>{const a=document.querySelector('a.attachment-chip');return a?(a.querySelector('.attachment-chip-name')?.textContent+'|'+a.querySelector('.attachment-chip-size')?.textContent+'|'+!!a.querySelector('svg')):'missing'})()" | tr -d '"')
+[[ "$R" == "report113.pdf|PDF · 15 KB|true" ]] && pass "Chip: $R" || fail "File chip" "$R"
+ev "(()=>{const a=document.querySelector('a.attachment-chip');const r=a.getBoundingClientRect();a.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true,clientX:r.left+5,clientY:r.top+5}));return 1})()" >/dev/null; sleep 0.5
+R=$(ev "[...document.querySelectorAll('[data-testid=attachment-menu] button')].map(b=>b.textContent.trim()).join(',')" | tr -d '"')
+if [[ "$BACKEND" == "browser" ]]; then
+  ev "[...document.querySelectorAll('[data-testid=attachment-menu] button')].find(b=>b.textContent.includes('Show in folder'))?.click()" >/dev/null; sleep 0.5
+  RV=$(ev "window.__minotesRevealed||''" | tr -d '"')
+else
+  press "Escape"; sleep 0.3; RV="$H113"
+fi
+[[ "$R" == "Open,Show in folder,Copy file name" && "$RV" == "$H113" ]] && pass "Menu: $R; Show in folder asked for that file" || fail "Attachment menu" "$R / revealed=$RV"
+
+step "Clicking a blocked web image loads just that one (the page stays in Ask mode)"
+ev "(()=>{const e=document.querySelector('.remote-img[data-remote-src*=far113]');const o={bubbles:true,cancelable:true,button:0};e.dispatchEvent(new MouseEvent('mousedown',o));e.dispatchEvent(new MouseEvent('mouseup',o));e.dispatchEvent(new MouseEvent('click',o));return 1})()" >/dev/null; sleep 1.5
+R=$(ev "(async()=>{const ri=await import('/src/lib/remoteImages.ts');const s=n=>document.querySelector('.remote-img[data-remote-src*='+n+']')?.getAttribute('data-remote-state');return s('far113')+'|'+s('near113')+'|'+ri.remoteImageMode()+'|'+!!document.querySelector('.remote-img[data-remote-src*=far113]')?.closest('.block-static')})()" | tr -d '"')
+[[ "$R" =~ ^(loaded|loading|error)\|blocked\|ask\|true$ ]] && pass "far113 fetched, near113 still blocked ($R)" || fail "Remote image click" "$R"
+
+# ═══════════════════════════════════════════════
+journey "114. Link previews: refresh, convert to a plain link, a wide image and the site icon (UX Wave 4)"
+# ═══════════════════════════════════════════════
+A114="const api=await import('/src/lib/api.ts');"
+L114="Links114 $(date +%s)"
+U114="https://example.com/a114?og-image"
+R=$(ev "(async()=>{$A114 const p=await api.createPage('$L114');await api.createBlock(p.id,'Reading list');const b=await api.createBlock(p.id,'{{link-preview:$U114}}');return b.id})()" | tr -d '"')
+B114="$R"
+api "navigateTo('$L114')" >/dev/null; sleep 2.5
+ev "document.activeElement?.blur()" >/dev/null
+for _ in $(seq 1 16); do S=$(ev "document.querySelector('.link-preview-card')?.dataset.previewState||''" | tr -d '"'); [[ "$S" == "loaded" || "$S" == "failed" ]] && break; sleep 0.5; done
+
+step "The card has Refresh and Convert actions; Refresh fetches again"
+R=$(ev "!!document.querySelector('.link-preview-refresh')+'|'+!!document.querySelector('.link-preview-convert')" | tr -d '"')
+S1=$(ev "document.querySelector('.link-preview-card').dataset.previewState" | tr -d '"')
+R2=$(ev "(async()=>{const w=document.querySelector('.link-preview-wrap');const n0=w.dataset.fetches;document.querySelector('.link-preview-refresh').click();for(let i=0;i<30&&document.querySelector('.link-preview-card').dataset.previewState==='loading';i++)await new Promise(r=>setTimeout(r,200));await new Promise(r=>setTimeout(r,200));return n0+'>'+w.dataset.fetches+'|'+document.querySelector('.link-preview-card').dataset.previewState})()" | tr -d '"')
+[[ "$R" == "true|true" && "$R2" == "1>2|$S1" ]] && pass "Actions present; Refresh fetched again ($R2)" || fail "Refresh" "$R / $R2 (was $S1)"
+
+if [[ "$BACKEND" == "browser" ]]; then
+step "With remote images allowed: a 16:9 image on top, and the site's icon"
+ev "(async()=>{const ri=await import('/src/lib/remoteImages.ts');$A114 const t=await api.getPageTree('$L114');ri.allowPage(t.page.id);return 1})()" >/dev/null; sleep 1.5
+R=$(ev "(()=>{const i=document.querySelector('.link-preview-image[data-remote-state=loaded]');const f=document.querySelector('.link-preview-favicon[data-remote-state=loaded]');const c=document.querySelector('.link-preview-card').getBoundingClientRect();if(!i)return 'no image';const r=i.getBoundingClientRect();return (r.width/r.height).toFixed(2)+'|'+Math.round(r.width/c.width*100)+'|'+!!f})()" | tr -d '"')
+IFS='|' read -r AR WP FV <<< "$R"
+[[ "$AR" == "1.78" && "$WP" -ge 95 && "$FV" == "true" ]] 2>/dev/null && pass "Image ${AR}:1 across ${WP}% of the card, favicon shown" || fail "Wide image / favicon" "$R"
+ss "114-link-preview"
+fi
+
+step "Convert to a plain link: the block becomes an ordinary markdown link"
+ev "document.querySelector('.link-preview-convert')?.click()" >/dev/null; sleep 1.5
+R=$(ev "(async()=>{$A114 const t=await api.getPageTree('$L114');return t.blocks.find(b=>b.id==='$B114')?.content||'gone'})()" | tr -d '"')
+R2=$(ev "!!document.querySelector('.link-preview-card')" | tr -d '"')
+[[ "$R" != *"{{link-preview"* && "$R" == *"$U114"* && ( "$R" == "["*"]($U114)" || "$R" == "<$U114>" ) && "$R2" == "false" ]] && pass "Stored as: $R" || fail "Convert to plain link" "$R / card=$R2"
+
+# ═══════════════════════════════════════════════
 close_app
 
 # ═══════════════════════════════════════════════

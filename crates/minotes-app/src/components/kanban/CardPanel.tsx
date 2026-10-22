@@ -27,11 +27,15 @@ function CardBlockEditor({ block, onSaved, onOpenPage, label }: {
     savedRef.current = markdown;
     api.updateBlock(block.id, markdown).then(onSaved).catch((e) => showToast(`Couldn't save the card: ${e}`));
   }, [block.id, onSaved]);
+  const edRef = useRef<{ commands: { blur: () => unknown } } | null>(null);
   const { editor } = useBlockEditor({
     content: block.content,
     onSave: save,
     onPageLinkClick: (title) => onOpenPage(title),
+    // Esc leaves the editor first (it saves on blur); the next Esc closes the panel.
+    onEscape: () => { edRef.current?.commands.blur(); (document.activeElement as HTMLElement | null)?.blur?.(); },
   });
+  edRef.current = editor;
   return (
     <div className="kanban-card-editor-rich block-content" data-card-block={block.id} aria-label={label}>
       {editor && <BubbleToolbar editor={editor} />}

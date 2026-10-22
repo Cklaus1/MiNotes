@@ -2077,6 +2077,7 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
     if (!el) return;
     el.__minotesBoard = {
       data: () => ({ ...boardShapes() }),
+      history: () => undoStackRef.current.map((s) => `${s.boxes.length}/${s.arrows.length}`),
       selection: () => (multiSelRef.current.length ? multiSelRef.current : selectedElementRef.current ? [selectedElementRef.current] : []).map(selKey),
       toScreen: (x: number, y: number) => {
         const r = canvasRef.current!.getBoundingClientRect();
@@ -2102,7 +2103,22 @@ function WhiteboardEditor({ whiteboardId, onClose, saved }: Props & { saved: Whi
   })();
 
   return (
-    <div className={`whiteboard whiteboard-${effectiveBg}`} ref={containerRef} tabIndex={-1} data-canvas-theme={effectiveBg}>
+    <div
+      className={`whiteboard whiteboard-${effectiveBg}`}
+      ref={containerRef}
+      tabIndex={-1}
+      data-canvas-theme={effectiveBg}
+      onKeyDown={(e) => {
+        // Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y are the board's own: stopped here so
+        // the app-wide page undo (a window listener) never runs on the board.
+        const k = e.key.toLowerCase();
+        if (!(e.ctrlKey || e.metaKey) || (k !== "z" && k !== "y") || editingNote || editingTextId) return;
+        if ((e.target as HTMLElement).closest("textarea, input")) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (k === "z" && !e.shiftKey) undo(); else redo();
+      }}
+    >
       {/* ── Base toolbar ── */}
       <div className="whiteboard-toolbar">
         <div className="whiteboard-toolbar-group">

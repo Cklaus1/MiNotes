@@ -36,7 +36,7 @@ export default function LinkPreviewCard({ url, onReplace }: { url: string; onRep
   }, [loaded, url, onReplace]);
 
   return (
-    <div className="link-preview-wrap" data-preview-url={url}>
+    <div className="link-preview-wrap" data-preview-url={url} data-fetches={gen + 1}>
       <a
         className={`link-preview-card link-preview-${state}${loaded && isRemoteSrc(loaded.image) ? " has-image" : ""}`}
         data-preview-state={state}
