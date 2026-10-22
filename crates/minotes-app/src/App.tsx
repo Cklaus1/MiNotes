@@ -32,6 +32,7 @@ import { isOnboardingComplete, markOnboardingComplete, TUTORIAL_BLOCKS } from ".
 import { executeUndo } from "./lib/undoManager";
 import { undoStack } from "./lib/undoStack";
 import { showToast, showUndoToast } from "./lib/toast";
+import { plural } from "./lib/confirm";
 import { installBrokenImageHints } from "./lib/brokenImages";
 import { installRemoteImages } from "./lib/remoteImages";
 import { pageAsText } from "./lib/pageText";
@@ -65,6 +66,13 @@ import ShortcutsOverlay from "./components/ShortcutsOverlay";
 // UX Wave 4 (views): remembered page views, image lightbox
 import { useRememberedPageView } from "./lib/pageView";
 import MediaHost from "./components/MediaHost";
+// ── Navigation (UX Wave 4) ──
+import AllPagesView from "./components/AllPagesView";
+import TrashView from "./components/TrashView";
+import NavButtons from "./components/NavButtons";
+import { cancelNavStep, noteLocation, setNavExecutor, takePendingNav, goBack, goForward, navHistorySnapshot, type NavEntry } from "./lib/navHistory";
+import { useAppCommands } from "./lib/appCommands";
+type MainView = null | "tasks" | "pages" | "trash" | "archive";
 // ── End import ──
 // ── End AI platform ──
 
@@ -119,8 +127,10 @@ export default function App() {
   }, []);
   useLayer(drawerWidth && drawerOpen, "panel", () => setDrawerOpen(false));
   const [folderSettingsId, setFolderSettingsId] = useState<string | null>(null);
-  // The Tasks view (sidebar TODO badge): shown in place of the page.
-  const [showTasks, setShowTasks] = useState(false);
+  // A view shown in place of the page (the page stays open underneath): Tasks
+  // (sidebar TODO badge), All Pages, Trash, Archive.
+  const [mainView, setMainView] = useState<MainView>(null);
+  const showTasks = mainView === "tasks";
 
   // Git Sync state: the shared status lives in lib/syncStatus (chip, Settings).
   const syncingRef = useRef(false);
@@ -215,7 +225,7 @@ export default function App() {
       }
       console.log("[openPage] got tree:", tree.page.title, "blocks:", tree.blocks.length);
       if (stale()) return; // superseded by a later navigation
-      if (!isRefresh) setShowTasks(false);
+      if (!isRefresh) setMainView(null);
       setActivePage(tree);
       setRefreshKey(k => k + 1);
       addRecentPage(tree.page.id, tree.page.title);
@@ -310,7 +320,7 @@ export default function App() {
 
   const openJournal = useCallback(async (date?: string) => {
     const token = ++navTokenRef.current;
-    setShowTasks(false);
+    setMainView(null);
     try {
       const d = date ?? localDateKey();
       const isToday = !date || d === localDateKey();
@@ -520,6 +530,37 @@ export default function App() {
     dismissToast = showUndoToast(`"${label}" moved to Trash`, restore, 10000, "Undo (Ctrl+Z)");
   }, [activePage, refresh, openPage, openJournal]);
 
+  // All Pages → select → Move to Trash: one toast with Undo for all of them.
+  const trashPages = useCallback(async (items: Array<{ id: string; title: string }>) => {
+    if (items.length === 1) { await deletePage(items[0].id, items[0].title); return; }
+    const done: typeof items = [];
+    const failed: string[] = [];
+    for (const it of items) {
+      try { await api.trashPage(it.id); done.push(it); } catch { failed.push(it.title); }
+    }
+    if (activePageIdRef.current && done.some(d => d.id === activePageIdRef.current)) {
+      ++navTokenRef.current;
+      setActivePage(null); // nothing can be typed into a trashed page
+    }
+    await refresh();
+    window.dispatchEvent(new Event("minotes-sidebar-refresh"));
+    if (failed.length) showToast(`Couldn't move ${failed.map(t => `“${t}”`).join(", ")} to the Trash`, 8000);
+    if (done.length === 0) return;
+    showUndoToast(`${plural(done.length, "page")} moved to Trash`, async () => {
+      for (const d of done) await api.restoreFromTrash(d.id, "page").catch(() => {});
+      await refresh();
+      window.dispatchEvent(new Event("minotes-sidebar-refresh"));
+      showToast(`Restored ${plural(done.length, "page")}`);
+    }, 10000);
+  }, [deletePage, refresh]);
+
+  // Leaving All Pages / Trash / Archive shows the page underneath (today's
+  // journal if that page went to the Trash meanwhile).
+  const closeMainView = useCallback(() => {
+    setMainView(null);
+    if (!activePageIdRef.current && !pendingJournalDate) openJournal().catch(() => {});
+  }, [openJournal, pendingJournalDate]);
+
   const openInSidebar = useCallback(async (titleOrId: string) => {
     try {
       const tree = await api.getPageTree(titleOrId);
@@ -697,7 +738,7 @@ export default function App() {
       setPdfViewerPath(null);
       setRightSidebarPanels([]);
       setFolderSettingsId(null);
-      setShowTasks(false);
+      setMainView(null);
       setLastError(null);
       setPendingJournalDate(null);
       setActivePage(null);
@@ -708,7 +749,11 @@ export default function App() {
       notifyCardsChanged();
       refresh();
       window.dispatchEvent(new Event("minotes-sidebar-refresh"));
-      openJournal().catch(() => {});
+      // Back/forward into this notebook, "Unlock and open", "Create page in…":
+      // that step, not today's journal (lib/navHistory).
+      const step = takePendingNav(key);
+      if (step) runNavRef.current(step);
+      else openJournal().catch(() => {});
       runTodoPageCleanup();
       api.gitSyncStatus().then(status => {
         applySyncStatus(status);
@@ -725,13 +770,14 @@ export default function App() {
   useEffect(() => {
     const onOpen = async (e: Event) => {
       const d = (e as CustomEvent<OpenInNotebook>).detail;
-      if (!d?.pageId) return;
+      if (!d?.pageId && !d?.title) return;
       try {
         if (d.key && d.key !== (await api.getCurrentNotebook())) await switchNotebook(d.key);
         setPendingReveal(d.blockId ?? null);
         setOpenPanel(null);
         setCanvasMode(null);
-        await openPage(d.pageId);
+        setMainView(null);
+        await openPage(d.pageId || d.title!);
       } catch (err) {
         setLastError(`Couldn't open the page: ${errorMessage(err)}`);
       }
@@ -842,10 +888,19 @@ export default function App() {
         const map: Record<string, boolean> = {
           search: openPanel === "search", query: openPanel === "query", graph: canvasMode === "graph",
           review: openPanel === "review", settings: openPanel === "settings", tasks: showTasks,
+          pages: mainView === "pages", trash: mainView === "trash", archive: mainView === "archive",
         };
         return map[name] ?? false;
       },
     });
+    // Back / forward and the main views (UX Wave 4).
+    registerTestApi({
+      goBack: () => { void goBack(); return true; },
+      goForward: () => { void goForward(); return true; },
+      navHistory: () => navHistorySnapshot(),
+      openView: (name: string) => { setCanvasMode(null); setMainView(name === "none" ? null : name as MainView); return true; },
+      getMainView: () => mainView,
+    } as any);
     // Notebooks: switch like the sidebar menu does; drive the folder dialog
     // (automation can't drive the native picker).
     registerTestApi({
@@ -855,7 +910,7 @@ export default function App() {
       setNextExportDest: (path: string | null) => { setNextExportDest(path); return true; },
       getNotebookKey: () => notebookKey,
     } as any);
-  }, [activePage, openPanel, canvasMode, whiteboardId, notebookKey, showTasks]);
+  }, [activePage, openPanel, canvasMode, whiteboardId, notebookKey, showTasks, mainView]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -996,6 +1051,85 @@ export default function App() {
     return () => window.removeEventListener("keydown", handler);
   }, [openJournal, createPage, activePage, whiteboardId, canvasMode, openNewWhiteboard, openPage, refresh, openPdfFlow]);
 
+  // ── Back / forward (lib/navHistory): where the user is, and how to go back there ──
+  const navLocation: NavEntry | null = !notebookKey ? null
+    : mainView ? { notebook: notebookKey, kind: "view", view: mainView }
+    : canvasMode === "graph" ? { notebook: notebookKey, kind: "view", view: "graph" }
+    : activePage ? { notebook: notebookKey, kind: "page", pageId: activePage.page.id, title: activePage.page.title }
+    : pendingJournalDate ? { notebook: notebookKey, kind: "journal-day", date: pendingJournalDate }
+    : null;
+  const navKey = navLocation ? JSON.stringify(navLocation) : "";
+  useEffect(() => { noteLocation(navLocation); }, [navKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const runNav = useCallback(async (e: NavEntry) => {
+    setOpenPanel(null);
+    setPdfViewerPath(null);
+    if (e.kind === "view") {
+      if (e.view === "graph") { setMainView(null); setCanvasMode("graph"); }
+      else { setCanvasMode(null); setMainView(e.view ?? null); }
+      return;
+    }
+    setCanvasMode(null);
+    setMainView(null);
+    if (e.kind === "journal-day" && e.date) { await openJournal(e.date); return; }
+    const label = e.title ?? "That page";
+    if (e.pageId) {
+      // A page that is gone or in the Trash is not opened again by Back.
+      const trashed = await api.listTrash().catch(() => [] as api.TrashItem[]);
+      if (trashed.some(t => t.id === e.pageId)) {
+        showToast(`“${label}” is in the Trash — restore it from the Trash view`);
+        cancelNavStep();
+        return;
+      }
+      try {
+        await api.getPageTree(e.pageId);
+      } catch {
+        showToast(`“${label}” no longer exists`);
+        cancelNavStep();
+        return;
+      }
+      await openPage(e.pageId);
+      return;
+    }
+    if (!e.title) return;
+    if (!e.create) {
+      // By name (a link into a notebook that was locked): never create it silently.
+      try {
+        await api.getPageTree(e.title);
+      } catch {
+        showToast(`This notebook has no page “${e.title}”`);
+        cancelNavStep();
+        openJournal().catch(() => {});
+        return;
+      }
+    }
+    await openPage(e.title);
+  }, [openPage, openJournal]);
+  const runNavRef = useRef(runNav);
+  runNavRef.current = runNav;
+  useEffect(() => setNavExecutor((e) => { void runNavRef.current(e); }), []);
+
+  // Every app action in the command palette (lib/appCommands.ts).
+  useAppCommands({
+    activePage: activePage?.page ?? null,
+    activeTree: activePage,
+    canvasMode,
+    mainView,
+    setOpenPanel,
+    setCanvasMode,
+    setMainView,
+    openJournal,
+    createPage,
+    deletePage,
+    renameActivePage,
+    openNewWhiteboard,
+    toggleSidebar,
+    toggleRightSidebar: () => setRightSidebarVisible(v => !v),
+    syncNow: () => triggerSync(true),
+    openPdf: () => { void openPdfFlow(); },
+    refresh,
+  });
+
   // Window title: "Page — Notebook — MiNotes", following navigation, the view
   // shown, and notebook switches / renames. (Locked: LockGate sets it.)
   const [notebookName, setNotebookName] = useState("");
@@ -1010,6 +1144,9 @@ export default function App() {
     };
   }, []);
   const viewLabel = showTasks ? "Tasks"
+    : mainView === "pages" ? "All pages"
+    : mainView === "trash" ? "Trash"
+    : mainView === "archive" ? "Archive"
     : canvasMode === "graph" ? "Graph"
     : canvasMode === "pages" ? "All pages"
     : activePage ? (activePage.page.is_journal && activePage.page.journal_date ? journalTitle(activePage.page.journal_date) : activePage.page.title)
@@ -1022,7 +1159,7 @@ export default function App() {
   // Alt+↑ / Alt+↓: previous / next journal day, while a journal day is shown
   // (a written one or an empty one). Not in text fields; a key something else
   // already handled (e.g. an editor binding) is left alone. Alt+←/→ zoom blocks.
-  const journalDateShown = showTasks ? null : (activePage?.page.is_journal ? activePage.page.journal_date ?? null : pendingJournalDate);
+  const journalDateShown = mainView ? null : (activePage?.page.is_journal ? activePage.page.journal_date ?? null : pendingJournalDate);
   useEffect(() => {
     if (!journalDateShown || canvasMode) return;
     const onKey = (e: KeyboardEvent) => {
@@ -1065,6 +1202,10 @@ export default function App() {
       }
 
       runTodoPageCleanup();
+      // Mounted after an unlock that was a step into this notebook (Back, or
+      // "Unlock and open" on a link): go there instead of the journal.
+      const step = takePendingNav(await api.getCurrentNotebook().catch(() => ""));
+      if (step) { runNavRef.current(step); return; }
       try {
         await openJournal();
       } catch (e) {
@@ -1082,7 +1223,7 @@ export default function App() {
         onToggleSidebar={toggleSidebar}
         activePage={activePage?.page ?? null}
         stats={stats}
-        onPageClick={(id) => { if (drawerWidth) setDrawerOpen(false); return openPage(id); }}
+        onPageClick={(id) => { if (drawerWidth) setDrawerOpen(false); setMainView(null); return openPage(id); }}
         onCreatePage={createPage}
         onDeletePage={deletePage}
         onJournalClick={(date?: string) => openJournal(date)}
@@ -1093,26 +1234,33 @@ export default function App() {
           if (activePage) openNewWhiteboard(activePage.page.id);
         }}
         onKanbanClick={() => { if (activePage) setCanvasMode(prev => prev === "kanban" ? null : "kanban"); }}
-        onPagesClick={() => setCanvasMode(prev => prev === "pages" ? null : "pages")}
+        onPagesClick={() => { setCanvasMode(null); setMainView(v => v === "pages" ? null : "pages"); }}
+        onTrashClick={() => { setCanvasMode(null); setMainView(v => v === "trash" ? null : "trash"); }}
+        onArchiveClick={() => { setCanvasMode(null); setMainView(v => v === "archive" ? null : "archive"); }}
+        activeView={mainView}
         onSettingsClick={() => setOpenPanel(prev => prev === "settings" ? null : "settings")}
         onFolderSettings={(id) => setFolderSettingsId(prev => prev === id ? null : id)}
         onReviewClick={() => setOpenPanel("review")}
         onTodoBadgeClick={() => {
           if (getSettings().ai?.todoExtraction === false) return; // Settings → AI → TODO extraction off
           setCanvasMode(null);
-          setShowTasks(true);
+          setMainView("tasks");
         }}
         tasksOpen={showTasks}
-        selectedJournalDate={showTasks ? null : (activePage?.page.is_journal ? activePage.page.journal_date ?? null : pendingJournalDate)}
-        activeMode={canvasMode === "graph" ? "graph" : canvasMode === "mindmap" ? "mindmap" : canvasMode === "draw" ? "whiteboard" : canvasMode === "kanban" ? "kanban" : canvasMode === "pages" ? "pages" : null}
+        selectedJournalDate={mainView ? null : (activePage?.page.is_journal ? activePage.page.journal_date ?? null : pendingJournalDate)}
+        activeMode={canvasMode === "graph" ? "graph" : canvasMode === "mindmap" ? "mindmap" : canvasMode === "draw" ? "whiteboard" : canvasMode === "kanban" ? "kanban" : canvasMode === "pages" || mainView === "pages" ? "pages" : null}
         refreshKey={refreshKey}
       />
       </div>
       {drawerWidth && drawerOpen && <div className="sidebar-drawer-backdrop" onMouseDown={() => setDrawerOpen(false)} data-testid="sidebar-backdrop" />}
       {sidebarHidden && (
-        <button className="sidebar-reveal-btn" onClick={toggleSidebar} title="Show sidebar (Ctrl+Shift+\)" aria-label="Show sidebar" data-testid="sidebar-reveal">
-          <Icon name="sidebar" size={18} />
-        </button>
+        <>
+          <button className="sidebar-reveal-btn" onClick={toggleSidebar} title="Show sidebar (Ctrl+Shift+\)" aria-label="Show sidebar" data-testid="sidebar-reveal">
+            <Icon name="sidebar" size={18} />
+          </button>
+          {/* Back / forward stay reachable with the sidebar hidden. */}
+          <NavButtons floating />
+        </>
       )}
       <div className="main workspace-split mod-root" style={{ position: "relative", display: "flex", flexDirection: "row" }}>
         <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }}>
@@ -1179,14 +1327,29 @@ export default function App() {
               } : undefined}
             />
           )}
-          {showTasks ? (
+          {mainView === "pages" ? (
+            <AllPagesView
+              activePageId={activePage?.page.id ?? null}
+              onPageClick={(id) => { setMainView(null); openPage(id).catch(() => {}); }}
+              onClose={closeMainView}
+              onTrashPages={trashPages}
+              onChanged={() => { refresh(); window.dispatchEvent(new Event("minotes-sidebar-refresh")); }}
+            />
+          ) : mainView === "trash" || mainView === "archive" ? (
+            <TrashView
+              kind={mainView}
+              onOpenPage={(id) => { setMainView(null); openPage(id).catch(() => {}); }}
+              onClose={closeMainView}
+              onChanged={() => { refresh(); window.dispatchEvent(new Event("minotes-sidebar-refresh")); }}
+            />
+          ) : showTasks ? (
             <TasksView
               onOpenTask={(t) => {
                 setPendingReveal(t.block_id);
                 openPage(t.page_id).catch(() => {});
               }}
               onClose={() => {
-                setShowTasks(false);
+                setMainView(null);
                 if (activePage) openPage(activePage.page.id).catch(() => {}); // tasks may have changed it
               }}
             />
@@ -1257,25 +1420,8 @@ export default function App() {
       <SearchPanel
         open={openPanel === "search"}
         onClose={() => setOpenPanel(null)}
-        onPageClick={(id) => { openPage(id); setOpenPanel(null); }}
-        onToggleTheme={() => { toggleTheme(); setOpenPanel(null); }}
+        onPageClick={(id) => { setOpenPanel(null); setCanvasMode(null); setMainView(null); openPage(id); }}
         onCreatePage={createPage}
-        onNewPage={() => {
-          setOpenPanel(null);
-          askNewPage().then(title => { if (title) createPage(title); });
-        }}
-        onJournal={() => { openJournal(); setOpenPanel(null); }}
-        onGraph={() => { setCanvasMode(prev => prev === "graph" ? null : "graph"); setOpenPanel(null); }}
-        onQuery={() => { setOpenPanel("query"); }}
-        onReview={() => { setOpenPanel("review"); }}
-        onSync={() => { setOpenPanel("sync"); }}
-        onSyncNow={() => { setOpenPanel(null); triggerSync(true); }}
-        onAskAi={() => { setOpenPanel(null); window.dispatchEvent(new CustomEvent("minotes:open-ai", { detail: "ask" })); }}
-        onAiSettings={() => { setOpenPanel(null); window.dispatchEvent(new CustomEvent("minotes:open-ai", { detail: "settings" })); }}
-        // The Obsidian plugin loader is an unsafe stub: development builds only.
-        onObsidianPlugins={import.meta.env.DEV ? () => { setOpenPanel("obsidianPlugins"); } : undefined}
-        onCssManager={() => { setOpenPanel("cssManager"); }}
-        onSettings={() => { setOpenPanel("settings"); }}
       />
       <QueryPanel
         open={openPanel === "query"}

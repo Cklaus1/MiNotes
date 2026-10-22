@@ -23,6 +23,8 @@ import * as theme from "./theme";
 import * as layers from "./layers";
 import * as tooltip from "./tooltip";
 import * as pageNames from "./pageNames";
+import * as shortcuts from "./shortcuts";
+import * as sidebarRecent from "./sidebarRecent";
 import { registerTestApi } from "./testApi";
 
 registerTestApi({
@@ -42,5 +44,7 @@ registerTestApi({
     "/src/lib/layers.ts": layers,
     "/src/lib/tooltip.ts": tooltip,
     "/src/lib/pageNames.ts": pageNames,
+    "/src/lib/shortcuts.ts": shortcuts,
+    "/src/lib/sidebarRecent.ts": sidebarRecent,
   },
 } as any);

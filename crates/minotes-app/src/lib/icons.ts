@@ -55,6 +55,12 @@ const ICONS = {
   text: ["M4 7V4h16v3", "M9 20h6", "M12 4v16"],
   folderOpen: ["M6 14l1.45-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.55 6a2 2 0 0 1-1.94 1.5H4a2 2 0 0 1-2-2V5c0-1.1.9-2 2-2h3.93a2 2 0 0 1 1.66.9l.82 1.2a2 2 0 0 0 1.66.9H18a2 2 0 0 1 2 2v2"],
   target: ["c:12,12,10", "c:12,12,6", "c:12,12,2"],
+  // Navigation (UX Wave 4): back / forward, restore, unlock.
+  "arrow-left": ["M19 12H5", "M12 19l-7-7 7-7"],
+  "arrow-right": ["M5 12h14", "M12 5l7 7-7 7"],
+  "rotate-ccw": ["M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8", "M3 3v5h5"],
+  unlock: ["r:3,11,18,11,2", "M7 11V7a5 5 0 0 1 9.9-1"],
+  command: ["M15 6v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3"],
 } as const;
 
 export type IconName = keyof typeof ICONS;

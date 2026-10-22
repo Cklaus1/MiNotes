@@ -6,11 +6,17 @@
  * then resolves it (batched, cached) to the target's CURRENT name and title —
  * by the ids link sync stored, so renames don't break it — or marks it "not
  * found". Clicking asks App (OPEN_IN_NOTEBOOK) to switch notebooks and open the
- * page. Such a link never creates a page, here or there.
+ * page. Following a link never creates a page silently: a "not found" chip in
+ * an existing notebook asks first ("Create page in <Notebook>"), and a chip
+ * into a locked notebook offers "Unlock and open" (the passphrase in-app).
  */
 import * as api from "./api";
 import { showToast } from "./toast";
-import { NOTEBOOK_SWITCHED, NOTEBOOKS_CHANGED } from "./notebooks";
+import { NOTEBOOK_SWITCHED, NOTEBOOKS_CHANGED, switchNotebook } from "./notebooks";
+import { askPassphrase, unlock } from "./encryption";
+import { confirmDialog } from "./confirm";
+import { errorMessage } from "./errors";
+import { setPendingNav } from "./navHistory";
 
 export const NOTEBOOK_SEP = "::";
 
@@ -38,6 +44,8 @@ export interface OpenInNotebook {
   key: string;
   pageId: string;
   blockId?: string;
+  /** Open (or create) by title instead of id. */
+  title?: string;
 }
 export function openInNotebook(detail: OpenInNotebook) {
   window.dispatchEvent(new CustomEvent<OpenInNotebook>(OPEN_IN_NOTEBOOK, { detail }));
@@ -94,9 +102,11 @@ function tooltip(t: api.LinkTarget, notebook: string, page: string): string {
       ? `Open “${t.page_title}”`
       : `Open “${t.page_title}” in notebook ${t.notebook_name}`;
     case "local": return `Open “${t.page_title}”`;
-    case "page_missing": return `Not found: no page “${page}” in notebook ${t.notebook_name ?? notebook}`;
+    case "page_missing": return `Not found: no page “${page}” in notebook ${t.notebook_name ?? notebook} — click to create it there`;
     case "notebook_missing": return `Not found: no notebook named “${notebook}”`;
-    case "unavailable": return `Notebook ${t.notebook_name ?? notebook} is ${t.detail ?? "not available"} right now`;
+    case "unavailable": return isLocked(t)
+      ? `Notebook ${t.notebook_name ?? notebook} is locked — click to unlock it and open “${page}”`
+      : `Notebook ${t.notebook_name ?? notebook} is ${t.detail ?? "not available"} right now`;
   }
 }
 
@@ -108,6 +118,9 @@ function apply(el: HTMLElement, t: api.LinkTarget, notebook: string, page: strin
     : notebookLinkLabel(t.notebook_name ?? notebook, page);
   if (el.textContent !== label) el.textContent = label;
   el.classList.toggle("xnb-missing", !OK_STATUSES.has(t.status));
+  // Not a dead end: a locked notebook can be unlocked, a missing page created.
+  el.classList.toggle("xnb-actionable", isLocked(t) || (t.status === "page_missing" && !!t.notebook_key));
+  el.dataset.xnbAction = isLocked(t) ? "unlock" : t.status === "page_missing" && t.notebook_key ? "create" : "";
   el.title = tooltip(t, notebook, page);
 }
 
@@ -144,14 +157,85 @@ export async function followNotebookLink(notebook: string, page: string, blockId
       openInNotebook({ key: "", pageId: t.page_id! });
       return;
     case "page_missing":
-      showToast(`Notebook ${t.notebook_name ?? notebook} has no page “${page}”. Links to another notebook never create pages — create it there first.`);
+      if (t.notebook_key) {
+        await createPageInNotebook(t.notebook_key, t.notebook_name ?? notebook, page, !!t.current);
+        return;
+      }
+      showToast(`Notebook ${t.notebook_name ?? notebook} has no page “${page}”.`);
       return;
     case "notebook_missing":
       showToast(`There is no notebook named “${notebook}”. [[Notebook::Page]] links to a page in another notebook — check the name in the notebook menu.`);
       return;
     case "unavailable":
+      if (isLocked(t) && t.notebook_key) {
+        await unlockAndOpen(t.notebook_key, t.notebook_name ?? notebook, page);
+        return;
+      }
       showToast(`Notebook ${t.notebook_name ?? notebook} is ${t.detail ?? "not available"} right now.`);
       return;
+  }
+}
+
+function isLocked(t: api.LinkTarget): boolean {
+  return t.status === "unavailable" && /locked/i.test(t.detail ?? "");
+}
+
+/**
+ * A link into a locked notebook: "Unlock and open" — the passphrase in the
+ * app's own prompt, then that notebook opens, unlocked, at the page. A wrong
+ * passphrase asks again; Cancel leaves its unlock screen showing (Back returns).
+ */
+export async function unlockAndOpen(key: string, name: string, page: string): Promise<boolean> {
+  let secret = await askPassphrase("Unlock and open", `“${name}” is encrypted and locked. Enter its passphrase to open “${page}”.`);
+  if (!secret) return false;
+  // App takes this step once the notebook is open and unlocked (lib/navHistory).
+  setPendingNav({ notebook: key, kind: "page", title: page });
+  try {
+    await switchNotebook(key);
+  } catch {
+    setPendingNav(null);
+    return false; // switchNotebook said why
+  }
+  for (;;) {
+    try {
+      await unlock(secret);
+      return true;
+    } catch (e) {
+      const msg = errorMessage(e);
+      if (!/WRONG_PASSPHRASE/i.test(msg)) {
+        showToast(`Couldn't unlock “${name}”: ${msg.replace(/^[A-Z_]+:\s*/, "")}`);
+        return false;
+      }
+      const again = await askPassphrase("Unlock and open", `Wrong passphrase for “${name}” — try again.`);
+      if (!again) return false;
+      secret = again;
+    }
+  }
+}
+
+/** A link to a page an existing notebook doesn't have: offer to create it there. */
+export async function createPageInNotebook(key: string, name: string, page: string, current: boolean): Promise<boolean> {
+  const ok = await confirmDialog({
+    title: `No page “${page}” in ${name}`,
+    message: current
+      ? `Create the page “${page}” in this notebook and open it?`
+      : `Create the page “${page}” in the notebook ${name}? MiNotes then opens ${name} at the new page.`,
+    confirmLabel: `Create page in ${name}`,
+  });
+  if (!ok) return false;
+  // Opening a page by title creates it (App.openPage); the link resolves to it from then on.
+  clearNotebookLinkCache();
+  if (current) {
+    openInNotebook({ key: "", pageId: "", title: page });
+    return true;
+  }
+  setPendingNav({ notebook: key, kind: "page", title: page, create: true });
+  try {
+    await switchNotebook(key);
+    return true;
+  } catch {
+    setPendingNav(null);
+    return false;
   }
 }
 

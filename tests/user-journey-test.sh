@@ -2618,9 +2618,11 @@ ev "document.activeElement?.blur()" > /dev/null
 press "Escape"; sleep 0.8
 K2=$(ev "!!document.querySelector('.canvas-layer')" | tr -d '"')
 ev "document.querySelector('.stats-mode-btn[title=\"All Pages\"]')?.click()" > /dev/null; sleep 1
-A1=$(ev "!!document.querySelector('.canvas-layer')" | tr -d '"')
+# All Pages is a view in the main pane since UX Wave 4 (no canvas layer).
+A1=$(ev "!!document.querySelector('.all-pages-view')" | tr -d '"')
+ev "document.activeElement?.blur()" > /dev/null
 press "Escape"; sleep 0.8
-A2=$(ev "!!document.querySelector('.canvas-layer')" | tr -d '"')
+A2=$(ev "!!document.querySelector('.all-pages-view')" | tr -d '"')
 [[ "$K1|$K2|$A1|$A2" == "true|false|true|false" ]] && pass "Escape closes Kanban and All Pages" || fail "Escape didn't close" "kanban $K1→$K2 pages $A1→$A2"
 
 step "Ctrl+J works with the cursor in a block"
@@ -3173,13 +3175,14 @@ for _ in $(seq 1 16); do sleep 0.5; [[ "$(api 'getCurrentPage()' | tr -d '"')" =
 [[ "$(api 'getCurrentPage()' | tr -d '"')" == "Roadmap62 final" ]] && pass "…and still opens it" || fail "Follow after rename" "$(api 'getCurrentPage()')"
 ev "window.__MINOTES__.switchNotebook('$HOME62')" >/dev/null; sleep 2
 
-step "Clicking the not-found chip explains instead of creating a page"
+step "Clicking the not-found chip asks before creating a page there (UX Wave 4); Cancel creates nothing"
 api "navigateTo('Links62')" >/dev/null; sleep 2
 ev "document.querySelectorAll('.block .xnb-link')[1]?.click()" >/dev/null; sleep 1.5
-R=$(ev "[...document.querySelectorAll('.minotes-toast')].map(t=>t.textContent).join(' | ')" | tr -d '"')
-[[ "$R" == *"has no page"*"No Such Page62"* ]] && pass "A toast explains the page doesn't exist there" || fail "Not-found click" "$R"
+R=$(ev "(document.querySelector('[data-testid=confirm-dialog]')?.innerText||'none')" | tr -d '"')
+[[ "$R" == *"No page"*"No Such Page62"*"Create page in $WORK62"* ]] && pass "Asks: Create page in $WORK62" || fail "Not-found click" "$R"
+ev "document.querySelector('[data-testid=confirm-cancel]')?.click()" >/dev/null; sleep 1
 R="$(cur62)|$(api 'getCurrentPage()' | tr -d '"')"
-[[ "$R" == "$HOME62|Links62" ]] && pass "I stay where I was" || fail "Moved on a not-found click" "$R"
+[[ "$R" == "$HOME62|Links62" ]] && pass "Cancel: I stay where I was" || fail "Moved on a not-found click" "$R"
 
 step "Typing [[ offers my other notebook, then its pages"
 ev "(async()=>{$A62 const p=await api.createPage('Typing62');await api.createBlock(p.id,'Next');return 1})()" >/dev/null
@@ -3541,10 +3544,11 @@ api "closePanel()" >/dev/null; press "Escape"; sleep 0.3
 ev "(async()=>{$A66 for(const t of ['$LONG66','Trash66 second']){const p=await api.createPage(t);await api.createBlock(p.id,'x');await api.trashPage(p.id)}window.dispatchEvent(new Event('minotes-sidebar-refresh'));return 1})()" >/dev/null; sleep 1
 
 step "Trash → ✕ on one item asks, and Cancel keeps it"
-ev "(()=>{const t=[...document.querySelectorAll('.sidebar-system-item')].find(e=>e.textContent.includes('Trash'));if(t&&!document.querySelector('.sidebar-trash-list'))t.click();return 1})()" >/dev/null
+# The sidebar's Trash entry opens the Trash view in the main pane (UX Wave 4).
+ev "(()=>{if(!document.querySelector('[data-testid=trash-view]'))document.querySelector('[data-testid=sidebar-trash]')?.click();return 1})()" >/dev/null
 wait66 "!!document.querySelector('[data-testid=trash-item]')" || true
-R=$(ev "(()=>{const it=[...document.querySelectorAll('[data-testid=trash-item]')].find(e=>e.textContent.includes('really very long'));if(!it)return 'no item';const x=it.querySelector('[data-testid=trash-delete]').getBoundingClientRect();const s=(it.closest('.sidebar')||document.querySelector('.sidebar')).getBoundingClientRect();return x.width>0&&x.left>=s.left&&x.right<=s.right?'visible':'clipped '+Math.round(x.right)+'>'+Math.round(s.right)})()" | tr -d '"')
-[[ "$R" == "visible" ]] && pass "The ✕ of a long-titled item is fully inside the sidebar" || fail "✕ clipped" "$R"
+R=$(ev "(()=>{const it=[...document.querySelectorAll('[data-testid=trash-item]')].find(e=>e.textContent.includes('really very long'));if(!it)return 'no item';const x=it.querySelector('[data-testid=trash-delete]').getBoundingClientRect();const s=it.closest('.system-view-list').getBoundingClientRect();return x.width>0&&x.left>=s.left&&x.right<=s.right?'visible':'clipped '+Math.round(x.right)+'>'+Math.round(s.right)})()" | tr -d '"')
+[[ "$R" == "visible" ]] && pass "The ✕ of a long-titled item is fully inside the Trash list" || fail "✕ clipped" "$R"
 ev "[...document.querySelectorAll('[data-testid=trash-item]')].find(e=>e.textContent.includes('really very long'))?.querySelector('[data-testid=trash-delete]').click()" >/dev/null; sleep 0.4
 R=$(dlg66)
 [[ "$R" == *"permanently"* && "$R" == *"can't be undone"* ]] && pass "Delete permanently asks first" || fail "No confirmation for ✕" "$R"
@@ -3564,6 +3568,7 @@ R=$(ev "(async()=>{$A66 return (await api.listTrash()).length})()" | tr -d '"')
 ev "document.querySelector('[data-testid=empty-trash]')?.click()" >/dev/null; sleep 0.4
 ev "document.querySelector('[data-testid=confirm-ok]')?.click()" >/dev/null
 wait66 "(async()=>{$A66 return (await api.listTrash()).length===0})()" && pass "OK: the trash is empty" || fail "Empty trash after OK" "$(ev "(async()=>{$A66 return (await api.listTrash()).length})()")"
+api "openView('none')" >/dev/null
 
 step "Deleting a CSS snippet asks; Cancel keeps it"
 ev "(async()=>{$A66 try{await api.deleteCssSnippet('snippet66')}catch{} await api.addCssSnippet('snippet66','.x66{color:red}');return 1})()" >/dev/null
@@ -4543,8 +4548,8 @@ ev "(async()=>{$A84 const t=await api.createPage('Travel — Lisbon 2027');const
 
 step "\"lisbon travel\" finds the page \"Travel — Lisbon 2027\""
 search84 "lisbon travel"
-# Page hits are the rows above the "Blocks" section.
-R=$(ev "(()=>{const out=[];for(const e of document.querySelector('.command-palette-results')?.children||[]){if(e.classList.contains('command-palette-section'))break;if(e.classList.contains('command-palette-item'))out.push(e.textContent)}return out.join('|')})()" | tr -d '"')
+# Page hits are the rows of the "Pages" section (UX Wave 4: sections per kind).
+R=$(ev "[...document.querySelectorAll('[data-testid=search-section-pages] .command-palette-item')].map(e=>e.textContent).join('|')" | tr -d '"')
 [[ "$R" == *"Travel — Lisbon 2027"* ]] && pass "Page found by words in any order ($R)" || fail "Token-wise title match" "$R"
 
 step "A block result is plain text with its page name"
@@ -5358,6 +5363,387 @@ R=$(ev "(async()=>{$M95 const t=(await api.listTrash()).map(x=>x.title).filter(x
 [[ "$R" == "Held95 B,Held95 D|false|"*"kept 2"* ]] && pass "B and D trashed, A and C kept; banner gone" || fail "Partial keep" "$R"
 ev "(async()=>{$M95 sm.mockRemotes.held=null;Object.assign(m.mockSync,{enabled:false,remote_url:null,last_sync:null});return 1})()" >/dev/null
 fi
+journey "96. Back and forward across pages, views and notebooks (UX Wave 4)"
+# One history for pages, journal days, Tasks / All Pages / Trash / Graph and
+# notebooks: the toolbar arrows, Ctrl+[ / Ctrl+], the mouse's back button; going
+# back into a locked notebook shows its unlock screen, then the page.
+# ═══════════════════════════════════════════════
+A96="const api=await import('/src/lib/api.ts');"
+cur96() { api "getCurrentPage()" | tr -d '"'; }
+view96() { api "getMainView()" | tr -d '"'; }
+nbkey96() { ev "(async()=>{$A96 return (await api.getNotebookSession()).key})()" | tr -d '"'; }
+wait96() { for _ in $(seq 1 ${2:-25}); do [[ "$(ev "$1" | tr -d '"')" == "true" ]] && return 0; sleep 0.3; done; return 1; }
+key96() { ev "(()=>{window.dispatchEvent(new KeyboardEvent('keydown',{key:'$1',code:'$2',ctrlKey:true,bubbles:true,cancelable:true}));return 1})()" >/dev/null; }
+api "closePanel()" >/dev/null; api "openView('none')" >/dev/null; press "Escape"; sleep 0.3
+HOME96=$(nbkey96)
+ev "(async()=>{$A96 for(const t of ['Hist96 A','Hist96 B']){const p=await api.createPage(t);await api.createBlock(p.id,'text of '+t)}return 1})()" >/dev/null
+
+step "Pages and views are steps: A → B → Tasks → All Pages, then the Back button"
+api "navigateTo('Hist96 A')" >/dev/null; wait96 "window.__MINOTES__.getCurrentPage()==='Hist96 A'"
+api "navigateTo('Hist96 B')" >/dev/null; wait96 "window.__MINOTES__.getCurrentPage()==='Hist96 B'"
+api "openView('tasks')" >/dev/null; sleep 0.5
+ev "document.querySelector('.stats-mode-btn[title=\"All Pages\"]')?.click()" >/dev/null; sleep 0.8
+R1="$(view96)"
+ev "document.querySelector('[data-testid=nav-back]')?.click()" >/dev/null; sleep 0.8
+R2="$(view96)"
+ev "document.querySelector('[data-testid=nav-back]')?.click()" >/dev/null; sleep 0.8
+R3="$(view96)|$(cur96)"
+[[ "$R1" == "pages" && "$R2" == "tasks" && "$R3" == "null|Hist96 B" ]] && pass "Back: All Pages → Tasks → Hist96 B ($R1 → $R2 → $R3)" || fail "Back through views" "$R1 → $R2 → $R3"
+ss "96-history-buttons"
+
+step "Ctrl+[ goes back, Ctrl+] forward; the forward arrow is enabled only when there is something ahead"
+key96 "[" "BracketLeft"; wait96 "window.__MINOTES__.getCurrentPage()==='Hist96 A'"
+R1="$(cur96)|$(ev "document.querySelector('[data-testid=nav-forward]')?.disabled" | tr -d '"')"
+key96 "]" "BracketRight"; wait96 "window.__MINOTES__.getCurrentPage()==='Hist96 B'"
+R2="$(cur96)"
+[[ "$R1" == "Hist96 A|false" && "$R2" == "Hist96 B" ]] && pass "Ctrl+[ → A (forward enabled), Ctrl+] → B ($R1, $R2)" || fail "History keys" "$R1, $R2"
+
+step "The mouse's back button goes back"
+ev "(()=>{const t=document.querySelector('.main')||document.body;t.dispatchEvent(new MouseEvent('mousedown',{button:3,bubbles:true,cancelable:true}));t.dispatchEvent(new MouseEvent('mouseup',{button:3,bubbles:true,cancelable:true}));return 1})()" >/dev/null
+wait96 "window.__MINOTES__.getCurrentPage()==='Hist96 A'" && pass "Mouse button 4 (back) → Hist96 A" || fail "Mouse back" "$(cur96)"
+api "navigateTo('Hist96 B')" >/dev/null; wait96 "window.__MINOTES__.getCurrentPage()==='Hist96 B'"
+R=$(ev "document.querySelector('[data-testid=nav-forward]')?.disabled" | tr -d '"')
+[[ "$R" == "true" ]] && pass "A new page after going back drops what was ahead (forward disabled)" || fail "Forward after a new page" "$R"
+
+step "Back after switching notebooks returns to the page in the first notebook"
+OTHER96=$(ev "(async()=>{$A96 return (await api.createNotebook('Other96 '+Date.now())).key})()" | tr -d '"')
+ev "window.__MINOTES__.switchNotebook('$OTHER96')" >/dev/null; sleep 2
+R1="$(nbkey96)"
+ev "document.querySelector('[data-testid=nav-back]')?.click()" >/dev/null
+wait96 "(async()=>{$A96 return (await api.getNotebookSession()).key==='$HOME96'&&window.__MINOTES__.getCurrentPage()==='Hist96 B'})()" 30
+R2="$(nbkey96)|$(cur96)"
+[[ "$R1" == "$OTHER96" && "$R2" == "$HOME96|Hist96 B" ]] && pass "Back reopened the first notebook at Hist96 B" || fail "Back across notebooks" "$R1 → $R2"
+
+step "Back into a locked notebook shows its unlock screen; unlocking opens the page"
+PASS96="ninety six correct horse staple"
+VAULT96=$(ev "(async()=>{$A96 return (await api.createEncryptedNotebook('Vault96 '+Date.now(),undefined,'$PASS96')).notebook.key})()" | tr -d '"')
+ev "window.__MINOTES__.switchNotebook('$VAULT96')" >/dev/null; sleep 2
+ev "(async()=>{$A96 const p=await api.createPage('Secret96');await api.createBlock(p.id,'hidden 96');return 1})()" >/dev/null
+api "navigateTo('Secret96')" >/dev/null; wait96 "window.__MINOTES__.getCurrentPage()==='Secret96'"
+ev "window.__MINOTES__.switchNotebook('$HOME96')" >/dev/null; sleep 2
+ev "document.querySelector('[data-testid=nav-back]')?.click()" >/dev/null
+wait96 "!!document.querySelector('[data-testid=unlock-screen]')" 30 && pass "Back → the vault's unlock screen (it locked when I left it)" || fail "No unlock screen" "$(nbkey96)"
+ss "96-back-into-locked"
+ev "(()=>{const i=document.querySelector('[data-testid=unlock-passphrase]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(i,'$PASS96');i.dispatchEvent(new Event('input',{bubbles:true}));return 1})()" >/dev/null; sleep 0.2
+ev "document.querySelector('[data-testid=unlock-submit]')?.click()" >/dev/null
+wait96 "window.__MINOTES__?.getCurrentPage?.()==='Secret96'" 30 && pass "Unlocked → Secret96, not today's journal" || fail "After unlock" "$(cur96)"
+# Before Secret96 came the vault's journal (where the switch landed), then Hist96 B.
+key96 "[" "BracketLeft"
+wait96 "/^Journal\\//.test(window.__MINOTES__?.getCurrentPage?.()||'')" 30
+R1="$(nbkey96)"
+key96 "[" "BracketLeft"
+wait96 "(async()=>{$A96 return (await api.getNotebookSession()).key==='$HOME96'&&window.__MINOTES__.getCurrentPage()==='Hist96 B'})()" 30
+R="$R1|$(nbkey96)|$(cur96)"
+[[ "$R" == "$VAULT96|$HOME96|Hist96 B" ]] && pass "Ctrl+[ twice: the vault's journal, then Hist96 B in the first notebook" || fail "Back out of the vault" "$R"
+[[ "$(nbkey96)" == "$HOME96" ]] || { ev "window.__MINOTES__.switchNotebook('$HOME96')" >/dev/null; sleep 2; }
+
+step "The shortcut list has back / forward"
+R=$(ev "(async()=>{const s=await import('/src/lib/shortcuts.ts');return s.SHORTCUT_GROUPS.flatMap(g=>g.items).some(([k,d])=>k.includes('Ctrl+[')&&/back/i.test(d))})()" | tr -d '"')
+[[ "$R" == "true" ]] && pass "Ctrl+[ / Ctrl+] listed" || fail "Shortcut list" "$R"
+api "openView('none')" >/dev/null
+
+# ═══════════════════════════════════════════════
+journey "97. The command palette runs every app action (UX Wave 4)"
+# ═══════════════════════════════════════════════
+A97="const api=await import('/src/lib/api.ts');"
+setq97() { ev "(()=>{const i=document.querySelector('.command-palette-input');if(!i)return 'no input';Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(i,'$1');i.dispatchEvent(new Event('input',{bubbles:true}));return 1})()" >/dev/null; sleep 0.5; }
+open97() { api "closePanel()" >/dev/null; api "openSearch()" >/dev/null; sleep 0.4; setq97 "$1"; }
+cmds97() { ev "[...document.querySelectorAll('[data-testid=palette-command]')].map(e=>e.dataset.commandId).join(',')" | tr -d '"'; }
+enter97() { ev "(()=>{document.querySelector('.command-palette-input')?.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));return 1})()" >/dev/null; sleep 0.7; }
+api "openView('none')" >/dev/null; api "closePanel()" >/dev/null
+ev "(async()=>{$A97 const f=await api.createFolder('Proj97');const p=await api.createPage('Cmd97 page');await api.createBlock(p.id,'x');window.__f97=f.id;return 1})()" >/dev/null
+api "navigateTo('Cmd97 page')" >/dev/null; sleep 1
+
+step "\">\" lists every app action with its shortcut"
+open97 ">"
+R=$(cmds97)
+N=$(echo "$R" | tr ',' '\n' | grep -c .)
+MISSING=""
+for id in back journal all-pages tasks trash archive graph mindmap kanban whiteboard pin move-page rename-page archive-page delete-page export-page new-page switch-notebook new-notebook manage-notebooks export-notebook import sync-now ask-ai ai-settings shortcuts toggle-theme toggle-sidebar settings query review pdf; do
+  [[ ",$R," == *",$id,"* ]] || MISSING="$MISSING $id"
+done
+[[ $N -ge 35 && -z "$MISSING" ]] && pass "$N commands, all the app's actions" || fail "Commands missing" "n=$N missing:$MISSING"
+R=$(ev "(()=>{const h=id=>document.querySelector('[data-command-id='+id+'] .shortcut-hint')?.textContent||'';return [h('journal'),h('back'),h('kanban'),h('settings')].join(' ')})()" | tr -d '"')
+[[ "$R" == "Ctrl+J Ctrl+[ Ctrl+Shift+K Ctrl+," ]] && pass "Shortcut hints shown ($R)" || fail "Shortcut hints" "$R"
+ss "97-commands"
+
+step "Ranking: exact > prefix > word start > fuzzy; typos still find the command"
+open97 ">settings"; R1=$(cmds97 | cut -d, -f1)
+open97 ">swtich"; R2=$(cmds97 | cut -d, -f1)
+open97 ">mind"; R3=$(cmds97 | cut -d, -f1)
+open97 ">delete"; R4=$(cmds97 | cut -d, -f1)
+R5=$(ev "document.querySelector('[data-command-id=switch-notebook] mark')?.textContent||'none'" | tr -d '"')
+[[ "$R1|$R2|$R3|$R4" == "settings|switch-notebook|mindmap|delete-page" ]] && pass "settings / swtich / mind / delete → $R1, $R2, $R3, $R4" || fail "Command ranking" "$R1|$R2|$R3|$R4"
+
+step "A command I ran comes first next time"
+open97 ">keyboard shortcuts"; enter97
+press "Escape"; sleep 0.3
+open97 ">"
+R=$(cmds97 | cut -d, -f1)
+R2=$(ev "document.querySelector('[data-command-id=shortcuts] .palette-detail')?.textContent||''" | tr -d '"')
+[[ "$R" == "shortcuts" && "$R2" == "recent" ]] && pass "Recent: Keyboard Shortcuts listed first, marked recent" || fail "Recent commands" "$R / $R2"
+
+step "Move Page to Project… asks which project, then moves the page"
+open97 ">move page"; enter97
+R1=$(ev "[...document.querySelectorAll('[data-testid=palette-pick-item]')].map(e=>e.textContent).join('|')" | tr -d '"')
+setq97 "proj97"; enter97
+R2=$(ev "(async()=>{$A97 const t=await api.getFolderTree();const walk=fs=>fs.flatMap(f=>[f,...walk(f.children||[])]);const f=walk(t.folders).find(f=>f.name==='Proj97');return !!f&&f.pages.some(p=>p.title==='Cmd97 page')})()" | tr -d '"')
+[[ "$R1" == *"Top level"*"Proj97"* && "$R2" == "true" ]] && pass "Picker lists projects; Cmd97 page is now in Proj97" || fail "Move via palette" "$R1 / $R2"
+
+step "Pin Page pins it; then the command says Unpin Page"
+open97 ">pin page"; enter97; sleep 0.5
+R1=$(ev "(async()=>{$A97 return (await api.listFavorites()).some(p=>p.title==='Cmd97 page')})()" | tr -d '"')
+open97 ">unpin"
+R2=$(ev "document.querySelector('[data-command-id=pin] .palette-label')?.textContent||'none'" | tr -d '"')
+[[ "$R1" == "true" && "$R2" == "Unpin Page" ]] && pass "Pinned; the label is now Unpin Page" || fail "Pin command" "$R1 / $R2"
+enter97
+
+step "Switch Notebook… lists the notebooks; Trash / All Pages open their views"
+open97 ">switch notebook"; enter97
+R1=$(ev "[...document.querySelectorAll('[data-testid=palette-pick-item]')].length" | tr -d '"')
+R1b=$(ev "[...document.querySelectorAll('[data-testid=palette-pick-item]')].some(e=>e.textContent.includes('open now')&&e.classList.contains('disabled'))" | tr -d '"')
+press "Escape"; sleep 0.3
+open97 ">trash"; enter97; R2=$(api "getMainView()" | tr -d '"')
+open97 ">all pages"; enter97; R3=$(api "getMainView()" | tr -d '"')
+[[ "$R1" -ge 2 && "$R1b" == "true" && "$R2" == "trash" && "$R3" == "pages" ]] && pass "$R1 notebooks (the open one marked); Trash and All Pages views open" || fail "Picker / views" "$R1 $R1b $R2 $R3"
+api "openView('none')" >/dev/null; api "closePanel()" >/dev/null
+
+# ═══════════════════════════════════════════════
+journey "98. Search finds what I meant: typos, highlights, sections, filters (UX Wave 4)"
+# ═══════════════════════════════════════════════
+A98="const api=await import('/src/lib/api.ts');"
+setq98() { ev "(()=>{const i=document.querySelector('.command-palette-input');if(!i)return 'no input';Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(i,'$1');i.dispatchEvent(new Event('input',{bubbles:true}));return 1})()" >/dev/null; sleep 0.9; }
+open98() { api "closePanel()" >/dev/null; api "openSearch()" >/dev/null; sleep 0.4; setq98 "$1"; }
+sect98() { ev "[...document.querySelectorAll('.command-palette-group[data-testid^=search-section]')].map(g=>g.querySelector('.command-palette-section')?.textContent).join('|')" | tr -d '"'; }
+api "openView('none')" >/dev/null; api "closePanel()" >/dev/null
+ev "(async()=>{$A98 const r=await api.createPage('Roadmap98');await api.createBlock(r.id,'milestones for the zebra98 launch');const q=await api.createPage('Grocery98');await api.createBlock(q.id,'zebra98 crackers');const j=await api.getJournal('2026-01-15');await api.createBlock(j.page.id,'journal note about zebra98');return 1})()" >/dev/null
+
+step "\"roadmp\" and \"raodmap98\" find Roadmap98 first, with the match highlighted"
+open98 "roadmp"
+R1=$(ev "document.querySelector('[data-testid=search-section-pages] .command-palette-item')?.textContent||'none'" | tr -d '"')
+R2=$(ev "[...document.querySelectorAll('[data-testid=search-section-pages] .command-palette-item')][0]?.querySelectorAll('mark.palette-hit').length||0" | tr -d '"')
+setq98 "raodmap98"
+R3=$(ev "document.querySelector('[data-testid=search-section-pages] .command-palette-item')?.textContent||'none'" | tr -d '"')
+[[ "$R1" == "Roadmap98" && "$R2" -ge 1 && "$R3" == "Roadmap98" ]] && pass "Typo-tolerant title match, highlighted ($R2 marks)" || fail "Fuzzy title" "$R1 / $R2 / $R3"
+ss "98-typo-search"
+
+step "Results come in sections: Pages, Blocks, Journals; snippets are highlighted"
+setq98 "zebra98"
+R=$(sect98)
+R2=$(ev "document.querySelector('[data-testid=search-section-blocks] mark.palette-hit')?.textContent||'none'" | tr -d '"')
+R3=$(ev "document.querySelector('[data-testid=search-section-journals] .command-palette-block-page')?.textContent||'none'" | tr -d '"')
+[[ "$R" == *"Blocks"*"Journals"* && "$R2" == "zebra98" && "$R3" == *"Jan"*"15"* ]] && pass "Sections $R; snippet hit '$R2'; journal block under Journals ($R3)" || fail "Sections" "$R / $R2 / $R3"
+
+step "Filters: Blocks only, then Tab cycles to Journals; the hint row names the keys"
+ev "document.querySelector('[data-testid=search-filter-blocks]')?.click()" >/dev/null; sleep 0.4
+R1=$(sect98)
+ev "(()=>{document.querySelector('.command-palette-input').dispatchEvent(new KeyboardEvent('keydown',{key:'Tab',bubbles:true,cancelable:true}));return 1})()" >/dev/null; sleep 0.4
+R2="$(sect98)|$(ev "document.querySelector('[data-testid=search-filter-journals]')?.getAttribute('aria-selected')" | tr -d '"')"
+R3=$(ev "document.querySelector('[data-testid=palette-hints]')?.textContent||''" | tr -d '"')
+[[ "$R1" == "Blocks" && "$R2" == "Journals|true" && "$R3" == *"Enter"*"Tab"*"Esc"* ]] && pass "Blocks → Tab → Journals; hints: $R3" || fail "Filters" "$R1 / $R2 / $R3"
+
+step "No match still offers \"Create page\""
+ev "document.querySelector('[data-testid=search-filter-all]')?.click()" >/dev/null
+setq98 "Brand new 98 qqq"
+R=$(ev "(()=>{const c=document.querySelector('.command-palette-create');return c?c.textContent+'|'+c.classList.contains('selected'):'none'})()" | tr -d '"')
+[[ "$R" == *"Create page"*"Brand new 98 qqq"*"|true" ]] && pass "Create row, selected" || fail "Create row" "$R"
+
+step "Fast with 5,000 pages"
+ev "(async()=>{$A98 const f=await api.createFolder('Bulk98');const w=['Project','Meeting','Notes','Roadmap','Research','Ideas','Weekly','Review','Plan','Draft','Budget','Travel'];for(let i=0;i<5000;i++){const p=await api.createPage(w[i%12]+' '+w[(i*7)%12]+' bulk98 '+i);await api.movePageToFolder(p.id,f.id)}window.__f98=f.id;return 1})()" >/dev/null
+open98 "x"; sleep 1
+R=$(ev "(async()=>{const i=document.querySelector('.command-palette-input');const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;const times=[];for(const q of ['weekly revew 4242','roadmp bulk98','meetnig','zzqq']){const t0=performance.now();set.call(i,q);i.dispatchEvent(new Event('input',{bubbles:true}));await new Promise(r=>requestAnimationFrame(()=>setTimeout(r,0)));times.push(Math.round(performance.now()-t0))}const first=document.querySelector('[data-testid=search-section-pages] .command-palette-item')?.textContent;return Math.max(...times)+'|'+times.join(',')})()" | tr -d '"')
+MS=${R%%|*}
+[[ "$MS" =~ ^[0-9]+$ && $MS -lt 300 ]] && pass "Pages ranked and drawn in ≤ ${MS} ms per keystroke over 5,000+ pages ($R)" || fail "Slow search" "$R"
+press "Escape"; sleep 0.3
+ev "(async()=>{$A98 await api.trashFolder(window.__f98);await api.permanentlyDelete(window.__f98,'folder');window.dispatchEvent(new Event('minotes-sidebar-refresh'));return 1})()" >/dev/null; sleep 1
+api "closePanel()" >/dev/null
+
+# ═══════════════════════════════════════════════
+journey "99. Trash and Archive are views: preview, dates, multi-select (UX Wave 4)"
+# ═══════════════════════════════════════════════
+A99="const api=await import('/src/lib/api.ts');"
+dlg99() { ev "(document.querySelector('[data-testid=confirm-dialog]')?.innerText||'none')" | tr -d '"'; }
+wait99() { for _ in $(seq 1 20); do [[ "$(ev "$1" | tr -d '"')" == "true" ]] && return 0; sleep 0.3; done; return 1; }
+trash99() { ev "(async()=>{$A99 return (await api.listTrash()).filter(t=>t.title.startsWith('Bin99')).map(t=>t.title).sort().join(',')})()" | tr -d '"'; }
+row99() { echo "[...document.querySelectorAll('[data-testid=trash-item]')].find(e=>e.textContent.includes('$1'))"; }
+api "closePanel()" >/dev/null; api "openView('none')" >/dev/null
+ev "(async()=>{$A99 for(const t of ['Bin99 one','Bin99 two','Bin99 three']){const p=await api.createPage(t);await api.createBlock(p.id,'first line of '+t);await api.createBlock(p.id,'second line of '+t);await api.trashPage(p.id)}window.dispatchEvent(new Event('minotes-sidebar-refresh'));return 1})()" >/dev/null; sleep 1
+
+step "The sidebar's Trash opens the Trash view in the main pane (sidebar stays)"
+ev "document.querySelector('[data-testid=sidebar-trash]')?.click()" >/dev/null
+wait99 "!!document.querySelector('[data-testid=trash-view]')" || true
+R=$(ev "[!!document.querySelector('[data-testid=trash-view]'),!!document.querySelector('.sidebar'),!!document.querySelector('.sidebar-trash-list')].join('|')" | tr -d '"')
+[[ "$R" == "true|true|false" ]] && pass "Trash view, sidebar visible, no inline list" || fail "Trash view" "$R"
+
+step "Selecting an item previews the page and says when it was deleted"
+ev "$(row99 'Bin99 two')?.click()" >/dev/null; sleep 0.8
+R=$(ev "(()=>{const p=document.querySelector('[data-testid=trash-preview]');return (p?.querySelector('h3')?.textContent||'')+'|'+(p?.querySelector('[data-testid=trash-preview-blocks]')?.textContent||'')+'|'+($(row99 'Bin99 two')?.querySelector('[data-testid=trash-date]')?.textContent||'')})()" | tr -d '"')
+[[ "$R" == "Bin99 two|"*"first line of Bin99 two"*"second line"*"|Deleted "*[0-9]* ]] && pass "Preview + date ($R)" || fail "Preview" "$R"
+ss "99-trash-view"
+
+step "Tick two, Restore 2 → both are back"
+ev "$(row99 'Bin99 one')?.querySelector('[data-testid=trash-check]').click()" >/dev/null
+ev "$(row99 'Bin99 two')?.querySelector('[data-testid=trash-check]').click()" >/dev/null; sleep 0.3
+R1=$(ev "document.querySelector('[data-testid=trash-restore-selected]')?.textContent" | tr -d '"')
+ev "document.querySelector('[data-testid=trash-restore-selected]')?.click()" >/dev/null; sleep 1
+R2=$(trash99)
+R3=$(ev "(async()=>{$A99 const t=(await api.listPages(100000)).map(p=>p.title);return t.includes('Bin99 one')&&t.includes('Bin99 two')})()" | tr -d '"')
+[[ "$R1" == *"Restore 2"* && "$R2" == "Bin99 three" && "$R3" == "true" ]] && pass "\"$R1\": both restored" || fail "Multi-restore" "$R1 / $R2 / $R3"
+
+step "Delete permanently asks with the count; Cancel keeps, OK deletes"
+ev "(async()=>{$A99 const p=(await api.listPages(100000)).filter(p=>p.title==='Bin99 one'||p.title==='Bin99 two');for(const x of p)await api.trashPage(x.id);window.dispatchEvent(new Event('minotes-sidebar-refresh'));return 1})()" >/dev/null; sleep 1
+ev "$(row99 'Bin99 one')?.querySelector('[data-testid=trash-check]').click()" >/dev/null
+ev "$(row99 'Bin99 three')?.querySelector('[data-testid=trash-check]').click()" >/dev/null; sleep 0.3
+ev "document.querySelector('[data-testid=trash-delete-selected]')?.click()" >/dev/null; sleep 0.5
+D=$(dlg99)
+ev "document.querySelector('[data-testid=confirm-cancel]')?.click()" >/dev/null; sleep 0.5
+R1=$(trash99)
+ev "document.querySelector('[data-testid=trash-delete-selected]')?.click()" >/dev/null; sleep 0.5
+ev "document.querySelector('[data-testid=confirm-ok]')?.click()" >/dev/null; sleep 1
+R2=$(trash99)
+[[ "$D" == *"Delete 2 items permanently"*"2 pages"*"can't be undone"* && "$R1" == "Bin99 one,Bin99 three,Bin99 two" && "$R2" == "Bin99 two" ]] && pass "Asked (\"Delete 2 items\"), Cancel kept 3, OK left 1" || fail "Bulk delete" "$D / $R1 / $R2"
+
+step "Archive: an archived page is listed with its date and can be unarchived"
+ev "(async()=>{$A99 const p=await api.createPage('Arch99 page');await api.createBlock(p.id,'archived text');await api.archivePage(p.id);window.dispatchEvent(new Event('minotes-sidebar-refresh'));return 1})()" >/dev/null; sleep 1
+ev "document.querySelector('[data-testid=sidebar-archive]')?.click()" >/dev/null
+wait99 "!!document.querySelector('[data-testid=archive-view]')" || true
+R1=$(ev "$(row99 'Arch99 page')?.querySelector('[data-testid=trash-date]')?.textContent||'none'" | tr -d '"')
+ev "$(row99 'Arch99 page')?.querySelector('[data-testid=trash-restore]')?.click()" >/dev/null; sleep 1
+R2=$(ev "(async()=>{$A99 return (await api.listPages(100000)).some(p=>p.title==='Arch99 page')+'|'+(await api.listArchived()).some(a=>a.title==='Arch99 page')})()" | tr -d '"')
+[[ "$R1" == "Archived "*[0-9]* && "$R2" == "true|false" ]] && pass "Archive view ($R1); unarchived" || fail "Archive view" "$R1 / $R2"
+
+step "Empty trash still asks with the count"
+ev "document.querySelector('[data-testid=sidebar-trash]')?.click()" >/dev/null; sleep 0.8
+ev "document.querySelector('[data-testid=empty-trash]')?.click()" >/dev/null; sleep 0.5
+D=$(dlg99)
+press "Escape"; sleep 0.4
+[[ "$D" == *"Empty the trash"*"Delete"*"item"* ]] && pass "Empty trash confirm: $(echo "$D" | tr '\n' ' ' | cut -c1-80)" || fail "Empty trash confirm" "$D"
+api "openView('none')" >/dev/null
+
+# ═══════════════════════════════════════════════
+journey "100. All Pages: project paths, times, journals, bulk actions, keyboard (UX Wave 4)"
+# ═══════════════════════════════════════════════
+A100="const api=await import('/src/lib/api.ts');"
+wait100() { for _ in $(seq 1 20); do [[ "$(ev "$1" | tr -d '"')" == "true" ]] && return 0; sleep 0.3; done; return 1; }
+rowq100() { echo "[...document.querySelectorAll('[data-testid=all-pages-row]')].find(r=>r.querySelector('.all-pages-title')?.textContent.trim()==='$1')"; }
+filt100() { ev "(()=>{const i=document.querySelector('[data-testid=all-pages-filter]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(i,'$1');i.dispatchEvent(new Event('input',{bubbles:true}));return 1})()" >/dev/null; sleep 0.4; }
+api "closePanel()" >/dev/null; api "openView('none')" >/dev/null
+ev "(async()=>{$A100 const w=await api.createFolder('Work100');const c=await api.createFolder('Clients100',w.id);window.__c100=c.id;const a=await api.createPage('AP100 alpha');await api.movePageToFolder(a.id,c.id);for(const t of ['AP100 beta','AP100 gamma'])await api.createPage(t);window.dispatchEvent(new Event('minotes-sidebar-refresh'));return 1})()" >/dev/null; sleep 1
+
+step "All Pages opens in the main pane: project path, created and modified with the time"
+ev "document.querySelector('.stats-mode-btn[title=\"All Pages\"]')?.click()" >/dev/null
+wait100 "!!document.querySelector('[data-testid=all-pages-view]')" || true
+filt100 "AP100"; wait100 "!!($(rowq100 'AP100 alpha'))" || true
+R=$(ev "(()=>{const r=$(rowq100 'AP100 alpha');if(!r)return 'no row';return [!!document.querySelector('.sidebar'),!document.querySelector('.canvas-layer'),r.querySelector('.all-pages-project').textContent,r.querySelector('[data-testid=all-pages-created]').textContent,r.querySelector('[data-testid=all-pages-modified]').textContent].join('|')})()" | tr -d '"')
+[[ "$R" == "true|true|Work100 / Clients100|"*[0-9]:[0-9][0-9]*"|"*[0-9]:[0-9][0-9]* ]] && pass "Sidebar stays; path + times ($R)" || fail "All Pages columns" "$R"
+ss "100-all-pages"
+
+step "Journals filter lists journal days only"
+ev "document.querySelector('[data-testid=all-pages-kind-journals]')?.click()" >/dev/null; filt100 ""
+R=$(ev "(()=>{const rows=[...document.querySelectorAll('[data-testid=all-pages-row]')];return rows.length>0&&rows.every(r=>r.querySelector('[data-icon=calendar]'))})()" | tr -d '"')
+ev "document.querySelector('[data-testid=all-pages-kind-pages]')?.click()" >/dev/null; filt100 "AP100"
+[[ "$R" == "true" ]] && pass "Journals: only days" || fail "Journals filter" "$R"
+
+step "Tick two rows → Move to… a project (with Undo)"
+ev "$(rowq100 'AP100 beta')?.querySelector('[data-testid=all-pages-check]').click()" >/dev/null
+ev "$(rowq100 'AP100 gamma')?.querySelector('[data-testid=all-pages-check]').click()" >/dev/null; sleep 0.3
+R1=$(ev "document.querySelector('[data-testid=all-pages-bulk]')?.textContent||'none'" | tr -d '"')
+ev "document.querySelector('[data-testid=bulk-move]')?.click()" >/dev/null; wait100 "document.querySelectorAll('[data-testid=move-target]').length>0" || true
+ev "[...document.querySelectorAll('[data-testid=move-target]')].find(b=>b.dataset.folderId===window.__c100)?.click()" >/dev/null
+wait100 "[$(rowq100 'AP100 beta'),$(rowq100 'AP100 gamma')].every(r=>r?.querySelector('.all-pages-project').textContent==='Work100 / Clients100')" || true
+R2=$(ev "(()=>[$(rowq100 'AP100 beta'),$(rowq100 'AP100 gamma')].map(r=>r?.querySelector('.all-pages-project').textContent).join(','))()" | tr -d '"')
+[[ "$R1" == "2 selected"* && "$R2" == "Work100 / Clients100,Work100 / Clients100" ]] && pass "Bulk bar ($R1); both moved to Work100 / Clients100" || fail "Bulk move" "$R1 / $R2"
+
+step "Bulk Pin, then Archive, from the same selection (it stays ticked after a move)"
+R0=$(ev "[...document.querySelectorAll('[data-testid=all-pages-row].checked')].length" | tr -d '"')
+ev "document.querySelector('[data-testid=bulk-pin]')?.click()" >/dev/null; sleep 0.8
+R1=$(ev "(async()=>{$A100 const f=(await api.listFavorites()).map(p=>p.title);return f.includes('AP100 beta')&&f.includes('AP100 gamma')})()" | tr -d '"')
+ev "document.querySelector('[data-testid=bulk-archive]')?.click()" >/dev/null; sleep 1
+R2=$(ev "(async()=>{$A100 const a=(await api.listArchived()).map(p=>p.title);return a.includes('AP100 beta')&&a.includes('AP100 gamma')})()" | tr -d '"')
+R3=$(ev "!!($(rowq100 'AP100 beta'))" | tr -d '"')
+[[ "$R0|$R1|$R2|$R3" == "2|true|true|false" ]] && pass "Still 2 ticked; pinned both, then archived both (gone from the list)" || fail "Bulk pin/archive" "$R0|$R1|$R2|$R3"
+ev "(async()=>{$A100 for(const a of (await api.listArchived()).filter(a=>a.title.startsWith('AP100')))await api.unarchivePage(a.id);for(const p of (await api.listFavorites()).filter(p=>p.title.startsWith('AP100')))await api.removeFavorite(p.id);window.dispatchEvent(new Event('minotes-sidebar-refresh'));return 1})()" >/dev/null; sleep 1
+
+step "Keyboard: ↓ from the filter, ↓ again, Space ticks, Del moves to the Trash (Undo)"
+ev "document.querySelector('[data-testid=all-pages-filter]')?.focus()" >/dev/null
+filt100 "AP100"
+ev "(()=>{document.querySelector('[data-testid=all-pages-filter]').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true}));return 1})()" >/dev/null; sleep 0.3
+ev "(()=>{document.activeElement.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true}));return 1})()" >/dev/null; sleep 0.3
+F1=$(ev "document.activeElement?.querySelector?.('.all-pages-title')?.textContent.trim()||document.activeElement?.tagName" | tr -d '"')
+ev "(()=>{document.activeElement.dispatchEvent(new KeyboardEvent('keydown',{key:' ',bubbles:true}));return 1})()" >/dev/null; sleep 0.3
+TICKED=$(ev "[...document.querySelectorAll('[data-testid=all-pages-row].checked .all-pages-title')].map(e=>e.textContent.trim()).join(',')" | tr -d '"')
+ev "(()=>{document.activeElement.dispatchEvent(new KeyboardEvent('keydown',{key:'Delete',bubbles:true}));return 1})()" >/dev/null; sleep 1
+R=$(ev "(async()=>{$A100 return (await api.listTrash()).some(t=>t.title==='$F1')})()" | tr -d '"')
+U=$(ev "[...document.querySelectorAll('.minotes-toast')].map(t=>t.innerText).join('|')" | tr -d '"')
+[[ -n "$F1" && "$TICKED" == "$F1" && "$R" == "true" && "$U" == *"Trash"* ]] && pass "Row 2 ($F1) focused, ticked, trashed with an Undo toast" || fail "Keyboard rows" "$F1 / $TICKED / $R / $U"
+ev "(async()=>{$A100 for(const t of (await api.listTrash()).filter(t=>t.title.startsWith('AP100')))await api.restoreFromTrash(t.id,'page');return 1})()" >/dev/null
+api "openView('none')" >/dev/null
+
+# ═══════════════════════════════════════════════
+journey "101. Recent pages in the sidebar; cross-notebook chips that lead somewhere (UX Wave 4)"
+# ═══════════════════════════════════════════════
+A101="const api=await import('/src/lib/api.ts');"
+wait101() { for _ in $(seq 1 ${2:-25}); do [[ "$(ev "$1" | tr -d '"')" == "true" ]] && return 0; sleep 0.3; done; return 1; }
+recent101() { ev "[...document.querySelectorAll('[data-testid=sidebar-recent] .page-item')].map(e=>e.textContent.replace(/⋮/g,'').trim()).join('|')" | tr -d '"'; }
+api "closePanel()" >/dev/null; api "openView('none')" >/dev/null
+ev "(async()=>{$A101 for(const t of ['Rec101 one','Rec101 two','Rec101 gone'])await api.createPage(t);return 1})()" >/dev/null
+for t in 'Rec101 one' 'Rec101 gone' 'Rec101 two'; do api "navigateTo('$t')" >/dev/null; sleep 0.8; done
+
+step "Recent lists the pages I opened, newest first"
+R=$(recent101)
+[[ "$R" == "Rec101 two|Rec101 gone|Rec101 one"* ]] && pass "Recent: $R" || fail "Recent section" "$R"
+
+step "A trashed or archived page leaves Recent"
+ev "(async()=>{$A101 const p=(await api.listPages(100000)).find(p=>p.title==='Rec101 gone');await api.trashPage(p.id);const o=(await api.listPages(100000)).find(p=>p.title==='Rec101 one');await api.archivePage(o.id);window.dispatchEvent(new Event('minotes-sidebar-refresh'));return 1})()" >/dev/null; sleep 1
+R=$(recent101)
+[[ "$R" == "Rec101 two"* && "$R" != *"Rec101 gone"* && "$R" != *"Rec101 one"* ]] && pass "Recent now: $R" || fail "Trashed/archived in Recent" "$R"
+ev "(async()=>{$A101 const t=(await api.listTrash()).find(t=>t.title==='Rec101 gone');if(t)await api.restoreFromTrash(t.id,'page');const a=(await api.listArchived()).find(a=>a.title==='Rec101 one');if(a)await api.unarchivePage(a.id);window.dispatchEvent(new Event('minotes-sidebar-refresh'));return 1})()" >/dev/null
+
+step "Recent collapses (remembered) and can be hidden from the palette"
+ev "document.querySelector('[data-testid=sidebar-recent-toggle]')?.click()" >/dev/null; sleep 0.3
+R1="$(ev "document.querySelectorAll('[data-testid=sidebar-recent] .page-item').length" | tr -d '"')|$(ev "localStorage.getItem('minotes-sidebar-recent-open')" | tr -d '"')"
+ev "document.querySelector('[data-testid=sidebar-recent-toggle]')?.click()" >/dev/null; sleep 0.3
+api "openSearch()" >/dev/null; sleep 0.4
+ev "(()=>{const i=document.querySelector('.command-palette-input');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(i,'>hide recent');i.dispatchEvent(new Event('input',{bubbles:true}));return 1})()" >/dev/null; sleep 0.4
+ev "(()=>{document.querySelector('.command-palette-input').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));return 1})()" >/dev/null; sleep 0.5
+R2=$(ev "!!document.querySelector('[data-testid=sidebar-recent]')" | tr -d '"')
+ev "(async()=>{const m=await import('/src/lib/sidebarRecent.ts');m.setRecentSectionShown(true);return 1})()" >/dev/null; sleep 0.3
+[[ "$R1" == "0|0" && "$R2" == "false" ]] && pass "Collapsed (remembered: $R1), hidden via the palette" || fail "Recent collapse/hide" "$R1 / $R2"
+
+step "A link into a locked notebook: \"Unlock and open\" asks for the passphrase in the app, then opens the page"
+HOME101=$(ev "(async()=>{$A101 return (await api.getNotebookSession()).key})()" | tr -d '"')
+PASS101="one oh one correct horse staple"
+VN101="Locked101 $(date +%s)"
+RN101="Shelf101 $(date +%s)"
+VK101=$(ev "(async()=>{$A101 return (await api.createEncryptedNotebook('$VN101',undefined,'$PASS101')).notebook.key})()" | tr -d '"')
+ev "window.__MINOTES__.switchNotebook('$VK101')" >/dev/null; sleep 2
+ev "(async()=>{$A101 const p=await api.createPage('Diary101');await api.createBlock(p.id,'dear diary');return 1})()" >/dev/null
+RK101=$(ev "(async()=>{$A101 return (await api.createNotebook('$RN101')).key})()" | tr -d '"')
+ev "window.__MINOTES__.switchNotebook('$HOME101')" >/dev/null; sleep 2
+ev "(async()=>{$A101 const p=await api.createPage('Links101');await api.createBlock(p.id,'see [[$VN101::Diary101]] and [[$RN101::Wishlist101]]');return 1})()" >/dev/null
+api "navigateTo('Links101')" >/dev/null; sleep 2
+R=$(ev "[...document.querySelectorAll('.xnb-link')].map(e=>e.dataset.xnbStatus+':'+e.dataset.xnbAction).join('|')" | tr -d '"')
+[[ "$R" == "unavailable:unlock|page_missing:create" ]] && pass "Chips: locked → unlock, missing → create ($R)" || fail "Chip states" "$R"
+ev "document.querySelector('.xnb-link[data-xnb-action=unlock]')?.click()" >/dev/null
+wait101 "!!document.querySelector('[data-testid=passphrase-prompt-input]')" && pass "The app's passphrase prompt (Unlock and open)" || fail "No passphrase prompt" "$(ev "document.body.innerText.slice(0,200)")"
+ss "101-unlock-and-open"
+ev "(()=>{const i=document.querySelector('[data-testid=passphrase-prompt-input]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(i,'$PASS101');i.dispatchEvent(new Event('input',{bubbles:true}));return 1})()" >/dev/null; sleep 0.2
+ev "document.querySelector('[data-testid=passphrase-prompt-ok]')?.click()" >/dev/null
+wait101 "window.__MINOTES__?.getCurrentPage?.()==='Diary101'" 120
+R="$(api "getCurrentPage()" | tr -d '"')|$(ev "(async()=>{$A101 const s=await api.getNotebookSession();return s.key+':'+s.locked})()" | tr -d '"')"
+[[ "$R" == "Diary101|$VK101:false" ]] && pass "Unlocked and opened Diary101" || fail "Unlock and open" "$R"
+
+step "A not-found page in an existing notebook: \"Create page in <Notebook>\""
+ev "window.__MINOTES__.goBack()" >/dev/null
+wait101 "window.__MINOTES__?.getCurrentPage?.()==='Links101'&&!document.querySelector('[data-testid=busy]')" 120; sleep 1.5
+ev "document.querySelector('.xnb-link[data-xnb-action=create]')?.click()" >/dev/null; sleep 0.8
+D=$(ev "(document.querySelector('[data-testid=confirm-dialog]')?.innerText||'none')" | tr -d '"')
+ev "document.querySelector('[data-testid=confirm-ok]')?.click()" >/dev/null
+wait101 "window.__MINOTES__?.getCurrentPage?.()==='Wishlist101'" 120
+R="$(api "getCurrentPage()" | tr -d '"')|$(ev "(async()=>{$A101 return (await api.getNotebookSession()).key})()" | tr -d '"')"
+[[ "$D" == *"Create page in $RN101"* && "$R" == "Wishlist101|$RK101" ]] && pass "Asked (\"Create page in $RN101\"), created and opened it there" || fail "Create page in notebook" "$D / $R"
+ev "window.__MINOTES__.switchNotebook('$HOME101')" >/dev/null; sleep 2
+api "openView('none')" >/dev/null
 
 # ═══════════════════════════════════════════════
 close_app
