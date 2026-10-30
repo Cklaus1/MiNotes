@@ -65,6 +65,37 @@ fn entry(notebook_key: &str) -> Result<keyring::Entry> {
     keyring::Entry::new(SERVICE, notebook_key).map_err(|e| Error::InvalidInput(format!("Keychain: {e}")))
 }
 
+/// Whether the OS keychain works on this device, decided once per process:
+/// 0 = not probed yet, 1 = works, 2 = unusable (no secret service, an error, or
+/// no answer). Without a secret service a call *fails* after a couple of seconds
+/// instead of timing out, so the time limit alone never stopped the app from
+/// paying that wait on every call (a notebook switch polled it for over a minute).
+static KEYCHAIN_STATE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+fn mark_unusable() {
+    KEYCHAIN_STATE.store(2, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Probe the keychain once; later calls return the cached answer at once.
+#[cfg(not(target_os = "android"))]
+fn usable() -> bool {
+    use std::sync::atomic::Ordering;
+    match KEYCHAIN_STATE.load(Ordering::Relaxed) {
+        1 => return true,
+        2 => return false,
+        _ => {}
+    }
+    let ok = guarded(|| {
+        matches!(
+            keyring::Entry::new(SERVICE, "availability-probe").and_then(|e| e.get_password()),
+            Ok(_) | Err(keyring::Error::NoEntry)
+        )
+    })
+    .unwrap_or(false);
+    KEYCHAIN_STATE.store(if ok { 1 } else { 2 }, Ordering::Relaxed);
+    ok
+}
+
 /// Can this device remember keys? (A missing entry still means it works.)
 pub fn available() -> bool {
     if fake_dir().is_some() {
@@ -72,13 +103,7 @@ pub fn available() -> bool {
     }
     #[cfg(not(target_os = "android"))]
     {
-        guarded(|| {
-            matches!(
-                keyring::Entry::new(SERVICE, "availability-probe").and_then(|e| e.get_password()),
-                Ok(_) | Err(keyring::Error::NoEntry)
-            )
-        })
-        .unwrap_or(false)
+        usable()
     }
     #[cfg(target_os = "android")]
     {
@@ -95,6 +120,9 @@ pub fn remember(notebook_key: &str, key: &DataKey) -> Result<()> {
     }
     #[cfg(not(target_os = "android"))]
     {
+        if !usable() {
+            return Err(Error::InvalidInput("This device has no keychain MiNotes can use".into()));
+        }
         let (nb, hex) = (notebook_key.to_string(), zeroize::Zeroizing::new(key.to_hex()));
         guarded(move || {
             entry(&nb)?
@@ -118,9 +146,27 @@ pub fn recall(notebook_key: &str) -> Option<DataKey> {
     }
     #[cfg(not(target_os = "android"))]
     {
+        if !usable() {
+            return None;
+        }
         let nb = notebook_key.to_string();
-        let hex = guarded(move || entry(&nb).ok()?.get_password().ok().map(zeroize::Zeroizing::new))??;
-        DataKey::from_hex(&hex).ok()
+        let got = guarded(move || match entry(&nb).ok()?.get_password() {
+            Ok(h) => Some(Ok(zeroize::Zeroizing::new(h))),
+            Err(keyring::Error::NoEntry) => None,
+            Err(_) => Some(Err(())),
+        });
+        match got {
+            None => {
+                mark_unusable(); // no answer in time
+                None
+            }
+            Some(None) => None,
+            Some(Some(Err(()))) => {
+                mark_unusable(); // the keychain stopped working mid-session
+                None
+            }
+            Some(Some(Ok(hex))) => DataKey::from_hex(&hex).ok(),
+        }
     }
     #[cfg(target_os = "android")]
     {
@@ -141,6 +187,9 @@ pub fn forget(notebook_key: &str) {
     }
     #[cfg(not(target_os = "android"))]
     {
+        if !usable() {
+            return;
+        }
         let nb = notebook_key.to_string();
         let _ = guarded(move || {
             if let Ok(e) = entry(&nb) {
@@ -190,5 +239,27 @@ mod tests {
         assert_eq!(guarded(|| 7), None, "skipped once it stopped answering");
         assert!(t.elapsed() < Duration::from_millis(100));
         UNRESPONSIVE.store(false, Ordering::Relaxed);
+    }
+
+    /// Without a secret service the keychain *fails* (it doesn't time out): it is
+    /// probed once, then every call returns at once instead of paying the wait.
+    #[cfg(not(target_os = "android"))]
+    #[test]
+    fn unusable_keychain_is_probed_once() {
+        use std::sync::atomic::Ordering;
+        use std::time::{Duration, Instant};
+        let _home = crate::notebook::tests::FakeHome::new(); // serialises env changes
+        std::env::remove_var("MINOTES_FAKE_KEYCHAIN_DIR");
+        KEYCHAIN_STATE.store(2, Ordering::Relaxed); // as if the probe had failed
+        let t = Instant::now();
+        for _ in 0..50 {
+            assert!(!available());
+            assert!(recall("nb-x").is_none());
+            assert!(!is_remembered("nb-x"));
+            forget("nb-x");
+            assert!(remember("nb-x", &DataKey::generate()).is_err());
+        }
+        assert!(t.elapsed() < Duration::from_millis(200), "{:?}", t.elapsed());
+        KEYCHAIN_STATE.store(0, Ordering::Relaxed);
     }
 }
