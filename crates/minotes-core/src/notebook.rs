@@ -89,10 +89,15 @@ pub fn home_dir() -> PathBuf {
     if let Some(dir) = app_storage() {
         return dir;
     }
-    std::env::var_os("HOME")
-        .filter(|h| !h.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
+    user_home().unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// The user's home from the environment: `HOME`, then (Windows, where `HOME`
+/// is normally unset) `USERPROFILE`. `None` only if neither is set — never the
+/// working directory, which made Windows data land wherever the app started.
+pub fn user_home() -> Option<PathBuf> {
+    let var = |k: &str| std::env::var_os(k).filter(|h| !h.is_empty()).map(PathBuf::from);
+    var("HOME").or_else(|| if cfg!(windows) { var("USERPROFILE") } else { None })
 }
 
 /// `~/.minotes` (created on demand): legacy databases, the registry, the active

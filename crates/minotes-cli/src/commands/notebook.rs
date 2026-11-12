@@ -78,7 +78,7 @@ pub fn expand_tilde(p: &str) -> PathBuf {
 }
 
 fn home_set() -> bool {
-    std::env::var_os("HOME").is_some_and(|h| !h.is_empty())
+    notebook::user_home().is_some()
 }
 
 /// The app's open notebook key: `~/.minotes/active_graph` (the on-disk name is

@@ -120,7 +120,7 @@ fn dirs_next() -> Option<PathBuf> {
     if let Some(dir) = minotes_core::notebook::app_storage() {
         return Some(dir);
     }
-    std::env::var("HOME").ok().map(PathBuf::from)
+    minotes_core::notebook::user_home()
 }
 
 #[derive(Debug, Serialize)]
