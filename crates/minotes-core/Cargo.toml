@@ -30,7 +30,11 @@ zip = { version = "9", default-features = false, features = ["deflate-flate2-zli
 # "Keep unlocked on this device" (PRD-encryption §4.3) — same crate and
 # features the app already uses for the AI key; not on Android (no backend).
 [target.'cfg(not(target_os = "android"))'.dependencies]
-keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
+# keyring 4's default `v1` store set = what 3.x's features gave: macOS Keychain,
+# Windows Credential Manager, Linux Secret Service (now over zbus, pure Rust —
+# no libdbus — with the same "crypto-rust" session encryption). Items written
+# by keyring 3 are found again (same service/user attributes and target names).
+keyring = "4.2"
 
 [dev-dependencies]
 tempfile = "3"
