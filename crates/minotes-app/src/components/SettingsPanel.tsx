@@ -17,6 +17,7 @@ import { useLayer } from "../lib/layers";
 import { useDialogFocus } from "../lib/dialogFocus";
 import ShortcutsList from "./ShortcutsList";
 import TemplatesSettings from "./TemplatesSettings";
+import { takeSettingsSection } from "../lib/settingsTarget";
 
 interface Props {
   open: boolean;
@@ -154,6 +155,15 @@ export default function SettingsPanel({ open, onClose, onOpenSync, onOpenCssSnip
     if (!open || !wantSync.current || !sections.includes("Sync & Backup")) return;
     wantSync.current = false;
     setTimeout(() => jumpTo("Sync & Backup"), 50);
+  }, [open, sections]);
+  // Any other section asked for by name (e.g. project settings → "Security").
+  const wantSection = useRef<string | null>(null);
+  useEffect(() => { if (open) { const t = takeSettingsSection(); if (t) wantSection.current = t; } }, [open]);
+  useEffect(() => {
+    const t = wantSection.current;
+    if (!open || !t || !sections.includes(t)) return;
+    wantSection.current = null;
+    setTimeout(() => jumpTo(t), 50);
   }, [open, sections]);
 
   if (!open) return null;

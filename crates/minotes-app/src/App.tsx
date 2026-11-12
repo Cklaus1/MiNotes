@@ -19,6 +19,7 @@ import ObsidianPluginBrowser from "./components/ObsidianPluginBrowser";
 import CssSnippetManager from "./components/CssSnippetManager";
 import SettingsPanel from "./components/SettingsPanel";
 import FolderSettingsPanel from "./components/FolderSettingsPanel";
+import { targetSettingsSection } from "./lib/settingsTarget";
 import TasksView from "./components/TasksView";
 import { cleanupGeneratedTodoPagesOnce } from "./lib/tasks";
 import { composeWindowTitle, journalTitle, setWindowTitle } from "./lib/windowTitle";
@@ -1414,6 +1415,7 @@ export default function App() {
             folderId={folderSettingsId}
             onClose={() => setFolderSettingsId(null)}
             onRefresh={refresh}
+            onOpenSecurity={() => { setFolderSettingsId(null); targetSettingsSection("Security"); setOpenPanel("settings"); }}
           />
         )}
       </div>

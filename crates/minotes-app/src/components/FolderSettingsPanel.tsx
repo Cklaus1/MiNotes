@@ -9,12 +9,14 @@ interface Props {
   folderId: string;
   onClose: () => void;
   onRefresh: () => void;
+  /** Close this panel and open Settings at Security. */
+  onOpenSecurity?: () => void;
 }
 
 const FOLDER_ICONS = ["\uD83D\uDCC1", "\uD83D\uDCC2", "\uD83D\uDCBC", "\uD83C\uDFE0", "\u2B50", "\uD83D\uDE80", "\uD83D\uDCA1", "\uD83C\uDFAF", "\uD83D\uDCD6", "\uD83D\uDD12"];
 const FOLDER_COLORS = ["#cdd6f4", "#89b4fa", "#a6e3a1", "#f9e2af", "#fab387", "#f38ba8", "#cba6f7", "#94e2d5"];
 
-export default function FolderSettingsPanel({ folderId, onClose, onRefresh }: Props) {
+export default function FolderSettingsPanel({ folderId, onClose, onRefresh, onOpenSecurity }: Props) {
   const [folder, setFolder] = useState<FolderTree | null>(null);
   const [name, setName] = useState("");
   const [pageCount, setPageCount] = useState(0);
@@ -194,23 +196,19 @@ export default function FolderSettingsPanel({ folderId, onClose, onRefresh }: Pr
 
         <div className="folder-settings-sep" />
 
-        {/* Security */}
+        {/* Security: encryption is per notebook (PRD-encryption), not per project */}
         <div className="folder-settings-section">
           <div className="folder-settings-section-title">Security</div>
-          <div className="folder-settings-row">
-            <span className="folder-settings-label">Lock folder</span>
-            <span className="folder-settings-value-muted">Coming soon</span>
-          </div>
-        </div>
-
-        <div className="folder-settings-sep" />
-
-        {/* Advanced */}
-        <div className="folder-settings-section">
-          <div className="folder-settings-section-title">Advanced</div>
-          <div className="folder-settings-row">
-            <span className="folder-settings-label">Encrypt folder</span>
-            <span className="folder-settings-value-muted">Coming soon</span>
+          <div className="folder-settings-row folder-settings-row-stack">
+            <span className="folder-settings-value-muted" data-testid="folder-encryption-note">
+              Encryption protects a whole notebook, not single projects. To keep these pages
+              private, encrypt this notebook or move them to an encrypted one.
+            </span>
+            {onOpenSecurity && (
+              <button className="btn btn-sm" data-testid="folder-open-security" onClick={onOpenSecurity}>
+                Notebook security…
+              </button>
+            )}
           </div>
         </div>
 
