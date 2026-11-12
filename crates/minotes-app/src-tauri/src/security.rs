@@ -390,6 +390,7 @@ mod tests {
         // Bypass check_outbound_url on purpose: the resolver alone must stop this.
         let res = tauri::async_runtime::block_on(async {
             let client = reqwest::Client::builder()
+                .tls_backend_preconfigured(crate::remote_images::tls_config())
                 .dns_resolver(std::sync::Arc::new(SafeResolver))
                 .no_proxy()
                 .timeout(std::time::Duration::from_secs(5))

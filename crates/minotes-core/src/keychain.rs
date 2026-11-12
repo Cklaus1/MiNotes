@@ -96,6 +96,23 @@ fn usable() -> bool {
     ok
 }
 
+/// Run `f` (a call into the OS keychain) only when the keychain is usable —
+/// probed once per process, cached — and under [`guarded`]'s time limit; a call
+/// that doesn't answer in time marks it unusable. `None`: no usable keychain.
+/// Other keychain users (the AI key) go through this, so no call ever pays the
+/// wait of a missing secret service again.
+#[cfg(not(target_os = "android"))]
+pub fn with_os_keychain<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Option<T> {
+    if !usable() {
+        return None;
+    }
+    let got = guarded(f);
+    if got.is_none() {
+        mark_unusable();
+    }
+    got
+}
+
 /// Can this device remember keys? (A missing entry still means it works.)
 pub fn available() -> bool {
     if fake_dir().is_some() {

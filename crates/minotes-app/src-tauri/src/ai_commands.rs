@@ -50,9 +50,10 @@ pub(crate) fn forget_runtime() {
 /// (key, keychain usable). A missing entry still means the keychain works.
 #[cfg(not(target_os = "android"))]
 fn keychain_read() -> (Option<String>, bool) {
-    // Guarded: with no secret service a keychain call can block for minutes, and
-    // this runs on the main thread (AI settings / Ask panel status).
-    minotes_core::keychain::guarded(|| match keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER).and_then(|e| e.get_password()) {
+    // Guarded and skipped once the keychain proved unusable: with no secret
+    // service a call can block for minutes, and this runs on the main thread
+    // (AI settings / Ask panel status).
+    minotes_core::keychain::with_os_keychain(|| match keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER).and_then(|e| e.get_password()) {
         Ok(k) => (Some(k), true),
         Err(keyring::Error::NoEntry) => (None, true),
         Err(_) => (None, false),
@@ -63,16 +64,16 @@ fn keychain_read() -> (Option<String>, bool) {
 #[cfg(not(target_os = "android"))]
 fn keychain_write(key: &str) -> Result<(), String> {
     let key = key.to_string();
-    minotes_core::keychain::guarded(move || {
+    minotes_core::keychain::with_os_keychain(move || {
         let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER).map_err(|e| e.to_string())?;
         entry.set_password(&key).map_err(|e| e.to_string())
     })
-    .unwrap_or_else(|| Err("The keychain is not responding".into()))
+    .unwrap_or_else(|| Err("This device has no keychain MiNotes can use".into()))
 }
 
 #[cfg(not(target_os = "android"))]
 fn keychain_delete() {
-    let _ = minotes_core::keychain::guarded(|| {
+    let _ = minotes_core::keychain::with_os_keychain(|| {
         if let Ok(e) = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER) {
             let _ = e.delete_credential();
         }

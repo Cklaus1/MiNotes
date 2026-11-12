@@ -28,10 +28,24 @@ const MAX_REDIRECTS: usize = 3;
 /// Wikipedia/Wikimedia among them — answer 403 to a request without one.
 pub const USER_AGENT: &str = concat!("MiNotes/", env!("CARGO_PKG_VERSION"));
 
+/// TLS for every outbound fetch: rustls on the ring provider with Mozilla's
+/// root certificates (webpki-roots) — what reqwest 0.12's `rustls-tls` gave,
+/// set explicitly since reqwest 0.13 defaults to aws-lc-rs and the platform
+/// verifier. TLS 1.2 and 1.3, no client certificates.
+pub fn tls_config() -> rustls::ClientConfig {
+    let roots = rustls::RootCertStore { roots: webpki_roots::TLS_SERVER_ROOTS.to_vec() };
+    rustls::ClientConfig::builder_with_provider(std::sync::Arc::new(rustls::crypto::ring::default_provider()))
+        .with_safe_default_protocol_versions()
+        .expect("ring supports TLS 1.2 and 1.3")
+        .with_root_certificates(roots)
+        .with_no_client_auth()
+}
+
 /// The SSRF-safe client: public addresses only (checked at DNS-resolution time),
 /// no automatic redirects, no proxies, a `MiNotes/<version>` User-Agent.
 pub fn safe_client(timeout: Duration) -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
+        .tls_backend_preconfigured(tls_config())
         .user_agent(USER_AGENT)
         .timeout(timeout)
         .connect_timeout(CONNECT_TIMEOUT.min(timeout))
@@ -378,5 +392,17 @@ mod tests {
         assert_eq!(image_file_name("https://x.org/", "image/png"), "image.png");
         assert_eq!(image_file_name("https://x.org/..%2F..%2Fetc", "image/gif"), "image.gif");
         assert_eq!(image_file_name("https://x.org/pic.php", "image/webp"), "pic.webp");
+    }
+
+    /// TLS works end to end (rustls on ring, webpki roots): one real https GET.
+    /// Needs the network: `cargo test -p minotes-app -- --ignored real_https`.
+    #[test]
+    #[ignore]
+    fn real_https_request_through_the_safe_client() {
+        let status = tauri::async_runtime::block_on(async {
+            let c = safe_client(Duration::from_secs(20)).unwrap();
+            c.get("https://example.com/").send().await.map(|r| r.status().as_u16())
+        });
+        assert_eq!(status.unwrap(), 200);
     }
 }

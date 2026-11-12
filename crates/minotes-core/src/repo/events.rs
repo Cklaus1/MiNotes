@@ -82,7 +82,8 @@ impl Database {
     /// number deleted.
     ///
     /// The event log is a bounded change feed, not a history. What reads it:
-    /// - sync (`pages_modified_since` / `folders_modified_since`) asks "what
+    /// - sync (`pages_changed_since` / `folders_changed_since`; held deletions:
+    ///   `pages_modified_since`) asks "what
     ///   changed here after `t`", where `t` is the current sync cycle's export
     ///   time or the moment a mass deletion was held — both recent (a held
     ///   deletion is re-checked every cycle). Page/block edits are also visible

@@ -609,9 +609,9 @@ pub struct ExportPhase {
     pub pages_exported: u32,
     /// Attachments left out of git (over the size limit).
     pub large_attachments: Vec<String>,
-    /// Instant just before the DB was read for export. Local edits after this are
-    /// protected from being overwritten by the phase-3 import.
-    pub export_time: DateTime<Utc>,
+    /// Where the DB's writes stood when it was read for export. Local edits after
+    /// this are protected from being overwritten by the phase-3 import.
+    pub mark: crate::repo::sync::SyncMark,
 }
 
 /// Outcome of phase 2.
@@ -791,10 +791,10 @@ where
     git_cmd::abort_stale_rebase(sync_dir)?;
 
     // 1. (DB lock) The files say what the database says; commit that.
-    let (export_time, flushed_head) = {
+    let (export_mark, flushed_head) = {
         let db = lock_db()?;
         let exp = export_and_commit_target(&db, target)?;
-        (exp.export_time, git_cmd::rev_parse_head(sync_dir)?)
+        (exp.mark, git_cmd::rev_parse_head(sync_dir)?)
     };
 
     // 2. (no DB lock) Bring in what other devices pushed.
@@ -820,7 +820,7 @@ where
             protect_pages.remove(id); // deleted by the pull: its file is gone, not old
         }
         let opts = SyncOptions {
-            protect_modified_after: Some(export_time),
+            protect_modified_after: Some(export_mark),
             protect_pages,
             park_removed: true,
             ..Default::default()
@@ -998,7 +998,7 @@ pub fn export_and_commit_target(db: &Database, target: &MirrorTarget) -> Result<
     if let Err(e) = crate::outside::import_outside_edits(db, &target, &crate::outside::Scope::All) {
         eprintln!("[minotes-sync] outside edits: {e}");
     }
-    let export_time = Utc::now();
+    let mut mark = db.sync_mark()?;
     let report = crate::mirror::run(db, &target, true)?;
 
     let before = git_cmd::rev_parse_head(sync_dir)?;
@@ -1012,7 +1012,8 @@ pub fn export_and_commit_target(db: &Database, target: &MirrorTarget) -> Result<
             write_state(sync_dir, &st)?;
         }
     }
-    Ok(ExportPhase { pages_exported: report.pages_rendered as u32, export_time, large_attachments: report.large_attachments })
+    db.finish_sync_mark(&mut mark);
+    Ok(ExportPhase { pages_exported: report.pages_rendered as u32, mark, large_attachments: report.large_attachments })
 }
 
 /// A page file of the mirror (not a sidecar, marker or conflict copy).
@@ -1191,7 +1192,7 @@ pub fn apply_import(
     db: &Database,
     sync_dir: &Path,
     pending: &PendingImport,
-    protect_after: Option<DateTime<Utc>>,
+    protect_after: Option<crate::repo::sync::SyncMark>,
 ) -> Result<SyncResult> {
     let opts = SyncOptions { protect_modified_after: protect_after, ..Default::default() };
     apply_import_opts(db, sync_dir, pending, opts)
@@ -1318,7 +1319,7 @@ where
     let mut conflict_pages = Vec::new();
     if let Some(pending) = pending_import(sync_dir)? {
         let db = lock_db()?;
-        let r = apply_import(&db, sync_dir, &pending, Some(export.export_time))?;
+        let r = apply_import(&db, sync_dir, &pending, Some(export.mark))?;
         // What the pull wrote into the mirror is not an outside edit.
         if let Err(e) = crate::outside::adopt_pulled_files(&db, target, pending.changed_paths.as_deref()) {
             eprintln!("[minotes-sync] could not re-baseline pulled files: {e}");
@@ -1606,20 +1607,75 @@ mod tests {
     // lines, on both devices — no "(2)" page, no conflict page.
     #[test]
     fn test_journals_of_one_day_from_two_devices_become_one_page() {
-        if !git_cmd::git_available() {
-            return;
+        if git_cmd::git_available() {
+            journals_of_one_day_from_two_devices(None, None, false);
         }
+    }
+
+    /// Every timestamp written so far now lies after "now", as when the wall
+    /// clock steps back (NTP; WSL re-syncs by seconds at a time, ~every 30 s).
+    fn clock_steps_back(db: &Database) {
+        let future = "2999-01-01T00:00:00+00:00";
+        for sql in [
+            "UPDATE pages SET updated_at = ?1",
+            "UPDATE blocks SET updated_at = ?1",
+            "UPDATE trash SET deleted_at = ?1",
+            "UPDATE archive SET archived_at = ?1",
+            "UPDATE events SET created_at = ?1",
+            "UPDATE folder_trash SET deleted_at = ?1",
+            "UPDATE folder_archive SET archived_at = ?1",
+        ] {
+            db.conn.execute(sql, [future]).unwrap();
+        }
+    }
+
+    // The test above failed ~1 run in 30 on this host (more under load): the
+    // import protected pages "edited after the export" by comparing timestamps,
+    // and whenever the clock stepped back between two cycles, the previous
+    // import's own writes looked newer than this export. The journal was then
+    // merged per block instead of imported, and a "(conflict from …)" page or a
+    // duplicated block was kept. Deterministic: the clock steps back before
+    // every cycle here.
+    #[test]
+    fn test_sync_is_unaffected_by_the_clock_stepping_back() {
+        if git_cmd::git_available() {
+            journals_of_one_day_from_two_devices(None, None, true);
+        }
+    }
+
+    // Two devices' ids are not ordered by creation time: two journals created in
+    // the same millisecond on two devices (each with its own UUIDv7 counter), or
+    // with a little clock skew, can have the LATER one smaller. Here the device
+    // that syncs second (B) holds the smaller id, so the first device (A) is the
+    // one whose written journal gives way.
+    #[test]
+    fn test_journals_of_one_day_become_one_page_whichever_device_has_the_smaller_id() {
+        if git_cmd::git_available() {
+            let small = Uuid::parse_str("01900000-0000-7000-8000-000000000001").unwrap();
+            let big = Uuid::parse_str("01900000-0000-7000-8000-000000000002").unwrap();
+            journals_of_one_day_from_two_devices(Some(big), Some(small), false);
+            journals_of_one_day_from_two_devices(Some(small), Some(big), false);
+        }
+    }
+
+    fn journals_of_one_day_from_two_devices(id_a: Option<Uuid>, id_b: Option<Uuid>, clock_jumps: bool) {
         let tmp = tempfile::tempdir().unwrap();
         let (_remote, a, b) = setup_remote_and_devices(tmp.path());
         let db_a = Database::open_in_memory().unwrap();
         let db_b = Database::open_in_memory().unwrap();
         let d = chrono::NaiveDate::from_ymd_opt(2026, 10, 15).unwrap();
-        let ja = db_a.get_or_create_journal(d, None, "user").unwrap();
+        let ja = db_a.get_or_create_journal(d, id_a, "user").unwrap();
         db_a.create_block(&ja.id, "morning on A", None, None, "user").unwrap();
         db_a.create_block(&ja.id, "", None, None, "user").unwrap();
-        let jb = db_b.get_or_create_journal(d, None, "user").unwrap();
+        let jb = db_b.get_or_create_journal(d, id_b, "user").unwrap();
         db_b.create_block(&jb.id, "", None, None, "user").unwrap();
         db_b.create_block(&jb.id, "evening on B", None, None, "user").unwrap();
+        let cycle = |dir: &Path, db: &Database| {
+            if clock_jumps {
+                clock_steps_back(db);
+            }
+            cycle(dir, db)
+        };
         cycle(&a, &db_a);
         cycle(&b, &db_b);
         db_a.create_block(&db_a.find_journal(d).unwrap().unwrap().id, "later on A", None, None, "user").unwrap();
@@ -1796,7 +1852,7 @@ mod tests {
         db_a.create_block(&p.id, "late", None, None, "user").unwrap();
         assert!(git_pull_push(&a).unwrap().error.is_none());
         let pending = pending_import(&a).unwrap().expect("remote commits → import");
-        let r = apply_import(&db_a, &a, &pending, Some(exp.export_time)).unwrap();
+        let r = apply_import(&db_a, &a, &pending, Some(exp.mark)).unwrap();
         assert!(r.pages_skipped_local_edits.contains(&"P".to_string()));
         assert_eq!(contents(&db_a, &p.id), vec!["edited mid-sync", "late"]);
         assert_eq!(contents(&db_a, &q.id), vec!["q from B"]);
@@ -2307,7 +2363,7 @@ mod tests {
         edit();
         assert!(git_pull_push(a).unwrap().error.is_none());
         let pending = pending_import(a).unwrap().expect("remote commits");
-        apply_import(db_a, a, &pending, Some(exp.export_time)).unwrap()
+        apply_import(db_a, a, &pending, Some(exp.mark)).unwrap()
     }
 
     fn titles(db: &Database) -> Vec<String> {
