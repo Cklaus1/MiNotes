@@ -3729,9 +3729,12 @@ R1=$(ev "($WHEEL68)('$NODE68',-100,5)" | tr -d '"'); R2=$(ev "($WHEEL68)('$NODE6
 
 step "Graph: dragging a node moves it and does not open the page; a click opens it"
 MOUSE68="(id,dx)=>{const c=document.querySelector('.graph-view canvas');const n=c.__minotesGraph.nodes().find(x=>x.id===id);const o={bubbles:true,cancelable:true,button:0};c.dispatchEvent(new MouseEvent('mousedown',{...o,clientX:n.x,clientY:n.y}));for(let i=1;i<=5;i++)window.dispatchEvent(new MouseEvent('mousemove',{...o,clientX:n.x+dx*i/5,clientY:n.y}));window.dispatchEvent(new MouseEvent('mouseup',{...o,clientX:n.x+dx,clientY:n.y}));c.dispatchEvent(new MouseEvent('click',{...o,clientX:n.x+dx,clientY:n.y}));return n.title}"
+# Compare the open page before and after: the dragged node may be the page
+# that is already open, so "its title isn't the current page" proves nothing.
+BEFORE68=$(ev "window.__MINOTES__.getCurrentPage()" | tr -d '"')
 T68=$(ev "($MOUSE68)('$NODE68',60)" | tr -d '"'); sleep 1
 R=$(ev "!!document.querySelector('.graph-view')+'|'+window.__MINOTES__.getCurrentPage()" | tr -d '"')
-[[ "$R" == "true|"* && "$R" != *"$T68"* ]] && pass "Dragged '$T68' 60 px: the graph stays open" || fail "Drag opened the page" "$R (node $T68)"
+[[ "$R" == "true|$BEFORE68" ]] && pass "Dragged '$T68' 60 px: the graph stays open on the same page" || fail "Drag opened the page" "$R (before: $BEFORE68, node $T68)"
 T68=$(ev "($MOUSE68)('$NODE68',2)" | tr -d '"'); sleep 1.5
 R=$(ev "!!document.querySelector('.graph-view')+'|'+window.__MINOTES__.getCurrentPage()" | tr -d '"')
 [[ "$R" == "false|"*"$T68"* ]] && pass "A click (2 px wobble) opens '$T68'" || fail "Click didn't open the page" "$R (node $T68)"
