@@ -47,6 +47,141 @@ pub struct SyncResult {
     pub conflict_copies: Vec<String>,
 }
 
+/// What the database looked like when a sync read it for export (phase 1).
+/// Pages and folders changed after the mark are protected from that sync's
+/// import (merged per block instead of overwritten from the pulled file).
+///
+/// "Changed after" never compares timestamps with the clock. It used to ask
+/// for rows with `updated_at > export time`, and whenever the wall clock
+/// stepped back (NTP corrections; WSL re-syncs its clock by seconds at a time,
+/// about every 30 s) rows written *before* the export — by the previous
+/// import, say — looked newer than it: the import then merged the page per
+/// block instead of applying the file, which kept "(conflict from …)" pages and
+/// duplicated blocks (a ~1-in-30 sync test failure, blamed at first on UUIDv7
+/// ordering). Now: nothing written since the mark (write counters) → nothing
+/// is protected; otherwise a page is protected when its row, its blocks (latest
+/// `updated_at` and count) or its trash/archive entry differ from the snapshot
+/// taken at the mark (compared for equality, so a clock step can neither hide
+/// nor invent a change), or when the event log (monotonic ids) has an edit of
+/// it after the mark that the import didn't make.
+#[derive(Debug, Clone)]
+pub struct SyncMark {
+    /// `PRAGMA data_version` at the mark: moves when another connection commits.
+    other_writes: i64,
+    /// This connection's `total_changes()` once phase 1 is done (its own writes
+    /// are the export's, not edits made during the network phase).
+    own_writes: u64,
+    /// Highest event id at the mark.
+    last_event: i64,
+    pages: HashMap<String, String>,
+    folders: HashMap<String, String>,
+}
+
+impl Database {
+    /// Take a mark: call right before reading the database for export.
+    pub fn sync_mark(&self) -> Result<SyncMark> {
+        Ok(SyncMark {
+            other_writes: self.data_version()?,
+            own_writes: self.conn.total_changes(),
+            last_event: self.conn.query_row("SELECT IFNULL(MAX(id), 0) FROM events", [], |r| r.get(0))?,
+            pages: self.page_signatures()?,
+            folders: self.folder_signatures()?,
+        })
+    }
+
+    /// Close a mark once phase 1 (export and commit) is done.
+    pub fn finish_sync_mark(&self, mark: &mut SyncMark) {
+        mark.own_writes = self.conn.total_changes();
+    }
+
+    fn data_version(&self) -> Result<i64> {
+        Ok(self.conn.query_row("PRAGMA data_version", [], |r| r.get(0))?)
+    }
+
+    /// Was anything written here (by this connection or another) since `mark`?
+    fn written_since(&self, mark: &SyncMark) -> Result<bool> {
+        Ok(self.conn.total_changes() != mark.own_writes || self.data_version()? != mark.other_writes)
+    }
+
+    /// `id → signature` from queries returning (id, text); one id's parts are
+    /// concatenated in query order.
+    fn signatures(&self, sqls: &[&str]) -> Result<HashMap<String, String>> {
+        let mut out: HashMap<String, String> = HashMap::new();
+        for (i, sql) in sqls.iter().enumerate() {
+            let mut stmt = self.conn.prepare(sql)?;
+            let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)))?;
+            for row in rows {
+                let (k, v) = row?;
+                let e = out.entry(k).or_default();
+                e.push_str(&format!("{i}:{}|", v.unwrap_or_default()));
+            }
+        }
+        Ok(out)
+    }
+
+    fn page_signatures(&self) -> Result<HashMap<String, String>> {
+        self.signatures(&[
+            "SELECT id, updated_at || ' ' || title || ' ' || IFNULL(folder_id, '') FROM pages",
+            "SELECT page_id, MAX(updated_at) || ' ' || COUNT(*) FROM blocks GROUP BY page_id",
+            "SELECT page_id, deleted_at FROM trash",
+            "SELECT page_id, archived_at FROM archive",
+        ])
+    }
+
+    fn folder_signatures(&self) -> Result<HashMap<String, String>> {
+        self.signatures(&[
+            "SELECT folder_id, deleted_at FROM folder_trash",
+            "SELECT folder_id, archived_at FROM folder_archive",
+        ])
+    }
+
+    /// Ids whose signature differs between `then` and `now` (added and removed too).
+    fn changed_ids(then: &HashMap<String, String>, now: &HashMap<String, String>) -> HashSet<Uuid> {
+        let added_or_changed = now.iter().filter(|(k, v)| then.get(*k) != Some(*v)).map(|(k, _)| k);
+        let removed = then.keys().filter(|k| !now.contains_key(*k));
+        added_or_changed.chain(removed).filter_map(|k| Uuid::parse_str(k).ok()).collect()
+    }
+
+    /// Pages changed locally (by anyone but `import_actor`) after `mark`.
+    pub(crate) fn pages_changed_since(&self, mark: &SyncMark, import_actor: &str) -> Result<HashSet<Uuid>> {
+        if !self.written_since(mark)? {
+            return Ok(HashSet::new());
+        }
+        let mut out = Self::changed_ids(&mark.pages, &self.page_signatures()?);
+        let mut stmt = self.conn.prepare(
+            "SELECT CASE
+                     WHEN entity_type IN ('page', 'property') THEN entity_id
+                     WHEN json_valid(payload) THEN json_extract(payload, '$.page_id')
+                   END
+               FROM events
+              WHERE id > ?1 AND actor != ?2 AND entity_type IN ('page', 'block', 'property')
+             UNION SELECT b.page_id FROM events e JOIN blocks b ON b.id = e.entity_id
+              WHERE e.id > ?1 AND e.actor != ?2 AND e.entity_type = 'property'",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![mark.last_event, import_actor], |r| r.get::<_, Option<String>>(0))?;
+        for r in rows {
+            if let Some(id) = r?.and_then(|s| Uuid::parse_str(&s).ok()) {
+                out.insert(id);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Folders changed locally (by anyone but `import_actor`) after `mark`.
+    pub(crate) fn folders_changed_since(&self, mark: &SyncMark, import_actor: &str) -> Result<HashSet<Uuid>> {
+        if !self.written_since(mark)? {
+            return Ok(HashSet::new());
+        }
+        let mut out = Self::changed_ids(&mark.folders, &self.folder_signatures()?);
+        let mut stmt = self.conn.prepare("SELECT entity_id FROM events WHERE id > ?1 AND actor != ?2 AND entity_type = 'folder'")?;
+        let rows = stmt.query_map(rusqlite::params![mark.last_event, import_actor], |r| r.get::<_, String>(0))?;
+        for r in rows {
+            out.extend(Uuid::parse_str(&r?).ok());
+        }
+        Ok(out)
+    }
+}
+
 /// Options for [`Database::sync_dir_with`].
 #[derive(Debug, Clone, Default)]
 pub struct SyncOptions {
@@ -56,8 +191,8 @@ pub struct SyncOptions {
     pub write_back: bool,
     /// Bypass the mass-deletion guard (>20 pages or >50% of pages in one pass).
     pub force_delete: bool,
-    /// Pages modified locally after this instant are not overwritten from files.
-    pub protect_modified_after: Option<DateTime<Utc>>,
+    /// Pages modified locally after this mark are not overwritten from files.
+    pub protect_modified_after: Option<SyncMark>,
     /// Pages whose file was removed upstream (e.g. by a `git pull`); moved to trash.
     pub trash_page_ids: Vec<Uuid>,
     /// Folders whose `.minotes-folder.json` was removed upstream; moved to trash
@@ -343,8 +478,8 @@ impl Database {
             }
         }
 
-        let mut protected = match opts.protect_modified_after {
-            Some(t) => self.pages_modified_since(t, actor)?,
+        let mut protected = match &opts.protect_modified_after {
+            Some(m) => self.pages_changed_since(m, actor)?,
             None => HashSet::new(),
         };
         protected.extend(opts.protect_pages.iter().copied());
@@ -364,8 +499,8 @@ impl Database {
         }
         order.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| files[a.1].rel.cmp(&files[b.1].rel)));
 
-        let protected_folders = match opts.protect_modified_after {
-            Some(t) => self.folders_modified_since(t, actor)?,
+        let protected_folders = match &opts.protect_modified_after {
+            Some(m) => self.folders_changed_since(m, actor)?,
             None => HashSet::new(),
         };
         let mut seen: HashSet<Uuid> = HashSet::new();
@@ -629,25 +764,6 @@ impl Database {
             rusqlite::params![id.to_string()],
             |r| r.get(0),
         )?)
-    }
-
-    /// Ids of folders changed locally (by anyone but `import_actor`) after `since`.
-    pub(crate) fn folders_modified_since(&self, since: DateTime<Utc>, import_actor: &str) -> Result<HashSet<Uuid>> {
-        let t = since.to_rfc3339();
-        let mut stmt = self.conn.prepare(
-            "SELECT entity_id FROM events
-              WHERE created_at > ?1 AND actor != ?2 AND entity_type = 'folder'
-             UNION SELECT folder_id FROM folder_trash WHERE deleted_at > ?1
-             UNION SELECT folder_id FROM folder_archive WHERE archived_at > ?1",
-        )?;
-        let rows = stmt.query_map(rusqlite::params![t, import_actor], |r| r.get::<_, String>(0))?;
-        let mut out = HashSet::new();
-        for r in rows {
-            if let Ok(id) = Uuid::parse_str(&r?) {
-                out.insert(id);
-            }
-        }
-        Ok(out)
     }
 
     /// Trash folders whose marker the pull removed (a delete — or a trash — on
@@ -2511,10 +2627,10 @@ mod tests {
         assert!(!without_drop.contains("drop:"));
 
         // Protected (edited locally after the export) → left alone.
-        let export_time = Utc::now();
+        let export_mark = db.sync_mark().unwrap();
         db.create_block(&p.id, "local edit", None, None, "user").unwrap();
         fs::write(&f, &without_drop).unwrap();
-        let opts = SyncOptions { protect_modified_after: Some(export_time), ..Default::default() };
+        let opts = SyncOptions { protect_modified_after: Some(export_mark), ..Default::default() };
         let r = db.sync_dir_with(dir.path(), "git-sync", &opts).unwrap();
         assert_eq!(r.pages_skipped_local_edits, vec!["P".to_string()]);
         assert!(props(&db, &p.id).iter().any(|(k, _)| k == "drop"));

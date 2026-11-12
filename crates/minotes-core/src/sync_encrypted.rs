@@ -41,7 +41,7 @@ use aes_gcm::aead::{Aead, KeyInit, OsRng, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -51,7 +51,7 @@ use crate::crypto::{DataKey, EncryptionInfo, RecoveryKey, Secret};
 use crate::db::Database;
 use crate::error::{Error, Result};
 use crate::git_cmd;
-use crate::repo::sync::{ImportFile, SyncResult};
+use crate::repo::sync::{ImportFile, SyncMark, SyncResult};
 use crate::sync_manager::{self, ExportPhase, GitPhase, IMPORT_ACTOR};
 
 /// Key slots + key check, committed so another device can join with the passphrase.
@@ -506,7 +506,7 @@ fn export_and_commit(db: &Database, dir: &Path, keys: &SyncKeys, info: Option<&E
     git_cmd::abort_stale_rebase(dir)?;
     sync_manager::ensure_gitignore(dir);
     ensure_key_file(dir, keys, info)?;
-    let export_time = Utc::now();
+    let mut mark = db.sync_mark()?;
     let (written, large) = export(db, dir, keys)?;
     let before = git_cmd::rev_parse_head(dir)?;
     let committed = git_cmd::commit_all(dir, &sync_manager::commit_message())?;
@@ -517,7 +517,8 @@ fn export_and_commit(db: &Database, dir: &Path, keys: &SyncKeys, info: Option<&E
             sync_manager::write_state(dir, &st)?;
         }
     }
-    Ok(ExportPhase { pages_exported: written, export_time, large_attachments: large })
+    db.finish_sync_mark(&mut mark);
+    Ok(ExportPhase { pages_exported: written, mark, large_attachments: large })
 }
 
 // ── Phase 2: pull (conflicts recorded for a per-block merge) and push ──
@@ -647,7 +648,7 @@ fn import(
     dir: &Path,
     keys: &SyncKeys,
     pending: Option<&Pending>,
-    protect_after: Option<DateTime<Utc>>,
+    protect_after: Option<SyncMark>,
 ) -> Result<SyncResult> {
     let mut r = SyncResult::default();
     let mut entries: Vec<(String, Entry)> = Vec::new();
@@ -664,12 +665,12 @@ fn import(
             }
         }
     }
-    let protected: HashSet<Uuid> = match protect_after {
-        Some(t) => db.pages_modified_since(t, IMPORT_ACTOR)?,
+    let protected: HashSet<Uuid> = match &protect_after {
+        Some(m) => db.pages_changed_since(m, IMPORT_ACTOR)?,
         None => HashSet::new(),
     };
-    let protected_folders: HashSet<Uuid> = match protect_after {
-        Some(t) => db.folders_modified_since(t, IMPORT_ACTOR)?,
+    let protected_folders: HashSet<Uuid> = match &protect_after {
+        Some(m) => db.folders_changed_since(m, IMPORT_ACTOR)?,
         None => HashSet::new(),
     };
 
@@ -986,7 +987,7 @@ where
     let mut conflict_pages = Vec::new();
     if git.error.is_none() && (pending.is_some() || has_merges) {
         let db = lock_db()?;
-        let r = import(&db, dir, keys, pending.as_ref(), Some(export.export_time))?;
+        let r = import(&db, dir, keys, pending.as_ref(), Some(export.mark))?;
         let mut st = sync_manager::read_state(dir);
         if !r.held_page_ids.is_empty() || !r.held_folder_ids.is_empty() {
             let mut h = st.held.take().unwrap_or_default();
