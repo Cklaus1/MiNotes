@@ -584,7 +584,7 @@ function MindMapInner({ pageId, pageTitle, isJournal, journalDate, blocks, onClo
 
   // Phase 4: Drag-to-rearrange — on node drag stop, find closest node and reparent
   const onNodeDragStop = useCallback(
-    (_event: React.MouseEvent, draggedNode: Node) => {
+    (_event: React.MouseEvent | MouseEvent | TouchEvent, draggedNode: Node) => {
       const d = draggedNode.data as unknown as MindMapNodeData;
       if (!d.blockId || d.isRoot) return;
 
