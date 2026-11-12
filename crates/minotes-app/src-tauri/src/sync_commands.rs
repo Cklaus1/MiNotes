@@ -37,6 +37,17 @@ fn uuid(s: &str) -> Result<Uuid, String> {
 }
 
 /// "Choose folder…" for a sync remote (a bare repository on a drive or a share).
+/// Android has no folder choosing (the dialog plugin can't pick folders there;
+/// the UI gates it on `useCapabilities()`), so the command refuses.
+#[cfg(target_os = "android")]
+#[tauri::command(async)]
+pub fn pick_sync_remote_folder(app: AppHandle) -> Result<Option<String>, String> {
+    let _ = (app, &PICKED);
+    Err("Choosing a folder is not available on this device".into())
+}
+
+/// "Choose folder…" for a sync remote (a bare repository on a drive or a share).
+#[cfg(not(target_os = "android"))]
 #[tauri::command(async)]
 pub fn pick_sync_remote_folder(app: AppHandle) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
