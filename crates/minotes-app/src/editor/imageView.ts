@@ -46,8 +46,10 @@ export function imageNodeView(
   const sync = () => {
     const { text, width } = parseImageAlt(current.attrs.alt);
     img.alt = text;
-    if (width) { img.style.width = `${width}px`; wrap.dataset.width = String(width); }
-    else { img.style.removeProperty("width"); delete wrap.dataset.width; }
+    // The width is on the <img> too (lib/media.ts reads `img[data-width]`; the
+    // alt has already lost its `|N` here, so media can't derive it itself).
+    if (width) { img.style.width = `${width}px`; wrap.dataset.width = img.dataset.width = String(width); }
+    else { img.style.removeProperty("width"); delete wrap.dataset.width; delete img.dataset.width; }
   };
   sync();
 
