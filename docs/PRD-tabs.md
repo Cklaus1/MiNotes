@@ -1,6 +1,6 @@
 # PRD: Tabs
 
-Status: draft, not started · Owner: Chris Klaus · Written 2026-11-12
+Status: decided, not started · Owner: Chris Klaus · Written 2026-11-12
 
 ## 1. Overview
 
@@ -240,17 +240,20 @@ Tab / Shift+Tab inside the editor stay indent / outdent.
 - The tab row adds no visible change for someone who never opens a second tab,
   beyond the row itself.
 
-## 9. Open questions
+## 9. Decisions (owner, 2026-11-12)
 
-1. Default for `+`: today's journal (recommended) or a "New tab" screen with
-   search and recent pages?
-2. Should Ctrl+Tab follow row order (recommended, like Evernote and browsers) or
-   most-recently-used order?
-3. Show the tab row with a single tab (recommended, so `+` is discoverable) or
-   hide it until a second tab exists?
-4. Should opening a page that is already open in another tab switch to that tab
-   instead (Obsidian has this as an option)? Recommended: no by default; a
-   setting later.
+All four open questions were decided with the recommended option.
+
+1. **`+` opens today's journal**, with the Settings choice "New tabs open:
+   Today's journal / New page / All Pages / Search" (§3.3) — close to Evernote,
+   which also lets you pick what new tabs show.
+2. **Ctrl+Tab follows row order** (left to right, wrapping), as in Evernote and
+   browsers. Back (Ctrl+[) covers "the page I was just on".
+3. **The tab row is always shown**, even with one tab, so `+` and the ← → arrows
+   have a fixed, discoverable place.
+4. **A page already open in another tab still opens in the current tab** (the
+   same page may be in two tabs). A "switch to the existing tab" setting can
+   come later if asked for.
 
 ## Sources
 
