@@ -20,7 +20,14 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
-reqwest = { version = "0.12", features = ["rustls-tls"], default-features = false }
+# reqwest 0.13's `rustls` feature means aws-lc-rs (a C/asm build — trouble for
+# the Android and MinGW cross builds) plus the OS-store verifier (needs a JNI
+# init on Android). `rustls-no-provider` + a preconfigured rustls config keeps
+# exactly what 0.12's `rustls-tls` shipped: rustls on ring, Mozilla's roots
+# (webpki-roots), no native-tls / OpenSSL for HTTP. See remote_images::tls_config.
+reqwest = { version = "0.13", features = ["rustls-no-provider"], default-features = false }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+webpki-roots = "1"
 regex = "1"
 notify = "8.2"
 
