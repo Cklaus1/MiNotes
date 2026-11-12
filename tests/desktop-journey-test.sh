@@ -41,7 +41,7 @@ echo "════════════════════════�
 echo "  MiNotes Desktop Journeys (real app, real backend)"
 echo "═══════════════════════════════════════════════"
 
-rm -rf "$STATE"/{persist,devA,devB,nbook,outside,xnb,zip8,barrier10,trust10,rimg,img10,remote.git,enc13,enc13-tmp,enc13-keychain,enc14a,enc14b,enc14c,enc14-tmp,remote14.git,w1,w1-files,w2,j17a,j17b,t17,remote17.git,remote17.git.moved,w18,w19,w23,d20a,w21,w22,big22} "$STATE/results.tsv"
+rm -rf "$STATE"/{persist,devA,devB,nbook,outside,xnb,zip8,barrier10,trust10,rimg,img10,remote.git,enc13,enc13-tmp,enc13-keychain,enc14a,enc14b,enc14c,enc14-tmp,remote14.git,w1,w1-files,w2,j17a,j17b,t17,remote17.git,remote17.git.moved,w18,w19,w23,d20a,w21,w22,big22,w24} "$STATE/results.tsv"
 if [[ -z "$DESKTOP_NO_BUILD" ]]; then
   "$DC" up --webdriver --profile persist >/dev/null || { echo "build/launch failed"; exit 1; }
 else
@@ -2170,6 +2170,66 @@ IFS='|' read -r K22 MX22 AV22 <<< "$R"
 is "Every key landed in the deep block (database)" "$(db w22 "select count(*) from blocks where content like 'Row 2750 %smooth22 typing in a big page'")" "1"
 [[ "$K22" -ge 25 && "$MX22" -lt 150 ]] 2>/dev/null && pass "$K22 keys, frame after each key: avg ${AV22} ms, max ${MX22} ms" || fail "Typing latency in the big page" "$R"
 "$DC" shot "d22-big-page" >/dev/null
+
+# ═══════════════════════════════════════════════
+journey "D24. Indent like a document, with the real keyboard (option B)"
+# Real X keys (xdotool): type, Tab, Enter on an empty child (outdents), Enter on
+# an empty top-level line (stays), Backspace at the start of a nested line
+# (outdents, text intact), Shift+Tab (GDK ISO_Left_Tab), Ctrl+Z after an Enter
+# outdent. The stored outline (parent ids) is read straight from SQLite.
+# ═══════════════════════════════════════════════
+A24="const api=await import('/src/lib/api.ts');"
+S24=$(date +%s); P24="Indent24 $S24"
+xy24() { ev "(()=>{const e=$1;if(!e)return '';const r=e.getBoundingClientRect();return Math.round(r.left+Math.min(r.width/2,60))+' '+Math.round(r.top+r.height/2)})()"; }
+# outline24: every block of the page as content<parent content, in outline order (the app's own order).
+outline24() { db w24 "with recursive t(id,content,parent,path) as (select b.id,b.content,'-',printf('%012.4f',b.position) from blocks b join pages g on b.page_id=g.id where g.title='$P24' and b.parent_id is null union all select c.id,c.content,t.content,t.path||'/'||printf('%012.4f',c.position) from blocks c join t on c.parent_id=t.id) select group_concat(content||'<'||parent,'|') from (select * from t order by path)"; }
+ui24() { ev "window.__MINOTES__.getBlockTree().map(b=>b.depth).join(',')"; }
+device w24 || true
+ev "(async()=>{$A24 const p=await api.createPage('$P24');await api.createBlock(p.id,'');return 1})()" >/dev/null
+api "navigateTo('$P24')" >/dev/null; waitfor "window.__MINOTES__.getCurrentPage()==='$P24'" 10; sleep 1
+
+step "Type, Enter, type, Tab: the second line is a child"
+XY=$(xy24 "document.querySelector('.block-list .block-content')"); "$DC" click $XY >/dev/null; sleep 0.5
+"$DC" type "Topic24"; "$DC" key Return; sleep 0.8; "$DC" type "Detail24"; sleep 0.3
+"$DC" key Tab; sleep 0.8
+is "Tab indented it (depths)" "$(ui24)" "0,1"
+
+step "Enter (new empty child), Enter again: the empty line steps out to the top level"
+"$DC" key Return; sleep 0.8
+D1=$(ui24)
+"$DC" key Return; sleep 0.8
+is "Child line, then outdented by the second Enter" "$D1 → $(ui24)" "0,1,1 → 0,1,0"
+"$DC" key Return; sleep 0.8
+is "A third Enter on the empty top-level line adds nothing" "$(ui24)" "0,1,0"
+"$DC" type "Next24"; sleep 0.3; "$DC" key Escape; sleep 1.5
+is "Stored: Next24 is a top-level block after Topic24's child" "$(outline24)" "Topic24<-|Detail24<Topic24|Next24<-"
+
+step "Tab, then Home + Backspace at the start of the nested line: outdented, text intact"
+XY=$(xy24 "document.querySelectorAll('.block-list .block-content')[2]"); "$DC" click $XY >/dev/null; sleep 0.5
+"$DC" key Tab; sleep 0.8
+is "Tab nested it under Topic24" "$(ui24)" "0,1,1"
+"$DC" key Home; "$DC" key BackSpace; sleep 0.8
+is "Backspace at the start outdented it" "$(ui24)" "0,1,0"
+is "…the caret is still at its start" "$(api 'getCaretInBlock(2)')" "1"
+"$DC" key Escape; sleep 1.5
+is "Stored: text intact, top level again" "$(outline24)" "Topic24<-|Detail24<Topic24|Next24<-"
+
+step "Tab then Shift+Tab (ISO_Left_Tab) round-trips"
+XY=$(xy24 "document.querySelectorAll('.block-list .block-content')[2]"); "$DC" click $XY >/dev/null; sleep 0.5
+"$DC" key Tab; sleep 0.8; D1=$(ui24)
+"$DC" key shift+Tab; sleep 0.8
+is "Tab → depth 1, Shift+Tab → depth 0" "$D1 → $(ui24)" "0,1,1 → 0,1,0"
+
+step "Ctrl+Z after an Enter outdent puts the line back at its depth"
+"$DC" key End; "$DC" key Return; sleep 0.8; "$DC" key Tab; sleep 0.8
+"$DC" type "Sub24"; sleep 0.3; "$DC" key Return; sleep 0.8
+D1=$(ui24)
+"$DC" key Return; sleep 0.8; D2=$(ui24)
+"$DC" key ctrl+z; sleep 1.2; D3=$(ui24)
+is "Empty child → Enter outdents → Ctrl+Z restores" "$D1 / $D2 / $D3" "0,1,0,1,1 / 0,1,0,1,0 / 0,1,0,1,1"
+"$DC" type "Sub24b"; sleep 0.3; "$DC" key Escape; sleep 1.5
+is "Stored outline after all of it" "$(outline24)" "Topic24<-|Detail24<Topic24|Next24<-|Sub24<Next24|Sub24b<Next24"
+"$DC" shot "d24-indent" >/dev/null
 
 # ═══════════════════════════════════════════════
 echo ""

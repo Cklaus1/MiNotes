@@ -95,3 +95,52 @@ export function applyDrop(list: Block[], draggedId: string, targetId: string, wh
     return r !== undefined ? { ...b, position: r } : b;
   }));
 }
+
+/**
+ * `count` increasing positions strictly between `block` and its next sibling, or
+ * null when it has no next sibling (the backend's default append-to-parent-end
+ * already lands after it).
+ */
+export function positionsAfter(all: Block[], block: Block, count: number): number[] | null {
+  const parent = block.parent_id ?? null;
+  const next = all
+    .filter(b => (b.parent_id ?? null) === parent && b.id !== block.id && b.position > block.position)
+    .sort((a, b) => a.position - b.position)[0];
+  if (!next) return null;
+  const step = (next.position - block.position) / (count + 1);
+  return Array.from({ length: count }, (_, i) => block.position + step * (i + 1));
+}
+
+/** A block's new place after an indent / outdent. */
+export interface Placement { parentId: string | undefined; position: number }
+
+/**
+ * Tab: the block becomes the LAST child of its previous sibling (positions are
+ * per parent). Null when nothing above it shares its parent (the first block of
+ * the page, a first child). `list` is in outline order.
+ */
+export function indentPlacement(list: Block[], id: string): Placement | null {
+  const idx = list.findIndex(b => b.id === id);
+  if (idx <= 0) return null;
+  const parentKey = list[idx].parent_id ?? null;
+  const prevSibling = list.slice(0, idx).reverse().find(b => (b.parent_id ?? null) === parentKey);
+  if (!prevSibling) return null;
+  const kids = list.filter(b => b.parent_id === prevSibling.id).map(b => b.position);
+  return { parentId: prevSibling.id, position: kids.length ? Math.max(...kids) + 1 : 1 };
+}
+
+/**
+ * Shift+Tab: the block goes directly after its former parent, among the parent's
+ * siblings — strictly between the parent and the parent's next sibling, so
+ * positions stay distinct. Null for a root block.
+ */
+export function outdentPlacement(list: Block[], id: string): Placement | null {
+  const block = list.find(b => b.id === id);
+  if (!block?.parent_id) return null;
+  const parent = list.find(b => b.id === block.parent_id);
+  if (!parent) return null;
+  return {
+    parentId: parent.parent_id ?? undefined,
+    position: positionsAfter(list, parent, 1)?.[0] ?? parent.position + 1,
+  };
+}

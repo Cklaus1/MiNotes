@@ -1,7 +1,16 @@
 import type { RestoreBlock } from './api';
 
+/** One block indented / outdented: where it was and where it went (null parent = top level). */
+interface UndoMove {
+  id: string;
+  fromParentId: string | null;
+  fromPosition: number;
+  toParentId: string | null;
+  toPosition: number;
+}
+
 interface UndoAction {
-  type: 'create' | 'delete' | 'update' | 'merge' | 'reparent' | 'outside-import' | 'conflict-resolve';
+  type: 'create' | 'delete' | 'update' | 'merge' | 'reparent' | 'move' | 'outside-import' | 'conflict-resolve';
   blockId: string;
   pageId: string;
   oldContent?: string;
@@ -20,6 +29,12 @@ interface UndoAction {
    * restored block; redo re-homes them again before deleting it.
    */
   movedChildren?: { id: string; fromParentId: string; fromPosition: number; toParentId: string; toPosition: number }[];
+  /**
+   * 'move': blocks indented / outdented in one step (Tab, Shift+Tab, Enter on an
+   * empty nested block, Backspace at its start, Tab on a selection). Undo puts
+   * them back in reverse order; redo applies them again in order.
+   */
+  moves?: UndoMove[];
   /**
    * 'outside-import': a file of the markdown copy edited in another program was
    * imported into the page. Undo sets the page's blocks back to `before`; redo
@@ -74,4 +89,4 @@ class UndoStack {
 }
 
 export const undoStack = new UndoStack();
-export type { UndoAction };
+export type { UndoAction, UndoMove };

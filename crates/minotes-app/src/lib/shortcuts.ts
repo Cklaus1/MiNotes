@@ -46,10 +46,12 @@ export const SHORTCUT_GROUPS: Array<{ title: string; items: Array<[string, strin
   {
     title: "While editing a block",
     items: [
-      ["Enter", "New block"],
-      ["Tab", "Indent"],
-      ["Esc", "Outdent a nested block"],
-      ["Backspace", "At the start: merge into the block above"],
+      ["Enter", "New block (split at the caret)"],
+      ["Tab", "Indent under the block above"],
+      ["Shift+Tab", "Outdent one level"],
+      ["Enter on an empty line", "Nested: outdent one level (top level: stays)"],
+      ["Backspace at the start", "Nested: outdent one level; top level: merge into the block above"],
+      ["Esc", "Stop editing (the block stays selected; Tab / Shift+Tab move it)"],
       ["Ctrl+Enter", "Cycle TODO → DOING → DONE"],
       ["Ctrl+B / Ctrl+I / Ctrl+E", "Bold / italic / inline code"],
       ["Ctrl+Z", "Undo typing"],

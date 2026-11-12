@@ -7,7 +7,7 @@ import { getSettings } from "../lib/settings";
 import { localDateKey } from "../lib/dates";
 import BlockItem from "./BlockItem";
 import type { BlockItemHandle, DropPosition, FocusPosition } from "./BlockItem";
-import { applyDrop, dropPlacement, effectiveDrop, outlineOrder } from "../lib/blockTree";
+import { applyDrop, dropPlacement, effectiveDrop, indentPlacement, outdentPlacement, outlineOrder, positionsAfter } from "../lib/blockTree";
 import { mergeMarkdown } from "../editor/mergeBlocks";
 import type { PastedBlock } from "../editor/pasteMarkdown";
 import { noteBlockContent, refreshShownBlockRefs } from "../lib/blockRefs";
@@ -16,8 +16,9 @@ import { fillTemplate, saveUserTemplate, templateFromBlocks, templateNameTaken, 
 import BacklinksPanel from "./BacklinksPanel";
 import UnlinkedRefsPanel from "./UnlinkedRefsPanel";
 import LinkPreview from "./LinkPreview";
-import { undoStack } from "../lib/undoStack";
-import { executeRedo, executeUndo } from "../lib/undoManager";
+import { undoStack, type UndoMove } from "../lib/undoStack";
+import { executeRedo, executeUndo, placeBlock } from "../lib/undoManager";
+import { isTabKey } from "../editor/useBlockEditor";
 import { registerTestApi } from "../lib/testApi";
 import TableOfContents from "./TableOfContents";
 import { downloadHtml, printPage } from "../lib/exportPage";
@@ -533,20 +534,6 @@ export default function PageView({
     onJournalNav(localDateKey(date));
   };
 
-  /**
-   * `count` increasing positions strictly between `block` and its next sibling, or
-   * null when it has no next sibling (the backend's default append-to-parent-end
-   * already lands after it).
-   */
-  const positionsAfter = (all: Block[], block: Block, count: number): number[] | null => {
-    const parent = block.parent_id ?? null;
-    const next = all
-      .filter(b => (b.parent_id ?? null) === parent && b.id !== block.id && b.position > block.position)
-      .sort((a, b) => a.position - b.position)[0];
-    if (!next) return null;
-    const step = (next.position - block.position) / (count + 1);
-    return Array.from({ length: count }, (_, i) => block.position + step * (i + 1));
-  };
 
   // A content save from a block editor. Local state first; a block whose create is
   // still in flight saves once it exists (in order, through the op queue).
@@ -682,6 +669,9 @@ export default function PageView({
     const current = localBlocksRef.current;
     const idx = current.findIndex(b => b.id === blockId);
     if (idx <= 0) return; // Can't merge first block
+    // Document-style indent: at the start of a NESTED block Backspace outdents it
+    // (the editor checks this first; this covers a block shown without an editor).
+    if (current[idx].parent_id) { handleOutdent(blockId); return; }
     const prevBlock = current[idx - 1];
     const merged = current[idx];
     // Capture now: block objects can be shared with the backend layer (the mock
@@ -900,51 +890,87 @@ export default function PageView({
   saveAsTemplateRef.current = saveAsTemplate;
   const handleSaveBlockTemplateLive = useCallback((id: string) => { void saveAsTemplateRef.current(id); }, []);
 
-  // UX-002: Block indent/outdent. Applied locally first (and the editor refocused
-  // at the same caret in the same keystroke — a moved DOM node loses focus), then
-  // persisted through the op queue.
-  const moveBlockLocally = (blockId: string, parentId: string | undefined, position: number) => {
-    const caret = blockRefs.current.get(blockId)?.getCaret() ?? null;
+  // UX-002 + document-style indent ("option B"): Tab / Shift+Tab, the block menu,
+  // Enter on an empty nested block and Backspace at the start of a nested block
+  // all move a block here. Applied locally first (and the editor refocused at the
+  // same caret in the same keystroke — a moved DOM node loses focus), then
+  // persisted through the op queue as ONE undo step (Ctrl+Z restores the depth).
+  const moveBlockLocally = (blockId: string, parentId: string | undefined, position: number, refocus = true) => {
+    const caret = refocus ? blockRefs.current.get(blockId)?.getCaret() ?? null : null;
     flushSync(() => {
       setLocalBlocks(prev => outlineOrder(prev.map(b => b.id === blockId ? { ...b, parent_id: parentId, position } : b)));
     });
-    blockRefs.current.get(blockId)?.focus(caret ?? "end");
+    if (refocus) blockRefs.current.get(blockId)?.focus(caret ?? "end");
   };
 
-  const handleIndent = (blockId: string) => {
-    const current = localBlocksRef.current;
-    const flatIdx = current.findIndex(b => b.id === blockId);
-    if (flatIdx <= 0) return; // Can't indent first block
-    const block = current[flatIdx];
-    const parentKey = block.parent_id ?? null;
-    // Previous sibling: the nearest earlier block with the same parent.
-    const prevSibling = current.slice(0, flatIdx).reverse().find(b => (b.parent_id ?? null) === parentKey);
-    if (!prevSibling) return; // No sibling above to become parent
-    // Becomes the LAST child of the previous sibling (positions are per parent).
-    const kidPositions = current.filter(b => b.parent_id === prevSibling.id).map(b => b.position);
-    const position = kidPositions.length ? Math.max(...kidPositions) + 1 : 1;
-    if (collapsedBlocksRef.current.has(prevSibling.id)) toggleCollapse(prevSibling.id);
-    moveBlockLocally(blockId, prevSibling.id, position);
-    enqueue(() => api.moveBlock(rid(blockId), rid(prevSibling.id), position))
-      .then(() => onRefreshPage())
-      .catch((e) => { console.error("indent failed:", e); showToast("Could not indent block"); onRefreshPage(); });
-  };
-
-  const handleOutdent = (blockId: string) => {
+  /** Indent ("in") / outdent ("out") one block locally: the move to persist, or null when it can't move. */
+  const shiftBlock = (blockId: string, dir: "in" | "out", refocus = true): UndoMove | null => {
     const current = localBlocksRef.current;
     const block = current.find(b => b.id === blockId);
-    if (!block?.parent_id) return; // Already at root level
-    const parent = current.find(b => b.id === block.parent_id);
-    if (!parent) return;
-    // Goes directly after its former parent, among the parent's siblings — strictly
-    // between the parent and the parent's next sibling, so positions stay distinct.
-    const grandParentId = parent.parent_id ?? undefined;
-    const position = positionsAfter(current, parent, 1)?.[0] ?? parent.position + 1;
-    moveBlockLocally(blockId, grandParentId, position);
-    enqueue(() => api.reorderBlock(rid(blockId), grandParentId ? rid(grandParentId) : undefined, position))
-      .then(() => onRefreshPage())
-      .catch((e) => { console.error("outdent failed:", e); showToast("Could not outdent block"); onRefreshPage(); });
+    const plan = block ? (dir === "in" ? indentPlacement(current, blockId) : outdentPlacement(current, blockId)) : null;
+    if (!block || !plan) return null;
+    // Indenting under a folded block unfolds it, so the moved block stays in view.
+    if (dir === "in" && plan.parentId && collapsedBlocksRef.current.has(plan.parentId)) toggleCollapse(plan.parentId);
+    moveBlockLocally(blockId, plan.parentId, plan.position, refocus);
+    return { id: blockId, fromParentId: block.parent_id ?? null, fromPosition: block.position, toParentId: plan.parentId ?? null, toPosition: plan.position };
   };
+
+  /** Persist local moves (temp ids resolved in the queue) as one undo entry. */
+  const persistMoves = (moves: UndoMove[]) => {
+    if (!moves.length) return;
+    enqueue(async () => {
+      const real = moves.map(m => ({
+        ...m, id: rid(m.id),
+        fromParentId: m.fromParentId && rid(m.fromParentId), toParentId: m.toParentId && rid(m.toParentId),
+      }));
+      for (const m of real) await placeBlock(m.id, m.toParentId, m.toPosition);
+      undoStack.push({ type: 'move', blockId: real[0].id, pageId: page.id, moves: real, timestamp: Date.now() });
+    })
+      .then(() => onRefreshPage())
+      .catch((e) => { console.error("indent/outdent failed:", e); showToast("Could not move the block"); onRefreshPage(); });
+  };
+
+  // Live handles for the selection keyboard handler (an effect closure).
+  const shiftBlockRef = useRef(shiftBlock);
+  shiftBlockRef.current = shiftBlock;
+  const persistMovesRef = useRef(persistMoves);
+  persistMovesRef.current = persistMoves;
+
+  const handleIndent = (blockId: string): boolean => {
+    const m = shiftBlock(blockId, "in");
+    if (m) persistMoves([m]);
+    return !!m;
+  };
+
+  /**
+   * One level out, directly after the former parent. Also Enter on an empty block
+   * and Backspace at the start: a top-level block returns false (Enter then does
+   * nothing, Backspace merges).
+   */
+  const handleOutdent = (blockId: string): boolean => {
+    const m = shiftBlock(blockId, "out");
+    if (m) persistMoves([m]);
+    return !!m;
+  };
+
+  /**
+   * Ctrl+Z in the editor right after it moved its block: undo that move (the top
+   * undo entry, once the queue has persisted it). False when the top entry is
+   * something else — the editor's own undo runs then.
+   */
+  const handleUndoMove = (blockId: string): Promise<boolean> => enqueue(async () => {
+    const top = undoStack.peekUndo();
+    if (top?.type !== 'move' || !top.moves?.length || top.blockId !== rid(blockId)) return false;
+    undoStack.popUndo();
+    const local = (id: string) => localBlocksRef.current.find(b => rid(b.id) === id)?.id ?? id;
+    for (const m of [...top.moves].reverse()) {
+      moveBlockLocally(local(m.id), m.fromParentId ? local(m.fromParentId) : undefined, m.fromPosition);
+      await placeBlock(m.id, m.fromParentId, m.fromPosition);
+    }
+    return true;
+  })
+    .then((done) => { if (done) onRefreshPage(); return done; })
+    .catch((e) => { console.error("undo move failed:", e); showToast("Could not undo the move"); onRefreshPage(); return true; });
 
   // Escape in a block: leave editing, keep the block selected so the keyboard can
   // carry on (arrows move the selection, Enter edits, Backspace deletes).
@@ -1751,6 +1777,26 @@ export default function PageView({
         setSelectedBlockIds(new Set());
         setSelectionAnchor(null);
       }
+      // Tab / Shift+Tab indent / outdent the selected blocks — one undo step. Only
+      // the top of each selected subtree moves (its children come along); outdent
+      // goes bottom-up so siblings keep their order. Tab elsewhere (a dialog, the
+      // sidebar) keeps moving focus.
+      const t = e.target as HTMLElement | null;
+      if (isTabKey(e) && !e.ctrlKey && !e.metaKey && !e.altKey && !hasOpenLayer() &&
+          (!t || t === document.body || !!t.closest?.(".block-list"))) {
+        e.preventDefault();
+        const all = localBlocksRef.current;
+        const byId = new Map(all.map(b => [b.id, b]));
+        const selectedAncestor = (b: Block) => {
+          for (let p = b.parent_id, n = 0; p && n < 10000; p = byId.get(p)?.parent_id, n++) if (selectedBlockIds.has(p)) return true;
+          return false;
+        };
+        const tops = all.filter(b => selectedBlockIds.has(b.id) && !selectedAncestor(b));
+        if (e.shiftKey) tops.reverse();
+        const moves = tops.map(b => shiftBlockRef.current(b.id, e.shiftKey ? "out" : "in", false)).filter((m): m is UndoMove => !!m);
+        persistMovesRef.current(moves);
+        return;
+      }
       // Ctrl+Up / Ctrl+Down fold / unfold the selected blocks (C-11).
       if ((e.key === "ArrowUp" || e.key === "ArrowDown") && (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey) {
         e.preventDefault();
@@ -1915,6 +1961,11 @@ export default function PageView({
       onPasteBlocks={handlePasteBlocks}
       onIndent={handleIndent}
       onOutdent={handleOutdent}
+      // Enter on an empty block / Backspace at the start: a nested block steps
+      // out a level (exactly Shift+Tab); at the top level nothing moves.
+      onEnterBlank={handleOutdent}
+      onOutdentAtStart={handleOutdent}
+      onUndoMove={handleUndoMove}
       onEscape={handleEscape}
       onDuplicate={handleDuplicate}
       onToggleCollapse={toggleCollapseLive}

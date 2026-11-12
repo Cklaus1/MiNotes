@@ -225,8 +225,15 @@ interface Props {
   onArrowDown?: (blockId: string) => void;
   onPasteMultiline?: (blockId: string, lines: string[]) => void;
   onPasteBlocks?: (blockId: string, blocks: PastedBlock[], intoEmpty: boolean) => void;
-  onIndent?: (blockId: string) => void;
-  onOutdent?: (blockId: string) => void;
+  /** Tab / Shift+Tab (and the block menu): true when the block moved. */
+  onIndent?: (blockId: string) => boolean | void;
+  onOutdent?: (blockId: string) => boolean | void;
+  /** Enter on an empty block: a nested one outdents (true when it moved). */
+  onEnterBlank?: (blockId: string) => boolean;
+  /** Backspace at the very start: a nested block outdents (true); else the merge runs. */
+  onOutdentAtStart?: (blockId: string) => boolean;
+  /** Ctrl+Z right after an indent / outdent from this block's editor. */
+  onUndoMove?: (blockId: string) => Promise<boolean>;
   onEscape?: (blockId: string) => void;
   onDuplicate?: (blockId: string) => void;
   onToggleCollapse?: (blockId: string) => void;
@@ -279,7 +286,7 @@ function setBlockDragImage(e: React.DragEvent, blockEl: HTMLElement | null) {
 const BlockItem = forwardRef<BlockItemHandle, Props>(({
   block, depth = 0, hasChildren = false, isLastSibling = false, isOnActivePath = false, onFocusBlock, onBlurBlock, dataBlockId, selected = false, onUpdate, onDelete, onPageLinkClick,
   onBlockRefClick, onEnter, canEnter, onBackspaceAtStart, onArrowUp, onArrowDown, onPasteMultiline, onPasteBlocks,
-  onIndent, onOutdent, onEscape, onDuplicate, onToggleCollapse, onSetCollapsed, onSetAllCollapsed, collapsed = false, hiddenCount = 0,
+  onIndent, onOutdent, onEnterBlank, onOutdentAtStart, onUndoMove, onEscape, onDuplicate, onToggleCollapse, onSetCollapsed, onSetAllCollapsed, collapsed = false, hiddenCount = 0,
   onZoomIn, onShiftClick, onOpenWhiteboard, onDragReorder, onInsertTemplate, onSaveAsTemplate,
 }, ref) => {
   const settings = getSettingsCached();
@@ -410,6 +417,9 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
     onPasteBlocks: onPasteBlocks ? (blocks, intoEmpty) => onPasteBlocks(block.id, blocks, intoEmpty) : undefined,
     onIndent: onIndent ? () => onIndent(block.id) : undefined,
     onOutdent: onOutdent ? () => onOutdent(block.id) : undefined,
+    onEnterBlank: onEnterBlank ? () => onEnterBlank(block.id) : undefined,
+    onOutdentAtStart: onOutdentAtStart ? () => onOutdentAtStart(block.id) : undefined,
+    onUndoMove: onUndoMove ? () => onUndoMove(block.id) : undefined,
     onEscape: onEscape ? () => onEscape(block.id) : undefined,
     onSetCollapsed: onSetCollapsed ? (c) => onSetCollapsed(block.id, c) : undefined,
     onMakeFlashcard: () => { void setFlashcard(true); },
@@ -900,6 +910,8 @@ const BlockItem = forwardRef<BlockItemHandle, Props>(({
           onToggleFlashcard={() => { void setFlashcard(!isCard); }}
           onTableAction={menuInTable ? (action) => { handleTableAction(action); } : undefined}
           onSaveAsTemplate={onSaveAsTemplate ? () => onSaveAsTemplate(block.id) : undefined}
+          onIndent={onIndent ? () => { onIndent(block.id); } : undefined}
+          onOutdent={onOutdent && depth > 0 ? () => { onOutdent(block.id); } : undefined}
         />
       )}
     </div>

@@ -22,6 +22,10 @@ interface Props {
   onSetAllCollapsed?: (collapsed: boolean) => void;
   /** Save this block and its children as a template (lib/templates.ts). */
   onSaveAsTemplate?: () => void;
+  /** Indent under the block above (Tab). */
+  onIndent?: () => void;
+  /** Outdent one level (Shift+Tab); absent for a top-level block (shown disabled). */
+  onOutdent?: () => void;
 }
 
 export default function BlockContextMenu({
@@ -41,6 +45,8 @@ export default function BlockContextMenu({
   onSetCollapsed,
   onSetAllCollapsed,
   onSaveAsTemplate,
+  onIndent,
+  onOutdent,
 }: Props) {
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -138,6 +144,25 @@ export default function BlockContextMenu({
         </>
       )}
       {(onSetAllCollapsed || (collapsed !== undefined && onSetCollapsed)) && <div className="block-context-menu-sep" />}
+      {onIndent && (
+        <>
+          <button className="block-context-menu-item" data-action="indent" onClick={() => { onClose(); onIndent(); }}>
+            Indent
+            <span className="block-context-menu-shortcut">Tab</span>
+          </button>
+          <button
+            className="block-context-menu-item"
+            data-action="outdent"
+            disabled={!onOutdent}
+            title={onOutdent ? undefined : "Already at the top level"}
+            onClick={() => { onClose(); onOutdent?.(); }}
+          >
+            Outdent
+            <span className="block-context-menu-shortcut">Shift+Tab</span>
+          </button>
+          <div className="block-context-menu-sep" />
+        </>
+      )}
       <button className="block-context-menu-item" onClick={handleCopyRef}>
         Copy block reference
         <span className="block-context-menu-shortcut">((…))</span>

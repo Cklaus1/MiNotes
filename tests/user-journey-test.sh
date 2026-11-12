@@ -5105,6 +5105,144 @@ R=$(ev "(async()=>{$A114 const t=await api.getPageTree('$L114');return t.blocks.
 R2=$(ev "!!document.querySelector('.link-preview-card')" | tr -d '"')
 [[ "$R" != *"{{link-preview"* && "$R" == *"$U114"* && ( "$R" == "["*"]($U114)" || "$R" == "<$U114>" ) && "$R2" == "false" ]] && pass "Stored as: $R" || fail "Convert to plain link" "$R / card=$R2"
 
+# ═══════════════════════════════════════════════
+journey "115. Indent like a document: Tab / Shift+Tab, Enter on an empty line and Backspace at the start step out"
+# Option B (Evernote / Google Docs): Enter on an EMPTY nested line outdents it
+# (repeated Enter steps out to the top and stops there), Backspace at the very
+# start of a NESTED line outdents it (same as Shift+Tab); only at the top level
+# does Backspace at the start merge. One Ctrl+Z per step restores the depth.
+# ═══════════════════════════════════════════════
+A115="const api=await import('/src/lib/api.ts');"
+P115="Indent115 $(date +%s)"
+api "closePanel()" >/dev/null; press "Escape"; sleep 0.3
+ev "(async()=>{$A115 const p=await api.createPage('$P115');await api.createBlock(p.id,'Plan115');return 1})()" >/dev/null
+api "navigateTo('$P115')" >/dev/null; sleep 2
+# Visible outline (content@depth) and the stored one (content<parent content).
+ui115() { ev "window.__MINOTES__.getBlockTree().map(b=>b.content+'@'+b.depth).join('|')" | tr -d '"'; }
+db115() { ev "(async()=>{$A115 const t=await api.getPageTree('$P115');const by=new Map(t.blocks.map(b=>[b.id,b]));return t.blocks.map(b=>b.content+'<'+(b.parent_id?by.get(b.parent_id).content:'-')).join('|')})()" | tr -d '"'; }
+key115() { api "pressKeyInBlock($1, '$2', {focus:false${3:+, $3}})" >/dev/null; sleep 0.6; }
+type115() { ev "document.execCommand('insertText',false,'$1')" >/dev/null; sleep 0.3; }
+# caret115 <i>: focus block i with the caret at its very start.
+caret115() { api "focusBlock($1)" >/dev/null; sleep 0.4; ev "(()=>{const pm=document.querySelector('[data-block-id=\"'+window.__MINOTES__.getBlockTree()[$1].id+'\"] .ProseMirror');const s=getSelection();s.collapse(pm.firstElementChild,0);document.dispatchEvent(new Event('selectionchange'));return 1})()" >/dev/null; sleep 0.3; }
+foc115() { api "getFocusedBlockIndex()" | tr -d '"'; }
+
+step "Tab indents the new line; Enter on the empty child outdents it (no extra empty line)"
+api "focusBlock(0)" >/dev/null; sleep 0.4
+key115 0 Enter
+type115 "Step one"
+key115 1 Tab
+key115 1 Enter
+R1=$(ui115)
+key115 2 Enter
+R2=$(ui115); F2=$(foc115)
+[[ "$R1" == "Plan115@0|Step one@1|@1" && "$R2" == "Plan115@0|Step one@1|@0" && "$F2" == "2" ]] && pass "Child line, then Enter on it: $R2 (caret stays, block 2)" || fail "Enter on an empty child" "before=$R1 after=$R2 focus=$F2"
+
+step "Enter on an empty top-level line does nothing (no stack of empty blocks)"
+key115 2 Enter
+R=$(ui115); FC=$(foc115)
+[[ "$R" == "Plan115@0|Step one@1|@0" && "$FC" == "2" ]] && pass "Still 3 blocks, caret in the empty line" || fail "Enter on an empty root line" "$R focus=$FC"
+
+step "Two levels deep: repeated Enter steps out one level at a time, then stops"
+key115 2 Tab; key115 2 Tab
+R0=$(ui115)
+key115 2 Enter; R1=$(ui115)
+key115 2 Enter; R2=$(ui115)
+key115 2 Enter; R3=$(ui115)
+[[ "$R0" == "Plan115@0|Step one@1|@2" && "$R1" == "Plan115@0|Step one@1|@1" && "$R2" == "Plan115@0|Step one@1|@0" && "$R3" == "$R2" ]] && pass "depth 2 → 1 → 0 → stays 0" || fail "Repeated Enter" "$R0 / $R1 / $R2 / $R3"
+sleep 1
+R=$(db115)
+[[ "$R" == "Plan115<-|Step one<Plan115|<-" ]] && pass "Stored outline: $R" || fail "Stored after Enter outdents" "$R"
+
+step "Ctrl+Z (in the editor) after an Enter outdent restores the depth — one step per Enter"
+key115 2 Tab
+key115 2 Enter
+R1=$(ui115)
+key115 2 z "ctrl:true"; sleep 0.8
+R2=$(ui115)
+sleep 0.8; R3=$(db115)
+[[ "$R1" == "Plan115@0|Step one@1|@0" && "$R2" == "Plan115@0|Step one@1|@1" && "$R3" == "Plan115<-|Step one<Plan115|<Plan115" ]] && pass "Undo put it back under Plan115 ($R3)" || fail "Ctrl+Z after Enter outdent" "after enter=$R1 after undo=$R2 db=$R3"
+
+step "Backspace at the start of a nested line with text outdents it; the text is intact"
+type115 "Second115"
+caret115 2
+key115 2 Backspace
+R=$(ui115); K=$(api "getCaretInBlock(2)" | tr -d '"'); FC=$(foc115); L=$(api "getLiveBlockContent(2)" | tr -d '"')
+[[ "$R" == "Plan115@0|Step one@1|@0" && "$L" == "Second115" && "$K" == "1" && "$FC" == "2" ]] && pass "Outdented with its text ($L), caret still at the start" || fail "Backspace on a nested line" "$R text=$L caret=$K focus=$FC"
+
+step "Ctrl+Z outside the editor also restores the depth"
+ev "document.activeElement?.blur()" >/dev/null; sleep 1
+ev "document.body.dispatchEvent(new KeyboardEvent('keydown',{key:'z',ctrlKey:true,bubbles:true}))" >/dev/null; sleep 2
+R=$(db115); U=$(ui115)
+[[ "$R" == "Plan115<-|Step one<Plan115|Second115<Plan115" && "$U" == "Plan115@0|Step one@1|Second115@1" ]] && pass "Undone: $R" || fail "Page undo of an outdent" "db=$R ui=$U"
+
+step "Backspace at the start of an empty nested line outdents it (it is not deleted)"
+ev "(async()=>{$A115 const t=await api.getPageTree('$P115');const s=t.blocks.find(b=>b.content==='Second115');await api.createBlock(t.page.id,'',s.id);return 1})()" >/dev/null
+api "navigateTo('Getting Started')" >/dev/null; sleep 1; api "navigateTo('$P115')" >/dev/null; sleep 2
+R0=$(ui115)
+caret115 3
+key115 3 Backspace
+R=$(ui115)
+[[ "$R0" == "Plan115@0|Step one@1|Second115@1|@2" && "$R" == "Plan115@0|Step one@1|Second115@1|@1" ]] && pass "Empty line stepped out: $R" || fail "Backspace on an empty nested line" "$R0 → $R"
+
+step "Backspace at the start of a top-level line still merges it into the line above"
+ev "(async()=>{$A115 const p=await api.createPage('$P115 root');await api.createBlock(p.id,'Alpha115');await api.createBlock(p.id,'Beta115');return 1})()" >/dev/null
+api "navigateTo('$P115 root')" >/dev/null; sleep 2
+caret115 1
+key115 1 Backspace; sleep 0.6
+R=$(ev "window.__MINOTES__.getBlocks().map(b=>b.content).join('|')" | tr -d '"'); K=$(api "getCaretInBlock(0)" | tr -d '"')
+[[ "$R" == "Alpha115Beta115" && "$K" == "9" ]] && pass "Merged into one line, caret at the join" || fail "Root Backspace merge" "$R caret=$K"
+
+step "Top level: Enter in the middle then Backspace gives back the exact line"
+ev "(async()=>{$A115 const t=await api.getPageTree('$P115 root');await api.createBlock(t.page.id,'Hello World');return 1})()" >/dev/null
+api "navigateTo('Getting Started')" >/dev/null; sleep 1; api "navigateTo('$P115 root')" >/dev/null; sleep 2
+HI=$(ev "window.__MINOTES__.getBlocks().findIndex(b=>b.content==='Hello World')" | tr -d '"')
+api "splitBlockAt($HI, 6)" >/dev/null; sleep 0.8
+M=$(api "getBlockContent($((HI+1)))" | tr -d '"')
+key115 $((HI+1)) Backspace; sleep 0.6
+R=$(ev "window.__MINOTES__.getBlocks().map(b=>b.content).join('|')" | tr -d '"')
+[[ "$M" == "World" && "$R" == "Alpha115Beta115|Hello World" ]] && pass "Hello / World → Hello World" || fail "Root split → merge" "split=$M after=$R"
+
+step "Nested: Enter in the middle then Backspace outdents the second half; a second Backspace merges it back"
+ev "(async()=>{$A115 const p=await api.createPage('$P115 nested');const a=await api.createBlock(p.id,'Parent115');await api.createBlock(p.id,'Nested half',a.id);return 1})()" >/dev/null
+api "navigateTo('$P115 nested')" >/dev/null; sleep 2
+api "splitBlockAt(1, 7)" >/dev/null; sleep 0.8
+R1=$(ui115)
+key115 2 Backspace
+R2=$(ui115)
+key115 2 Backspace; sleep 0.6
+R3=$(ui115)
+sleep 1
+R4=$(ev "(async()=>{$A115 const t=await api.getPageTree('$P115 nested');const by=new Map(t.blocks.map(b=>[b.id,b]));return t.blocks.map(b=>b.content+'<'+(b.parent_id?by.get(b.parent_id).content:'-')).join('|')})()" | tr -d '"')
+[[ "$R1" == "Parent115@0|Nested@1|half@1" && "$R2" == "Parent115@0|Nested@1|half@0" && "$R3" == "Parent115@0|Nested half@1" && "$R4" == "Parent115<-|Nested half<Parent115" ]] && pass "half@1 → half@0 → merged: Nested half" || fail "Nested split then Backspace" "$R1 / $R2 / $R3 / db=$R4"
+
+step "Several selected blocks: Tab indents them all, Shift+Tab brings them back"
+ev "(async()=>{$A115 const p=await api.createPage('$P115 sel');for(const c of ['S0','S1','S2'])await api.createBlock(p.id,c);return 1})()" >/dev/null
+api "navigateTo('$P115 sel')" >/dev/null; sleep 2
+ev "document.activeElement?.blur()" >/dev/null
+api "selectBlocks(1, 2)" >/dev/null; sleep 0.3
+ev "document.body.dispatchEvent(new KeyboardEvent('keydown',{key:'Tab',bubbles:true,cancelable:true}))" >/dev/null; sleep 1
+R1=$(ui115); S1=$(api "getSelectedCount()" | tr -d '"')
+ev "document.body.dispatchEvent(new KeyboardEvent('keydown',{key:'Tab',shiftKey:true,bubbles:true,cancelable:true}))" >/dev/null; sleep 1
+R2=$(ui115)
+[[ "$R1" == "S0@0|S1@1|S2@1" && "$S1" == "2" && "$R2" == "S0@0|S1@0|S2@0" ]] && pass "Tab: $R1 (still selected), Shift+Tab: $R2" || fail "Tab on a selection" "$R1 sel=$S1 / $R2"
+
+step "Right-click: Indent (Tab) and Outdent (Shift+Tab); the empty page hint and the shortcut list explain it"
+ev "(()=>{const b=document.querySelectorAll('.block-list > .block')[1];const pm=b.querySelector('.ProseMirror')||b;const r=pm.getBoundingClientRect();pm.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true,clientX:r.left+20,clientY:r.top+8}));return 1})()" >/dev/null; sleep 0.5
+M=$(ev "[...document.querySelectorAll('.block-context-menu [data-action=indent], .block-context-menu [data-action=outdent]')].map(e=>e.textContent+(e.disabled?'(off)':'')).join('|')" | tr -d '"')
+ev "document.querySelector('.block-context-menu [data-action=indent]')?.click()" >/dev/null; sleep 1
+R=$(ui115)
+ev "(async()=>{$A115 const p=await api.createPage('$P115 empty');await api.createBlock(p.id,'');return 1})()" >/dev/null
+api "navigateTo('$P115 empty')" >/dev/null; sleep 2; ev "document.activeElement?.blur()" >/dev/null; sleep 0.3
+HINT=$(ev "(()=>{const p=document.querySelector('.block-list .ProseMirror p.is-editor-empty');return p?getComputedStyle(p,'::before').content:'no empty block'})()")
+[[ "$HINT" == *"Tab"*"Shift+Tab"* ]] && HINT=true
+ev "window.dispatchEvent(new Event('minotes:open-shortcuts'))" >/dev/null; sleep 0.5
+SC=$(ev "(()=>{const d=document.querySelector('[data-testid=shortcuts-overlay]');const t=d?.textContent||'';return ['Shift+Tab','Outdent','Enter on an empty','Backspace at the start'].map(x=>t.includes(x)).join(',')})()" | tr -d '"')
+press "Escape"; sleep 0.3
+[[ "$M" == "IndentTab|OutdentShift+Tab(off)" && "$R" == "S0@0|S1@1|S2@0" && "$HINT" == "true" && "$SC" == "true,true,true,true" ]] && pass "Menu: $M; Indent worked ($R); hint + shortcut list" || fail "Discoverability" "menu=$M tree=$R hint=$HINT shortcuts=$SC"
+ss "115-indent"
+
+
+# ═══════════════════════════════════════════════
 journey "92. I set up sync from Settings: test an address, set it up, change it, remove it (UX Wave 4)"
 # Settings → Sync & Backup has the remote: an address, Test connection (what it
 # found, in words), Set up sync; then Change… / Remove. Addresses that could run

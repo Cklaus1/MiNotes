@@ -50,7 +50,7 @@ Average **5.2 / 10** across 72 features. Nothing scores 10; the best is 9
 |---|---|---|
 | Basic block editing (type, Enter, Tab, Shift+Tab) | 7 | Solid and fast; no indent guides; cramped hover controls |
 | Split / merge | 5 | **Fixed** (`9541610`: one-line join, caret at the join, the split's space restored) — Merge joins with a newline and puts the caret at the end, so split→merge isn't reversible |
-| Multi-block selection | 4 | Works via Escape + Shift+arrows; Tab leaks focus; Ctrl+A → Backspace silently wipes the page |
+| Multi-block selection | 4 | **Tab fixed** (2026-11: Tab / Shift+Tab indent / outdent the selection, one undo step) — Works via Escape + Shift+arrows; Tab leaks focus; Ctrl+A → Backspace silently wipes the page |
 | Drag reorder | 3 | **Fixed** (`6675717`: outline order after a drop, text drag image, drop as a child) — Saved correctly, but the outline renders scrambled until reload; white-square drag image |
 | Collapse / expand | 2 | **Fixed** (`3b45b43`, C-11) — Toggle can't be clicked (covered by other controls); collapsed blocks look like leaves |
 | Inline formatting | 5 | Bold/italic/code/strike fine; **highlight is lost on save** (**fixed** in Wave 1) |
@@ -75,6 +75,20 @@ Average **5.2 / 10** across 72 features. Nothing scores 10; the best is 9
 | Empty page | 7 | Clear placeholder; inconsistent wording |
 | Hashtags `#tag` | 1 | **Typing `#urgent ` saves as `[tag]t`** (data corruption) |
 | Themes / narrow window | 7 | **Fixed** (`aff6c6a`: the sidebar collapses, a drawer below 900 px; `518ebf6`: light-theme bullets in the muted text colour) — Both themes coherent; faint light-theme bullets; sidebar can't collapse |
+
+**Indent model (2026-11, product decision "option B": document-style, as in Evernote / Google Docs).**
+Tab indents a block under the block above, Shift+Tab outdents it one level (directly after its former
+parent); both also work on a block selection (Escape, Shift+arrows, then Tab) and from the block's
+right-click menu (Indent / Outdent). **Enter on an empty nested line** — no text, or only a list /
+task marker such as `- [ ]` or `TODO` (`editor/blankBlock.ts`) — outdents it instead of adding another
+empty line; repeated Enter steps out to the top level and then does nothing (no stack of empty
+blocks). **Backspace at the very start of a nested line** (empty or not) outdents it, exactly like
+Shift+Tab, with the caret staying at the start; only at the top level does Backspace merge into the
+previous block (split→merge there is still exact). Consequence, accepted: Enter in the middle of a
+nested line then Backspace outdents the second half; a second Backspace merges it back. Every such
+move is one undo step (`'move'` entry): Ctrl+Z — in the editor right after the move, or on the page —
+restores the previous depth. Discoverable from the empty-page hint, the block menu and the shortcut
+list (Settings, Ctrl+/). Browser journey 115, desktop D24.
 
 ### Navigation, organisation, notebooks
 
