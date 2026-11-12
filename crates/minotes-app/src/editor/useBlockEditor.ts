@@ -1,5 +1,6 @@
 import { useEditor } from "@tiptap/react";
 import { useRef, useCallback, useEffect } from "react";
+import { Selection } from "@tiptap/pm/state";
 import { isInTable, moveToCellBelow } from "./tables";
 import { setSlashCallbacks, slashPluginKey } from "./slashCommands";
 import { pageLinkPluginKey } from "./PageLinkSuggestion";
@@ -12,6 +13,7 @@ import { errorMessage } from "../lib/errors";
 import { blobImageToFile, hasBlobImage, pastedFiles, withoutBlobImages } from "./pastedFiles";
 import { fenceToCodeBlock, parsePastedMarkdown, type PastedBlock } from "./pasteMarkdown";
 import { hasOpenLayer, yieldEscape } from "../lib/layers";
+import { isBlankBlock, isBlankDoc } from "./blankBlock";
 // ── End import ──
 
 
@@ -22,7 +24,7 @@ function suggestionMenuOpen(state: any): boolean {
 }
 
 /** Tab, including WebKitGTK's Shift+Tab (GDK ISO_Left_Tab) which may not report key "Tab". */
-function isTabKey(event: KeyboardEvent): boolean {
+export function isTabKey(event: KeyboardEvent): boolean {
   return event.key === "Tab" || event.key === "ISO_Left_Tab" || event.code === "Tab" || event.keyCode === 9;
 }
 
@@ -44,8 +46,23 @@ interface UseBlockEditorOptions {
   /** Pasted markdown with structure (C-6): the block tree to create. `intoEmpty`:
    *  this block is empty, so the first pasted block replaces it. */
   onPasteBlocks?: (blocks: PastedBlock[], intoEmpty: boolean) => void;
-  onIndent?: () => void;
-  onOutdent?: () => void;
+  /** Tab / Shift+Tab. Return true when the block moved (Ctrl+Z can then undo it). */
+  onIndent?: () => boolean | void;
+  onOutdent?: () => boolean | void;
+  /**
+   * Enter on an empty block (no text, or only a list / task marker): a nested
+   * block outdents, a top-level one stays put (document-style indent, "option B").
+   * Return true when the block moved.
+   */
+  onEnterBlank?: () => boolean;
+  /** Backspace at the very start: a nested block outdents (true); false lets the merge run. */
+  onOutdentAtStart?: () => boolean;
+  /**
+   * Ctrl+Z right after this editor indented / outdented its block (no typing
+   * since): undo that move. Resolves false when there was none to undo — the
+   * editor's own undo runs instead.
+   */
+  onUndoMove?: () => Promise<boolean>;
   /** Escape (no menu open): leave editing. */
   onEscape?: () => void;
   onSlashCommand?: (newMarkdown: string) => void;
@@ -78,6 +95,9 @@ export function useBlockEditor({
   onPasteBlocks,
   onIndent,
   onOutdent,
+  onEnterBlank,
+  onOutdentAtStart,
+  onUndoMove,
   onEscape,
   onSlashCommand,
   onTagClick,
@@ -105,6 +125,12 @@ export function useBlockEditor({
   const onPasteBlocksRef = useRef(onPasteBlocks);
   const onIndentRef = useRef(onIndent);
   const onOutdentRef = useRef(onOutdent);
+  const onEnterBlankRef = useRef(onEnterBlank);
+  const onOutdentAtStartRef = useRef(onOutdentAtStart);
+  const onUndoMoveRef = useRef(onUndoMove);
+  // Indents / outdents made from this editor since its last text edit: that many
+  // Ctrl+Z presses undo a move instead of typing (the text history has none).
+  const movesSinceEditRef = useRef(0);
   const onEscapeRef = useRef(onEscape);
   const onSlashCommandRef = useRef(onSlashCommand);
   const onTagClickRef = useRef(onTagClick);
@@ -135,6 +161,9 @@ export function useBlockEditor({
   onPasteBlocksRef.current = onPasteBlocks;
   onIndentRef.current = onIndent;
   onOutdentRef.current = onOutdent;
+  onEnterBlankRef.current = onEnterBlank;
+  onOutdentAtStartRef.current = onOutdentAtStart;
+  onUndoMoveRef.current = onUndoMove;
   onEscapeRef.current = onEscape;
   onSlashCommandRef.current = onSlashCommand;
   onTagClickRef.current = onTagClick;
@@ -285,8 +314,15 @@ export function useBlockEditor({
     else dirtyRef.current = false;
   };
 
-  /** Merge this block into the previous one (Backspace at start). */
+  /** A move made from this editor: Ctrl+Z can take it back. */
+  const moved = (didMove: boolean | void) => { if (didMove) movesSinceEditRef.current++; };
+
+  /**
+   * Backspace at the very start: a nested block outdents (exactly Shift+Tab); a
+   * top-level one merges into the previous block.
+   */
   const mergeWithPrevious = (): boolean => {
+    if (onOutdentAtStartRef.current?.()) { moved(true); return true; }
     if (!onBackspaceAtStartRef.current) return false;
     onBackspaceAtStartRef.current(getMarkdown());
     return true;
@@ -326,6 +362,19 @@ export function useBlockEditor({
           return false;
         }
 
+        // Ctrl+Z right after an indent / outdent made here: undo the move (one
+        // step per move). Any typing since hands Ctrl+Z back to the text history.
+        if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "z" &&
+            movesSinceEditRef.current > 0 && onUndoMoveRef.current) {
+          event.preventDefault();
+          movesSinceEditRef.current--;
+          onUndoMoveRef.current().then((undone) => {
+            const ed = editorInstanceRef.current;
+            if (!undone && ed && !ed.isDestroyed) ed.commands.undo();
+          }).catch(() => {});
+          return true;
+        }
+
         // Ctrl+Up / Ctrl+Down — fold / unfold this block's children (C-11).
         if ((event.key === "ArrowUp" || event.key === "ArrowDown") && (event.ctrlKey || event.metaKey) &&
             !event.shiftKey && !event.altKey && onSetCollapsedRef.current && !suggestionMenuOpen(view.state)) {
@@ -363,6 +412,14 @@ export function useBlockEditor({
 
         // Enter — split block (unless Shift, inside list/code/table/blockquote, or popup open)
         if (event.key === "Enter" && !event.shiftKey && onEnterRef.current && !document.querySelector('.tippy-box')) {
+          // An empty line (or only a list / task marker): a nested block steps out
+          // one level, a top-level one stays — never a stack of empty blocks. The
+          // DOM is checked too: text typed an instant ago may not be in the state yet.
+          if (onEnterBlankRef.current && isBlankDoc(view.state.doc) && isBlankBlock(view.dom.textContent ?? "")) {
+            event.preventDefault();
+            moved(onEnterBlankRef.current());
+            return true;
+          }
           const { state } = view;
           const { $from } = state.selection;
           const parentNode = $from.node($from.depth);
@@ -393,6 +450,15 @@ export function useBlockEditor({
 
           event.preventDefault();
           splitAtCursor(view);
+          return true;
+        }
+
+        // Backspace at the very start of a nested block outdents it (also when its
+        // first line is a list / task item); at the top level it merges (below).
+        if (event.key === "Backspace" && view.state.selection.empty &&
+            view.state.selection.from === Selection.atStart(view.state.doc).from && onOutdentAtStartRef.current?.()) {
+          event.preventDefault();
+          moved(true);
           return true;
         }
 
@@ -457,8 +523,7 @@ export function useBlockEditor({
               : hasPrevItem && ed.commands.sinkListItem(itemType);
             if (handled) return true;
           }
-          if (event.shiftKey) onOutdentRef.current?.();
-          else onIndentRef.current?.();
+          moved(event.shiftKey ? onOutdentRef.current?.() : onIndentRef.current?.());
           return true;
         }
 
@@ -599,6 +664,7 @@ export function useBlockEditor({
       // Only genuine document edits count, never our own external-sync setContent.
       if (transaction.docChanged && !applyingExternalRef.current && !transaction.getMeta("preventUpdate")) {
         dirtyRef.current = true;
+        movesSinceEditRef.current = 0;
       }
       if (transaction.docChanged && !adoptingRef.current) {
         let blob = false;

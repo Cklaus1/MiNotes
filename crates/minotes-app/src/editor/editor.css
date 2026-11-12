@@ -31,7 +31,7 @@
 /* Empty page: its only block is empty — show a starting hint even before focus
    (the Placeholder extension only supplies text while the editor is focused). */
 .block-list > .block:only-child .block-content .ProseMirror > p.is-editor-empty:only-child::before {
-  content: "Type to start writing, / for commands, [[ to link";
+  content: "Type to start writing, / for commands, [[ to link, Tab / Shift+Tab to indent / outdent";
   opacity: 0.8;
 }
 

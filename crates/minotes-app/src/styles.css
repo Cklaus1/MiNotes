@@ -4146,6 +4146,13 @@ body.theme-light { /* matches our light theme */ }
   color: var(--bg-primary);
 }
 
+.block-context-menu-item:disabled {
+  opacity: 0.45;
+  cursor: default;
+  background: none;
+  color: var(--text-secondary);
+}
+
 .block-context-menu-sep {
   height: 1px;
   background: var(--border);

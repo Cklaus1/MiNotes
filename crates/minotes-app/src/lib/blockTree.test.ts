@@ -5,7 +5,7 @@
  */
 import { describe, expect, test } from "vitest";
 import type { Block } from "./api";
-import { applyDrop, dropPlacement, effectiveDrop, outlineOrder } from "./blockTree";
+import { applyDrop, dropPlacement, effectiveDrop, indentPlacement, outdentPlacement, outlineOrder } from "./blockTree";
 
 const blk = (id: string, position: number, parent_id?: string): Block => ({
   id, page_id: "p", parent_id, position, content: id, format: "markdown", collapsed: false,
@@ -74,5 +74,48 @@ describe("applyDrop", () => {
     expect(plan.renumber.get("y")).toBe(3);
     expect(plan.position).toBe(2);
     expect(show(applyDrop(list, "z", "x", "below")!)).toBe("x@0 z@0 y@0");
+  });
+});
+
+/** Tab / Shift+Tab (and Enter on an empty nested block, Backspace at its start): where the block goes. */
+describe("indent / outdent placement", () => {
+  const move = (list: Block[], id: string, plan: { parentId: string | undefined; position: number } | null) =>
+    plan ? outlineOrder(list.map(b => (b.id === id ? { ...b, parent_id: plan.parentId, position: plan.position } : b))) : null;
+
+  test("indent: last child of the previous sibling", () => {
+    expect(show(move(page(), "B", indentPlacement(page(), "B"))!)).toBe("A@0 a1@1 a2@1 B@1 b1@2 C@0");
+    expect(show(move(page(), "a2", indentPlacement(page(), "a2"))!)).toBe("A@0 a1@1 a2@2 B@0 b1@1 C@0");
+  });
+
+  test("indent: nothing above at the same level (first block, first child)", () => {
+    expect(indentPlacement(page(), "A")).toBeNull();
+    expect(indentPlacement(page(), "a1")).toBeNull();
+    expect(indentPlacement(page(), "missing")).toBeNull();
+  });
+
+  test("outdent: right after the former parent, before the parent's next sibling", () => {
+    const plan = outdentPlacement(page(), "a2")!;
+    expect(plan.parentId).toBeUndefined();
+    expect(plan.position).toBeGreaterThan(1);
+    expect(plan.position).toBeLessThan(2);
+    expect(show(move(page(), "a2", plan)!)).toBe("A@0 a1@1 a2@0 B@0 b1@1 C@0");
+  });
+
+  test("outdent: two levels deep steps out one level at a time", () => {
+    const deep = outlineOrder([...page(), blk("x", 1, "a1")]);
+    const once = move(deep, "x", outdentPlacement(deep, "x"))!;
+    expect(show(once)).toBe("A@0 a1@1 x@1 a2@1 B@0 b1@1 C@0");
+    const twice = move(once, "x", outdentPlacement(once, "x"))!;
+    expect(show(twice)).toBe("A@0 a1@1 a2@1 x@0 B@0 b1@1 C@0");
+    expect(outdentPlacement(twice, "x")).toBeNull();
+  });
+
+  test("outdent: a root block stays", () => {
+    expect(outdentPlacement(page(), "B")).toBeNull();
+  });
+
+  test("outdent of the last parent's child appends after it", () => {
+    const plan = outdentPlacement(page(), "b1")!;
+    expect(show(move(page(), "b1", plan)!)).toBe("A@0 a1@1 a2@1 B@0 b1@0 C@0");
   });
 });

@@ -8,6 +8,11 @@ function restoreRoots(blocks: RestoreBlock[]): string[] {
   return blocks.filter(b => !b.parent_id || !ids.has(b.parent_id)).map(b => b.id);
 }
 
+/** A block under `parentId` (null: top level) at `position` — move_block needs a parent. */
+export function placeBlock(id: string, parentId: string | null, position: number) {
+  return parentId ? api.moveBlock(id, parentId, position) : api.reorderBlock(id, undefined, position);
+}
+
 /**
  * Tell views that undo/redo rewrote these blocks server-side, so any optimistic
  * "recently deleted/edited" bookkeeping for them is stale and the next fetched
@@ -56,6 +61,9 @@ export async function executeUndo(): Promise<boolean> {
     case 'reparent':
       await api.reparentBlock(action.blockId, action.oldParentId ?? undefined);
       break;
+    case 'move':
+      for (const m of [...(action.moves ?? [])].reverse()) await placeBlock(m.id, m.fromParentId, m.fromPosition);
+      break;
     case 'outside-import':
       // Blocks the import added are dropped; removed ones come back from the Trash.
       await api.outsideEditSetBlocks(action.pageId, action.before ?? [], undefined, action.parkedPageId);
@@ -95,6 +103,9 @@ export async function executeRedo(): Promise<boolean> {
       break;
     case 'reparent':
       await api.reparentBlock(action.blockId, action.newParentId ?? undefined);
+      break;
+    case 'move':
+      for (const m of action.moves ?? []) await placeBlock(m.id, m.toParentId, m.toPosition);
       break;
     case 'outside-import':
       // Removed lines go to the Trash again (never a hard delete).
