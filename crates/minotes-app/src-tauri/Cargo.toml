@@ -22,7 +22,7 @@ uuid = { workspace = true }
 chrono = { workspace = true }
 reqwest = { version = "0.12", features = ["rustls-tls"], default-features = false }
 regex = "1"
-notify = "6"
+notify = "8.2"
 
 # ── AI platform: OpenRouter key in the OS keychain ──
 # Not on Android: keyring has no Android store there (only an in-memory mock

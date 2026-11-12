@@ -437,7 +437,9 @@ impl DbWatch {
 pub fn start_db_watch(app: &AppHandle) -> DbWatch {
     use notify::{Config, Watcher};
     let (tx, rx) = mpsc::channel();
-    let watcher = notify::RecommendedWatcher::new(tx, Config::default()).ok();
+    // Never follow a symlink (notify 7+ follows them by default; the watched
+    // folder holds the database, nothing below it should be watched).
+    let watcher = notify::RecommendedWatcher::new(tx, Config::default().with_follow_symlinks(false)).ok();
     let app_handle = app.clone();
     std::thread::spawn(move || {
         // Debounce: a sync or import touches the WAL many times in quick
@@ -477,7 +479,7 @@ pub fn start_db_watch(app: &AppHandle) -> DbWatch {
             };
             let Some(Ok(event)) = res else { continue };
             let event: notify::Event = event;
-            // Reads are not changes. (SQLite reading the WAL — and every read of an
+            // Reads (and opens: notify 8 reports those too) are not changes. (SQLite reading the WAL — and every read of an
             // encrypted database, which SQLCipher never memory-maps — raises access
             // events; counting them made each UI refresh trigger the next one.)
             // (Closing after a write is still a change.)
@@ -563,7 +565,10 @@ fn follow_session_with_watch(app: &AppHandle) {
 fn start_mirror_watch(app: &AppHandle) -> MirrorWatch {
     use notify::{Config, Watcher};
     let (tx, rx) = mpsc::channel::<notify::Result<notify::Event>>();
-    let watcher = notify::RecommendedWatcher::new(tx, Config::default()).ok();
+    // Never descend through a symlink below the mirror root (the mirror trust
+    // rule; notify 7+ follows symlinks by default, notify 6 always did): a link
+    // to a folder elsewhere must not make edits there look like outside edits.
+    let watcher = notify::RecommendedWatcher::new(tx, Config::default().with_follow_symlinks(false)).ok();
     let dir: Arc<Mutex<Option<PathBuf>>> = Arc::new(Mutex::new(None));
     let cur = dir.clone();
     let handle = app.clone();
