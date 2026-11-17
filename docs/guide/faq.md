@@ -28,7 +28,7 @@ Yes. It is released under the [MIT license](../../LICENSE). The code is at [gith
 
 ## Is there a mobile app?
 
-Not as a release. The same code builds for Android and a debug APK exists for testing, but it is not ready for everyday use and not distributed. There is no iOS app. macOS has no installer yet; you can build it from source.
+Android: each release has a test APK (a debug build to sideload and try; not on the Play Store yet). iOS: no app — Apple only allows App Store or TestFlight installs, which needs an Apple developer account and review. macOS: an experimental, not-yet-signed `.dmg` is on the releases page (see [Install](install.md#macos)).
 
 ## What about privacy?
 

@@ -38,7 +38,15 @@ sudo zypper install ./MiNotes-*.rpm     # openSUSE
 
 ## macOS
 
-There is no macOS installer yet. You can build it from source; see [CONTRIBUTING](../../CONTRIBUTING.md).
+An **experimental** installer is on the releases page: `MiNotes_…_universal.dmg`, for Apple Silicon and Intel Macs. Open the `.dmg` and drag MiNotes into Applications.
+
+It is not signed by Apple yet, so the first time you open it macOS says it "cannot be opened because Apple cannot check it". Right-click (or Control-click) MiNotes in Applications and choose **Open**, then **Open** again. Or go to System Settings → Privacy & Security and click **Open Anyway**. You only have to do this once.
+
+This is the first Mac build; please [report problems](https://github.com/Cklaus1/MiNotes/issues/new/choose). You can also build it from source; see [CONTRIBUTING](../../CONTRIBUTING.md).
+
+## Android (test build)
+
+Each release has a test APK, `MiNotes_…_android-debug.apk`. Download it on your phone, allow your browser or file manager to "install unknown apps", and open it. It is a debug build for trying MiNotes out, not a Play Store release; a later proper release may need you to uninstall it first (your notes are inside the app, so export them before uninstalling).
 
 ## Updating
 

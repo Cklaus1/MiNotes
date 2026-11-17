@@ -52,6 +52,17 @@ jobs:
             cli: minotes-windows-x86_64.exe
             cli_src: target/release/minotes.exe
             cache: release-windows
+          - name: macOS (dmg, experimental)
+            # One universal dmg (Apple Silicon + Intel). Unsigned and not notarized:
+            # Gatekeeper blocks the first open (right-click > Open, or System
+            # Settings > Privacy & Security > Open Anyway) until an Apple Developer
+            # ID is added. Never tested on a Mac before this build.
+            os: macos-latest
+            bundles: dmg
+            target: universal-apple-darwin
+            cli: minotes-macos-arm64
+            cli_src: target/release/minotes
+            cache: release-macos
           - name: Linux (AppImage + deb + rpm)
             # Oldest runner image still offered: AppImage/deb link against its glibc,
             # so the packages run on older distributions too.
@@ -93,6 +104,9 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal --no-self-update
           rustup default stable
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          fi
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
@@ -120,7 +134,7 @@ jobs:
           releaseName: "MiNotes v__VERSION__"
           releaseDraft: true
           prerelease: false
-          args: --bundles ${{ matrix.bundles }}
+          args: --bundles ${{ matrix.bundles }}${{ matrix.target && format(' --target {0}', matrix.target) || '' }}
           releaseBody: |
             ## Install
 
@@ -133,6 +147,8 @@ jobs:
             - Fedora / RHEL: `sudo dnf install ./MiNotes-*.rpm`
 
             **Android (test build)** — `MiNotes_*_android-debug.apk` (attached by the Android workflow a little later): allow "install unknown apps" for your browser or file manager, then open it. A debug build for trying out, not a Play Store release.
+
+            **macOS (experimental)** — `MiNotes_*_universal.dmg` (Apple Silicon and Intel): open it and drag MiNotes to Applications. It is not signed by Apple yet, so the first open is blocked: right-click MiNotes > **Open** > **Open**, or System Settings > Privacy & Security > **Open Anyway**. First Mac build — please report problems.
 
             **Command line** — `minotes-windows-x86_64.exe` / `minotes-linux-x86_64` is the standalone `minotes` CLI (same notebooks as the app).
 
