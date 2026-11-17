@@ -237,6 +237,7 @@ pub fn label(category: &str) -> &'static str {
         "too_large" => "files over the size limit — skipped",
         "note_too_large" => "notes over the size limit — skipped",
         "unreadable" => "files that could not be read — skipped",
+        "empty_resource" => "empty Evernote attachments (0 bytes) — skipped",
         "title_mapped" => "titles with characters MiNotes links can't use — renamed",
         "duplicate_title" => "notes with the same title — numbered (\"Title (2)\")",
         "title_collision" => "titles already used in this notebook — kept both with a suffix",

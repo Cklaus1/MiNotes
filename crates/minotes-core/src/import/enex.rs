@@ -108,6 +108,8 @@ struct Resource {
     spooled: Option<PathBuf>,
     size: u64,
     too_large: bool,
+    /// The base64 did not decode.
+    bad: bool,
 }
 
 #[derive(Default)]
@@ -206,6 +208,7 @@ fn stream_data<R: BufRead>(reader: &mut Reader<R>, spool: &Path, cap: u64) -> st
         spooled: ok.then_some(path),
         size,
         too_large,
+        bad,
         ..Default::default()
     })
 }
@@ -260,7 +263,7 @@ pub fn read(
         let file_label = file.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
 
         let fh = fs::File::open(file).map_err(|e| Error::InvalidInput(format!("Cannot read {}: {e}", file.display())))?;
-        let mut reader = Reader::from_reader(BufReader::with_capacity(256 * 1024, fh));
+        let mut reader = Reader::from_reader(BufReader::with_capacity(256 * 1024, RetryRead(fh)));
         {
             let cfg = reader.config_mut();
             cfg.check_end_names = false;
@@ -445,9 +448,11 @@ fn finish_note(
             continue;
         }
         let (Some(md5), Some(path)) = (r.md5.clone(), r.spooled.clone()) else {
-            w.add("unreadable", Some(&key), Some(&name));
+            // Evernote exports zero-byte resources too: nothing to keep.
+            w.add(if r.size == 0 && !r.bad { "empty_resource" } else { "unreadable" }, Some(&key), Some(&name));
             continue;
         };
+        let is_image = r.mime.as_deref().map(|m| m.starts_with("image/")).unwrap_or(false) || sniff_image(&path);
         let akey = format!("md5:{md5}");
         let idx = match attachments.iter().position(|a| a.key == akey) {
             Some(i) => {
@@ -467,12 +472,12 @@ fn finish_note(
                 attachments.len() - 1
             }
         };
-        let is_image = r.mime.as_deref().map(|m| m.starts_with("image/")).unwrap_or(false);
+
         media.insert(md5.clone(), (idx, is_image, name));
         res_order.push(md5);
     }
 
-    let mut conv = Converter { key: &key, w, media: &media, used: HashSet::new(), layout_depth: 0 };
+    let mut conv = Converter { key: &key, w, media: &media, used: HashSet::new(), layout_depth: 0, inside: Vec::new() };
     let mut body = conv.convert(&n.content);
     // Resources no en-media points at are still the note's attachments.
     let unused: Vec<&String> = res_order.iter().filter(|h| !conv.used.contains(*h)).collect();
@@ -649,6 +654,113 @@ fn is_block(name: &str) -> bool {
     )
 }
 
+/// Web clips often store pictures as `application/octet-stream`: is the file
+/// really an image (PNG, JPEG, GIF, WebP or SVG)? Read from its first bytes.
+fn sniff_image(path: &Path) -> bool {
+    use std::io::Read;
+    let mut head = [0u8; 256];
+    let n = fs::File::open(path).and_then(|mut f| f.read(&mut head)).unwrap_or(0);
+    let h = &head[..n];
+    h.starts_with(b"\x89PNG")
+        || h.starts_with(b"\xFF\xD8\xFF")
+        || h.starts_with(b"GIF8")
+        || (h.len() >= 12 && &h[..4] == b"RIFF" && &h[8..12] == b"WEBP")
+        || String::from_utf8_lossy(h).trim_start().starts_with("<svg")
+}
+
+/// Split `[label](minotes-att:N)` file links (not images) out of link text.
+fn take_file_links(text: &str) -> (String, String) {
+    let (mut rest, mut files, mut out) = (text, Vec::new(), String::new());
+    while let Some(i) = rest.find("](minotes-att:") {
+        let start = rest[..i].rfind('[');
+        let end = rest[i..].find(')').map(|e| i + e + 1);
+        match (start, end) {
+            (Some(st), Some(en)) if !rest[..st].ends_with('!') => {
+                out.push_str(&rest[..st]);
+                files.push(rest[st..en].to_string());
+                rest = &rest[en..];
+            }
+            (_, Some(en)) => {
+                out.push_str(&rest[..en]);
+                rest = &rest[en..];
+            }
+            _ => break,
+        }
+    }
+    out.push_str(rest);
+    (out, files.join(" "))
+}
+
+/// `## Title` → `Title` (a heading's markdown mark at the start of a line).
+fn strip_heading_mark(l: &str) -> &str {
+    let t = l.trim_start();
+    let n = t.chars().take_while(|c| *c == '#').count();
+    if (1..=6).contains(&n) && t[n..].starts_with(' ') {
+        t[n + 1..].trim_start()
+    } else {
+        l
+    }
+}
+
+/// `**a****b**` → `**a b**`-style join: a run of exactly four stars where a
+/// bold run is open is "close + open" of two touching bold runs (links in bold,
+/// split elements). Elsewhere (`****1234`, a masked card number) it is text.
+fn merge_bold_runs(line: &str) -> String {
+    if !line.contains("****") {
+        return line.to_string();
+    }
+    let b = line.as_bytes();
+    let (mut out, mut open, mut i) = (String::with_capacity(line.len()), false, 0);
+    let mut last = 0;
+    while i < b.len() {
+        if b[i] == b'*' {
+            let j = i + b[i..].iter().take_while(|c| **c == b'*').count();
+            match j - i {
+                2 | 3 => open = !open,
+                4 if open => {
+                    out.push_str(&line[last..i]);
+                    last = j;
+                }
+                _ => {}
+            }
+            i = j;
+        } else {
+            i += 1;
+        }
+        if b.get(i).is_some_and(|c| *c == b'\n') {
+            open = false;
+        }
+    }
+    out.push_str(&line[last..]);
+    out
+}
+
+/// A source file read that retries a transient failure. A Windows drive seen
+/// from WSL (`/mnt/c`) refuses a read now and then with ENOMEM when memory is
+/// tight, and a multi-GB export would otherwise fail at the first one.
+struct RetryRead<R>(R);
+
+impl<R: std::io::Read> std::io::Read for RetryRead<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let mut wait = std::time::Duration::from_millis(50);
+        for attempt in 0.. {
+            match self.0.read(buf) {
+                Err(e) if attempt < 8 && is_transient(&e) => {
+                    std::thread::sleep(wait);
+                    wait = (wait * 2).min(std::time::Duration::from_secs(2));
+                }
+                other => return other,
+            }
+        }
+        unreachable!()
+    }
+}
+
+fn is_transient(e: &std::io::Error) -> bool {
+    matches!(e.kind(), std::io::ErrorKind::Interrupted | std::io::ErrorKind::WouldBlock | std::io::ErrorKind::OutOfMemory)
+        || matches!(e.raw_os_error(), Some(4) | Some(11) | Some(12)) // EINTR, EAGAIN, ENOMEM
+}
+
 /// Inline elements whose own formatting can be dropped when they wrap blocks.
 fn is_wrapper(name: &str) -> bool {
     matches!(
@@ -725,6 +837,9 @@ struct Converter<'a> {
     used: HashSet<String>,
     /// How many layout tables we are inside (a one-row table there is layout too).
     layout_depth: usize,
+    /// Marks (`**`, `*`, `~~`) we are inside: the same mark again is a no-op
+    /// (<b>Jan 6<b>th</b></b> is bold once, not `**Jan 6****th****`).
+    inside: Vec<&'static str>,
 }
 
 /// Link text with stray `[`/`]` removed (they would end the link early) while
@@ -797,9 +912,11 @@ impl Converter<'_> {
     /// Render `nodes` as block-level lines (prefix: list nesting indent).
     fn blocks(&mut self, nodes: &[Node], out: &mut Vec<String>, indent: usize) {
         let mut line = String::new();
+        let mut pending: Option<usize> = None;
         let pad = " ".repeat(indent);
         let flush = |line: &mut String, out: &mut Vec<String>| {
-            let t = line.trim();
+            let merged = merge_bold_runs(line);
+            let t = merged.trim();
             if !t.is_empty() {
                 for l in t.split('\n') {
                     out.push(format!("{pad}{}", escape_line_start(l.trim())));
@@ -807,7 +924,7 @@ impl Converter<'_> {
             }
             line.clear();
         };
-        for n in nodes {
+        for (i, n) in nodes.iter().enumerate() {
             match n {
                 Node::El { name, attrs, children } if is_block(name) => {
                     flush(&mut line, out);
@@ -825,7 +942,23 @@ impl Converter<'_> {
                     let m = self.media_md(attrs);
                     out.push(format!("{pad}{m}"));
                 }
-                _ => line.push_str(&self.inline(std::slice::from_ref(n))),
+                _ => {
+                    // Consecutive inline nodes go through inline() together, so
+                    // neighbouring bold runs merge.
+                    if pending.is_none() {
+                        pending = Some(i);
+                    }
+                    let next_inline = nodes.get(i + 1).is_some_and(|m| match m {
+                        Node::El { name, children, .. } => {
+                            !(is_block(name) || (is_wrapper(name) && has_block(children)) || (name == "en-media" && self.is_lone_media(nodes)))
+                        }
+                        Node::Text(_) => true,
+                    });
+                    if !next_inline {
+                        let from = pending.take().unwrap();
+                        line.push_str(&self.inline(&nodes[from..=i]));
+                    }
+                }
             }
         }
         flush(&mut line, out);
@@ -859,6 +992,8 @@ impl Converter<'_> {
             "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
                 let level = (name.as_bytes()[1] - b'0') as usize;
                 let text = crate::import::text::collapse_ws(&self.inline(children));
+                // A page that shows its own markdown ("<h2>## Title</h2>").
+                let text = strip_heading_mark(&text).to_string();
                 out.push(String::new());
                 if !text.is_empty() {
                     out.push(format!("{pad}{} {text}", "#".repeat(level.min(4))));
@@ -961,6 +1096,14 @@ impl Converter<'_> {
                     }
                     text.push_str(&self.inline(cc));
                 }
+                // A heading in a list item: its own line, bold.
+                Node::El { name, children: cc, .. } if matches!(name.as_str(), "h1" | "h2" | "h3" | "h4" | "h5" | "h6") => {
+                    if !text.is_empty() {
+                        text.push('\n');
+                    }
+                    text.push_str(&self.wrap("**", cc));
+                    text.push('\n');
+                }
                 _ => text.push_str(&self.inline(std::slice::from_ref(c))),
             }
         }
@@ -1024,6 +1167,8 @@ impl Converter<'_> {
             walk(nodes, rows, this);
         };
         collect_rows(children, &mut rows, self);
+        // A row of empty cells (spacers in mail and web tables) is no data.
+        rows.retain(|r| r.iter().any(|c| !c.trim().is_empty()));
         if rows.is_empty() {
             return;
         }
@@ -1062,6 +1207,7 @@ impl Converter<'_> {
     /// Inline markdown for `nodes` (whitespace collapsed, `<br>` → newline).
     fn inline(&mut self, nodes: &[Node]) -> String {
         let mut s = String::new();
+        let mut bold_ended = false;
         for n in nodes {
             match n {
                 Node::Text(t) => {
@@ -1080,9 +1226,32 @@ impl Converter<'_> {
                     }
                     s.push_str(&collapsed);
                 }
-                Node::El { name, attrs, children } => s.push_str(&self.inline_el(name, attrs, children)),
+                Node::El { name, attrs, children } => {
+                    let piece = self.inline_el(name, attrs, children);
+                    // <b>a</b><b>b</b> is one bold run, not `**a****b**`.
+                    if matches!(name.as_str(), "b" | "strong") && piece.starts_with("**") && s.ends_with("**") && bold_ended {
+                        s.truncate(s.len() - 2);
+                        s.push_str(&piece[2..]);
+                    } else {
+                        s.push_str(&piece);
+                    }
+                    bold_ended = matches!(name.as_str(), "b" | "strong") && piece.ends_with("**");
+                    continue;
+                }
             }
+            bold_ended = false;
         }
+        s
+    }
+
+    /// [`Self::wrap`], unless already inside `mark`.
+    fn mark(&mut self, mark: &'static str, children: &[Node]) -> String {
+        if self.inside.contains(&mark) {
+            return self.inline(children);
+        }
+        self.inside.push(mark);
+        let s = self.wrap(mark, children);
+        self.inside.pop();
         s
     }
 
@@ -1110,9 +1279,9 @@ impl Converter<'_> {
                 (if checked { TODO_DONE } else { TODO_OPEN }).to_string()
             }
             "en-media" => self.media_md(attrs),
-            "b" | "strong" => self.wrap("**", children),
-            "i" | "em" | "cite" => self.wrap("*", children),
-            "s" | "strike" | "del" => self.wrap("~~", children),
+            "b" | "strong" => self.mark("**", children),
+            "i" | "em" | "cite" => self.mark("*", children),
+            "s" | "strike" | "del" => self.mark("~~", children),
             "code" | "tt" | "kbd" | "samp" => {
                 let t = raw_text(children);
                 if t.contains('`') {
@@ -1136,7 +1305,13 @@ impl Converter<'_> {
                     // before every real link); don't turn it into a bare URL.
                     String::new()
                 } else {
-                    format!("[{}]({href})", link_text(&text))
+                {
+                    // A file attachment can't sit inside a link: put it after it.
+                    let (text, files) = take_file_links(&text);
+                    let text = text.trim();
+                    let link = if text.is_empty() { String::new() } else { format!("[{}]({href})", link_text(text)) };
+                    [link, files].into_iter().filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" ")
+                }
                 }
             }
             "img" => {
@@ -1204,7 +1379,13 @@ impl Converter<'_> {
             _ if is_block(name) => {
                 let mut lines = Vec::new();
                 self.block_el(name, attrs, children, &mut lines, 0);
-                format!(" {} ", lines.into_iter().filter(|l| !l.trim().is_empty()).collect::<Vec<_>>().join(" "))
+                // Inside a line (a link, a cell) a heading can't be one: keep its text.
+                let lines: Vec<String> = lines
+                    .into_iter()
+                    .map(|l| strip_heading_mark(&l).to_string())
+                    .filter(|l| !l.trim().is_empty())
+                    .collect();
+                format!(" {} ", lines.join(" "))
             }
             _ => self.inline(children),
         }
@@ -1284,7 +1465,7 @@ mod tests {
 
     fn conv(enml: &str, media: &HashMap<String, (usize, bool, String)>) -> (String, Warnings) {
         let mut w = Warnings::default();
-        let mut c = Converter { key: "k", w: &mut w, media, used: HashSet::new(), layout_depth: 0 };
+        let mut c = Converter { key: "k", w: &mut w, media, used: HashSet::new(), layout_depth: 0, inside: Vec::new() };
         let s = c.convert(enml);
         (s, w)
     }
@@ -1334,7 +1515,7 @@ two</pre><hr/></en-note>"#;
     #[test]
     fn nested_bold_is_bold_once() {
         let (md, _) = conv("<en-note><div><b><strong>From:</strong></b> x <b>a <b>b</b> c</b></div></en-note>", &HashMap::new());
-        assert_eq!(md, "**From:** x **a **b** c**", "{md}");
+        assert_eq!(md, "**From:** x **a b c**", "{md}");
     }
 
     /// HTML email lays everything out with tables: the cells become ordinary
@@ -1355,8 +1536,61 @@ two</pre><hr/></en-note>"#;
         );
         assert_eq!(md, "> [Go](https://x.example)\n> paperless\n>\n> end", "full:\n{md}");
         // Evernote's own table (div-wrapped cells, two columns) stays a table.
-        let (md, _) = conv("<en-note><table><tr><td><div>a</div></td><td><div>b</div></td></tr></table></en-note>", &HashMap::new());
+        let (md, _) = conv("<en-note><table><tr><td><div>a</div></td><td><div>b</div></td></tr><tr><td> </td><td></td></tr></table></en-note>", &HashMap::new());
         assert_eq!(md, "| a | b |\n| --- | --- |", "{md}");
+    }
+
+    /// Found importing real exports: neighbouring bold runs, headings inside
+    /// links and list items, a file inside a link, masked card numbers.
+    #[test]
+    fn real_export_cases() {
+        let mut media = HashMap::new();
+        media.insert("f1".to_string(), (4usize, false, "card.bin".to_string()));
+        media.insert("i1".to_string(), (5usize, true, "logo.svg".to_string()));
+        let (md, _) = conv(
+            r#"<en-note><div><b>May 11, 2017</b><b>:</b> text, card ****1234</div><div><a href="https://n.example/1"><h3>Part 1</h3><h2>States</h2></a></div><ul><li><b>Numbers</b><h3><a href="https://n.example/2">Article</a></h3></li></ul><div><a href="https://g.example"><div>Repo</div><en-media hash="i1" type="image/svg+xml"/><en-media hash="f1" type="application/octet-stream"/></a></div></en-note>"#,
+            &media,
+        );
+        assert!(md.contains("**May 11, 2017:** text, card ****1234"), "{md}");
+        assert!(md.contains("[Part 1 States](https://n.example/1)"), "{md}");
+        assert!(md.contains("- **Numbers**\n  **[Article](https://n.example/2)**"), "{md}");
+        assert!(md.contains("[Repo ![logo.svg](minotes-att:5)](https://g.example) [card.bin](minotes-att:4)"), "{md}");
+        assert!(!md.contains("###") && !md.contains("****:"), "{md}");
+        assert_eq!(merge_bold_runs("**[a](u)****[b](v)** card ****1234 3**********5"), "**[a](u)[b](v)** card ****1234 3**********5");
+        let (md, _) = conv("<en-note><h2><span>## </span>Title</h2></en-note>", &HashMap::new());
+        assert_eq!(md, "## Title", "{md}");
+        let (md, _) = conv("<en-note><div><b>Jan 6<sup><b>th</b></sup>, 2019</b> and <i>a <em>b</em></i></div></en-note>", &HashMap::new());
+        assert_eq!(md, "**Jan 6th, 2019** and *a b*", "{md}");
+    }
+
+    #[test]
+    fn a_transient_read_error_is_retried() {
+        use std::io::Read;
+        struct Flaky(u32);
+        impl Read for Flaky {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                if self.0 > 0 {
+                    self.0 -= 1;
+                    return Err(std::io::Error::from_raw_os_error(12));
+                }
+                buf[0] = b'x';
+                Ok(1)
+            }
+        }
+        let mut b = [0u8; 4];
+        assert_eq!(RetryRead(Flaky(3)).read(&mut b).unwrap(), 1);
+        assert!(RetryRead(Flaky(50)).read(&mut b).is_err(), "gives up eventually");
+    }
+
+    #[test]
+    fn octet_stream_pictures_are_images() {
+        let dir = tempfile::tempdir().unwrap();
+        let png = dir.path().join("a");
+        std::fs::write(&png, b"\x89PNG\r\n\x1a\nrest").unwrap();
+        let txt = dir.path().join("b");
+        std::fs::write(&txt, b"hello").unwrap();
+        assert!(sniff_image(&png));
+        assert!(!sniff_image(&txt));
     }
 
     #[test]
