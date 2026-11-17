@@ -20,6 +20,10 @@ import { errorMessage } from "./errors";
 import { pageAsText } from "./pageText";
 import { downloadHtml } from "./exportPage";
 import { recentSectionShown, setRecentSectionShown } from "./sidebarRecent";
+import {
+  activateTab, closeOtherTabs, closeTab, cycleTab, duplicateTab, getTabsSnapshot, reopenClosedTab, togglePin,
+} from "./tabs";
+import type { TabBarItem } from "./tabBarTypes";
 
 type MainView = null | "tasks" | "pages" | "trash" | "archive";
 
@@ -41,6 +45,10 @@ export interface AppCommandDeps {
   syncNow: () => void;
   openPdf: () => void;
   refresh: () => Promise<void> | void;
+  /** "+" / Ctrl+T (the destination from Settings → Editor → New tabs open). */
+  newTab: () => void;
+  /** The tab row as drawn (titles for "Go to tab…"), read when the palette lists. */
+  tabItems: () => TabBarItem[];
 }
 
 /** Event NotebookSwitcher listens to: open one of its dialogs. */
@@ -82,6 +90,38 @@ export function useAppCommands(d: AppCommandDeps): void {
     return () => { for (const ev of [LOCK_CHANGED, NOTEBOOK_SWITCHED, NOTEBOOKS_CHANGED]) window.removeEventListener(ev, load); };
   }, []);
 
+  // Tabs (PRD-tabs §4): read the store when the palette lists / runs them.
+  useCommands("tabs", () => {
+    const snap = () => getTabsSnapshot();
+    const several = () => snap().tabs.length > 1;
+    const active = () => snap().activeId;
+    const activePinned = () => !!snap().tabs.find(t => t.id === active())?.pinned;
+    return [
+      { id: "tab-new", label: "New Tab", shortcut: "Ctrl+T", keywords: "open tab", run: () => d.newTab() },
+      { id: "tab-close", label: "Close Tab", shortcut: "Ctrl+W", available: several, run: () => closeTab(active()) },
+      {
+        id: "tab-close-others", label: "Close Other Tabs", keywords: "tabs",
+        available: () => snap().tabs.some(t => t.id !== active() && !t.pinned), run: () => closeOtherTabs(active()),
+      },
+      { id: "tab-reopen", label: "Reopen Closed Tab", keywords: "undo close tab", available: () => snap().closed > 0, run: () => reopenClosedTab() },
+      { id: "tab-pin", label: () => (activePinned() ? "Unpin Tab" : "Pin Tab"), keywords: "tab", run: () => togglePin(active()) },
+      { id: "tab-duplicate", label: "Duplicate Tab", keywords: "copy tab", run: () => duplicateTab(active()) },
+      { id: "tab-next", label: "Next Tab", shortcut: "Ctrl+Tab", available: several, run: () => cycleTab(1) },
+      { id: "tab-previous", label: "Previous Tab", shortcut: "Ctrl+Shift+Tab", available: several, run: () => cycleTab(-1) },
+      {
+        id: "tab-go", label: "Go to Tab…", keywords: "switch tab open tabs", available: several,
+        pick: {
+          placeholder: "Go to tab…",
+          items: () => d.tabItems().map(t => ({
+            id: t.id, label: t.fullTitle,
+            detail: t.id === active() ? "open now" : t.pinned ? "pinned" : undefined,
+          })),
+          onPick: (item) => activateTab(item.id),
+        },
+      },
+    ];
+  }, [d.newTab, d.tabItems]);
+
   useCommands("app", () => {
     const page = d.activePage;
     const hasPage = !!page;
@@ -104,7 +144,7 @@ export function useAppCommands(d: AppCommandDeps): void {
       // ── This page ──
       { id: "mindmap", label: "Open Mind Map", shortcut: "Ctrl+M", available: hasPage, run: canvas("mindmap") },
       { id: "kanban", label: "Open Kanban Board", shortcut: "Ctrl+Shift+K", available: hasPage, run: canvas("kanban") },
-      { id: "whiteboard", label: "New Whiteboard", shortcut: "Ctrl+W", keywords: "draw canvas board", available: hasPage, run: () => { d.setMainView(null); d.openNewWhiteboard(page!.id); } },
+      { id: "whiteboard", label: "New Whiteboard", shortcut: "Ctrl+Shift+W", keywords: "draw canvas board", available: hasPage, run: () => { d.setMainView(null); d.openNewWhiteboard(page!.id); } },
       {
         id: "pin", label: pinned ? "Unpin Page" : "Pin Page", keywords: "favorite pinned", available: hasPage,
         run: async () => {

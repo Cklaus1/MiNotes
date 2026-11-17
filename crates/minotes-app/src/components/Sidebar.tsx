@@ -34,7 +34,6 @@ import { plural } from "../lib/confirm";
 import SyncChip from "./SyncChip";
 import { NEW_PAGE_FIELD_EVENT } from "../lib/newPage";
 import Icon from "./Icon";
-import NavButtons from "./NavButtons";
 import { getRecentPages } from "../lib/recentFiles";
 import { RECENT_SECTION_SIZE, setRecentSectionOpen, useRecentSection } from "../lib/sidebarRecent";
 import "./navigation.css";
@@ -398,7 +397,6 @@ export default function Sidebar({
         <button className="sidebar-gear-btn" onClick={onSettingsClick} title="Settings (Ctrl+,)" aria-label="Settings"><Icon name="settings" /></button>
       </div>
       <div className="sidebar-actions-bar">
-        <NavButtons />
         <button className="btn btn-sm" onClick={onSearchClick} title="Search (Ctrl+K)" style={{ flex: 1 }}>
           <Icon name="search" size={14} /> Search
         </button>
@@ -753,7 +751,7 @@ export default function Sidebar({
           <button className={`stats-mode-btn ${activeMode === "mindmap" ? "active" : ""}`} onClick={onMindmapClick} title="Mindmap (Ctrl+M)">
             <Icon name="mindmap" size={18} /><span>Mind</span>
           </button>
-          <button className={`stats-mode-btn ${activeMode === "whiteboard" ? "active" : ""}`} onClick={onWhiteboardClick} title="Draw (Ctrl+W)">
+          <button className={`stats-mode-btn ${activeMode === "whiteboard" ? "active" : ""}`} onClick={onWhiteboardClick} title="Draw (Ctrl+Shift+W)">
             <Icon name="draw" size={18} /><span>Draw</span>
           </button>
           <button className={`stats-mode-btn ${activeMode === "kanban" ? "active" : ""}`} onClick={onKanbanClick} title="Kanban (Ctrl+Shift+K)">

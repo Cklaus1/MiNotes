@@ -148,6 +148,18 @@ export function newTab(entry: NavEntry): string {
   return openInNewTab(entry, { activate: true });
 }
 
+/**
+ * A new tab with nothing in it yet (New tabs open → "A new page": App shows a
+ * title field there). Switched to; nothing is navigated. Not saved while empty.
+ */
+export function newEmptyTab(): string {
+  const t: Tab = { id: newId(), entries: [], index: -1, pinned: false };
+  tabs.splice(insertionIndex(), 0, t);
+  swapTo(t.id);
+  emit();
+  return t.id;
+}
+
 /** Remove the tabs in `ids` (pushed onto the closed stack); if the active one goes, activate `next`. */
 function removeTabs(ids: Set<string>, nextActive: () => string | undefined) {
   if (ids.size === 0) return;
@@ -489,9 +501,20 @@ function arrive(dest: { entries: NavEntry[]; index: number } | null, live: { ent
   return { entries, index: past.length + (c - from) };
 }
 
-/** Load notebook `key`'s tabs (saving the previous notebook's first). See `useNotebookTabs`. */
-export async function loadNotebookTabs(key: string): Promise<void> {
-  if (!key || key === notebook) return;
+let loadPromise: Promise<void> = Promise.resolve();
+
+/**
+ * Load notebook `key`'s tabs (saving the previous notebook's first). See
+ * `useNotebookTabs`. Already loaded / loading: the load under way (so App can
+ * await it before choosing the first page).
+ */
+export function loadNotebookTabs(key: string): Promise<void> {
+  if (!key || key === notebook) return loadPromise;
+  loadPromise = loadTabsOf(key);
+  return loadPromise;
+}
+
+async function loadTabsOf(key: string): Promise<void> {
   const token = ++loadToken;
   // The previous notebook: the save barrier wrote it before the switch; keep its closed stack.
   if (notebook) closedByNotebook.set(notebook, closed);
@@ -514,7 +537,12 @@ export async function loadNotebookTabs(key: string): Promise<void> {
   try {
     const json = await api.getUiState(TABS_UI_KEY);
     saved = json ? parseTabs(json, key) : null;
-  } catch { /* none */ }
+  } catch {
+    // Unreadable (a notebook that opened locked): not loaded — nothing is saved
+    // over its tabs, and the next open (after unlocking) loads them.
+    if (token === loadToken) { loading = false; notebook = ""; }
+    return;
+  }
   if (token !== loadToken) return;
   loading = false;
   const live = exportHistory();

@@ -231,6 +231,25 @@ export default function SettingsPanel({ open, onClose, onOpenSync, onOpenCssSnip
           )}
         </div>
 
+        {/* Editor: what a new tab opens (PRD-tabs §3.3) */}
+        <div className="settings-section">
+          <div className="settings-section-title">Editor</div>
+          <div className="settings-row">
+            <span className="settings-row-label" title="What the + button next to the tabs and Ctrl+T open">New tabs open</span>
+            <select
+              className="settings-select"
+              value={settings.newTabOpens}
+              onChange={e => toggle("newTabOpens", e.target.value)}
+              data-testid="settings-new-tab"
+            >
+              <option value="journal">Today's journal</option>
+              <option value="page">A new page</option>
+              <option value="pages">All Pages</option>
+              <option value="search">Search</option>
+            </select>
+          </div>
+        </div>
+
         {/* Notebook: location + markdown copy (mirror) status */}
         <NotebookSettings />
 

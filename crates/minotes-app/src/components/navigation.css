@@ -1,50 +1,6 @@
-/* Navigation (UX Wave 4): back/forward buttons, the palette's sections,
+/* Navigation (UX Wave 4): the palette's sections,
    filters, highlights and key hints, the Trash/Archive views, All Pages in the
    main pane, the sidebar's Recent section. Theme tokens only. */
-
-/* ── Back / forward ── */
-.nav-buttons {
-  display: inline-flex;
-  gap: 2px;
-  flex-shrink: 0;
-}
-.nav-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 26px;
-  height: 26px;
-  padding: 0;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--text-secondary);
-  cursor: pointer;
-}
-.nav-btn:hover:not(:disabled) {
-  background: var(--bg-surface);
-  color: var(--text-primary);
-}
-.nav-btn:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-.nav-btn:disabled {
-  opacity: 0.35;
-  cursor: default;
-}
-.nav-buttons-floating {
-  position: fixed;
-  left: 54px;
-  bottom: 16px;
-  z-index: 60;
-  padding: 2px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--bg-secondary);
-}
-.nav-buttons-floating .nav-btn { border-radius: 999px; }
-@media (max-width: 768px) { .nav-buttons-floating { display: none; } }
 
 /* ── Command palette / search ── */
 .command-palette-overlay .command-palette {

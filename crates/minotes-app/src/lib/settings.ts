@@ -29,7 +29,11 @@ export interface MiNotesSettings {
   /** Encrypted notebooks lock after this many minutes without input; 0 = never
    *  (PRD-encryption §4.4, default 15). Also locks after the computer slept. */
   autoLockMinutes: number;
+  /** What "+" / Ctrl+T opens in the new tab (PRD-tabs §3.3; default today's journal). */
+  newTabOpens: NewTabDestination;
 }
+
+export type NewTabDestination = "journal" | "page" | "pages" | "search";
 
 const STORAGE_KEY = "minotes-settings";
 
@@ -45,6 +49,7 @@ const DEFAULTS: MiNotesSettings = {
   searchAllNotebooks: false,
   remoteImages: "ask",
   autoLockMinutes: 15,
+  newTabOpens: "journal",
 };
 
 export function getSettings(): MiNotesSettings {

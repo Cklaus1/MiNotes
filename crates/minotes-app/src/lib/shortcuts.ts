@@ -9,7 +9,7 @@ export const SHORTCUT_GROUPS: Array<{ title: string; items: Array<[string, strin
     title: "Anywhere (also while editing a block)",
     items: [
       ["Ctrl+K", "Search (Tab: pages / blocks / journals); type > for commands"],
-      ["Ctrl+[ / Ctrl+]", "Back / forward (pages, views, notebooks); also the mouse's back / forward buttons"],
+      ["Ctrl+[ / Ctrl+]", "Back / forward in this tab (pages, views, notebooks); also the mouse's back / forward buttons"],
       ["Ctrl+J", "Today's journal"],
       ["Alt+↑ / Alt+↓", "Previous / next journal day"],
       ["Ctrl+N", "New page"],
@@ -17,7 +17,7 @@ export const SHORTCUT_GROUPS: Array<{ title: string; items: Array<[string, strin
       ["Ctrl+G", "Graph view"],
       ["Ctrl+M", "Mind map"],
       ["Ctrl+Shift+K", "Kanban board"],
-      ["Ctrl+W", "New whiteboard (Draw)"],
+      ["Ctrl+Shift+W", "New whiteboard (Draw)"],
       ["Ctrl+Q", "SQL query panel"],
       ["Ctrl+R", "Flashcard review"],
       ["Ctrl+P", "Open a PDF by path"],
@@ -31,6 +31,19 @@ export const SHORTCUT_GROUPS: Array<{ title: string; items: Array<[string, strin
       ["Ctrl+\\", "Show/hide the right sidebar"],
       ["Ctrl+/", "This list of shortcuts"],
       ["Esc", "Close the open panel, menu or view"],
+    ],
+  },
+  {
+    title: "Tabs",
+    items: [
+      ["Ctrl+T", "New tab (Settings → Editor chooses what it opens)"],
+      ["Ctrl+W", "Close the tab (not the last one)"],
+      ["Ctrl+Tab / Ctrl+Shift+Tab", "Next / previous tab (also Ctrl+PgDn / Ctrl+PgUp)"],
+      ["Alt+1 … Alt+8", "Go to tab 1–8; Alt+9: the last tab"],
+      ["Ctrl+Shift+PgUp / PgDn", "Move the tab left / right"],
+      ["Ctrl+click, middle-click", "Open a page, link or view in a background tab"],
+      ["Ctrl+Shift+click", "Open in a new tab and switch to it"],
+      ["Ctrl+Enter (search)", "Open the result in a new tab"],
     ],
   },
   {

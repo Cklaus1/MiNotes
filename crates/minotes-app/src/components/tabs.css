@@ -198,3 +198,14 @@
 @media (prefers-reduced-motion: reduce) {
   .tab { transition: none; }
 }
+
+/* A "new page" tab (New tabs open → A new page): the title field, nothing created yet. */
+.new-page-draft .new-page-draft-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 22px;
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid var(--accent);
+  border-radius: 0;
+}

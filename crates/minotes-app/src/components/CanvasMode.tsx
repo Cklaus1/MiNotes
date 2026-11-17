@@ -110,7 +110,7 @@ export default function CanvasMode({
               <button className="btn btn-primary" onClick={() => onNewWhiteboard?.()} data-testid="draw-new-board">
                 New board on this page
               </button>
-              <div className="canvas-draw-chooser-hint">A new board is added to the end of “{pageTitle}” once you draw on it (Ctrl+W).</div>
+              <div className="canvas-draw-chooser-hint">A new board is added to the end of “{pageTitle}” once you draw on it (Ctrl+Shift+W).</div>
             </div>
           );
         }

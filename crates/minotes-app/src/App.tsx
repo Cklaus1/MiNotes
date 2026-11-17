@@ -61,7 +61,7 @@ import ImportMount from "./components/ImportMount";
 import { openImport } from "./lib/importPicks";
 import { askNewPage } from "./lib/newPage";
 import Icon from "./components/Icon";
-import { isDrawerWidth, isSidebarToggleKey, loadSidebarCollapsed, saveSidebarCollapsed, useDrawerWidth } from "./lib/sidebarLayout";
+import { DRAWER_BELOW_PX, isDrawerWidth, isSidebarToggleKey, loadSidebarCollapsed, saveSidebarCollapsed, useDrawerWidth } from "./lib/sidebarLayout";
 import { useLayer } from "./lib/layers";
 import ShortcutsOverlay from "./components/ShortcutsOverlay";
 // UX Wave 4 (views): remembered page views, image lightbox
@@ -70,9 +70,21 @@ import MediaHost from "./components/MediaHost";
 // ── Navigation (UX Wave 4) ──
 import AllPagesView from "./components/AllPagesView";
 import TrashView from "./components/TrashView";
-import NavButtons from "./components/NavButtons";
-import { cancelNavStep, noteLocation, setNavExecutor, takePendingNav, goBack, goForward, navHistorySnapshot, type NavEntry } from "./lib/navHistory";
+import { cancelNavStep, noteLocation, setNavExecutor, takePendingNav, goBack, goForward, goToCurrent, navHistorySnapshot, setPendingNav, useNavHistory, type NavEntry } from "./lib/navHistory";
 import { useAppCommands } from "./lib/appCommands";
+// ── Tabs (PRD-tabs) ──
+import TabBar from "./components/TabBar";
+import type { TabBarItem } from "./lib/tabBarTypes";
+import {
+  activateTab, closeOtherTabs, closeTab, closeTabsToRight, cycleTab, duplicateTab, getTabsSnapshot, goToTab,
+  loadNotebookTabs, moveActiveTab, moveTab, newEmptyTab, newTab, openInNewTab, reopenClosedTab, tabsNotebook,
+  togglePin, useNotebookTabs, useTabs,
+} from "./lib/tabs";
+import { openInTab, setOpenInTabHandler, type OpenMode } from "./lib/openIntent";
+import { openInNotebook } from "./lib/crossNotebook";
+import { tabLabel } from "./lib/tabLabels";
+import { isConfirmOpen } from "./lib/confirm";
+import { isBusy } from "./lib/busy";
 type MainView = null | "tasks" | "pages" | "trash" | "archive";
 // ── End import ──
 // ── End AI platform ──
@@ -142,6 +154,34 @@ export default function App() {
   const [syncNeedsConfirm, setSyncNeedsConfirm] = useState(false);
   // Key of the open notebook (remounts per-notebook views such as the AI panel).
   const [notebookKey, setNotebookKey] = useState<string>("");
+  const notebookKeyRef = useRef("");
+  notebookKeyRef.current = notebookKey;
+
+  // ── Tabs (PRD-tabs): lib/tabs.ts holds them (per notebook, ui_state "tabs.v1");
+  // App shows the active tab's place. Android: no tab row (one page at a time).
+  const tabsOn = !caps.mobile;
+  const tabsView = useTabs();
+  const { canBack, canForward } = useNavHistory();
+  useNotebookTabs(notebookKey);
+  // The notebook the tab store already had when App mounted (remounted after
+  // unlocking: its tabs are in memory, App reopens the active one).
+  const tabsNotebookAtMount = useRef(tabsNotebook());
+  // A tab opened by "+" with New tabs open → "A new page": a title field, the
+  // page is created when the title is confirmed (an unused tab leaves nothing).
+  const draftTabIds = useRef(new Set<string>());
+  const [newPageDraft, setNewPageDraft] = useState(false);
+  const [draftTitle, setDraftTitle] = useState("");
+  // The tab's page went to the Trash or no longer exists (shown in its place).
+  const [goneNotice, setGoneNotice] = useState<{ kind: "trash" | "missing"; pageId: string; title: string } | null>(null);
+  // New tabs open → "Search": the palette opens once the new tab's page is shown.
+  const openSearchAfterNavRef = useRef(false);
+  const openNewTabRef = useRef<() => void>(() => {});
+  const [narrowWindow, setNarrowWindow] = useState(() => typeof window !== "undefined" && window.innerWidth < DRAWER_BELOW_PX);
+  useEffect(() => {
+    const onResize = () => setNarrowWindow(window.innerWidth < DRAWER_BELOW_PX);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
 
   const refresh = useCallback(async () => {
     try {
@@ -750,11 +790,15 @@ export default function App() {
       notifyCardsChanged();
       refresh();
       window.dispatchEvent(new Event("minotes-sidebar-refresh"));
-      // Back/forward into this notebook, "Unlock and open", "Create page in…":
-      // that step, not today's journal (lib/navHistory).
-      const step = takePendingNav(key);
-      if (step) runNavRef.current(step);
-      else openJournal().catch(() => {});
+      setGoneNotice(null);
+      // This notebook's tabs first (lib/tabs): restored ones open the active
+      // tab's page themselves. Back/forward into this notebook, a link, "Unlock
+      // and open", "Create page in…": that step. Otherwise today's journal.
+      void loadNotebookTabs(key).then(() => {
+        const step = takePendingNav(key);
+        if (step) runNavRef.current(step);
+        else if (!activeTabHasPlace()) openJournal().catch(() => {});
+      });
       runTodoPageCleanup();
       api.gitSyncStatus().then(status => {
         applySyncStatus(status);
@@ -773,7 +817,14 @@ export default function App() {
       const d = (e as CustomEvent<OpenInNotebook>).detail;
       if (!d?.pageId && !d?.title) return;
       try {
-        if (d.key && d.key !== (await api.getCurrentNotebook())) await switchNotebook(d.key);
+        if (d.key && d.key !== (await api.getCurrentNotebook())) {
+          // Opened by the switch (a pending step, lib/navHistory) in that
+          // notebook's active tab — never raced by its restored tabs.
+          setPendingReveal(d.blockId ?? null);
+          setPendingNav({ notebook: d.key, kind: "page", pageId: d.pageId || undefined, title: d.title, create: !d.pageId || undefined });
+          await switchNotebook(d.key);
+          return;
+        }
         setPendingReveal(d.blockId ?? null);
         setOpenPanel(null);
         setCanvasMode(null);
@@ -976,8 +1027,18 @@ export default function App() {
         e.preventDefault();
         askNewPage().then(title => { if (title) createPage(title); });
       }
-      // Cmd/Ctrl+W — new whiteboard / toggle draw mode
-      if (key === "w" && plain && appChord) {
+      // Cmd/Ctrl+T — new tab; Cmd/Ctrl+W — close the tab (never the last one)
+      if (key === "t" && plain && tabsOn) {
+        e.preventDefault();
+        if (!isConfirmOpen() && !isBusy()) openNewTabRef.current();
+      }
+      if (key === "w" && plain && tabsOn) {
+        e.preventDefault();
+        const snap = getTabsSnapshot();
+        if (!isConfirmOpen() && !isBusy() && snap.tabs.length > 1) closeTab(snap.activeId);
+      }
+      // Cmd/Ctrl+Shift+W — new whiteboard / toggle draw mode
+      if (key === "w" && e.shiftKey && !e.altKey && appChord) {
         e.preventDefault();
         if (canvasMode === "draw") {
           setCanvasMode(null);
@@ -1050,7 +1111,7 @@ export default function App() {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [openJournal, createPage, activePage, whiteboardId, canvasMode, openNewWhiteboard, openPage, refresh, openPdfFlow]);
+  }, [openJournal, createPage, activePage, whiteboardId, canvasMode, openNewWhiteboard, openPage, refresh, openPdfFlow, tabsOn]);
 
   // ── Back / forward (lib/navHistory): where the user is, and how to go back there ──
   const navLocation: NavEntry | null = !notebookKey ? null
@@ -1063,8 +1124,12 @@ export default function App() {
   useEffect(() => { noteLocation(navLocation); }, [navKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const runNav = useCallback(async (e: NavEntry) => {
-    setOpenPanel(null);
+    // A tab switch closes what is open over the page (palette, overlays); "+"
+    // with New tabs open → Search opens the palette over the new tab.
+    setOpenPanel(openSearchAfterNavRef.current ? "search" : null);
+    openSearchAfterNavRef.current = false;
     setPdfViewerPath(null);
+    setGoneNotice(null);
     if (e.kind === "view") {
       if (e.view === "graph") { setMainView(null); setCanvasMode("graph"); }
       else { setCanvasMode(null); setMainView(e.view ?? null); }
@@ -1075,18 +1140,21 @@ export default function App() {
     if (e.kind === "journal-day" && e.date) { await openJournal(e.date); return; }
     const label = e.title ?? "That page";
     if (e.pageId) {
-      // A page that is gone or in the Trash is not opened again by Back.
-      const trashed = await api.listTrash().catch(() => [] as api.TrashItem[]);
-      if (trashed.some(t => t.id === e.pageId)) {
-        showToast(`“${label}” is in the Trash — restore it from the Trash view`);
+      // A page that is gone or in the Trash is not opened again by Back or a
+      // tab: the tab shows why, in place of the page (Restore / Close tab).
+      const gone = (kind: "trash" | "missing") => {
+        ++navTokenRef.current;
+        setActivePage(null);
+        setPendingJournalDate(null);
+        setGoneNotice({ kind, pageId: e.pageId!, title: label });
         cancelNavStep();
-        return;
-      }
+      };
+      const trashed = await api.listTrash().catch(() => [] as api.TrashItem[]);
+      if (trashed.some(t => t.id === e.pageId)) { gone("trash"); return; }
       try {
         await api.getPageTree(e.pageId);
       } catch {
-        showToast(`“${label}” no longer exists`);
-        cancelNavStep();
+        gone("missing");
         return;
       }
       await openPage(e.pageId);
@@ -1110,6 +1178,180 @@ export default function App() {
   runNavRef.current = runNav;
   useEffect(() => setNavExecutor((e) => { void runNavRef.current(e); }), []);
 
+  // ── Tabs (PRD-tabs) ──
+
+  // "+" / Ctrl+T: a new tab after the active one, opening what Settings →
+  // Editor → "New tabs open" says.
+  const openNewTab = useCallback(async () => {
+    const key = notebookKeyRef.current;
+    if (!key) return;
+    const dest = getSettings().newTabOpens;
+    if (dest === "pages") { newTab({ notebook: key, kind: "view", view: "pages" }); return; }
+    if (dest === "page") { draftTabIds.current.add(newEmptyTab()); return; }
+    try {
+      const today = await api.getJournal(localDateKey());
+      if (dest === "search") openSearchAfterNavRef.current = true;
+      newTab({ notebook: key, kind: "page", pageId: today.page.id, title: today.page.title });
+    } catch (err) {
+      openSearchAfterNavRef.current = false;
+      showToast(`Couldn't open a new tab: ${errorMessage(err)}`);
+    }
+  }, []);
+
+  openNewTabRef.current = () => { void openNewTab(); };
+
+  // Ctrl/middle-click on a page, link or view (lib/openIntent): a new tab.
+  // Another notebook's page opens in the current tab (switching notebooks).
+  const openEntryInTab = useCallback(async (raw: NavEntry, mode: Exclude<OpenMode, "current">) => {
+    const key = notebookKeyRef.current || ((await api.getCurrentNotebook().catch(() => "")) ?? "");
+    if (raw.notebook && raw.notebook !== key) {
+      openInNotebook({ key: raw.notebook, pageId: raw.pageId ?? "", title: raw.pageId ? undefined : raw.title });
+      return;
+    }
+    let entry: NavEntry;
+    try {
+      entry = await resolveTabEntry({ ...raw, notebook: key });
+    } catch (err) {
+      showToast(`Couldn't open that in a new tab: ${errorMessage(err)}`);
+      return;
+    }
+    if (mode === "foreground") { openInNewTab(entry, { activate: true }); return; }
+    openInNewTab(entry, { activate: false });
+    const label = tabLabel(entry, { today: localDateKey() }).fullTitle;
+    showToast(`Opened “${label}” in a background tab`, 2500);
+  }, []);
+  useEffect(() => (tabsOn ? setOpenInTabHandler((e, mode) => { void openEntryInTab(e, mode); }) : undefined), [tabsOn, openEntryInTab]);
+
+  // Live page titles for the tabs that aren't shown (renames here, by sync, outside edits).
+  const [pageTitles, setPageTitles] = useState<ReadonlyMap<string, string>>(() => new Map());
+  const [titlesTick, setTitlesTick] = useState(0);
+  useEffect(() => {
+    const bump = () => setTitlesTick(t => t + 1);
+    window.addEventListener("minotes-sidebar-refresh", bump);
+    window.addEventListener(OUTSIDE_PAGES_CHANGED, bump);
+    return () => {
+      window.removeEventListener("minotes-sidebar-refresh", bump);
+      window.removeEventListener(OUTSIDE_PAGES_CHANGED, bump);
+    };
+  }, []);
+  const severalTabs = tabsView.tabs.length > 1;
+  useEffect(() => {
+    if (!severalTabs || !tabsOn) return;
+    let live = true;
+    api.getFolderTree().then(tree => {
+      if (!live) return;
+      const m = new Map<string, string>();
+      tree.root_pages.forEach(p => m.set(p.id, p.title));
+      const walk = (fs: api.FolderTree[]) => { for (const f of fs) { f.pages.forEach(p => m.set(p.id, p.title)); walk(f.children ?? []); } };
+      walk(tree.folders);
+      setPageTitles(m);
+    }).catch(() => {});
+    return () => { live = false; };
+  }, [severalTabs, tabsOn, stats, titlesTick, notebookKey]);
+
+  const todayKey = localDateKey();
+  const tabItems: TabBarItem[] = tabsView.tabs.map(t => {
+    const active = t.id === tabsView.activeId;
+    const label = active && newPageDraft && !t.entry ? { icon: "file-plus" as const, title: "New page", fullTitle: "New page" }
+      // The shown page's own title is the freshest (a rename right here).
+      : active && activePage && t.entry?.kind === "page" && t.entry.pageId === activePage.page.id
+        ? tabLabel({ ...t.entry, title: activePage.page.title }, { today: todayKey })
+        : tabLabel(t.entry, { titles: pageTitles, today: todayKey });
+    return { id: t.id, pinned: t.pinned, ...label };
+  });
+  const tabItemsRef = useRef(tabItems);
+  tabItemsRef.current = tabItems;
+  const getTabItems = useCallback(() => tabItemsRef.current, []);
+
+  // A "new page" tab shows its title field (also when switched back to).
+  const activeTabView = tabsView.tabs.find(t => t.id === tabsView.activeId);
+  const activeIsDraft = !!activeTabView && !activeTabView.entry && draftTabIds.current.has(activeTabView.id);
+  useEffect(() => {
+    if (!activeIsDraft) { setNewPageDraft(false); return; }
+    ++navTokenRef.current;
+    setOpenPanel(null);
+    setCanvasMode(null);
+    setPdfViewerPath(null);
+    setMainView(null);
+    setPendingJournalDate(null);
+    setActivePage(null);
+    setGoneNotice(null);
+    setLastError(null);
+    setDraftTitle("");
+    setNewPageDraft(true);
+  }, [activeIsDraft, tabsView.activeId]);
+  // Anything shown in the tab replaces the Trash / gone notice.
+  useEffect(() => { if (activePage || pendingJournalDate || mainView) setGoneNotice(null); }, [activePage, pendingJournalDate, mainView]);
+
+  // Tab keys that must work while typing in a block (capture phase, before
+  // ProseMirror): Ctrl+Tab / Ctrl+Shift+Tab, Ctrl+PgDn / PgUp (next /
+  // previous), Ctrl+Shift+PgUp / PgDn (move the tab), Alt+1…8, Alt+9 (last).
+  useEffect(() => {
+    if (!tabsOn) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || isConfirmOpen() || isBusy()) return;
+      const ctrl = e.ctrlKey || e.metaKey;
+      const page = e.key === "PageDown" ? 1 : e.key === "PageUp" ? -1 : 0;
+      const digit = e.altKey && !ctrl && !e.shiftKey
+        ? Number(/^Digit([1-9])$/.exec(e.code)?.[1] ?? (/^[1-9]$/.test(e.key) ? e.key : 0))
+        : 0;
+      let act: (() => void) | null = null;
+      if (ctrl && !e.altKey && e.key === "Tab") act = () => cycleTab(e.shiftKey ? -1 : 1);
+      else if (ctrl && !e.altKey && !e.shiftKey && page) act = () => cycleTab(page as 1 | -1);
+      else if (ctrl && !e.altKey && e.shiftKey && page) act = () => moveActiveTab(page as 1 | -1);
+      else if (digit) act = () => goToTab(digit);
+      if (!act) return;
+      e.preventDefault();
+      e.stopPropagation();
+      act();
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [tabsOn]);
+
+  // Test hooks (journeys): the tab row as data, and its actions by index.
+  useEffect(() => {
+    const byIndex = (i?: number) => {
+      const snap = getTabsSnapshot();
+      return i === undefined ? snap.activeId : snap.tabs[i]?.id;
+    };
+    registerTestApi({
+      tabs: () => {
+        const snap = getTabsSnapshot();
+        const items = tabItemsRef.current;
+        return {
+          activeId: snap.activeId,
+          active: snap.tabs.findIndex(t => t.id === snap.activeId),
+          closed: snap.closed,
+          tabs: snap.tabs.map(t => {
+            const cur = t.entries[t.index] ?? null;
+            return {
+              id: t.id, pinned: t.pinned, history: t.entries.length, index: t.index,
+              title: items.find(x => x.id === t.id)?.fullTitle ?? null,
+              kind: cur?.kind ?? null, pageId: cur?.pageId ?? null, pageTitle: cur?.title ?? null,
+              view: cur?.view ?? null, date: cur?.date ?? null,
+            };
+          }),
+        };
+      },
+      newTab: () => { openNewTabRef.current(); return true; },
+      activateTab: (i: number) => { const id = byIndex(i); if (id) activateTab(id); return !!id; },
+      closeTab: (i?: number) => { const id = byIndex(i); if (id) closeTab(id); return !!id; },
+      pinTab: (i?: number) => { const id = byIndex(i); if (id) togglePin(id); return !!id; },
+      duplicateTab: (i?: number) => { const id = byIndex(i); if (id) duplicateTab(id); return !!id; },
+      reopenClosedTab: () => { reopenClosedTab(); return true; },
+      cycleTab: (d: number) => { cycleTab(d < 0 ? -1 : 1); return true; },
+      openInBackgroundTab: (titleOrId: string) => openInTab(tabTarget(titleOrId), "background"),
+      openInForegroundTab: (titleOrId: string) => openInTab(tabTarget(titleOrId), "foreground"),
+    } as any);
+  }, []);
+
+  const createDraftPage = useCallback(async () => {
+    const title = draftTitle.trim();
+    if (!title) return;
+    await createPage(title);
+  }, [draftTitle, createPage]);
+
   // Every app action in the command palette (lib/appCommands.ts).
   useAppCommands({
     activePage: activePage?.page ?? null,
@@ -1129,6 +1371,8 @@ export default function App() {
     syncNow: () => triggerSync(true),
     openPdf: () => { void openPdfFlow(); },
     refresh,
+    newTab: () => { void openNewTab(); },
+    tabItems: getTabItems,
   });
 
   // Window title: "Page — Notebook — MiNotes", following navigation, the view
@@ -1152,6 +1396,8 @@ export default function App() {
     : canvasMode === "pages" ? "All pages"
     : activePage ? (activePage.page.is_journal && activePage.page.journal_date ? journalTitle(activePage.page.journal_date) : activePage.page.title)
     : pendingJournalDate ? journalTitle(pendingJournalDate)
+    : goneNotice ? goneNotice.title
+    : newPageDraft ? "New page"
     : null;
   useEffect(() => {
     setWindowTitle(composeWindowTitle(viewLabel, notebookName));
@@ -1203,10 +1449,19 @@ export default function App() {
       }
 
       runTodoPageCleanup();
+      const key = (await api.getCurrentNotebook().catch(() => "")) ?? "";
+      // The notebook's saved tabs first, so the journal never flashes before
+      // the restored tab's page (the load opens it).
+      await loadNotebookTabs(key);
       // Mounted after an unlock that was a step into this notebook (Back, or
       // "Unlock and open" on a link): go there instead of the journal.
-      const step = takePendingNav(await api.getCurrentNotebook().catch(() => ""));
+      const step = takePendingNav(key);
       if (step) { runNavRef.current(step); return; }
+      if (activeTabHasPlace()) {
+        // Remounted (after unlocking) with this notebook's tabs in memory: reopen the active one.
+        if (tabsNotebookAtMount.current === key) void goToCurrent();
+        return;
+      }
       try {
         await openJournal();
       } catch (e) {
@@ -1259,12 +1514,31 @@ export default function App() {
           <button className="sidebar-reveal-btn" onClick={toggleSidebar} title="Show sidebar (Ctrl+Shift+\)" aria-label="Show sidebar" data-testid="sidebar-reveal">
             <Icon name="sidebar" size={18} />
           </button>
-          {/* Back / forward stay reachable with the sidebar hidden. */}
-          <NavButtons floating />
         </>
       )}
       <div className="main workspace-split mod-root" style={{ position: "relative", display: "flex", flexDirection: "row" }}>
         <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }}>
+          {tabsOn && (
+            <TabBar
+              tabs={tabItems}
+              activeId={tabsView.activeId}
+              canBack={canBack}
+              canForward={canForward}
+              onBack={() => { void goBack(); }}
+              onForward={() => { void goForward(); }}
+              onActivate={activateTab}
+              onClose={closeTab}
+              onNewTab={() => { void openNewTab(); }}
+              onCloseOthers={closeOtherTabs}
+              onCloseRight={closeTabsToRight}
+              onTogglePin={togglePin}
+              onDuplicate={duplicateTab}
+              onReopenClosed={reopenClosedTab}
+              canReopen={tabsView.canReopen}
+              onMove={moveTab}
+              compact={narrowWindow}
+            />
+          )}
           <NotebookBanner
             heldDeletions={heldDeletions}
             onResolveHeld={resolveHeldDeletions}
@@ -1399,6 +1673,58 @@ export default function App() {
                 )}
               </div>
             </div>
+          ) : goneNotice ? (
+            <div className="pending-journal tab-gone" data-testid="tab-gone" data-kind={goneNotice.kind}>
+              <div className="main-header">
+                <h2 className="pending-journal-date">
+                  <Icon name={goneNotice.kind === "trash" ? "trash" : "warning"} size={20} className="title-icon" /> {goneNotice.title}
+                </h2>
+              </div>
+              <div className="pending-journal-body">
+                <p className="pending-journal-hint">
+                  {goneNotice.kind === "trash" ? "This page is in the Trash." : "This page no longer exists."}
+                </p>
+                {goneNotice.kind === "trash" && (
+                  <button className="btn btn-primary" data-testid="tab-gone-restore" onClick={async () => {
+                    const { pageId, title } = goneNotice;
+                    try {
+                      await api.restoreFromTrash(pageId, "page");
+                    } catch (err) {
+                      showToast(`Couldn't restore “${title}”: ${errorMessage(err)}`);
+                      return;
+                    }
+                    await refresh();
+                    window.dispatchEvent(new Event("minotes-sidebar-refresh"));
+                    await openPage(pageId);
+                    showToast(`Restored “${title}”`);
+                  }}>Restore</button>
+                )}
+                {tabsView.tabs.length > 1 ? (
+                  <button className="btn btn-sm" data-testid="tab-gone-close" onClick={() => closeTab(tabsView.activeId)}>Close tab</button>
+                ) : (
+                  <button className="btn btn-sm" onClick={() => { openJournal().catch(() => {}); }}>Open today's journal</button>
+                )}
+              </div>
+            </div>
+          ) : newPageDraft ? (
+            <div className="pending-journal new-page-draft" data-testid="new-page-draft">
+              <div className="main-header">
+                <input
+                  className="page-title-input new-page-draft-title"
+                  autoFocus
+                  value={draftTitle}
+                  placeholder="Untitled"
+                  aria-label="New page title"
+                  onChange={e => setDraftTitle(e.target.value)}
+                  onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); void createDraftPage(); } }}
+                  data-testid="new-page-draft-title"
+                />
+              </div>
+              <div className="pending-journal-body">
+                <p className="pending-journal-hint">Type a title and press Enter to create the page. A tab left empty creates nothing.</p>
+                <button className="btn btn-primary" disabled={!draftTitle.trim()} title={draftTitle.trim() ? undefined : "Type a title first"} onClick={() => { void createDraftPage(); }}>Create page</button>
+              </div>
+            </div>
           ) : (
             <EmptyState onCreatePage={createPage} />
           )}
@@ -1476,4 +1802,44 @@ export default function App() {
       />
     </div>
   );
+}
+
+/** Does the active tab have a place to show (restored tabs, or one already visited)? */
+function activeTabHasPlace(): boolean {
+  const s = getTabsSnapshot();
+  const t = s.tabs.find(x => x.id === s.activeId);
+  return !!t && t.index >= 0 && !!t.entries[t.index];
+}
+
+/**
+ * An entry handed to "open in a new tab": a page known only by its title gets
+ * its id (or opens / creates by title, like a click on that link would); a
+ * written journal day becomes its page (today's is created, as Ctrl+J does).
+ */
+async function resolveTabEntry(e: NavEntry): Promise<NavEntry> {
+  if (e.kind === "journal-day" && e.date) {
+    if (e.date === localDateKey()) {
+      const t = await api.getJournal(e.date);
+      return { notebook: e.notebook, kind: "page", pageId: t.page.id, title: t.page.title };
+    }
+    const p = await api.findJournalPage(e.date).catch(() => null);
+    return p ? { notebook: e.notebook, kind: "page", pageId: p.id, title: p.title } : e;
+  }
+  if (e.kind === "page" && !e.pageId && e.title) {
+    const title = e.title.trim();
+    const hits = await api.findPagesByTitle(title, 10).catch(() => [] as api.Page[]);
+    const hit = hits.find(p => p.title.toLowerCase() === title.toLowerCase());
+    return hit ? { notebook: e.notebook, kind: "page", pageId: hit.id, title: hit.title } : { notebook: e.notebook, kind: "page", title, create: true };
+  }
+  if (e.kind === "page" && e.pageId && !e.title) {
+    const t = await api.getPageTree(e.pageId).catch(() => null);
+    return t ? { ...e, title: t.page.title } : e;
+  }
+  return e;
+}
+
+/** A page by title or id, as "open in a new tab" receives it (test hooks). */
+function tabTarget(titleOrId: string): NavEntry {
+  const isId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(titleOrId);
+  return isId ? { notebook: "", kind: "page", pageId: titleOrId } : { notebook: "", kind: "page", title: titleOrId };
 }
