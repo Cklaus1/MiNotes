@@ -1,12 +1,16 @@
-import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "./api";
-import { goBack, goForward, navHistorySnapshot, noteLocation, setNavExecutor, type NavEntry } from "./navHistory";
 import {
-  activateTab, closeOtherTabs, closeTab, closeTabsToRight, cycleTab, duplicateTab, getTabsSnapshot, goToTab,
-  loadNotebookTabs, MAX_CLOSED, MAX_SAVED_ENTRIES, moveActiveTab, moveTab, newTab, openInNewTab, parseTabs,
-  reopenClosedTab, resetTabsForTests, serializeTabs, TABS_UI_KEY, togglePin, type TabsState,
+  cancelNavStep, goBack, goForward, navHistorySnapshot, noteLocation, setNavExecutor, setPendingNav, type NavEntry,
+} from "./navHistory";
+import {
+  activateTab, BARRIER_HOLD_MS, closeOtherTabs, closeTab, closeTabsToRight, cycleTab, duplicateTab, flushTabs,
+  getTabsSnapshot, goToTab, loadNotebookTabs, MAX_CLOSED, MAX_SAVED_ENTRIES, MAX_TABS, moveActiveTab, moveTab,
+  newEmptyTab, newTab, openInNewTab, parseTabs, reopenClosedTab, resetTabsForTests, serializeTabs,
+  setTooManyTabsHandler, TABS_UI_KEY, togglePin, type TabsState,
 } from "./tabs";
 import { flushPendingEdits } from "./pendingEdits";
+import { mockHandlers } from "./mockBackend";
 
 let nb = "";
 const page = (id: string, notebook = nb): NavEntry => ({ notebook, kind: "page", pageId: id, title: id.toUpperCase() });
@@ -55,13 +59,13 @@ describe("tabs", () => {
 
     const fg = openInNewTab(page("d"), { activate: true });
     await tick();
-    expect(ids()).toEqual([first, fg, bg]); // right after the active tab
+    expect(ids()).toEqual([first, bg, fg]); // after the tab already opened from this one (click order)
     expect(snap().activeId).toBe(fg);
     expect(at()).toBe("d");
 
     const plus = newTab(page("journal"));
     await tick();
-    expect(ids()).toEqual([first, fg, plus, bg]);
+    expect(ids()).toEqual([first, bg, fg, plus]); // "+": right after the active tab
     expect(snap().activeId).toBe(plus);
     expect(at()).toBe("journal");
   });
@@ -103,8 +107,8 @@ describe("tabs", () => {
     closeTab(A);
     expect(ids()).toEqual([A]);
 
-    const B = openInNewTab(page("b"), { activate: false });
-    const C = openInNewTab(page("c"), { activate: false }); // after the active tab: A C B
+    const C = openInNewTab(page("c"), { activate: false });
+    const B = openInNewTab(page("b"), { activate: false }); // click order: A C B
     expect(ids()).toEqual([A, C, B]);
     closeTab(A);
     await tick();
@@ -127,9 +131,9 @@ describe("tabs", () => {
     const A = snap().activeId;
     const B = openInNewTab(page("b"), { activate: false });
     const C = openInNewTab(page("c"), { activate: false });
-    const D = openInNewTab(page("d"), { activate: false }); // A D C B
-    togglePin(B); // B A D C
-    expect(ids()).toEqual([B, A, D, C]);
+    const D = openInNewTab(page("d"), { activate: false }); // A B C D (click order)
+    togglePin(B); // B A C D
+    expect(ids()).toEqual([B, A, C, D]);
     closeTabsToRight(A);
     expect(ids()).toEqual([B, A]);
     const E = openInNewTab(page("e"), { activate: false });
@@ -148,7 +152,7 @@ describe("tabs", () => {
     const A = snap().activeId;
     const B = openInNewTab(page("b"), { activate: false });
     const C = openInNewTab(page("c"), { activate: false });
-    expect(ids()).toEqual([A, C, B]);
+    expect(ids()).toEqual([A, B, C]);
     togglePin(B);
     togglePin(C);
     expect(ids()).toEqual([B, C, A]);
@@ -165,8 +169,8 @@ describe("tabs", () => {
     visit("a");
     const A = snap().activeId;
     const B = openInNewTab(page("b"), { activate: false });
-    const C = openInNewTab(page("c"), { activate: false }); // A C B
-    togglePin(A); // A* C B
+    const C = openInNewTab(page("c"), { activate: false }); // A B C
+    togglePin(A); // A* B C
     moveTab(B, 0); // B* A* C
     expect(ids()).toEqual([B, A, C]);
     expect(snap().tabs.map(t => t.pinned)).toEqual([true, true, false]);
@@ -194,9 +198,9 @@ describe("tabs", () => {
 
   it("Ctrl+Tab cycles in row order with wrapping; Alt+n goes to the nth tab, Alt+9 to the last", async () => {
     visit("a");
-    openInNewTab(page("d"), { activate: false });
+    openInNewTab(page("b"), { activate: false });
     openInNewTab(page("c"), { activate: false });
-    openInNewTab(page("b"), { activate: false }); // a b c d
+    openInNewTab(page("d"), { activate: false }); // a b c d
     expect(activeIdx()).toBe(0);
     cycleTab(1);
     await tick();
@@ -354,6 +358,18 @@ describe("tabs", () => {
     expect(at()).toBe("a1");
   });
 
+  it("a plain notebook switch (switcher, palette): Back returns to the previous notebook", async () => {
+    visit("y1");
+    visit("y2");
+    await loadNotebookTabs("z"); // switched without a link or a Back step
+    const j: NavEntry = { notebook: "z", kind: "journal-day", date: "2026-11-17" };
+    noteLocation(j); // App opened the journal there
+    const s = snap();
+    expect(s.tabs).toHaveLength(1);
+    expect(s.tabs[0].entries.map(x => x.pageId ?? x.date)).toEqual(["y2", "2026-11-17"]);
+    expect(s.tabs[0].index).toBe(1);
+  });
+
   it("a cross-notebook arrival lands in the notebook's active tab; Back returns to the source", async () => {
     visit("y1");
     visit("y2");
@@ -369,5 +385,226 @@ describe("tabs", () => {
     expect(e.map(x => x.pageId)).toEqual(["y2", "xp"]);
     expect(s.tabs[0].index).toBe(1);
     expect(navHistorySnapshot().pending).toBeNull();
+  });
+  it("background tabs opened one after another from a tab keep click order; activating a tab starts over", async () => {
+    visit("t");
+    const T = snap().activeId;
+    const A = openInNewTab(page("a"), { activate: false });
+    const B = openInNewTab(page("b"), { activate: false });
+    const C = openInNewTab(page("c"), { activate: false });
+    expect(ids()).toEqual([T, A, B, C]);
+    activateTab(B);
+    await tick();
+    activateTab(T);
+    await tick();
+    const D = openInNewTab(page("d"), { activate: false });
+    expect(ids()).toEqual([T, D, A, B, C]); // a new run: right after T again
+    const E = openInNewTab(page("e"), { activate: false });
+    expect(ids()).toEqual([T, D, E, A, B, C]);
+    const P = newTab(page("journal")); // "+" is not a link: right after the active tab
+    expect(ids()).toEqual([T, P, D, E, A, B, C]);
+    // Moving on in the tab starts a new run too.
+    activateTab(T);
+    await tick();
+    const F = openInNewTab(page("f"), { activate: false });
+    expect(ids()).toEqual([T, F, P, D, E, A, B, C]);
+    visit("t2");
+    const G = openInNewTab(page("g"), { activate: false });
+    expect(ids()).toEqual([T, G, F, P, D, E, A, B, C]);
+  });
+
+  it("an empty tab shows the new-page field when switched to; it is not reopened, its duplicate is a draft too", async () => {
+    visit("a");
+    const A = snap().activeId;
+    const D = newEmptyTab();
+    expect(snap().tabs.find(t => t.id === D)!.draft).toBe(true);
+    activateTab(A);
+    await tick();
+    expect(at()).toBe("a");
+    activateTab(D);
+    await tick();
+    duplicateTab(D);
+    const copy = snap().tabs.find(t => t.id === snap().activeId)!;
+    expect(copy.id).not.toBe(D);
+    expect(copy.entries).toHaveLength(0);
+    expect(copy.draft).toBe(true);
+    closeTab(copy.id);
+    closeTab(D);
+    expect(snap().closed).toBe(0); // nothing to reopen into a broken state
+    reopenClosedTab();
+    expect(ids()).toEqual([A]);
+
+    // A tab that never had a place (not a draft) becomes one when switched to,
+    // so App shows the new-page field instead of leaving the old page up.
+    resetTabsForTests();
+    const first = snap().activeId;
+    expect(snap().tabs[0].draft).toBeFalsy();
+    openInNewTab(page("b"), { activate: true });
+    await tick();
+    activateTab(first);
+    await tick();
+    expect(snap().activeId).toBe(first);
+    expect(snap().tabs.find(t => t.id === first)!.draft).toBe(true);
+  });
+
+  it("opens at most MAX_TABS tabs; one more says so and does nothing", () => {
+    visit("a");
+    let told = 0;
+    setTooManyTabsHandler(() => { told++; });
+    try {
+      for (let i = 1; i < MAX_TABS; i++) openInNewTab(page(`p${i}`), { activate: false });
+      expect(snap().tabs).toHaveLength(MAX_TABS);
+      expect(openInNewTab(page("one-more"), { activate: false })).toBe("");
+      expect(newEmptyTab()).toBe("");
+      expect(snap().tabs).toHaveLength(MAX_TABS);
+      expect(told).toBe(2);
+    } finally {
+      setTooManyTabsHandler(null);
+    }
+  });
+});
+
+/** Real notebook switches in the mock backend (left on the default notebook afterwards). */
+describe("tabs across notebook switches", () => {
+  let home = "";
+  let other = "";
+  let n = 0;
+  beforeAll(async () => {
+    home = await api.getCurrentNotebook();
+    setNavExecutor(e => { shown.push(e); noteLocation(e); });
+  });
+  beforeEach(async () => {
+    other = (await api.createNotebook(`Tabs other ${++n}`)).key;
+    resetTabsForTests();
+    shown.length = 0;
+    await api.setUiState(TABS_UI_KEY, "");
+    await loadNotebookTabs(home);
+  });
+  afterEach(async () => {
+    if ((await api.getCurrentNotebook()) !== home) await api.switchNotebook(home);
+    resetTabsForTests();
+  });
+
+  /** What lib/notebooks does: the save barrier, the backend switch, then App loads the tabs. */
+  const switchTo = async (key: string, first?: NavEntry) => {
+    await flushPendingEdits();
+    await api.switchNotebook(key);
+    await loadNotebookTabs(key);
+    await tick();
+    const s = snap();
+    const t = s.tabs.find(x => x.id === s.activeId)!;
+    const e = t.entries[t.index];
+    if ((!e || e.notebook !== key) && first) { shown.push(first); noteLocation(first); } // App: its first page
+    await tick();
+  };
+
+  it("a write under way when the barrier runs lands before the switch; none starts after it", async () => {
+    // get_current_notebook answers with the notebook open when it was asked, but
+    // the answer arrives late (the backend is busy) — the window in which a
+    // switch could run between the check and the write.
+    const orig = mockHandlers.get_current_notebook;
+    let release!: () => void;
+    let gate!: Promise<void>;
+    const newGate = () => { gate = new Promise<void>(r => { release = r; }); };
+    newGate();
+    mockHandlers.get_current_notebook = (a: unknown) => { const v = orig(a); const g = gate; return g.then(() => v); };
+    try {
+      noteLocation({ notebook: home, kind: "page", pageId: "secret-id", title: "Secret plan" });
+      const timerWrite = flushTabs(); // the debounced write has started: waiting for get_current_notebook
+      let late: Promise<void> = Promise.resolve();
+      // lib/notebooks: the save barrier, then at once the backend switch.
+      const switched = flushPendingEdits().then(async () => {
+        // A change right after the barrier: its debounced write must not start now.
+        newGate();
+        const release2 = release;
+        noteLocation({ notebook: home, kind: "page", pageId: "secret-2", title: "Second secret" });
+        late = flushTabs();
+        await tick();
+        await api.switchNotebook(other);
+        release2();
+      });
+      await tick();
+      release();
+      await switched;
+      await timerWrite;
+      await late;
+      await tick();
+    } finally {
+      mockHandlers.get_current_notebook = orig;
+    }
+    expect((await api.getUiState(TABS_UI_KEY)) ?? "").not.toMatch(/secret/i);
+    await api.switchNotebook(home);
+    expect(await api.getUiState(TABS_UI_KEY)).toContain("Secret plan"); // it went where it belongs
+  });
+
+  it("switching back and forth keeps one 'previous notebook' entry for Back, not a pile of copies", async () => {
+    const a1: NavEntry = { notebook: home, kind: "page", pageId: "a1", title: "A1" };
+    const b1: NavEntry = { notebook: other, kind: "page", pageId: "b1", title: "B1" };
+    shown.push(a1);
+    noteLocation(a1);
+    await switchTo(other, b1);
+    for (let i = 0; i < 4; i++) {
+      await switchTo(home);
+      await switchTo(other);
+    }
+    const fmt = (h: { entries: NavEntry[] }) => h.entries.map(e => `${e.notebook === home ? "A" : "B"}:${e.pageId}`);
+    let h = navHistorySnapshot();
+    expect(fmt(h)).toEqual(["A:a1", "B:b1"]);
+    expect(h.index).toBe(1);
+    await switchTo(home);
+    h = navHistorySnapshot();
+    expect(fmt(h)).toEqual(["B:b1", "A:a1"]);
+    expect(h.index).toBe(1);
+    expect(at()).toBe("a1");
+  });
+
+  /** Notebook `other`'s saved tabs: one tab on its page q1. */
+  const saveOtherTabs = async () => {
+    const t: TabsState = {
+      notebook: other,
+      tabs: [{ id: "tq", entries: [{ notebook: other, kind: "page", pageId: "q1", title: "Q1" }], index: 0, pinned: false }],
+      activeId: "tq",
+    };
+    await api.switchNotebook(other);
+    await api.setUiState(TABS_UI_KEY, serializeTabs(t));
+    await api.switchNotebook(home);
+  };
+  const y1: NavEntry = { notebook: "", kind: "page", pageId: "y1", title: "Y1" };
+
+  it("a step the barrier saw that then failed does not turn a later open of that notebook into its arrival", async () => {
+    await saveOtherTabs();
+    shown.push({ ...y1, notebook: home });
+    noteLocation({ ...y1, notebook: home });
+    setPendingNav({ notebook: other, kind: "page", pageId: "q9", title: "Q9" }); // Back into `other`…
+    await flushPendingEdits(); // …the save barrier ran
+    cancelNavStep(); // …and the switch failed
+    await api.switchNotebook(other); // later the notebook opens (App remounted: no new barrier)
+    await loadNotebookTabs(other);
+    await tick();
+    const t = snap().tabs.find(x => x.id === snap().activeId)!;
+    expect(t.entries.map(e => e.pageId)).toEqual(["y1", "q1"]); // its restored tab; Back → where the user was
+    expect(t.index).toBe(1);
+    expect(at()).toBe("q1");
+  });
+
+  it("…nor when the step was dropped without a word: the barrier's note expires", async () => {
+    await saveOtherTabs();
+    shown.push({ ...y1, notebook: home });
+    noteLocation({ ...y1, notebook: home });
+    vi.useFakeTimers();
+    try {
+      setPendingNav({ notebook: other, kind: "page", pageId: "q9", title: "Q9" });
+      await flushPendingEdits();
+      setPendingNav(null); // e.g. "Unlock and open" given up
+      vi.advanceTimersByTime(BARRIER_HOLD_MS + 10);
+    } finally {
+      vi.useRealTimers();
+    }
+    await api.switchNotebook(other);
+    await loadNotebookTabs(other);
+    await tick();
+    const t = snap().tabs.find(x => x.id === snap().activeId)!;
+    expect(t.entries.map(e => e.pageId)).toEqual(["y1", "q1"]);
+    expect(at()).toBe("q1");
   });
 });

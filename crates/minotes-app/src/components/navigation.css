@@ -1,6 +1,45 @@
-/* Navigation (UX Wave 4): the palette's sections,
-   filters, highlights and key hints, the Trash/Archive views, All Pages in the
-   main pane, the sidebar's Recent section. Theme tokens only. */
+/* Navigation (UX Wave 4): back/forward buttons (Android, where there is no
+   tab row), the palette's sections, filters, highlights and key hints, the
+   Trash/Archive views, All Pages in the main pane, the sidebar's Recent
+   section. Theme tokens only. */
+
+/* ── Back / forward (no tab row) ── */
+.nav-buttons-bar {
+  display: flex;
+  align-items: center;
+  padding: 4px 12px 0;
+  flex-shrink: 0;
+}
+.nav-buttons {
+  display: inline-flex;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.nav-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.nav-btn:hover:not(:disabled) {
+  background: var(--bg-surface);
+  color: var(--text-primary);
+}
+.nav-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.nav-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
 
 /* ── Command palette / search ── */
 .command-palette-overlay .command-palette {

@@ -41,7 +41,7 @@ echo "════════════════════════�
 echo "  MiNotes Desktop Journeys (real app, real backend)"
 echo "═══════════════════════════════════════════════"
 
-rm -rf "$STATE"/{persist,devA,devB,nbook,outside,xnb,zip8,barrier10,trust10,rimg,img10,remote.git,enc13,enc13-tmp,enc13-keychain,enc14a,enc14b,enc14c,enc14-tmp,remote14.git,w1,w1-files,w2,j17a,j17b,t17,remote17.git,remote17.git.moved,w18,w19,w23,d20a,w21,w22,big22,w24} "$STATE/results.tsv"
+rm -rf "$STATE"/{persist,devA,devB,nbook,outside,xnb,zip8,barrier10,trust10,rimg,img10,remote.git,enc13,enc13-tmp,enc13-keychain,enc14a,enc14b,enc14c,enc14-tmp,remote14.git,w1,w1-files,w2,j17a,j17b,t17,remote17.git,remote17.git.moved,w18,w19,w23,d20a,w21,w22,big22,w24,w25,enc25,enc25-tmp,enc25-keychain} "$STATE/results.tsv"
 if [[ -z "$DESKTOP_NO_BUILD" ]]; then
   "$DC" up --webdriver --profile persist >/dev/null || { echo "build/launch failed"; exit 1; }
 else
@@ -60,7 +60,7 @@ SIG="(async()=>{const api=await import('/src/lib/api.ts');const t=await api.getP
 is "Page has 4 blocks" "$(api 'getBlockCount()')" "4"
 
 step "I draw on a whiteboard"
-"$DC" press "Control+w"; waitfor "!!document.querySelector('canvas')" 10
+"$DC" press "Control+Shift+w"; waitfor "!!document.querySelector('canvas')" 10
 "$DC" click 229 62; sleep 0.5
 DISPLAY="localhost:${DESKTOP_CHECK_DISPLAY:-97}" bash -c 'xdotool mousemove 300 300 mousedown 1; for i in $(seq 1 15); do xdotool mousemove $((300+i*20)) $((300+(i%4)*30)); sleep 0.03; done; xdotool mouseup 1'
 sleep 3; "$DC" click 50 22; sleep 2
@@ -807,9 +807,9 @@ is "The stroke is in the home database's board" "$(lines10 "$HDB10" "$WB10")" "1
 is "No board row in Other10's database" "$(sqlite3 "$ODB10" "select count(*) from whiteboards where id='$WB10'")" "0"
 ev "window.__MINOTES__.switchNotebook('$HOME10')" >/dev/null; wait_nb10 "$HOME10"
 
-step "I draw on a NEW board (Ctrl+W) and switch at once: its block and board stay home"
+step "I draw on a NEW board (Ctrl+Shift+W) and switch at once: its block and board stay home"
 api "navigateTo('Edit10')" >/dev/null; waitfor "window.__MINOTES__.getCurrentPage()==='Edit10'"; sleep 1
-"$DC" press "Control+w"; waitfor "!!document.querySelector('canvas.whiteboard-canvas')" 10
+"$DC" press "Control+Shift+w"; waitfor "!!document.querySelector('canvas.whiteboard-canvas')" 10
 NWB10=$(api "getOpenWhiteboardId()")
 ev "$DRAWMODE10" >/dev/null; sleep 0.5
 is "Switch armed" "$(ev "$ARM10")" "armed"
@@ -1792,7 +1792,7 @@ is "Ctrl+click opened Getting Started, the map closed" "$(ev "!!document.querySe
 step "Whiteboard (real mouse): an arrow from box to box stays attached when the box moves"
 ev "(async()=>{$A23 const p=await api.createPage('D23w$S23');await api.createBlock(p.id,'Board below');return 1})()" >/dev/null
 api "navigateTo('D23w$S23')" >/dev/null; waitfor "window.__MINOTES__.getCurrentPage()==='D23w$S23'" 10; sleep 0.5
-"$DC" key Escape; "$DC" key ctrl+w; waitfor "!!document.querySelector('.whiteboard-canvas')" 10; sleep 0.8
+"$DC" key Escape; "$DC" key ctrl+shift+w; waitfor "!!document.querySelector('.whiteboard-canvas')" 10; sleep 0.8
 CV=$(ev "(()=>{const r=document.querySelector('.whiteboard-canvas').getBoundingClientRect();return Math.round(r.left)+' '+Math.round(r.top)})()")
 read -r CX CY <<< "$CV"
 tool23() { rclick23 "[...document.querySelectorAll('.whiteboard-toolbar button')].find(b=>b.textContent==='$1')"; sleep 0.3; }
@@ -1999,7 +1999,7 @@ HOME21=$(nb21)
 
 step "Real clicks: A → B in the sidebar, then the Back arrow; Ctrl+] and Ctrl+[ (real keys)"
 rclick21 "$(row21 'Nav21 B')"; waitfor "window.__MINOTES__.getCurrentPage()==='Nav21 B'" 10
-rclick21 "document.querySelector('[data-testid=nav-back]')"; waitfor "window.__MINOTES__.getCurrentPage()==='Nav21 A'" 10
+rclick21 "document.querySelector('[data-testid=tab-back]')"; waitfor "window.__MINOTES__.getCurrentPage()==='Nav21 A'" 10
 is "Back arrow → Nav21 A" "$(cur21)" "Nav21 A"
 "$DC" shot "d21-back-arrow" >/dev/null
 "$DC" key ctrl+bracketright; waitfor "window.__MINOTES__.getCurrentPage()==='Nav21 B'" 10
@@ -2027,6 +2027,11 @@ is "Now in Other21" "$(nb21)" "Other21"
 "$DC" key ctrl+bracketleft
 waitfor "window.__MINOTES__?.getCurrentPage?.()==='Nav21 A'" 20
 is "Ctrl+[ → back in the first notebook at Nav21 A" "$(nb21)|$(cur21)" "$HOME21|Nav21 A"
+# Whatever Back did, the rest of the journey needs the first notebook (a failure above must not cascade).
+if [[ "$(nb21)" != "$HOME21" ]]; then
+  ev "(async()=>{$A21 const n=(await api.listNotebooks()).find(x=>x.name==='$HOME21');await window.__MINOTES__.switchNotebook(n.key);return 1})()" >/dev/null
+  waitfor "(document.querySelector('[data-testid=notebook-switcher]')?.innerText||'').includes('$HOME21')" 20; sleep 1.5
+fi
 
 step "A typo in search (real typing) finds the page; Enter opens it"
 "$DC" key ctrl+k; waitfor "!!document.querySelector('.command-palette-input')" 10
@@ -2230,6 +2235,117 @@ is "Empty child → Enter outdents → Ctrl+Z restores" "$D1 / $D2 / $D3" "0,1,0
 "$DC" type "Sub24b"; sleep 0.3; "$DC" key Escape; sleep 1.5
 is "Stored outline after all of it" "$(outline24)" "Topic24<-|Detail24<Topic24|Next24<-|Sub24<Next24|Sub24b<Next24"
 "$DC" shot "d24-indent" >/dev/null
+
+# ═══════════════════════════════════════════════
+journey "D25. Tabs under real keys and a real mouse (PRD-tabs §7)"
+# Ctrl+T, Ctrl+Tab, Alt+2, Ctrl+W (X keys); a REAL middle-click (X button 2) on a
+# [[link]] opens a background tab and pastes nothing (the X primary selection is
+# loaded first); the mouse's back button (X button 8) acts on the active tab; the
+# row comes back after an app restart; Ctrl+Shift+W makes a whiteboard; and an
+# encrypted notebook's page titles, shown in tabs, are in no file outside its
+# database (the D13 leak scan, with tabs open).
+# ═══════════════════════════════════════════════
+A25="const api=await import('/src/lib/api.ts');"
+X25="localhost:${DESKTOP_CHECK_DISPLAY:-97}"
+tsum25() { ev "(()=>{const t=window.__MINOTES__.tabs();return t.tabs.length+'|'+t.active+'|'+t.tabs.map(x=>(x.pinned?'*':'')+(x.pageTitle||x.view||x.date||'?')).join(';')})()"; }
+cur25() { api "getCurrentPage()"; }
+xy25() { ev "(()=>{const e=$1;if(!e)return '';e.scrollIntoView({block:'nearest'});const r=e.getBoundingClientRect();return Math.round(r.left+r.width/2)+' '+Math.round(r.top+r.height/2)})()"; }
+blocks25() { db w25 "select group_concat(b.content,' ¦ ') from blocks b join pages p on b.page_id=p.id where p.title='$1' order by b.position"; }
+device w25 || true
+ev "(async()=>{$A25 for(const t of ['Tab25 A','Tab25 B','Tab25 C']){const p=await api.createPage(t);await api.createBlock(p.id,'text of '+t)}const l=await api.createPage('Link25');await api.createBlock(l.id,'go to [[Tab25 B]] now');await api.createBlock(l.id,'second block');return 1})()" >/dev/null
+api "navigateTo('Tab25 A')" >/dev/null; waitfor "window.__MINOTES__.getCurrentPage()==='Tab25 A'" 10; sleep 1
+
+step "Ctrl+T (real key) opens a tab on today's journal"
+"$DC" key ctrl+t; sleep 1.5
+R="$(tsum25)"
+[[ "$R" == 2\|1\|Tab25\ A\;* ]] && [[ "$(cur25)" == Journal/* ]] && pass "Ctrl+T → 2 tabs, the new one active on a journal ($R)" || fail "Ctrl+T" "$R / $(cur25)"
+"$DC" wshot "d25-new-tab" >/dev/null
+
+step "Ctrl+Tab and Alt+2 move between tabs"
+"$DC" key ctrl+Tab; sleep 1
+R1="$(ev "window.__MINOTES__.tabs().active")|$(cur25)"
+"$DC" key alt+2; sleep 1
+R2="$(ev "window.__MINOTES__.tabs().active")|$(cur25)"
+[[ "$R1" == "0|Tab25 A" ]] && pass "Ctrl+Tab wraps to the first tab ($R1)" || fail "Ctrl+Tab" "$R1"
+[[ "$R2" == 1\|Journal/* ]] && pass "Alt+2 → the second tab ($R2)" || fail "Alt+2" "$R2"
+
+step "Ctrl+W closes the active tab; with one tab left it does nothing"
+"$DC" key ctrl+w; sleep 1
+R="$(tsum25)"
+[[ "$R" == "1|0|Tab25 A" ]] && pass "Ctrl+W closed the journal tab ($R)" || fail "Ctrl+W" "$R"
+"$DC" key ctrl+w; sleep 1
+is "Ctrl+W with one tab: still there" "$(tsum25)" "1|0|Tab25 A"
+is "…and the window is still open" "$(cur25)" "Tab25 A"
+
+step "A real middle-click on a [[link]]: a background tab, and nothing is pasted"
+api "navigateTo('Link25')" >/dev/null; waitfor "window.__MINOTES__.getCurrentPage()==='Link25'" 10; sleep 1
+B0="$(blocks25 'Link25')"
+# the X primary selection is what a middle-click pastes on Linux
+DISPLAY="$X25" bash -c 'printf "PASTED25" | xclip -selection primary -i' >/dev/null 2>&1; sleep 0.3
+XY=$(xy25 "document.querySelector('.wiki-link')")
+DISPLAY="$X25" xdotool mousemove $XY sleep 0.3 click 2; sleep 1.5
+R="$(tsum25)"
+[[ "$R" == "2|0|Link25;Tab25 B" ]] && pass "Middle-click → Tab25 B in a background tab, Link25 stays active ($R)" || fail "Middle-click on a link" "$R"
+sleep 1.5
+is "Nothing pasted into the live page" "$(ev "String(document.body.innerText.includes('PASTED25'))")" "false"
+is "Nothing pasted into the stored blocks" "$(blocks25 'Link25')" "$B0"
+is "No block anywhere contains the pasted text" "$(db w25 "select count(*) from blocks where content like '%PASTED25%'")" "0"
+"$DC" wshot "d25-middle-click" >/dev/null
+
+step "The mouse's back button (X button 8) goes back in the ACTIVE tab only"
+api "navigateTo('Tab25 A')" >/dev/null; waitfor "window.__MINOTES__.getCurrentPage()==='Tab25 A'" 10
+XY=$(xy25 "document.querySelector('.main, .main-content, body')")
+DISPLAY="$X25" xdotool mousemove 700 500 sleep 0.3 click 8; sleep 1.2
+R="$(cur25)|$(tsum25)"
+[[ "$R" == "Link25|2|0|Link25;Tab25 B" ]] && pass "Back button → Link25 in tab 1; the other tab untouched ($R)" || fail "Mouse back" "$R"
+DISPLAY="$X25" xdotool mousemove 700 500 sleep 0.3 click 9; sleep 1.2
+is "Forward button → Tab25 A again" "$(cur25)" "Tab25 A"
+
+step "Tabs come back after an app restart: three tabs, the same active one"
+api "openInBackgroundTab('Tab25 C')" >/dev/null; sleep 1
+ev "window.__MINOTES__.activateTab(1)" >/dev/null; sleep 1
+BEFORE="$(tsum25)|$(cur25)"
+sleep 1.5
+"$DC" restart >/dev/null && waitfor "window.__MINOTES__ && !!window.__MINOTES__.navigateTo" 30
+waitfor "window.__MINOTES__.tabs().tabs.length===3" 20 || true; sleep 1.5
+AFTER="$(tsum25)|$(cur25)"
+[[ "$BEFORE" == 3\|* ]] && is "Same tabs, same order, same active tab after a restart" "$AFTER" "$BEFORE" || fail "Tabs before restart" "$BEFORE"
+"$DC" wshot "d25-restored" >/dev/null
+
+step "Ctrl+Shift+W (real keys) starts a whiteboard; Ctrl+W alone does not"
+ev "document.activeElement?.blur()" >/dev/null; sleep 0.3
+N0=$(ev "window.__MINOTES__.tabs().tabs.length")
+"$DC" key ctrl+shift+w; waitfor "!!document.querySelector('canvas')" 10 && pass "Ctrl+Shift+W → a whiteboard canvas" || fail "Ctrl+Shift+W" "no canvas"
+is "…and no tab was closed" "$(ev "window.__MINOTES__.tabs().tabs.length")" "$N0"
+"$DC" key Escape; sleep 0.8
+
+step "Encrypted notebook: page titles shown in tabs are in no file outside its database"
+EH25="$STATE/enc25"; ETMP25="$STATE/enc25-tmp"; EKC25="$STATE/enc25-keychain"
+TMPDIR_ORIG25="${TMPDIR:-}"; rm -rf "$ETMP25" "$EKC25"; mkdir -p "$ETMP25"
+export TMPDIR="$ETMP25" MINOTES_FAKE_KEYCHAIN_DIR="$EKC25"
+device enc25 || true
+PASS25="tabs twenty five staple"
+T1="Quokka25Alpha"; T2="Quokka25Beta"; T3="Quokka25Gamma"
+setv25() { ev "(()=>{const i=document.querySelector('$1');if(!i)return 'no input';const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;set.call(i,'$2');i.dispatchEvent(new Event('input',{bubbles:true}));return 'ok'})()" >/dev/null; }
+leaks25() { grep -rlaF -e "$T1" -e "$T2" -e "$T3" "$EH25" "$ETMP25" "$STATE/app.log" 2>/dev/null | grep -v '/shots/' | head -5; }
+R=$(ev "(async()=>{$A25 const r=await api.createEncryptedNotebook('Vault25',undefined,'$PASS25');const n=await import('/src/lib/notebooks.ts');await n.switchNotebook(r.notebook.key);for(const t of ['$T1','$T2','$T3']){const p=await api.createPage(t);await api.createBlock(p.id,'body of '+t)}return (await api.getNotebookSession()).encrypted})()")
+is "Encrypted notebook created with three pages" "$R" "true"
+api "navigateTo('$T1')" >/dev/null; waitfor "window.__MINOTES__.getCurrentPage()==='$T1'" 10; sleep 1
+api "openInBackgroundTab('$T2')" >/dev/null; sleep 1; api "openInBackgroundTab('$T3')" >/dev/null; sleep 1
+ev "window.__MINOTES__.activateTab(1)" >/dev/null; sleep 2.5
+is "Three tabs are open in the vault" "$(ev "window.__MINOTES__.tabs().tabs.length")" "3"
+C25=$(grep -rlaF -e "Tab25 B" "$STATE/w25/.minotes" 2>/dev/null | head -1)
+[[ -n "$C25" ]] && pass "Control: the same scan does find a title in the plaintext notebook" || fail "Leak scan control" "no hit for a title in the unencrypted notebook"
+L=$(leaks25); [[ -z "$L" ]] && pass "Unlocked, tabs open: no title in any file (HOME, TMPDIR, app log)" || fail "Title found outside the database (open)" "$L"
+"$DC" restart >/dev/null
+waitfor "!!document.querySelector('[data-testid=unlock-screen]')" 30 && pass "The vault opens locked" || fail "Not locked" "$(ev "document.body.innerText.slice(0,160)")"
+is "The locked screen shows no tab title" "$(ev "String(document.body.innerText.includes('Quokka25'))")" "false"
+L=$(leaks25); [[ -z "$L" ]] && pass "Locked after a restart: still no title in any file" || fail "Title found outside the database (locked)" "$L"
+setv25 "[data-testid=unlock-passphrase]" "$PASS25"; "$DC" wclick "[data-testid=unlock-submit]" >/dev/null
+waitfor "!!window.__MINOTES__?.tabs && window.__MINOTES__.tabs().tabs.length===3" 30 && pass "Unlocked: the three tabs are back (saved inside the encrypted database)" || fail "Tabs after unlock" "$(tsum25)"
+L=$(leaks25); [[ -z "$L" ]] && pass "After unlocking and restoring: still no title in any file" || fail "Title found outside the database (restored)" "$L"
+unset MINOTES_FAKE_KEYCHAIN_DIR
+if [[ -n "$TMPDIR_ORIG25" ]]; then export TMPDIR="$TMPDIR_ORIG25"; else unset TMPDIR; fi
 
 # ═══════════════════════════════════════════════
 echo ""

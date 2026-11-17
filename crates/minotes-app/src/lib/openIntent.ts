@@ -25,6 +25,11 @@ export function setOpenInTabHandler(fn: Handler | null): () => void {
   return () => { if (handler === fn) handler = null; };
 }
 
+/** Can a destination open in a new tab here (App registered the handler — not on Android)? */
+export function canOpenInTab(): boolean {
+  return !!handler;
+}
+
 /** True when a tab was opened (callers then skip their normal open). */
 export function openInTab(entry: NavEntry, mode: OpenMode): boolean {
   if (mode === "current" || !handler) return false;

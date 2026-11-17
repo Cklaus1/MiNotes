@@ -49,6 +49,8 @@ export interface AppCommandDeps {
   newTab: () => void;
   /** The tab row as drawn (titles for "Go to tab…"), read when the palette lists. */
   tabItems: () => TabBarItem[];
+  /** The tab row is shown (not on Android): only then are there tab commands. */
+  tabsOn: boolean;
 }
 
 /** Event NotebookSwitcher listens to: open one of its dialogs. */
@@ -92,6 +94,7 @@ export function useAppCommands(d: AppCommandDeps): void {
 
   // Tabs (PRD-tabs §4): read the store when the palette lists / runs them.
   useCommands("tabs", () => {
+    if (!d.tabsOn) return [];
     const snap = () => getTabsSnapshot();
     const several = () => snap().tabs.length > 1;
     const active = () => snap().activeId;
@@ -120,7 +123,7 @@ export function useAppCommands(d: AppCommandDeps): void {
         },
       },
     ];
-  }, [d.newTab, d.tabItems]);
+  }, [d.newTab, d.tabItems, d.tabsOn]);
 
   useCommands("app", () => {
     const page = d.activePage;

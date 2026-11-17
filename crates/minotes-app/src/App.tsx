@@ -48,7 +48,7 @@ import {
 } from "./lib/syncStatus";
 import { listenOutsideEdits, OUTSIDE_PAGES_CHANGED } from "./lib/outsideEdits";
 import {
-  NOTEBOOK_SWITCHED, NOTEBOOKS_CHANGED, setNextExportDest, setNextPickedFolder, setNextZipPick, switchNotebook, useCapabilities,
+  NOTEBOOK_SWITCHED, NOTEBOOKS_CHANGED, platformCapabilities, setNextExportDest, setNextPickedFolder, setNextZipPick, switchNotebook, useCapabilities,
 } from "./lib/notebooks";
 import { OPEN_IN_NOTEBOOK, type OpenInNotebook } from "./lib/crossNotebook";
 import { setPendingReveal } from "./lib/pendingReveal";
@@ -77,9 +77,11 @@ import TabBar from "./components/TabBar";
 import type { TabBarItem } from "./lib/tabBarTypes";
 import {
   activateTab, closeOtherTabs, closeTab, closeTabsToRight, cycleTab, duplicateTab, getTabsSnapshot, goToTab,
-  loadNotebookTabs, moveActiveTab, moveTab, newEmptyTab, newTab, openInNewTab, reopenClosedTab, tabsNotebook,
-  togglePin, useNotebookTabs, useTabs,
+  loadNotebookTabs, MAX_TABS, moveActiveTab, moveTab, newEmptyTab, newTab, openInNewTab, reopenClosedTab,
+  setTooManyTabsHandler, tabsNotebook, togglePin, useTabs,
 } from "./lib/tabs";
+import NavButtons from "./components/NavButtons";
+import { hasOpenLayer } from "./lib/layers";
 import { openInTab, setOpenInTabHandler, type OpenMode } from "./lib/openIntent";
 import { openInNotebook } from "./lib/crossNotebook";
 import { tabLabel } from "./lib/tabLabels";
@@ -158,17 +160,22 @@ export default function App() {
   notebookKeyRef.current = notebookKey;
 
   // ── Tabs (PRD-tabs): lib/tabs.ts holds them (per notebook, ui_state "tabs.v1");
-  // App shows the active tab's place. Android: no tab row (one page at a time).
+  // App shows the active tab's place. Android: no tab row (one page at a time),
+  // back / forward arrows instead, and a notebook's saved tabs are left untouched.
   const tabsOn = !caps.mobile;
   const tabsView = useTabs();
   const { canBack, canForward } = useNavHistory();
-  useNotebookTabs(notebookKey);
+  useEffect(() => { if (notebookKey) void loadTabsHere(notebookKey); }, [notebookKey]);
+  useEffect(() => {
+    setTooManyTabsHandler(() => showToast(`${MAX_TABS} tabs are open — close some to open another`));
+    return () => setTooManyTabsHandler(null);
+  }, []);
   // The notebook the tab store already had when App mounted (remounted after
   // unlocking: its tabs are in memory, App reopens the active one).
   const tabsNotebookAtMount = useRef(tabsNotebook());
-  // A tab opened by "+" with New tabs open → "A new page": a title field, the
-  // page is created when the title is confirmed (an unused tab leaves nothing).
-  const draftTabIds = useRef(new Set<string>());
+  // A tab with nothing in it yet (New tabs open → "A new page", or an empty tab
+  // switched to): a title field, the page is created when the title is
+  // confirmed with Enter (an unused tab leaves nothing).
   const [newPageDraft, setNewPageDraft] = useState(false);
   const [draftTitle, setDraftTitle] = useState("");
   // The tab's page went to the Trash or no longer exists (shown in its place).
@@ -794,7 +801,7 @@ export default function App() {
       // This notebook's tabs first (lib/tabs): restored ones open the active
       // tab's page themselves. Back/forward into this notebook, a link, "Unlock
       // and open", "Create page in…": that step. Otherwise today's journal.
-      void loadNotebookTabs(key).then(() => {
+      void loadTabsHere(key).then(() => {
         const step = takePendingNav(key);
         if (step) runNavRef.current(step);
         else if (!activeTabHasPlace()) openJournal().catch(() => {});
@@ -1030,12 +1037,12 @@ export default function App() {
       // Cmd/Ctrl+T — new tab; Cmd/Ctrl+W — close the tab (never the last one)
       if (key === "t" && plain && tabsOn) {
         e.preventDefault();
-        if (!isConfirmOpen() && !isBusy()) openNewTabRef.current();
+        if (!tabKeysBlocked()) openNewTabRef.current();
       }
       if (key === "w" && plain && tabsOn) {
         e.preventDefault();
         const snap = getTabsSnapshot();
-        if (!isConfirmOpen() && !isBusy() && snap.tabs.length > 1) closeTab(snap.activeId);
+        if (!tabKeysBlocked() && snap.tabs.length > 1) closeTab(snap.activeId);
       }
       // Cmd/Ctrl+Shift+W — new whiteboard / toggle draw mode
       if (key === "w" && e.shiftKey && !e.altKey && appChord) {
@@ -1124,6 +1131,11 @@ export default function App() {
   useEffect(() => { noteLocation(navLocation); }, [navKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const runNav = useCallback(async (e: NavEntry) => {
+    // This step is the latest navigation: one started before it (a page still
+    // loading when Ctrl+Tab moved on) is dropped, and this one gives way to any
+    // later one at each await.
+    const token = ++navTokenRef.current;
+    const superseded = () => token !== navTokenRef.current;
     // A tab switch closes what is open over the page (palette, overlays); "+"
     // with New tabs open → Search opens the palette over the new tab.
     setOpenPanel(openSearchAfterNavRef.current ? "search" : null);
@@ -1143,20 +1155,23 @@ export default function App() {
       // A page that is gone or in the Trash is not opened again by Back or a
       // tab: the tab shows why, in place of the page (Restore / Close tab).
       const gone = (kind: "trash" | "missing") => {
+        if (superseded()) return;
         ++navTokenRef.current;
         setActivePage(null);
         setPendingJournalDate(null);
         setGoneNotice({ kind, pageId: e.pageId!, title: label });
         cancelNavStep();
       };
-      const trashed = await api.listTrash().catch(() => [] as api.TrashItem[]);
-      if (trashed.some(t => t.id === e.pageId)) { gone("trash"); return; }
+      let tree: api.PageTree;
       try {
-        await api.getPageTree(e.pageId);
+        tree = await api.getPageTree(e.pageId);
       } catch {
         gone("missing");
         return;
       }
+      if (superseded()) return;
+      if (await isTrashed(tree.page)) { gone("trash"); return; }
+      if (superseded()) return;
       await openPage(e.pageId);
       return;
     }
@@ -1166,11 +1181,13 @@ export default function App() {
       try {
         await api.getPageTree(e.title);
       } catch {
+        if (superseded()) return;
         showToast(`This notebook has no page “${e.title}”`);
         cancelNavStep();
         openJournal().catch(() => {});
         return;
       }
+      if (superseded()) return;
     }
     await openPage(e.title);
   }, [openPage, openJournal]);
@@ -1187,7 +1204,7 @@ export default function App() {
     if (!key) return;
     const dest = getSettings().newTabOpens;
     if (dest === "pages") { newTab({ notebook: key, kind: "view", view: "pages" }); return; }
-    if (dest === "page") { draftTabIds.current.add(newEmptyTab()); return; }
+    if (dest === "page") { newEmptyTab(); return; }
     try {
       const today = await api.getJournal(localDateKey());
       if (dest === "search") openSearchAfterNavRef.current = true;
@@ -1227,27 +1244,35 @@ export default function App() {
   const [titlesTick, setTitlesTick] = useState(0);
   useEffect(() => {
     const bump = () => setTitlesTick(t => t + 1);
-    window.addEventListener("minotes-sidebar-refresh", bump);
-    window.addEventListener(OUTSIDE_PAGES_CHANGED, bump);
-    return () => {
-      window.removeEventListener("minotes-sidebar-refresh", bump);
-      window.removeEventListener(OUTSIDE_PAGES_CHANGED, bump);
-    };
+    const events = ["minotes-sidebar-refresh", "minotes-page-renamed", OUTSIDE_PAGES_CHANGED];
+    for (const ev of events) window.addEventListener(ev, bump);
+    return () => { for (const ev of events) window.removeEventListener(ev, bump); };
   }, []);
+  // Fetched when a tab shows a page the map doesn't know yet, or on a rename /
+  // refresh / outside-edit event — not on every stats refresh.
+  const tabPageIds = [...new Set(tabsView.tabs.flatMap(t => (!t.foreign && t.entry?.kind === "page" && t.entry.pageId ? [t.entry.pageId] : [])))].sort().join(",");
+  const pageTitlesRef = useRef(pageTitles);
+  pageTitlesRef.current = pageTitles;
+  const titlesFetchedTick = useRef(-1);
   const severalTabs = tabsView.tabs.length > 1;
   useEffect(() => {
-    if (!severalTabs || !tabsOn) return;
+    if (!severalTabs || !tabsOn || !tabPageIds) return;
+    const unknown = tabPageIds.split(",").some(id => !pageTitlesRef.current.has(id));
+    if (!unknown && titlesFetchedTick.current === titlesTick) return;
     let live = true;
-    api.getFolderTree().then(tree => {
-      if (!live) return;
-      const m = new Map<string, string>();
-      tree.root_pages.forEach(p => m.set(p.id, p.title));
-      const walk = (fs: api.FolderTree[]) => { for (const f of fs) { f.pages.forEach(p => m.set(p.id, p.title)); walk(f.children ?? []); } };
-      walk(tree.folders);
-      setPageTitles(m);
-    }).catch(() => {});
-    return () => { live = false; };
-  }, [severalTabs, tabsOn, stats, titlesTick, notebookKey]);
+    const t = setTimeout(() => {
+      titlesFetchedTick.current = titlesTick;
+      api.getFolderTree().then(tree => {
+        if (!live) return;
+        const m = new Map<string, string>();
+        tree.root_pages.forEach(p => m.set(p.id, p.title));
+        const walk = (fs: api.FolderTree[]) => { for (const f of fs) { f.pages.forEach(p => m.set(p.id, p.title)); walk(f.children ?? []); } };
+        walk(tree.folders);
+        setPageTitles(m);
+      }).catch(() => {});
+    }, 150); // a burst of refresh events: one fetch
+    return () => { live = false; clearTimeout(t); };
+  }, [severalTabs, tabsOn, tabPageIds, titlesTick, notebookKey]);
 
   const todayKey = localDateKey();
   const tabItems: TabBarItem[] = tabsView.tabs.map(t => {
@@ -1256,6 +1281,9 @@ export default function App() {
       // The shown page's own title is the freshest (a rename right here).
       : active && activePage && t.entry?.kind === "page" && t.entry.pageId === activePage.page.id
         ? tabLabel({ ...t.entry, title: activePage.page.title }, { today: todayKey })
+        // Another notebook's place (its tabs still loading, or a step on its way):
+        // never its title — it may be a locked notebook's.
+        : t.foreign ? foreignTabLabel(t.entry)
         : tabLabel(t.entry, { titles: pageTitles, today: todayKey });
     return { id: t.id, pinned: t.pinned, ...label };
   });
@@ -1265,7 +1293,7 @@ export default function App() {
 
   // A "new page" tab shows its title field (also when switched back to).
   const activeTabView = tabsView.tabs.find(t => t.id === tabsView.activeId);
-  const activeIsDraft = !!activeTabView && !activeTabView.entry && draftTabIds.current.has(activeTabView.id);
+  const activeIsDraft = tabsOn && !!activeTabView && !activeTabView.entry && activeTabView.draft;
   useEffect(() => {
     if (!activeIsDraft) { setNewPageDraft(false); return; }
     ++navTokenRef.current;
@@ -1289,10 +1317,12 @@ export default function App() {
   useEffect(() => {
     if (!tabsOn) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.defaultPrevented || isConfirmOpen() || isBusy()) return;
+      if (e.defaultPrevented || tabKeysBlocked()) return;
       const ctrl = e.ctrlKey || e.metaKey;
       const page = e.key === "PageDown" ? 1 : e.key === "PageUp" ? -1 : 0;
-      const digit = e.altKey && !ctrl && !e.shiftKey
+      // Alt+1…9. On macOS Option+digit types a character (¡ ™ £ …): there it
+      // only switches tabs outside text fields and editors.
+      const digit = e.altKey && !ctrl && !e.shiftKey && !(IS_MAC && isTypingTarget(e.target))
         ? Number(/^Digit([1-9])$/.exec(e.code)?.[1] ?? (/^[1-9]$/.test(e.key) ? e.key : 0))
         : 0;
       let act: (() => void) | null = null;
@@ -1373,6 +1403,7 @@ export default function App() {
     refresh,
     newTab: () => { void openNewTab(); },
     tabItems: getTabItems,
+    tabsOn,
   });
 
   // Window title: "Page — Notebook — MiNotes", following navigation, the view
@@ -1452,7 +1483,7 @@ export default function App() {
       const key = (await api.getCurrentNotebook().catch(() => "")) ?? "";
       // The notebook's saved tabs first, so the journal never flashes before
       // the restored tab's page (the load opens it).
-      await loadNotebookTabs(key);
+      await loadTabsHere(key);
       // Mounted after an unlock that was a step into this notebook (Back, or
       // "Unlock and open" on a link): go there instead of the journal.
       const step = takePendingNav(key);
@@ -1518,6 +1549,11 @@ export default function App() {
       )}
       <div className="main workspace-split mod-root" style={{ position: "relative", display: "flex", flexDirection: "row" }}>
         <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }}>
+          {!tabsOn && (
+            <div className="nav-buttons-bar">
+              <NavButtons />
+            </div>
+          )}
           {tabsOn && (
             <TabBar
               tabs={tabItems}
@@ -1804,11 +1840,55 @@ export default function App() {
   );
 }
 
+/**
+ * Load notebook `key`'s tabs — not on Android, which has no tab row: a notebook
+ * opened there keeps its saved tabs untouched (PRD-tabs §4.9).
+ */
+async function loadTabsHere(key: string): Promise<void> {
+  if ((await platformCapabilities()).mobile) return;
+  await loadNotebookTabs(key);
+}
+
+const IS_MAC = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+
+/** A text field or an editor (where a key types a character). */
+function isTypingTarget(t: EventTarget | null): boolean {
+  const el = t as HTMLElement | null;
+  if (!el || !el.tagName) return false;
+  return el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable
+    || !!el.closest?.(".ProseMirror, .cm-editor");
+}
+
+/** Tab keys do nothing while a dialog, menu or popover is open, or the app is busy. */
+function tabKeysBlocked(): boolean {
+  return isConfirmOpen() || isBusy() || hasOpenLayer(["dialog", "menu", "popover"]);
+}
+
+/** A tab whose place is another notebook's: its kind, never its title. */
+function foreignTabLabel(e: NavEntry | null): { icon: "journal" | "external"; title: string; fullTitle: string } {
+  const title = "In another notebook";
+  return { icon: e?.kind === "journal-day" ? "journal" : "external", title, fullTitle: title };
+}
+
+/**
+ * Is this page in the Trash? Without listing the Trash on every tab switch: a
+ * live page is found by its title (the title lookup leaves out hidden pages —
+ * trashed or archived); only a hidden one is looked up in the Trash.
+ */
+async function isTrashed(page: api.Page): Promise<boolean> {
+  const live = await api.findPagesByTitle(page.title, 5).catch(() => null);
+  if (!live || live.some(p => p.id === page.id)) return false;
+  const trashed = await api.listTrash().catch(() => [] as api.TrashItem[]);
+  return trashed.some(t => t.id === page.id);
+}
+
 /** Does the active tab have a place to show (restored tabs, or one already visited)? */
 function activeTabHasPlace(): boolean {
   const s = getTabsSnapshot();
   const t = s.tabs.find(x => x.id === s.activeId);
-  return !!t && t.index >= 0 && !!t.entries[t.index];
+  const e = t && t.index >= 0 ? t.entries[t.index] : null;
+  // The place the user came from in another notebook (kept for Back) is not a place here.
+  return !!e && (!e.notebook || e.notebook === tabsNotebook());
 }
 
 /**

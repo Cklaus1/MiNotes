@@ -351,7 +351,7 @@ export default function AllPagesView({ activePageId, onPageClick, onClose, onTra
                   onAuxClick={e => { if (e.button === 1) { e.preventDefault(); openInTab(pageEntry(page), "background"); } }}
                   onClick={e => {
                     if (openInTab(pageEntry(page), openModeFrom(e))) { e.preventDefault(); return; }
-                    if (e.shiftKey || e.ctrlKey || e.metaKey) { e.preventDefault(); toggle(page.id, e.shiftKey); return; }
+                    if (e.shiftKey) { e.preventDefault(); toggle(page.id, true); return; } // a range (Ctrl+click opens a tab)
                     onPageClick(page.id);
                   }}
                   onContextMenu={e => { e.preventDefault(); setMenu({ x: e.clientX, y: e.clientY, ids: checked && chosen.length > 1 ? chosen.map(c => c.id) : [page.id], mode: "actions" }); }}

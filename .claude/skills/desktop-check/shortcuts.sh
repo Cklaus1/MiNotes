@@ -73,7 +73,9 @@ for ctx in neutral editor; do
   t "Ctrl+N" Control+n ctrl+n $ctx "New Page" "" 'window.__sig.dialogs.length > window.__b.dialogs'
   t "Ctrl+G" Control+g ctrl+g $ctx "Graph" "" "$(canvas_is Graph)"
   t "Ctrl+M" Control+m ctrl+m $ctx "Mind Map" "" "$(canvas_is Mind)"
-  t "Ctrl+W" Control+w ctrl+w $ctx "Draw (new whiteboard)" "" "$(canvas_is Draw)"
+  t "Ctrl+Shift+W" Control+Shift+W ctrl+shift+w $ctx "Draw (new whiteboard)" "" "$(canvas_is Draw)"
+  t "Ctrl+T" Control+t ctrl+t $ctx "New tab (tab row)" 'ev "(window.__t0 = window.__MINOTES__.tabs().tabs.length, 1)"' 'window.__MINOTES__.tabs().tabs.length === window.__t0 + 1'
+  t "Ctrl+W" Control+w ctrl+w $ctx "Close tab (tab row)" 'ev "(window.__MINOTES__.newTab(), window.__t0 = window.__MINOTES__.tabs().tabs.length, 1)"; sleep 0.6' 'window.__MINOTES__.tabs().tabs.length === window.__t0 - 1'
   t "Ctrl+Shift+K" Control+Shift+K ctrl+shift+k $ctx "Kanban" "" "$(canvas_is Kanban)"
   t "Ctrl+," Control+, ctrl+comma $ctx "Settings" "" 'window.__MINOTES__.isPanelOpen("settings")'
   t "Ctrl+Q" Control+q ctrl+q $ctx "SQL Query Panel (palette hint)" "" 'window.__MINOTES__.isPanelOpen("query")'
@@ -173,7 +175,7 @@ for r in rows:
 for r in rows:
     if r[0] == "Esc" and r[1] == "editor" and "outdents" in r[2] and r[3] == "works":
         print("- `Esc` is advertised as “Close”, but inside a nested block it **outdents** the block and keeps editing (useBlockEditor.ts).")
-os_conv = {"Ctrl+W": "close window/tab", "Ctrl+Q": "quit the application (Linux/GNOME convention)", "Ctrl+R": "reload",
+os_conv = {"Ctrl+Q": "quit the application (Linux/GNOME convention)", "Ctrl+R": "reload",
            "Ctrl+P": "print", "Ctrl+N": "new window", "Ctrl+J": "downloads (browsers)", "Ctrl+Shift+T": "reopen closed tab",
            "Ctrl+M": "minimise (macOS Cmd+M)", "Ctrl+E": "search bar (browsers)", "Ctrl+K": "insert link (most editors)"}
 for c, conv in os_conv.items():

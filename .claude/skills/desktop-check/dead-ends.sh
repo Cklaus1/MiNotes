@@ -139,8 +139,8 @@ probe "CSS snippets (palette command)"     neutral yes 'palette_cmd CSS' 'window
 probe "Graph view (Ctrl+G)"                neutral no  'press Control+g 1.5' '(document.querySelector(".canvas-mode-btn.active")?.innerText || "").includes("Graph") ? document.querySelector(".canvas-layer") : null'
 probe "Mind map (Ctrl+M)"                  neutral no  'press Control+m 1.5' '(document.querySelector(".canvas-mode-btn.active")?.innerText || "").includes("Mind") ? document.querySelector(".canvas-layer") : null'
 probe "Kanban (Ctrl+Shift+K)"              neutral no  'press Control+Shift+K 1.5' '(document.querySelector(".canvas-mode-btn.active")?.innerText || "").includes("Kanban") ? document.querySelector(".canvas-layer") : null'
-probe "Whiteboard / Draw (Ctrl+W)"         neutral no  'press Control+w 2' '(document.querySelector(".canvas-mode-btn.active")?.innerText || "").includes("Draw") ? document.querySelector(".canvas-layer") : null'
-probe "Whiteboard, a drawing tool armed"   neutral no  'press Control+w 2; rclick "window.__sig.byText(\".canvas-layer button\", \"Box\")" 0.5' '(document.querySelector(".canvas-mode-btn.active")?.innerText || "").includes("Draw") ? document.querySelector(".canvas-layer") : null'
+probe "Whiteboard / Draw (Ctrl+Shift+W)"         neutral no  'press Control+Shift+w 2' '(document.querySelector(".canvas-mode-btn.active")?.innerText || "").includes("Draw") ? document.querySelector(".canvas-layer") : null'
+probe "Whiteboard, a drawing tool armed"   neutral no  'press Control+Shift+w 2; rclick "window.__sig.byText(\".canvas-layer button\", \"Box\")" 0.5' '(document.querySelector(".canvas-mode-btn.active")?.innerText || "").includes("Draw") ? document.querySelector(".canvas-layer") : null'
 probe "All pages (sidebar button)"         neutral no  'rclick "window.__sig.byText(\".stats-mode-btn\", \"Pages\")" 1.2' '(document.querySelector(".canvas-mode-btn.active")?.innerText || "").includes("Pages") ? document.querySelector(".canvas-layer") : null'
 # Ctrl+P opens the native file picker (or a recent-PDFs list), which a probe
 # can't drive: open the viewer through the test API instead.

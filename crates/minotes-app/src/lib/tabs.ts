@@ -8,7 +8,7 @@
  * `exportHistory()` whenever it is read, and swapped with `importHistory()`
  * when another tab is activated.
  *
- * Tabs are per notebook: `useNotebookTabs(key)` loads the open notebook's tabs
+ * Tabs are per notebook: `loadNotebookTabs(key)` (App, not on Android) loads the open notebook's tabs
  * from its `ui_state` ("tabs.v1" — encrypted with an encrypted notebook, never
  * localStorage) and saves them back debounced (≤ 1 write per second, and at
  * once in the save barrier, i.e. before a notebook switch or lock).
@@ -18,7 +18,7 @@
  * live history is spliced onto that notebook's active tab, so Back returns to
  * the source notebook (and Forward from there comes back).
  */
-import { useEffect, useSyncExternalStore } from "react";
+import { useSyncExternalStore } from "react";
 import * as api from "./api";
 import {
   exportHistory, goToCurrent, importHistory, isRestoring, pendingNav, sameEntry,
@@ -26,9 +26,17 @@ import {
 } from "./navHistory";
 import { registerFlush } from "./pendingEdits";
 
-export interface Tab { id: string; entries: NavEntry[]; index: number; pinned: boolean }
-/** What the tab row draws: `entry` is the tab's current location (null = not visited yet). */
-export interface TabView { id: string; pinned: boolean; entry: NavEntry | null }
+/**
+ * `draft`: a tab with nothing in it yet that shows the "new page" title field
+ * (New tabs open → "A new page", or an empty tab switched to). Never saved.
+ */
+export interface Tab { id: string; entries: NavEntry[]; index: number; pinned: boolean; draft?: boolean }
+/**
+ * What the tab row draws: `entry` is the tab's current location (null = not
+ * visited yet); `foreign` = that entry is another notebook's (its title must
+ * not be shown — the tabs are loading, or a cross-notebook step is on its way).
+ */
+export interface TabView { id: string; pinned: boolean; entry: NavEntry | null; draft: boolean; foreign: boolean }
 /** One notebook's tabs (what is saved in its ui_state). */
 export interface TabsState { notebook: string; tabs: Tab[]; activeId: string }
 
@@ -39,7 +47,17 @@ export const TABS_UI_KEY = "tabs.v1";
 export const MAX_SAVED_ENTRIES = 50;
 /** Closed tabs "Reopen closed tab" remembers (per notebook, in memory only). */
 export const MAX_CLOSED = 10;
+/** Open tabs at most (opening more says so and does nothing). */
+export const MAX_TABS = 100;
 const SAVE_DELAY_MS = 1000;
+/**
+ * After the save barrier (a notebook switch or lock is about to happen) no
+ * debounced write starts for that notebook until its tabs are unloaded — or,
+ * when nothing switched (the switch failed, a lock), until this long has passed.
+ */
+export const BARRIER_HOLD_MS = 8000;
+/** A failed read of a notebook's tabs (not a lock) is retried once after this. */
+const LOAD_RETRY_MS = 1500;
 
 // ── State ──
 
@@ -63,6 +81,19 @@ let loading = false;
 let loadToken = 0;
 /** What was pending when the save barrier last ran (just before a notebook switch). */
 let pendingAtFlush: NavEntry | null = null;
+/** The save barrier ran for `notebook`: writes for it wait (see BARRIER_HOLD_MS). */
+let hold: { notebook: string; timer: ReturnType<typeof setTimeout> } | null = null;
+/**
+ * Tabs opened by links from tab `anchor` one after another go after the last
+ * of them (`last`), so they keep click order (as in browsers). Over once
+ * another tab is activated or the anchor tab moves on from `at`.
+ */
+let bgRun: { anchor: string; last: string; at: NavEntry | null } | null = null;
+
+function liveCurrent(): NavEntry | null {
+  const h = exportHistory();
+  return h.entries[h.index] ?? null;
+}
 
 let version = 0;
 const listeners = new Set<() => void>();
@@ -75,6 +106,10 @@ function emit() {
 
 subscribeNavHistory(() => {
   if (!isRestoring()) settledIndex = exportHistory().index;
+  // The step the barrier saw was cancelled or failed (navHistory dropped it):
+  // a later plain switch into that notebook must not count as its arrival.
+  if (pendingAtFlush && !pendingNav()) pendingAtFlush = null;
+  if (bgRun && !sameEntry(liveCurrent(), bgRun.at)) bgRun = null; // the tab went elsewhere
   emit();
 });
 
@@ -97,12 +132,17 @@ function swapTo(id: string) {
   syncActive();
   const t = tabs.find(x => x.id === id);
   if (!t) return;
+  bgRun = null;
+  // Switched to a tab with nothing in it: it shows the new-page field, never
+  // the page that was open before.
+  if (!currentEntry(t)) t.draft = true;
   activeId = id;
   importHistory({ entries: t.entries, index: t.index });
   settledIndex = exportHistory().index;
 }
 
 function pushClosed(t: Tab, position: number) {
+  if (!currentEntry(t)) return; // an empty tab: nothing to reopen
   closed.push({ tab: cloneTab(t), position });
   if (closed.length > MAX_CLOSED) closed = closed.slice(closed.length - MAX_CLOSED);
 }
@@ -112,11 +152,31 @@ function regroup() {
   tabs = [...tabs.filter(t => t.pinned), ...tabs.filter(t => !t.pinned)];
 }
 
-/** Where a new tab goes: right after the active one (after the pinned group if it is pinned). */
-function insertionIndex(): number {
+/**
+ * Where a new tab goes: right after the active one (after the pinned group if
+ * it is pinned). `fromLink`: after the tabs already opened from the active one
+ * by links (click order, as browsers do).
+ */
+function insertionIndex(fromLink = false): number {
   const i = findIndex(activeId);
   if (i < 0) return tabs.length;
+  if (fromLink && bgRun?.anchor === activeId) {
+    const j = findIndex(bgRun.last);
+    if (j >= 0 && !tabs[j].pinned) return j + 1;
+  }
   return tabs[i].pinned ? pinnedCount() : i + 1;
+}
+
+let tooManyHandler: (() => void) | null = null;
+/** App: what to do when a tab can't be opened because MAX_TABS are open (a toast). */
+export function setTooManyTabsHandler(fn: (() => void) | null): void {
+  tooManyHandler = fn;
+}
+/** At the cap: says so (App's toast) and returns true. */
+function atCap(): boolean {
+  if (tabs.length < MAX_TABS) return false;
+  tooManyHandler?.();
+  return true;
 }
 
 // ── Public API ──
@@ -129,11 +189,20 @@ export function activateTab(id: string): void {
   void goToCurrent();
 }
 
-/** Open `entry` in a new tab next to the active one; `activate` switches to it. Returns its id. */
+/**
+ * Open `entry` in a new tab next to the active one (after the ones already
+ * opened from it); `activate` switches to it. Returns its id ("" at MAX_TABS).
+ */
 export function openInNewTab(entry: NavEntry, opts: { activate: boolean }): string {
+  return addTab(entry, opts.activate, true);
+}
+
+function addTab(entry: NavEntry, activate: boolean, fromLink: boolean): string {
+  if (atCap()) return "";
   const t: Tab = { id: newId(), entries: [{ ...entry }], index: 0, pinned: false };
-  tabs.splice(insertionIndex(), 0, t);
-  if (opts.activate) {
+  tabs.splice(insertionIndex(fromLink), 0, t);
+  if (fromLink) bgRun = { anchor: activeId, last: t.id, at: liveCurrent() };
+  if (activate) {
     swapTo(t.id);
     emit();
     void goToCurrent();
@@ -145,7 +214,7 @@ export function openInNewTab(entry: NavEntry, opts: { activate: boolean }): stri
 
 /** "+" / Ctrl+T: a new tab after the active one, switched to. */
 export function newTab(entry: NavEntry): string {
-  return openInNewTab(entry, { activate: true });
+  return addTab(entry, true, false);
 }
 
 /**
@@ -153,7 +222,8 @@ export function newTab(entry: NavEntry): string {
  * title field there). Switched to; nothing is navigated. Not saved while empty.
  */
 export function newEmptyTab(): string {
-  const t: Tab = { id: newId(), entries: [], index: -1, pinned: false };
+  if (atCap()) return "";
+  const t: Tab = { id: newId(), entries: [], index: -1, pinned: false, draft: true };
   tabs.splice(insertionIndex(), 0, t);
   swapTo(t.id);
   emit();
@@ -212,7 +282,7 @@ export function togglePin(id: string): void {
 export function duplicateTab(id: string): void {
   syncActive();
   const i = findIndex(id);
-  if (i < 0) return;
+  if (i < 0 || atCap()) return;
   const copy: Tab = { ...cloneTab(tabs[i]), id: newId(), pinned: false };
   tabs.splice(tabs[i].pinned ? pinnedCount() : i + 1, 0, copy);
   swapTo(copy.id);
@@ -222,8 +292,8 @@ export function duplicateTab(id: string): void {
 
 /** Bring back the last closed tab (with its history) where it was, and switch to it. */
 export function reopenClosedTab(): void {
-  const c = closed.pop();
-  if (!c) return;
+  if (closed.length === 0 || atCap()) return;
+  const c = closed.pop()!;
   const t = cloneTab(c.tab);
   if (findIndex(t.id) >= 0) t.id = newId();
   const pc = pinnedCount();
@@ -295,7 +365,10 @@ let viewCache: { version: number; value: { tabs: TabView[]; activeId: string; ca
 function viewSnapshot() {
   if (viewCache?.version === version) return viewCache.value;
   const value = {
-    tabs: liveTabs().map(t => ({ id: t.id, pinned: t.pinned, entry: currentEntry(t) })),
+    tabs: liveTabs().map(t => {
+      const entry = currentEntry(t);
+      return { id: t.id, pinned: t.pinned, entry, draft: !!t.draft, foreign: !!notebook && !!entry?.notebook && entry.notebook !== notebook };
+    }),
     activeId,
     canReopen: closed.length > 0,
   };
@@ -443,6 +516,8 @@ function stateForSave(): TabsState {
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 let dirty = false;
+/** The write under way (the barrier and a load wait for it). */
+let writing: Promise<void> | null = null;
 
 function scheduleSave() {
   if (!notebook || loading) return;
@@ -450,28 +525,79 @@ function scheduleSave() {
   if (!saveTimer) saveTimer = setTimeout(() => { void writeNow(); }, SAVE_DELAY_MS);
 }
 
-async function writeNow(): Promise<void> {
+const heldFor = (key: string) => !!hold && hold.notebook === key;
+
+function releaseHold() {
+  if (!hold) return;
+  clearTimeout(hold.timer);
+  hold = null;
+}
+
+/** Wait for the write under way (and one started meanwhile). */
+async function settleWrites(): Promise<void> {
+  while (writing) await writing;
+}
+
+/**
+ * Write unsaved tab changes into the open notebook's ui_state. `barrier`: the
+ * save barrier's own write; otherwise nothing is written while the barrier
+ * holds this notebook (a switch may be about to swap the database).
+ */
+async function writeNow(barrier = false): Promise<void> {
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = null;
+  await settleWrites();
   if (!dirty || !notebook || loading) return;
+  if (!barrier && heldFor(notebook)) return; // stays dirty: written after the hold
   dirty = false;
   const key = notebook;
   const json = serializeTabs(stateForSave());
-  // Only into the notebook the tabs belong to (the backend may have switched).
-  const current = await api.getCurrentNotebook().catch(() => null);
-  if (current !== key) return;
-  await api.setUiState(TABS_UI_KEY, json).catch(() => { /* best effort: the next change retries */ });
+  const p = (async () => {
+    // Only into the notebook the tabs belong to. The check and the write are
+    // not atomic: the barrier waits for this write before any switch runs,
+    // and no write starts after the barrier (the hold), so nothing can switch
+    // in between.
+    const current = await api.getCurrentNotebook().catch(() => null);
+    if (current !== key) return;
+    await api.setUiState(TABS_UI_KEY, json).catch(() => { /* best effort: the next change retries */ });
+  })();
+  writing = p;
+  try {
+    await p;
+  } finally {
+    if (writing === p) writing = null;
+  }
 }
 
-/** Write any unsaved tab changes now (the save barrier runs this before a notebook switch / lock). */
+/** Write unsaved tab changes now, as the debounce timer would (not while the barrier holds). */
 export function flushTabs(): Promise<void> {
   return writeNow();
 }
 
-registerFlush(() => {
+/**
+ * The save barrier (before a notebook switch or lock): what a step was waiting
+ * for, the last write (after the one under way), then a hold — no further write
+ * for this notebook until it is unloaded or BARRIER_HOLD_MS have passed.
+ */
+async function barrierFlush(): Promise<void> {
   pendingAtFlush = pendingNav();
-  return writeNow();
-});
+  const key = notebook;
+  if (key) {
+    if (hold) clearTimeout(hold.timer);
+    const timer = setTimeout(() => {
+      // Nothing switched (a failed switch, a lock): saving resumes.
+      if (hold?.timer !== timer) return;
+      hold = null;
+      pendingAtFlush = null;
+      if (dirty) scheduleSave();
+    }, BARRIER_HOLD_MS);
+    hold = { notebook: key, timer };
+  }
+  await writeNow(true);
+  await settleWrites();
+}
+
+registerFlush(barrierFlush);
 
 // ── Notebooks ──
 
@@ -505,7 +631,8 @@ let loadPromise: Promise<void> = Promise.resolve();
 
 /**
  * Load notebook `key`'s tabs (saving the previous notebook's first). See
- * `useNotebookTabs`. Already loaded / loading: the load under way (so App can
+ * App calls it on every notebook (re)open (one tab whose entry App's first
+ * `noteLocation` fills when nothing was saved). Already loaded / loading: the load under way (so App can
  * await it before choosing the first page).
  */
 export function loadNotebookTabs(key: string): Promise<void> {
@@ -514,13 +641,15 @@ export function loadNotebookTabs(key: string): Promise<void> {
   return loadPromise;
 }
 
-async function loadTabsOf(key: string): Promise<void> {
+async function loadTabsOf(key: string, retry = true): Promise<void> {
   const token = ++loadToken;
   // The previous notebook: the save barrier wrote it before the switch; keep its closed stack.
   if (notebook) closedByNotebook.set(notebook, closed);
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = null;
   dirty = false;
+  releaseHold();
+  bgRun = null;
   const p = pendingNav() ?? pendingAtFlush;
   pendingAtFlush = null;
   const before = exportHistory();
@@ -535,12 +664,27 @@ async function loadTabsOf(key: string): Promise<void> {
   emit();
   let saved: TabsState | null = null;
   try {
+    // A write that started before the switch has landed (or not) before we read.
+    await settleWrites();
     const json = await api.getUiState(TABS_UI_KEY);
     saved = json ? parseTabs(json, key) : null;
-  } catch {
-    // Unreadable (a notebook that opened locked): not loaded — nothing is saved
-    // over its tabs, and the next open (after unlocking) loads them.
-    if (token === loadToken) { loading = false; notebook = ""; }
+  } catch (err) {
+    // Unreadable: not loaded — nothing is saved over its tabs. A notebook that
+    // opened locked loads them on the next open (after unlocking); any other
+    // failure is retried once a little later.
+    if (token !== loadToken) return;
+    loading = false;
+    notebook = "";
+    if (retry && !/NOTEBOOK_LOCKED/i.test(String((err as { message?: string })?.message ?? err))) {
+      setTimeout(() => {
+        if (token !== loadToken || notebook) return; // something else loaded meanwhile
+        void api.getCurrentNotebook().then(cur => {
+          if (cur === key && token === loadToken && !notebook) {
+            loadPromise = loadTabsOf(key, false);
+          }
+        }).catch(() => {});
+      }, LOAD_RETRY_MS);
+    }
     return;
   }
   if (token !== loadToken) return;
@@ -548,16 +692,34 @@ async function loadTabsOf(key: string): Promise<void> {
   const live = exportHistory();
   const restoredActive = saved?.tabs.find(t => t.id === saved!.activeId) ?? null;
   let history: { entries: NavEntry[]; index: number };
+  // Where the user was in the previous notebook (a switch while the app runs —
+  // the switcher, the palette): Back returns there, as it did before tabs.
+  const cur = currentEntry(live);
+  const from = cur && cur.notebook && cur.notebook !== key ? cur : null;
   if (byNav) {
     history = arrive(restoredActive, live, key);
   } else if (restoredActive) {
-    history = { entries: restoredActive.entries, index: restoredActive.index };
+    const i = restoredActive.index;
+    const es = restoredActive.entries;
+    if (from && i >= 0) {
+      // Back returns to `from`. Coming back and forth: the copy saved last
+      // time is replaced by the latest place, never piled up.
+      const keep = i > 0 && sameEntry(es[i - 1], from) ? i - 1 : i;
+      const entries = [...es.slice(0, keep), from, ...es.slice(i)];
+      history = { entries, index: keep + 1 };
+    } else {
+      history = { entries: es, index: restoredActive.index };
+    }
   } else {
-    // A fresh notebook: what App opened here (the trailing run of this notebook's places).
+    // A fresh notebook: what App opened here (the trailing run of this notebook's
+    // places), after the place the user came from in another notebook.
     let s = live.index;
     if (s >= 0 && live.entries[s]?.notebook === key) {
       while (s > 0 && live.entries[s - 1].notebook === key) s--;
+      if (s > 0) s--; // the other notebook's place just before the run
       history = { entries: live.entries.slice(s, live.index + 1), index: live.index - s };
+    } else if (from) {
+      history = { entries: [from], index: 0 }; // App's first location here is appended
     } else {
       history = { entries: [], index: -1 };
     }
@@ -576,17 +738,6 @@ async function loadTabsOf(key: string): Promise<void> {
   if (!byNav && restoredActive && !sameEntry(currentEntry(live), currentEntry(history))) void goToCurrent();
 }
 
-/**
- * App calls this with the open notebook's key: on a notebook (re)open it loads
- * that notebook's saved tabs (or one tab whose entry is filled by App's first
- * `noteLocation`). A step pending into the notebook lands in its active tab.
- */
-export function useNotebookTabs(notebookKey: string): void {
-  useEffect(() => {
-    if (notebookKey) void loadNotebookTabs(notebookKey);
-  }, [notebookKey]);
-}
-
 /** Tests: back to one empty tab, no notebook. */
 export function resetTabsForTests(): void {
   loadToken++;
@@ -598,6 +749,9 @@ export function resetTabsForTests(): void {
   closed = [];
   closedByNotebook.clear();
   pendingAtFlush = null;
+  releaseHold();
+  bgRun = null;
+  writing = null;
   tabs = [{ id: newId(), entries: [], index: -1, pinned: false }];
   activeId = tabs[0].id;
   importHistory({ entries: [], index: -1 });

@@ -1,6 +1,6 @@
 # PRD: Tabs
 
-Status: decided, not started · Owner: Chris Klaus · Written 2026-11-12
+Status: phases 1–2 shipped (2026-11-17) · Owner: Chris Klaus · Written 2026-11-12
 
 ## 1. Overview
 
@@ -92,8 +92,9 @@ Opens a new tab after the current one with a default destination, chosen in
 Settings → Editor → "New tabs open":
 
 - **Today's journal** (default; MiNotes' home)
-- A **new page** (title field focused, created on the first keystroke so an
-  unused tab never leaves an empty "Untitled" page)
+- A **new page** (title field focused; the page is created when the title is
+  confirmed with Enter or "Create page", so an unused tab leaves nothing — no
+  empty "Untitled" page)
 - **All Pages**
 - **Search** (the palette opens over the new tab; Esc leaves today's journal)
 

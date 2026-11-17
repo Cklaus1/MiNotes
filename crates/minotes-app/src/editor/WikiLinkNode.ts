@@ -94,6 +94,8 @@ export const WikiLinkNode = Node.create<WikiLinkOptions>({
             // (and stopped there) so ProseMirror never moves the cursor or selects the
             // chip, and the middle button never pastes the X primary selection.
             mousedown(_view, event) {
+              // A cross-notebook chip: the middle button does nothing (never pastes).
+              if (event.button === 1 && (event.target as HTMLElement).closest?.(".xnb-link")) { event.preventDefault(); return true; }
               const wiki = (event.target as HTMLElement).closest?.(".wiki-link") as HTMLElement | null;
               if (!wiki) return false;
               if (event.button === 1) { event.preventDefault(); return true; }
@@ -101,6 +103,7 @@ export const WikiLinkNode = Node.create<WikiLinkOptions>({
               return false;
             },
             auxclick(_view, event) {
+              if (event.button === 1 && (event.target as HTMLElement).closest?.(".xnb-link")) { event.preventDefault(); return true; }
               const wiki = (event.target as HTMLElement).closest?.(".wiki-link") as HTMLElement | null;
               if (!wiki || event.button !== 1) return false;
               event.preventDefault();

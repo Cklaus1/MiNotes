@@ -79,7 +79,7 @@ key "Control+g";         visit graph "" "true"; key Escape
 key "Control+m";         visit mindmap "" "true"; key Escape
 key "Control+Shift+K";   visit kanban "" "true"; key Escape
 "$D" click 50 22 2>/dev/null; sleep 1
-key "Control+w";         visit whiteboard "" "!!document.querySelector('canvas')"; "$D" click 50 22 2>/dev/null; sleep 1
+key "Control+Shift+w";        visit whiteboard "" "!!document.querySelector('canvas')"; "$D" click 50 22 2>/dev/null; sleep 1
 "$D" click 227 780 2>/dev/null; sleep 1.5; visit all-pages "" "true"; "$D" click 50 22 2>/dev/null; sleep 1
 "$D" eval "(async()=>{const api=await import('/src/lib/api.ts');const t=await api.getPageTree('Bulk page 01');await api.deletePage(t.page.id);window.__MINOTES__.refreshSidebar();return 1})()" >/dev/null 2>&1
 "$D" click 57 742 2>/dev/null; sleep 1.5; visit trash "" "true"; key Escape

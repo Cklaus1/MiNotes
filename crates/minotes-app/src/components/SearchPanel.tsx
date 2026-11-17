@@ -8,7 +8,8 @@ import { blockPlainText } from "../lib/plainText";
 import "./tasks.css";
 import "./navigation.css";
 import { useLayer } from "../lib/layers";
-import { openModeFrom, openInTab, preventMiddlePaste, type OpenMode } from "../lib/openIntent";
+import { canOpenInTab, openModeFrom, openInTab, preventMiddlePaste, type OpenMode } from "../lib/openIntent";
+import { ContextMenuPortal } from "../lib/ContextMenuPortal";
 import Icon from "./Icon";
 import { useDialogFocus } from "../lib/dialogFocus";
 import { highlightParts, rankByFuzzy, snippetAround, type Range } from "../lib/fuzzy";
@@ -79,6 +80,9 @@ const BLOCK_LIMIT = { all: 8, focused: 40 };
 
 export default function SearchPanel({ open, onClose, onPageClick, onCreatePage }: Props) {
   const [query, setQuery] = useState("");
+  // Right-click on a page result: Open / Open in new tab (PRD-tabs §3.2).
+  const [rowMenu, setRowMenu] = useState<{ x: number; y: number; page: { id: string; title: string } } | null>(null);
+  useEffect(() => { if (!open) setRowMenu(null); }, [open]);
   const [filter, setFilter] = useState<Filter>("all");
   const [results, setResults] = useState<api.Block[]>([]);
   const [blockPages, setBlockPages] = useState<Map<string, { title: string; journal: boolean }>>(new Map());
@@ -496,6 +500,12 @@ export default function SearchPanel({ open, onClose, onPageClick, onCreatePage }
                     onMouseDown={e => { e.preventDefault(); preventMiddlePaste(e); }}
                     onClick={e => { if (r.page && openPageIn(r.page, openModeFrom(e))) return; r.run(); }}
                     onAuxClick={e => { if (e.button === 1 && r.page) { e.preventDefault(); openPageIn(r.page, "background"); } }}
+                    onContextMenu={e => {
+                      if (!r.page || !canOpenInTab()) return;
+                      e.preventDefault();
+                      setSelectedIndex(i);
+                      setRowMenu({ x: e.clientX, y: e.clientY, page: r.page });
+                    }}
                     title={r.title}
                     data-testid={r.testId}
                     {...dataAttrs}
@@ -526,6 +536,26 @@ export default function SearchPanel({ open, onClose, onPageClick, onCreatePage }
             </div>
           )}
         </div>
+        {rowMenu && (
+          <ContextMenuPortal x={rowMenu.x} y={rowMenu.y} onClose={() => setRowMenu(null)}>
+            <button
+              className="sidebar-context-menu-item"
+              role="menuitem"
+              onClick={() => { const { page } = rowMenu; setRowMenu(null); openPage(page.id); }}
+              data-testid="search-row-open"
+            >
+              <Icon name="page" size={14} /> Open
+            </button>
+            <button
+              className="sidebar-context-menu-item"
+              role="menuitem"
+              onClick={() => { const { page } = rowMenu; setRowMenu(null); openPageIn(page, "foreground"); }}
+              data-testid="search-row-open-tab"
+            >
+              <Icon name="external" size={14} /> Open in new tab
+            </button>
+          </ContextMenuPortal>
+        )}
         <div className="command-palette-hints" aria-hidden="true" data-testid="palette-hints">
           <span><kbd>↑</kbd><kbd>↓</kbd> select</span>
           <span><kbd>Enter</kbd> {isCommandMode ? "run" : "open"}</span>

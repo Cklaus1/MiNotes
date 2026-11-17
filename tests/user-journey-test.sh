@@ -2925,6 +2925,7 @@ R=$(ev "document.querySelector('.sidebar-header [data-testid=notebook-switcher]'
 [[ "$R" == *"$HOME_NAME"* ]] && pass "Notebook name next to MiNotes ($HOME_NAME)" || fail "No notebook name in the sidebar header" "$R"
 
 step "Its menu lists my notebooks with the open one checked, plus New / Open / Manage"
+HOME_PAGE60=$(api "getCurrentPage()" | tr -d '"')  # the home notebook's open tab, restored when I come back (PRD-tabs §3.8)
 ev "document.querySelector('[data-testid=notebook-switcher]').click()" >/dev/null; sleep 0.5
 R=$(ev "(()=>{const m=document.querySelector('.nb-menu');if(!m)return 'no menu';const cur=m.querySelector('[aria-checked=true]');return (cur?cur.dataset.notebookKey:'none')+'|'+[...m.querySelectorAll('.nb-menu-action')].map(b=>b.textContent.trim()).join(',')})()" | tr -d '"')
 [[ "$R" == "$HOME_NB|New notebook…,Open notebook…,Join an existing notebook…,Manage notebooks…,Export notebook…,Import notebook…,Import from other apps…" ]] && pass "Menu: current checked + actions" || fail "Notebook menu" "$R"
@@ -2969,8 +2970,8 @@ R=$(ev "(async()=>{const u=await import('/src/lib/undoStack.ts');return String(u
 [[ "$R" == "false" ]] && pass "Undo history was cleared on switch" || fail "Undo survived the switch" "$R"
 R=$(ev "(()=>{try{return String(JSON.parse(localStorage.getItem('minotes-recent-pages')||'[]').some(r=>r.title==='Secret58 plan'))}catch(e){return 'err'}})()" | tr -d '"')
 [[ "$R" == "false" ]] && pass "Recent pages are per notebook" || fail "Recent pages leaked" "$R"
-R=$(ev "String((window.__MINOTES__.getCurrentPage()||'').includes('$(date +%Y-%m-%d)'))" | tr -d '"')
-[[ "$R" == "true" ]] && pass "Switching lands on today's journal" || fail "Switch landing page" "$(api 'getCurrentPage()')"
+R=$(api "getCurrentPage()" | tr -d '"')
+[[ -n "$HOME_PAGE60" && "$R" == "$HOME_PAGE60" ]] && pass "Switching back reopens the page my tab was on ($R)" || fail "Switch landing page" "expected $HOME_PAGE60, got $R"
 
 step "The Graph view shows the notebook as a label, not a second switcher"
 api "closePanel()" >/dev/null; press "Control+g"; sleep 2
@@ -3855,9 +3856,9 @@ ev "[...document.querySelectorAll('.canvas-mode-btn')].find(b=>b.textContent.inc
 R=$(ev "(()=>{const c=document.querySelector('[data-testid=draw-chooser]');return c?(c.querySelectorAll('[data-board-id]').length+'|'+c.textContent.includes('no board yet')):'board '+window.__MINOTES__.getOpenWhiteboardId()})()" | tr -d '"')
 [[ "$R" == "0|true" ]] && pass "On another page the Draw tab doesn't reopen the last board" || fail "Stale board on another page" "$R"
 ev "document.querySelector('.canvas-back-btn')?.click()" >/dev/null; sleep 0.8
-ev "document.activeElement?.blur()" >/dev/null; press "Control+w"; sleep 1.5
+ev "document.activeElement?.blur()" >/dev/null; press "Control+Shift+w"; sleep 1.5
 R=$(ev "document.querySelector('[data-testid=canvas-page-context]')?.textContent||''" | tr -d '"')
-[[ "$R" == "New board · added to “Hub68” when you draw" ]] && pass "Ctrl+W says where the new board goes ($R)" || fail "Ctrl+W context" "$R"
+[[ "$R" == "New board · added to “Hub68” when you draw" ]] && pass "Ctrl+Shift+W says where the new board goes ($R)" || fail "Ctrl+Shift+W context" "$R"
 press "Escape"; sleep 0.8
 
 # ═══════════════════════════════════════════════
@@ -5002,7 +5003,7 @@ A112="const api=await import('/src/lib/api.ts');"
 W112="Board112 $(date +%s)"
 ev "(async()=>{$A112 const p=await api.createPage('$W112');await api.createBlock(p.id,'Drawing below');return 1})()" >/dev/null
 api "navigateTo('$W112')" >/dev/null; sleep 1.2
-ev "document.activeElement?.blur()" >/dev/null; press "Control+w"; sleep 1.5
+ev "document.activeElement?.blur()" >/dev/null; press "Control+Shift+w"; sleep 1.5
 WB112="(()=>{const c=document.querySelector('.whiteboard-canvas');const r=c.getBoundingClientRect();const ev=(t,x,y,o={})=>c.dispatchEvent(new MouseEvent(t,{bubbles:true,cancelable:true,clientX:r.left+x,clientY:r.top+y,button:0,...o}));const sleep=ms=>new Promise(r=>setTimeout(r,ms));const drag=async(x0,y0,x1,y1,o={})=>{ev('mousedown',x0,y0,o);for(let i=1;i<=6;i++){ev('mousemove',x0+(x1-x0)*i/6,y0+(y1-y0)*i/6,o);await sleep(25)}ev('mouseup',x1,y1,o);await sleep(120)};const tool=n=>[...document.querySelectorAll('.whiteboard-toolbar button')].find(b=>b.textContent===n).click();const B=document.querySelector('.whiteboard').__minotesBoard;return {drag,tool,B,sleep}})()"
 
 step "An arrow drawn from one box to another attaches to both"
@@ -5525,16 +5526,16 @@ api "navigateTo('Hist96 B')" >/dev/null; wait96 "window.__MINOTES__.getCurrentPa
 api "openView('tasks')" >/dev/null; sleep 0.5
 ev "document.querySelector('.stats-mode-btn[title=\"All Pages\"]')?.click()" >/dev/null; sleep 0.8
 R1="$(view96)"
-ev "document.querySelector('[data-testid=nav-back]')?.click()" >/dev/null; sleep 0.8
+ev "document.querySelector('[data-testid=tab-back]')?.click()" >/dev/null; sleep 0.8
 R2="$(view96)"
-ev "document.querySelector('[data-testid=nav-back]')?.click()" >/dev/null; sleep 0.8
+ev "document.querySelector('[data-testid=tab-back]')?.click()" >/dev/null; sleep 0.8
 R3="$(view96)|$(cur96)"
 [[ "$R1" == "pages" && "$R2" == "tasks" && "$R3" == "null|Hist96 B" ]] && pass "Back: All Pages → Tasks → Hist96 B ($R1 → $R2 → $R3)" || fail "Back through views" "$R1 → $R2 → $R3"
 ss "96-history-buttons"
 
 step "Ctrl+[ goes back, Ctrl+] forward; the forward arrow is enabled only when there is something ahead"
 key96 "[" "BracketLeft"; wait96 "window.__MINOTES__.getCurrentPage()==='Hist96 A'"
-R1="$(cur96)|$(ev "document.querySelector('[data-testid=nav-forward]')?.disabled" | tr -d '"')"
+R1="$(cur96)|$(ev "document.querySelector('[data-testid=tab-forward]')?.disabled" | tr -d '"')"
 key96 "]" "BracketRight"; wait96 "window.__MINOTES__.getCurrentPage()==='Hist96 B'"
 R2="$(cur96)"
 [[ "$R1" == "Hist96 A|false" && "$R2" == "Hist96 B" ]] && pass "Ctrl+[ → A (forward enabled), Ctrl+] → B ($R1, $R2)" || fail "History keys" "$R1, $R2"
@@ -5543,14 +5544,14 @@ step "The mouse's back button goes back"
 ev "(()=>{const t=document.querySelector('.main')||document.body;t.dispatchEvent(new MouseEvent('mousedown',{button:3,bubbles:true,cancelable:true}));t.dispatchEvent(new MouseEvent('mouseup',{button:3,bubbles:true,cancelable:true}));return 1})()" >/dev/null
 wait96 "window.__MINOTES__.getCurrentPage()==='Hist96 A'" && pass "Mouse button 4 (back) → Hist96 A" || fail "Mouse back" "$(cur96)"
 api "navigateTo('Hist96 B')" >/dev/null; wait96 "window.__MINOTES__.getCurrentPage()==='Hist96 B'"
-R=$(ev "document.querySelector('[data-testid=nav-forward]')?.disabled" | tr -d '"')
+R=$(ev "document.querySelector('[data-testid=tab-forward]')?.disabled" | tr -d '"')
 [[ "$R" == "true" ]] && pass "A new page after going back drops what was ahead (forward disabled)" || fail "Forward after a new page" "$R"
 
 step "Back after switching notebooks returns to the page in the first notebook"
 OTHER96=$(ev "(async()=>{$A96 return (await api.createNotebook('Other96 '+Date.now())).key})()" | tr -d '"')
 ev "window.__MINOTES__.switchNotebook('$OTHER96')" >/dev/null; sleep 2
 R1="$(nbkey96)"
-ev "document.querySelector('[data-testid=nav-back]')?.click()" >/dev/null
+ev "document.querySelector('[data-testid=tab-back]')?.click()" >/dev/null
 wait96 "(async()=>{$A96 return (await api.getNotebookSession()).key==='$HOME96'&&window.__MINOTES__.getCurrentPage()==='Hist96 B'})()" 30
 R2="$(nbkey96)|$(cur96)"
 [[ "$R1" == "$OTHER96" && "$R2" == "$HOME96|Hist96 B" ]] && pass "Back reopened the first notebook at Hist96 B" || fail "Back across notebooks" "$R1 → $R2"
@@ -5562,7 +5563,7 @@ ev "window.__MINOTES__.switchNotebook('$VAULT96')" >/dev/null; sleep 2
 ev "(async()=>{$A96 const p=await api.createPage('Secret96');await api.createBlock(p.id,'hidden 96');return 1})()" >/dev/null
 api "navigateTo('Secret96')" >/dev/null; wait96 "window.__MINOTES__.getCurrentPage()==='Secret96'"
 ev "window.__MINOTES__.switchNotebook('$HOME96')" >/dev/null; sleep 2
-ev "document.querySelector('[data-testid=nav-back]')?.click()" >/dev/null
+ev "document.querySelector('[data-testid=tab-back]')?.click()" >/dev/null
 wait96 "!!document.querySelector('[data-testid=unlock-screen]')" 30 && pass "Back → the vault's unlock screen (it locked when I left it)" || fail "No unlock screen" "$(nbkey96)"
 ss "96-back-into-locked"
 ev "(()=>{const i=document.querySelector('[data-testid=unlock-passphrase]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(i,'$PASS96');i.dispatchEvent(new Event('input',{bubbles:true}));return 1})()" >/dev/null; sleep 0.2
@@ -6246,6 +6247,162 @@ R=$(ev "[...document.querySelectorAll('.kanban-card-text')].map(e=>e.textContent
 ss "108-kanban-card"
 press "Escape"; sleep 0.5
 ev "(()=>{for(const b of document.querySelectorAll('.stats-mode-btn')){if(b.classList.contains('active')){b.click();return 1}}return 0})()" >/dev/null; sleep 0.5
+
+# ═══════════════════════════════════════════════
+journey "116. Tabs: click stays, Ctrl/middle/Ctrl+Shift click open tabs, Ctrl+W, per-tab history, pin, reopen, retitle, Trash, notebooks"
+# PRD-tabs: the row above the page. Real DOM events (click / auxclick with
+# modifiers) on the sidebar and on a [[link]]; keys are dispatched on window
+# (Ctrl+W would be the browser's own shortcut for a CDP key press).
+# ═══════════════════════════════════════════════
+A116="const api=await import('/src/lib/api.ts');"
+S116="$(date +%s)"
+tsum116() { ev "(()=>{const t=window.__MINOTES__.tabs();return t.tabs.length+'|'+t.active+'|'+t.tabs.map(x=>(x.pinned?'*':'')+(x.pageTitle||x.view||x.date||'?')).join(';')})()" | tr -d '"'; }
+tcount116() { ev "window.__MINOTES__.tabs().tabs.length" | tr -d '"'; }
+tact116() { ev "window.__MINOTES__.tabs().active" | tr -d '"'; }
+wait116() { for _ in $(seq 1 ${2:-25}); do [[ "$(ev "$1" | tr -d '"')" == "true" ]] && return 0; sleep 0.3; done; return 1; }
+key116() { ev "(()=>{window.dispatchEvent(new KeyboardEvent('keydown',{key:'$1',code:'$2',ctrlKey:true,shiftKey:${3:-false},bubbles:true,cancelable:true}));return 1})()" >/dev/null; sleep 0.6; }
+reset116() { ev "(()=>{const T=window.__MINOTES__;for(let i=0;i<30;i++){const t=T.tabs();const p=t.tabs.findIndex(x=>x.pinned);if(p<0)break;T.pinTab(p)}for(let i=0;i<30&&T.tabs().tabs.length>1;i++)T.closeTab(1);T.activateTab(0);return 1})()" >/dev/null; sleep 0.6; }
+# Background tabs keep click order, as in browsers: opening B then C from A gives A, B, C (PRD-tabs §3.2).
+# a mouse gesture on the sidebar row / a [[link]] / the journal: kind = click | ctrl | ctrlshift | middle
+sbrow116() { echo "[...document.querySelectorAll('.page-item')].find(e=>(e.getAttribute('title')||'').startsWith('$1'))"; }
+mouse116() { # <element expr> <kind>
+  local o="{bubbles:true,cancelable:true,clientX:10,clientY:10"
+  case "$2" in
+    click) o="$o,button:0}" ;; ctrl) o="$o,button:0,ctrlKey:true}" ;; ctrlshift) o="$o,button:0,ctrlKey:true,shiftKey:true}" ;; middle) o="$o,button:1}" ;;
+  esac
+  if [[ "$2" == "middle" ]]; then
+    ev "(()=>{const e=$1;if(!e)return 'none';e.dispatchEvent(new MouseEvent('mousedown',$o));e.dispatchEvent(new MouseEvent('mouseup',$o));e.dispatchEvent(new MouseEvent('auxclick',$o));return 'ok'})()" >/dev/null
+  else
+    ev "(()=>{const e=$1;if(!e)return 'none';e.dispatchEvent(new MouseEvent('mousedown',$o));e.dispatchEvent(new MouseEvent('mouseup',$o));e.dispatchEvent(new MouseEvent('click',$o));return 'ok'})()" >/dev/null
+  fi
+  sleep 0.8
+}
+api "closePanel()" >/dev/null; api "openView('none')" >/dev/null; press "Escape"; sleep 0.3
+reset116
+ev "(async()=>{$A116 const m=await import('/src/lib/settings.ts');m.updateSettings({newTabOpens:'journal'});for(const t of ['Tab116 A','Tab116 B','Tab116 C','Tab116 D']){const p=await api.createPage(t);await api.createBlock(p.id,'text of '+t)}const s=await api.createPage('Src116');await api.createBlock(s.id,'see [[Tab116 C]] and [[Tab116 D]]');window.dispatchEvent(new Event('minotes-sidebar-refresh'));return 1})()" >/dev/null; sleep 1
+api "navigateTo('Tab116 A')" >/dev/null; wait116 "window.__MINOTES__.getCurrentPage()==='Tab116 A'"
+
+step "A plain click on a sidebar page switches in place: still one tab, and no × to close the only tab"
+mouse116 "$(sbrow116 'Tab116 B')" click
+R="$(tsum116)|$(api 'getCurrentPage()' | tr -d '"')|$(ev "document.querySelectorAll('[data-testid=tab] .tab-x').length" | tr -d '"')"
+[[ "$R" == "1|0|Tab116 B|Tab116 B|0" ]] && pass "One tab, now on Tab116 B, no × rendered ($R)" || fail "Click switches in place" "$R"
+[[ "$(ev "!!document.querySelector('[data-testid=tabbar]')")" == "true" ]] && pass "The tab row is always shown" || fail "Tab row missing" ""
+
+step "Ctrl+click a sidebar page: a background tab (count +1, active unchanged, toast)"
+mouse116 "$(sbrow116 'Tab116 A')" ctrl
+R="$(tsum116)|$(api 'getCurrentPage()' | tr -d '"')"
+T=$(ev "[...document.querySelectorAll('.minotes-toast')].map(x=>x.textContent).join(' ¦ ')" | tr -d '"')
+[[ "$R" == "2|0|Tab116 B;Tab116 A|Tab116 B" ]] && pass "Ctrl+click → 2 tabs, still on Tab116 B ($R)" || fail "Ctrl+click on a sidebar page" "$R"
+[[ "$T" == *"Opened “Tab116 A” in a background tab"* ]] && pass "Toast: Opened “Tab116 A” in a background tab" || fail "Background tab toast" "$T"
+
+step "Ctrl+click and middle-click a [[link]] in a block: background tabs"
+api "navigateTo('Src116')" >/dev/null; wait116 "window.__MINOTES__.getCurrentPage()==='Src116'"; sleep 1
+ev "document.activeElement?.blur()" >/dev/null
+mouse116 "[...document.querySelectorAll('.wiki-link')].find(e=>e.textContent.includes('Tab116 C'))" ctrl
+R1="$(tsum116)"
+mouse116 "[...document.querySelectorAll('.wiki-link')].find(e=>e.textContent.includes('Tab116 D'))" middle
+R2="$(tsum116)"
+[[ "$R1" == "3|0|Src116;Tab116 C;Tab116 A" ]] && pass "Ctrl+click [[Tab116 C]] → background tab ($R1)" || fail "Ctrl+click on a link" "$R1"
+[[ "$R2" == "4|0|Src116;Tab116 C;Tab116 D;Tab116 A" ]] && pass "Middle-click [[Tab116 D]] → background tab ($R2)" || fail "Middle-click on a link" "$R2"
+R="$(api 'getCurrentPage()' | tr -d '"')"
+[[ "$R" == "Src116" ]] && pass "The page stayed Src116 (no navigation, no paste)" || fail "Page changed" "$R"
+
+step "Ctrl+Shift+click opens a tab and switches to it"
+mouse116 "$(sbrow116 'Tab116 B')" ctrlshift
+R="$(tsum116)|$(api 'getCurrentPage()' | tr -d '"')"
+[[ "$R" == "5|3|Src116;Tab116 C;Tab116 D;Tab116 B;Tab116 A|Tab116 B" ]] && pass "Ctrl+Shift+click → new active tab on Tab116 B ($R)" || fail "Ctrl+Shift+click" "$R"
+ss "116-tabs"
+
+step "+ opens today's journal in a new tab"
+N0=$(tcount116)
+ev "document.querySelector('[data-testid=tab-new]')?.click()" >/dev/null; sleep 1.2
+R="$(tcount116)|$(api 'getCurrentPage()' | tr -d '"')"
+[[ "$R" == "$((N0+1))|Journal/"* ]] && pass "+ → a journal tab ($R)" || fail "+ button" "$R"
+
+step "Ctrl+W closes the active tab and the right neighbour takes over; with one tab it does nothing"
+reset116
+api "navigateTo('Tab116 A')" >/dev/null; wait116 "window.__MINOTES__.getCurrentPage()==='Tab116 A'"
+api "openInBackgroundTab('Tab116 B')" >/dev/null; sleep 0.6; api "openInBackgroundTab('Tab116 C')" >/dev/null; sleep 0.6
+ev "window.__MINOTES__.activateTab(1)" >/dev/null; wait116 "window.__MINOTES__.getCurrentPage()==='Tab116 B'"
+key116 w KeyW
+R="$(tsum116)|$(api 'getCurrentPage()' | tr -d '"')"
+[[ "$R" == "2|1|Tab116 A;Tab116 C|Tab116 C" ]] && pass "Ctrl+W closed Tab116 B; Tab116 C (its right neighbour) is active ($R)" || fail "Ctrl+W" "$R"
+reset116
+R0="$(tsum116)"; key116 w KeyW; R1="$(tsum116)"
+[[ "$R0" == "$R1" && "$R0" == 1* ]] && pass "Ctrl+W with one tab does nothing ($R1)" || fail "Ctrl+W with one tab" "$R0 → $R1"
+
+step "Back / forward belong to the tab: navigating twice in tab A, then Back in tab B leaves A alone"
+api "navigateTo('Tab116 A')" >/dev/null; wait116 "window.__MINOTES__.getCurrentPage()==='Tab116 A'"
+api "navigateTo('Tab116 B')" >/dev/null; wait116 "window.__MINOTES__.getCurrentPage()==='Tab116 B'"
+api "openInForegroundTab('Tab116 C')" >/dev/null; wait116 "window.__MINOTES__.tabs().active===1&&window.__MINOTES__.getCurrentPage()==='Tab116 C'"
+R="$(ev "document.querySelector('[data-testid=tab-back]')?.disabled" | tr -d '"')"
+[[ "$R" == "true" ]] && pass "A fresh tab has nothing to go back to (Back disabled)" || fail "New tab Back state" "$R"
+ev "window.__MINOTES__.activateTab(0)" >/dev/null; wait116 "window.__MINOTES__.getCurrentPage()==='Tab116 B'"
+ev "document.querySelector('[data-testid=tab-back]')?.click()" >/dev/null; wait116 "window.__MINOTES__.getCurrentPage()==='Tab116 A'"
+ev "window.__MINOTES__.activateTab(1)" >/dev/null; wait116 "window.__MINOTES__.getCurrentPage()==='Tab116 C'"
+ev "window.__MINOTES__.activateTab(0)" >/dev/null; sleep 0.8
+R="$(api 'getCurrentPage()' | tr -d '"')|$(ev "document.querySelector('[data-testid=tab-forward]')?.disabled" | tr -d '"')"
+[[ "$R" == "Tab116 A|false" ]] && pass "Back in tab A → A (forward enabled); tab B kept Tab116 C ($R)" || fail "Per-tab history" "$R"
+ev "window.__MINOTES__.activateTab(1)" >/dev/null; sleep 0.8
+R="$(api 'getCurrentPage()' | tr -d '"')|$(ev "document.querySelector('[data-testid=tab-back]')?.disabled" | tr -d '"')|$(ev "document.querySelector('[data-testid=tab-forward]')?.disabled" | tr -d '"')"
+[[ "$R" == "Tab116 C|true|true" ]] && pass "Tab B still on Tab116 C with its own (empty) history ($R)" || fail "Tab B history" "$R"
+
+step "Pin via the context menu: the tab moves left and its title is hidden"
+reset116; api "navigateTo('Tab116 A')" >/dev/null; wait116 "window.__MINOTES__.getCurrentPage()==='Tab116 A'"
+api "openInBackgroundTab('Tab116 B')" >/dev/null; sleep 0.6; api "openInBackgroundTab('Tab116 C')" >/dev/null; sleep 0.6
+ev "(()=>{const e=document.querySelectorAll('[data-testid=tab]')[1];e.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true,clientX:60,clientY:40,button:2}));return 1})()" >/dev/null; sleep 0.5
+ev "[...document.querySelectorAll('[data-testid=tab-menu] button')].find(b=>b.textContent.trim()==='Pin tab')?.click()" >/dev/null; sleep 0.8
+R="$(tsum116)|$(ev "document.querySelectorAll('[data-testid=tab]')[0].querySelectorAll('.tab-title').length" | tr -d '"')"
+[[ "$R" == "3|"*"|*Tab116 B;Tab116 A;Tab116 C|0" ]] && pass "Pinned Tab116 B moved to the left, no title shown ($R)" || fail "Pin" "$R"
+
+step "Reopen closed tab brings the last closed one back"
+ev "window.__MINOTES__.closeTab(2)" >/dev/null; sleep 0.6
+N1=$(tcount116)
+ev "window.__MINOTES__.reopenClosedTab()" >/dev/null; sleep 1
+R="$N1→$(tsum116)"
+[[ "$R" == "2→3|"*"Tab116 C"* ]] && pass "Closed Tab116 C reopened ($R)" || fail "Reopen closed tab" "$R"
+
+step "Renaming a page retitles its tab; a trashed page's tab shows the Trash notice"
+reset116; api "navigateTo('Tab116 A')" >/dev/null; wait116 "window.__MINOTES__.getCurrentPage()==='Tab116 A'"
+api "openInBackgroundTab('Tab116 D')" >/dev/null; sleep 0.6
+ev "(async()=>{$A116 const t=await api.getPageTree('Tab116 D');await api.renamePage(t.page.id,'Tab116 D2');window.dispatchEvent(new Event('minotes-sidebar-refresh'));return 1})()" >/dev/null; sleep 1.5
+R="$(ev "window.__MINOTES__.tabs().tabs[1].title" | tr -d '"')"
+[[ "$R" == "Tab116 D2" ]] && pass "The background tab now reads $R" || fail "Rename retitles the tab" "$R"
+ev "(async()=>{$A116 const t=await api.getPageTree('Tab116 D2');await api.trashPage(t.page.id);window.dispatchEvent(new Event('minotes-sidebar-refresh'));return 1})()" >/dev/null; sleep 1
+ev "window.__MINOTES__.activateTab(1)" >/dev/null; wait116 "!!document.querySelector('[data-testid=tab-gone]')"
+R="$(ev "document.querySelector('[data-testid=tab-gone]')?.textContent||''" | tr -d '"')|$(ev "!!document.querySelector('[data-testid=tab-gone-restore]')" | tr -d '"')"
+[[ "$R" == *"This page is in the Trash"*"|true" ]] && pass "Trashed page's tab: notice with Restore" || fail "Trash notice" "$R"
+ev "(async()=>{$A116 const t=(await api.listTrash()).find(x=>x.title==='Tab116 D2');if(t)await api.restoreFromTrash(t.id,'page');return 1})()" >/dev/null
+
+step "Switching notebooks swaps the row; switching back restores it"
+reset116; api "navigateTo('Tab116 A')" >/dev/null; wait116 "window.__MINOTES__.getCurrentPage()==='Tab116 A'"
+api "openInBackgroundTab('Tab116 B')" >/dev/null; sleep 0.6; api "openInBackgroundTab('Tab116 C')" >/dev/null; sleep 1.2
+HOME116=$(ev "(async()=>{$A116 return (await api.getNotebookSession()).key})()" | tr -d '"')
+OTHER116=$(ev "(async()=>{$A116 return (await api.createNotebook('Other116 '+Date.now())).key})()" | tr -d '"')
+ev "window.__MINOTES__.switchNotebook('$OTHER116')" >/dev/null; sleep 2.5
+R1="$(tcount116)"
+ev "window.__MINOTES__.switchNotebook('$HOME116')" >/dev/null; wait116 "window.__MINOTES__.tabs().tabs.length===3" 30
+R2="$(tsum116)"
+[[ "$R1" == "1" && "$R2" == "3|0|Tab116 A;Tab116 B;Tab116 C" ]] && pass "Other notebook: 1 tab; back home: $R2" || fail "Notebook tab rows" "$R1 / $R2"
+
+step "Ctrl+Shift+W still starts a whiteboard (Ctrl+W is the tab now)"
+reset116; api "navigateTo('Tab116 A')" >/dev/null; wait116 "window.__MINOTES__.getCurrentPage()==='Tab116 A'"
+ev "document.activeElement?.blur()" >/dev/null; key116 W KeyW true; sleep 1
+R="$(ev "!!document.querySelector('.whiteboard-canvas, canvas')" | tr -d '"')|$(tcount116)"
+[[ "$R" == "true|1" ]] && pass "Ctrl+Shift+W → whiteboard canvas, no tab closed ($R)" || fail "Ctrl+Shift+W whiteboard" "$R"
+press "Escape"; sleep 0.8
+
+step "Settings → New tabs open = All Pages makes + open All Pages"
+ev "(async()=>{const m=await import('/src/lib/settings.ts');m.updateSettings({newTabOpens:'pages'});return 1})()" >/dev/null
+api "openSettings()" >/dev/null; sleep 1
+R=$(ev "document.querySelector('[data-testid=settings-new-tab]')?.value" | tr -d '"')
+[[ "$R" == "pages" ]] && pass "Settings select shows All Pages" || fail "Settings select" "$R"
+api "closePanel()" >/dev/null; press "Escape"; sleep 0.5
+ev "document.querySelector('[data-testid=tab-new]')?.click()" >/dev/null; sleep 1.2
+R="$(tcount116)|$(api 'getMainView()' | tr -d '"')"
+[[ "$R" == "2|pages" ]] && pass "+ opened All Pages in a new tab ($R)" || fail "+ with All Pages" "$R"
+ev "(async()=>{const m=await import('/src/lib/settings.ts');m.updateSettings({newTabOpens:'journal'});return 1})()" >/dev/null
+reset116; api "openView('none')" >/dev/null
 
 # ═══════════════════════════════════════════════
 close_app
