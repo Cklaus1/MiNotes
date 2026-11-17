@@ -11,7 +11,12 @@
 # `bundle.windows.certificateThumbprint` / `signCommand` in tauri.conf.json, with the
 # certificate imported in an extra step before the build); the signing step is
 # the only place secrets would be needed. This workflow uses only the built-in
-# GITHUB_TOKEN.
+# GITHUB_TOKEN. The tag must exist before this runs (push it): the release is
+# created for that tag without a target commit — v0.1.0, whose commit added this
+# workflow, was refused ("Resource not accessible by integration") when a target
+# was passed. If a run is still refused, create the draft by hand
+# (`gh release create vX.Y.Z --draft --verify-tag`) and re-run the failed jobs:
+# they then only upload into it.
 name: Release
 
 on:
@@ -130,7 +135,6 @@ jobs:
         with:
           projectPath: crates/minotes-app
           tagName: ${{ env.RELEASE_TAG }}
-          releaseCommitish: ${{ github.sha }}
           releaseName: "MiNotes v__VERSION__"
           releaseDraft: true
           prerelease: false
