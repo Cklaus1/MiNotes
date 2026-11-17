@@ -619,6 +619,10 @@ pub struct ExportPhase {
 pub struct GitPhase {
     pub conflicts_resolved: u32,
     pub error: Option<String>,
+    /// The pull set another device's version of a page aside for a block merge,
+    /// so nothing was pushed: this device's side alone would read as "your
+    /// blocks were removed" there. Push after the merge has been exported.
+    pub push_deferred: bool,
 }
 
 /// Work for phase 3, computed without the DB.
@@ -1097,6 +1101,12 @@ fn apply_page_merges(db: &Database, sync_dir: &Path, r: &mut SyncResult) -> Resu
 
 /// Phase 2: pull --rebase (auto-resolving conflicts) and push. No DB access.
 pub fn git_pull_push(sync_dir: &Path) -> Result<GitPhase> {
+    git_pull_push_opts(sync_dir, true)
+}
+
+/// [`git_pull_push`]; with `defer_on_merge`, a pull that left a block merge to
+/// do pushes nothing ([`GitPhase::push_deferred`]).
+fn git_pull_push_opts(sync_dir: &Path, defer_on_merge: bool) -> Result<GitPhase> {
     let mut out = GitPhase::default();
     if !git_cmd::has_remote(sync_dir) {
         return Ok(out);
@@ -1109,6 +1119,10 @@ pub fn git_pull_push(sync_dir: &Path) -> Result<GitPhase> {
             out.error = Some(e.to_string());
             return Ok(out);
         }
+    }
+    if defer_on_merge && !read_state(sync_dir).merges.is_empty() {
+        out.push_deferred = true;
+        return Ok(out);
     }
 
     match git_cmd::push(sync_dir) {
@@ -1311,7 +1325,7 @@ where
     };
 
     // Phase 2 (no DB lock)
-    let git = git_pull_push(sync_dir)?;
+    let mut git = git_pull_push(sync_dir)?;
 
     // Phase 3 (DB lock, only if the pull brought something in)
     let mut pages_imported = 0u32;
@@ -1335,6 +1349,18 @@ where
         pages_imported = (r.pages_created.len() + r.pages_updated.len() + r.pages_merged.len()) as u32;
         import_errors = r.errors.clone();
         conflict_pages = r.conflict_copies.clone();
+    }
+    // Phase 4, only after a block merge: write the merged pages, commit, push.
+    // (Pushed even if a merge failed and stays recorded — it is retried later,
+    // and syncing must not stall on it.)
+    if git.push_deferred {
+        {
+            let db = lock_db()?;
+            export_and_commit_target(&db, target)?;
+        }
+        let g = git_pull_push_opts(sync_dir, false)?;
+        git.conflicts_resolved += g.conflicts_resolved;
+        git.error = g.error;
     }
     let held_deletions = {
         let db = lock_db()?;
@@ -1679,9 +1705,12 @@ mod tests {
         cycle(&a, &db_a);
         cycle(&b, &db_b);
         db_a.create_block(&db_a.find_journal(d).unwrap().unwrap().id, "later on A", None, None, "user").unwrap();
+        let parked = |db: &Database| all_titles(db).into_iter().any(|t| t.contains(crate::repo::sync::REMOVED_BY_SYNC));
         for _ in 0..3 {
-            cycle(&a, &db_a);
-            cycle(&b, &db_b);
+            let ra = cycle(&a, &db_a);
+            assert!(!parked(&db_a), "A parked a block (conflicts {}): {:?}", ra.conflicts_resolved, all_titles(&db_a));
+            let rb = cycle(&b, &db_b);
+            assert!(!parked(&db_b), "B parked a block (conflicts {}): {:?}", rb.conflicts_resolved, all_titles(&db_b));
         }
         for db in [&db_a, &db_b] {
             assert_eq!(titles(db), ["Journal/2026-10-15"], "one journal, no conflict page");
@@ -1690,6 +1719,44 @@ mod tests {
             let mut texts = contents(db, &j.id);
             texts.retain(|t| !t.is_empty());
             assert_eq!(texts, ["evening on B", "later on A", "morning on A"]);
+        }
+    }
+
+    /// A git conflict on a page used to push this device's version before the
+    /// other device's blocks were merged in: that commit read as "your block was
+    /// removed", and the other device parked it on a "(removed by sync …)" page
+    /// on the way to converging. The push now waits for the block merge.
+    #[test]
+    fn test_conflicting_edits_never_read_as_a_removal() {
+        if !git_cmd::git_available() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let (_remote, a, b) = setup_remote_and_devices(tmp.path());
+        let db_a = Database::open_in_memory().unwrap();
+        let db_b = Database::open_in_memory().unwrap();
+        let pa = db_a.create_page("Shared", None, false, None, "user").unwrap();
+        db_a.create_block(&pa.id, "first", None, None, "user").unwrap();
+        cycle(&a, &db_a);
+        cycle(&b, &db_b);
+        let pb = db_b.find_pages_by_title("Shared", 5).unwrap().into_iter().find(|p| p.title == "Shared").expect("Shared on B");
+        db_a.create_block(&pa.id, "from A", None, None, "user").unwrap();
+        db_b.create_block(&pb.id, "from B", None, None, "user").unwrap();
+        let parked = |db: &Database| all_titles(db).into_iter().any(|t| t.contains(crate::repo::sync::REMOVED_BY_SYNC));
+        cycle(&a, &db_a);
+        assert!(cycle(&b, &db_b).conflicts_resolved > 0, "git conflicted"); // the git conflict
+        assert!(!parked(&db_b), "B: {:?}", all_titles(&db_b));
+        for _ in 0..2 {
+            cycle(&a, &db_a);
+            assert!(!parked(&db_a), "A parked a block: {:?}", all_titles(&db_a));
+            cycle(&b, &db_b);
+            assert!(!parked(&db_b), "B parked a block: {:?}", all_titles(&db_b));
+        }
+        for (db, id) in [(&db_a, pa.id), (&db_b, pb.id)] {
+            let mut texts = contents(db, &id);
+            texts.retain(|t| !t.is_empty());
+            texts.sort();
+            assert_eq!(texts, ["first", "from A", "from B"]);
         }
     }
 

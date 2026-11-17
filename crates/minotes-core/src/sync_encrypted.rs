@@ -577,6 +577,12 @@ fn pull_with_resolve(dir: &Path) -> Result<u32> {
 /// Phase 2 for an encrypted notebook: refuse a foreign remote, pull --rebase
 /// (conflicts keep the local file, the other version is merged in phase 3) and push.
 fn pull_push(dir: &Path, keys: &SyncKeys) -> Result<GitPhase> {
+    pull_push_opts(dir, keys, true)
+}
+
+/// [`pull_push`]; with `defer_on_merge`, a pull that left a block merge to do
+/// pushes nothing until the merged files are written ([`GitPhase::push_deferred`]).
+fn pull_push_opts(dir: &Path, keys: &SyncKeys, defer_on_merge: bool) -> Result<GitPhase> {
     let mut out = GitPhase::default();
     if !git_cmd::has_remote(dir) {
         return Ok(out);
@@ -592,6 +598,10 @@ fn pull_push(dir: &Path, keys: &SyncKeys) -> Result<GitPhase> {
             out.error = Some(e.to_string());
             return Ok(out);
         }
+    }
+    if defer_on_merge && !sync_manager::read_state(dir).merges.is_empty() {
+        out.push_deferred = true;
+        return Ok(out);
     }
     match git_cmd::push(dir) {
         Ok(_) => {}
@@ -977,7 +987,7 @@ where
         let exp = export_and_commit(&db, dir, keys, info)?;
         (exp, git_cmd::rev_parse_head(dir)?)
     };
-    let git = pull_push(dir, keys)?;
+    let mut git = pull_push(dir, keys)?;
 
     let base = if enabling { flushed_head.clone() } else { sync_manager::read_state(dir).imported_head };
     let pending = pending_since(dir, base.as_deref())?;
@@ -1019,6 +1029,16 @@ where
             st.imported_head = git_cmd::rev_parse_head(dir)?;
             st
         })?;
+    }
+    // After a block merge: write the merged files, commit, then push.
+    if git.push_deferred {
+        {
+            let db = lock_db()?;
+            export_and_commit(&db, dir, keys, info)?;
+        }
+        let g = pull_push_opts(dir, keys, false)?;
+        git.conflicts_resolved += g.conflicts_resolved;
+        git.error = g.error;
     }
     let error = match (&git.error, import_errors.first()) {
         (Some(e), _) => Some(e.clone()),

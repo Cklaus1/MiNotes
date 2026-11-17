@@ -501,13 +501,22 @@ fn journals_of_one_day(startup_sync_first: bool) {
         assert!(a.sync(false).success);
     }
     a.db.update_block(&x.id, Some("first line — A"), "user").unwrap();
+    // A git conflict must never read as "a block was removed" on either side
+    // (that used to park a block on a "(removed by sync …)" page on the way).
+    let parked = |d: &Dev| {
+        let mut st = d.db.conn.prepare("SELECT title FROM pages").unwrap();
+        let t: Vec<String> = st.query_map([], |r| r.get::<_, String>(0)).unwrap().map(|r| r.unwrap()).collect();
+        t.into_iter().any(|t| t.contains(crate::repo::sync::REMOVED_BY_SYNC))
+    };
     let r = a.sync(false);
     assert!(r.success, "{r:?}");
     assert_eq!(r.conflicts_resolved > 0, !startup_sync_first, "git conflicted on the page iff A edited before pulling");
     assert!(a.sync(false).success);
     for _ in 0..3 {
         assert!(b.sync(false).success);
+        assert!(!parked(&b), "B parked a block");
         assert!(a.sync(false).success);
+        assert!(!parked(&a), "A parked a block");
     }
 
     for d in [&a, &b] {
