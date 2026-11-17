@@ -75,6 +75,14 @@ jobs:
 
       - name: Build the APK
         working-directory: crates/minotes-app
+        # A debug-signed APK (no signing secrets), but optimised and without debug
+        # symbols: an unoptimised debug build with symbols is ~550 MB and slow.
+        env:
+          CARGO_PROFILE_DEV_OPT_LEVEL: "s"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_DEV_STRIP: "symbols"
+          CARGO_PROFILE_DEV_DEBUG_ASSERTIONS: "false"
+          CARGO_PROFILE_DEV_OVERFLOW_CHECKS: "false"
         run: npx tauri android build --debug --apk --target x86_64 aarch64
 
       - name: Upload APK
