@@ -16,6 +16,7 @@ Get the installer for your system from the **[latest release](https://github.com
 | Linux, any distribution | `MiNotes_….AppImage` |
 | Debian, Ubuntu, Mint | `MiNotes_….deb` |
 | Fedora, openSUSE | `MiNotes-….rpm` |
+| Android (test build) | `MiNotes_…_android-debug.apk` — sideload it ("install unknown apps"); a debug build for trying out, not a store release |
 | macOS | Not yet. You can [build it from source](CONTRIBUTING.md). |
 
 **Windows:** the installers are not signed yet, so Windows SmartScreen may say "Windows protected your PC". Click **More info**, then **Run anyway**.
