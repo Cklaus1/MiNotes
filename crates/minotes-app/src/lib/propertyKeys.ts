@@ -36,3 +36,15 @@ export function suggestKeys(keys: readonly string[], typed: string, exclude: rea
   const contains = pool.filter((k) => !k.toLowerCase().startsWith(q) && k.toLowerCase().includes(q));
   return [...starts, ...contains].slice(0, max);
 }
+
+/**
+ * Bookkeeping the importer writes on every imported page (core `import`):
+ * hashes and run ids that re-import and "undo import" match on. They stay in
+ * the database but are never drawn or suggested; `import_source` ("evernote",
+ * "obsidian"…) is the readable one and stays visible.
+ */
+const INTERNAL_KEYS = new Set(["import_hash", "import_src_hash", "import_ref", "import_run", "import_origin", "import_report"]);
+
+export function isInternalProperty(key: string): boolean {
+  return INTERNAL_KEYS.has(key);
+}

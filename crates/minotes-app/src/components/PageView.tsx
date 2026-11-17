@@ -35,6 +35,7 @@ import RemoteImageBar from "./RemoteImageBar";
 import { hasOpenLayer } from "../lib/layers";
 import Icon from "./Icon";
 import PropertyEditor from "./PropertyEditor";
+import { isInternalProperty } from "../lib/propertyKeys";
 
 /**
  * Big pages render progressively: the first INITIAL_RENDER blocks at once, the
@@ -2127,7 +2128,7 @@ export default function PageView({
       {/* Page properties: a compact, editable row under the title (UX Wave 4: they
           used to be hidden in the info panel). Shown when the page has some, or
           while adding one (the info panel's "Add property"). */}
-      {(pageProps.length > 0 || addingProp) && (
+      {(pageProps.some((p) => !isInternalProperty(p.key)) || addingProp) && (
         <PropertyEditor
           entityId={page.id}
           entityType="page"

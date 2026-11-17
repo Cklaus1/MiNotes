@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { Property } from "../lib/api";
 import * as api from "../lib/api";
 import { showToast } from "../lib/toast";
-import { notePropertyKey, propertyKeys, suggestKeys } from "../lib/propertyKeys";
+import { isInternalProperty, notePropertyKey, propertyKeys, suggestKeys } from "../lib/propertyKeys";
 import Icon from "./Icon";
 
 const propError = (e: unknown) => String((e as any)?.message ?? e);
@@ -46,7 +46,7 @@ export default function PropertyEditor({ entityId, entityType, properties, onCha
   useEffect(() => {
     if (!adding) { setNewKey(""); setNewValue(""); setActive(-1); return; }
     let live = true;
-    propertyKeys().then((k) => { if (live) setKeys(k); });
+    propertyKeys().then((k) => { if (live) setKeys(k.filter((x) => !isInternalProperty(x))); });
     return () => { live = false; };
   }, [adding]);
 
@@ -104,11 +104,12 @@ export default function PropertyEditor({ entityId, entityType, properties, onCha
     valueRef.current?.focus();
   };
 
-  if (properties.length === 0 && !adding && variant === "block") return null;
+  const shown = properties.filter((p) => !isInternalProperty(p.key));
+  if (shown.length === 0 && !adding && variant === "block") return null;
 
   return (
     <div className={variant === "page" ? "page-props-row" : "block-properties"} data-testid={variant === "page" ? "page-props" : undefined}>
-      {properties.map((prop) => (
+      {shown.map((prop) => (
         <span key={prop.key} className="prop-chip" data-key={prop.key}>
           <span className="prop-key">{prop.key}</span>
           {editing === prop.key ? (

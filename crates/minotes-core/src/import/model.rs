@@ -247,6 +247,7 @@ pub fn label(category: &str) -> &'static str {
         "en_crypt" => "encrypted Evernote text — kept as an opaque block",
         "missing_resource" => "Evernote media whose file isn't in the export — kept as a placeholder",
         "nested_table" => "nested tables — flattened",
+        "layout_table" => "tables used only for layout (HTML email, web clips) — shown as ordinary blocks",
         "heavy_clip" => "web clips over 200 blocks",
         "evernote_link_unresolved" => "Evernote note links to notes outside the import — kept as text",
         "unknown_entity" => "unknown XML entities — kept as text",

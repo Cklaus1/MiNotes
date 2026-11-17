@@ -472,7 +472,7 @@ fn finish_note(
         res_order.push(md5);
     }
 
-    let mut conv = Converter { key: &key, w, media: &media, used: HashSet::new() };
+    let mut conv = Converter { key: &key, w, media: &media, used: HashSet::new(), layout_depth: 0 };
     let mut body = conv.convert(&n.content);
     // Resources no en-media points at are still the note's attachments.
     let unused: Vec<&String> = res_order.iter().filter(|h| !conv.used.contains(*h)).collect();
@@ -649,11 +649,110 @@ fn is_block(name: &str) -> bool {
     )
 }
 
+/// Inline elements whose own formatting can be dropped when they wrap blocks.
+fn is_wrapper(name: &str) -> bool {
+    matches!(
+        name,
+        "span" | "font" | "u" | "b" | "strong" | "i" | "em" | "small" | "big" | "mark" | "label" | "sup" | "sub" | "s"
+            | "strike" | "del" | "ins" | "abbr" | "q" | "cite" | "code"
+    )
+}
+
+/// Does any descendant of `nodes` start a block?
+fn has_block(nodes: &[Node]) -> bool {
+    nodes.iter().any(|n| match n {
+        Node::El { name, children, .. } => is_block(name) || has_block(children),
+        Node::Text(_) => false,
+    })
+}
+
+/// The cells of a table's rows (`tr` directly or under thead/tbody/tfoot).
+fn table_rows(nodes: &[Node]) -> Vec<Vec<&[Node]>> {
+    let mut rows = Vec::new();
+    for n in nodes {
+        if let Node::El { name, children, .. } = n {
+            match name.as_str() {
+                "tr" => rows.push(
+                    children
+                        .iter()
+                        .filter_map(|c| match c {
+                            Node::El { name, children, .. } if name == "td" || name == "th" => Some(children.as_slice()),
+                            _ => None,
+                        })
+                        .collect(),
+                ),
+                "thead" | "tbody" | "tfoot" => rows.extend(table_rows(children)),
+                _ => {}
+            }
+        }
+    }
+    rows
+}
+
+/// A table used for page layout, not data: a single column, cells holding
+/// headings, lists, quotes or rules, or a cell holding a table that is itself
+/// layout or several rows long. (Evernote's own tables wrap cell text in <div>s,
+/// so plain divs don't count, and a small one-row table in a cell is still data:
+/// it is flattened into that cell.)
+fn is_layout_table(rows: &[Vec<&[Node]>]) -> bool {
+    let cols = rows.iter().map(|r| r.len()).max().unwrap_or(0);
+    !rows.is_empty() && (cols <= 1 || heavy_cells(rows))
+}
+
+/// Cells with layout content: headings, lists, quotes, rules, or a table that
+/// has several rows or layout content of its own.
+fn heavy_cells(rows: &[Vec<&[Node]>]) -> bool {
+    fn heavy(nodes: &[Node]) -> bool {
+        nodes.iter().any(|n| match n {
+            Node::El { name, children, .. } if name == "table" => {
+                let inner = table_rows(children);
+                inner.len() > 1 || heavy_cells(&inner)
+            }
+            Node::El { name, children, .. } => {
+                matches!(name.as_str(), "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "ul" | "ol" | "blockquote" | "hr" | "pre")
+                    || heavy(children)
+            }
+            Node::Text(_) => false,
+        })
+    }
+    rows.iter().flatten().any(|c| heavy(c))
+}
+
 struct Converter<'a> {
     key: &'a str,
     w: &'a mut Warnings,
     media: &'a HashMap<String, (usize, bool, String)>,
     used: HashSet<String>,
+    /// How many layout tables we are inside (a one-row table there is layout too).
+    layout_depth: usize,
+}
+
+/// Link text with stray `[`/`]` removed (they would end the link early) while
+/// images inside the link — `![label](target)`, as Evernote web clips wrap
+/// pictures in `<a>` — are kept whole, so their attachment is still found.
+fn link_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(i) = rest.find("![") {
+        out.extend(rest[..i].chars().filter(|c| *c != '[' && *c != ']'));
+        let after = &rest[i + 2..];
+        let img = after.find(']').filter(|&j| !after[..j].contains('[')).and_then(|j| {
+            let tail = &after[j + 1..];
+            tail.strip_prefix('(').and_then(|t| t.find(')')).map(|k| j + 1 + k + 2)
+        });
+        match img {
+            Some(end) => {
+                out.push_str(&rest[i..i + 2 + end]);
+                rest = &rest[i + 2 + end..];
+            }
+            None => {
+                out.push('!');
+                rest = &rest[i + 2..];
+            }
+        }
+    }
+    out.extend(rest.chars().filter(|c| *c != '[' && *c != ']'));
+    out
 }
 
 impl Converter<'_> {
@@ -713,6 +812,13 @@ impl Converter<'_> {
                 Node::El { name, attrs, children } if is_block(name) => {
                     flush(&mut line, out);
                     self.block_el(name, attrs, children, out, indent);
+                }
+                // An inline wrapper around block content (web clips put a <span> or
+                // <font> around a whole article) is laid out as blocks, as a browser
+                // does — inlining it would run every heading and paragraph into one line.
+                Node::El { name, children, .. } if is_wrapper(name) && has_block(children) => {
+                    flush(&mut line, out);
+                    self.blocks(children, out, indent);
                 }
                 Node::El { name, attrs, .. } if name == "en-media" && self.is_lone_media(nodes) => {
                     flush(&mut line, out);
@@ -786,6 +892,14 @@ impl Converter<'_> {
             "blockquote" => {
                 let mut inner = Vec::new();
                 self.blocks(children, &mut inner, 0);
+                // Layout-heavy mail leaves runs of empty lines: keep one.
+                inner.dedup_by(|a, b| a.trim().is_empty() && b.trim().is_empty());
+                while inner.first().is_some_and(|l| l.trim().is_empty()) {
+                    inner.remove(0);
+                }
+                while inner.last().is_some_and(|l| l.trim().is_empty()) {
+                    inner.pop();
+                }
                 out.push(String::new());
                 for l in inner {
                     out.push(if l.is_empty() { format!("{pad}>") } else { format!("{pad}> {l}") });
@@ -864,6 +978,21 @@ impl Converter<'_> {
     }
 
     fn table(&mut self, children: &[Node], out: &mut Vec<String>, indent: usize) {
+        // HTML email (and some web clips) positions everything with tables: a
+        // markdown table of that is a wall of `| --- |`. Lay its cells out as
+        // ordinary blocks instead; real data tables inside it stay tables.
+        let rows = table_rows(children);
+        if is_layout_table(&rows) || (self.layout_depth > 0 && rows.len() <= 1) {
+            self.w.add("layout_table", Some(self.key), None);
+            self.layout_depth += 1;
+            for row in rows {
+                for cell in row {
+                    self.blocks(cell, out, indent);
+                }
+            }
+            self.layout_depth -= 1;
+            return;
+        }
         let pad = " ".repeat(indent);
         let mut rows: Vec<Vec<String>> = Vec::new();
         let collect_rows = |nodes: &[Node], rows: &mut Vec<Vec<String>>, this: &mut Self| {
@@ -965,6 +1094,11 @@ impl Converter<'_> {
         }
         let lead = if inner.starts_with(' ') { " " } else { "" };
         let trail = if inner.ends_with(' ') { " " } else { "" };
+        // <b><strong>x</strong></b> (common in forwarded mail) is bold once,
+        // not `****x****`.
+        if t.len() > 2 * mark.len() && t.starts_with(mark) && t.ends_with(mark) && !t[mark.len()..t.len() - mark.len()].contains(mark) {
+            return format!("{lead}{t}{trail}");
+        }
         format!("{lead}{mark}{t}{mark}{trail}")
     }
 
@@ -998,9 +1132,11 @@ impl Converter<'_> {
                 }
                 let href = href.replace(' ', "%20").replace(')', "%29").replace('(', "%28");
                 if text.is_empty() {
-                    format!("<{href}>")
+                    // An empty <a> shows nothing in a browser (Outlook writes one
+                    // before every real link); don't turn it into a bare URL.
+                    String::new()
                 } else {
-                    format!("[{}]({href})", text.replace(['[', ']'], ""))
+                    format!("[{}]({href})", link_text(&text))
                 }
             }
             "img" => {
@@ -1148,7 +1284,7 @@ mod tests {
 
     fn conv(enml: &str, media: &HashMap<String, (usize, bool, String)>) -> (String, Warnings) {
         let mut w = Warnings::default();
-        let mut c = Converter { key: "k", w: &mut w, media, used: HashSet::new() };
+        let mut c = Converter { key: "k", w: &mut w, media, used: HashSet::new(), layout_depth: 0 };
         let s = c.convert(enml);
         (s, w)
     }
@@ -1165,6 +1301,62 @@ two</pre><hr/></en-note>"#;
         assert_eq!(w.count("missing_resource"), 1);
         assert_eq!(w.count("nested_table"), 1);
         assert_eq!(w.count("en_crypt"), 1);
+    }
+
+    /// Web clips wrap pictures in links: the image (and so its attachment) must
+    /// survive inside the link, while stray brackets in link text still go.
+    #[test]
+    fn image_inside_a_link_keeps_its_attachment() {
+        let mut media = HashMap::new();
+        media.insert("abc".to_string(), (3usize, true, "hotel [1].jpg".to_string()));
+        let (md, w) = conv(
+            r#"<en-note><div><a href="https://h.example/x?a=1">[Book] <en-media hash="abc" type="image/jpeg"/> now</a></div><div><a href="https://h.example/y"><img src="https://h.example/p.png" alt="p"/></a></div></en-note>"#,
+            &media,
+        );
+        assert!(md.contains("[Book ![hotel _1_.jpg](minotes-att:3) now](https://h.example/x?a=1)"), "{md}");
+        assert!(md.contains("[![p](https://h.example/p.png)](https://h.example/y)"), "{md}");
+        assert_eq!(w.count("missing_resource"), 0);
+        assert_eq!(link_text("a [b] ![c](d) e]"), "a b ![c](d) e");
+        assert_eq!(link_text("![unclosed"), "!unclosed");
+    }
+
+    /// A web clip wraps the whole article in a <span>: its headings and
+    /// paragraphs must still become separate lines, not one run-on paragraph.
+    #[test]
+    fn span_around_blocks_keeps_the_structure() {
+        let (md, _) = conv(
+            r#"<en-note><div><span style="x"><div><h1>Title</h1><div>Intro <b>bold</b></div><p>Para</p><h3>Sub</h3></div></span></div><div><span>plain</span> text</div></en-note>"#,
+            &HashMap::new(),
+        );
+        assert_eq!(md, "# Title\n\nIntro **bold**\n\nPara\n\n### Sub\n\nplain text", "full:\n{md}");
+    }
+
+    #[test]
+    fn nested_bold_is_bold_once() {
+        let (md, _) = conv("<en-note><div><b><strong>From:</strong></b> x <b>a <b>b</b> c</b></div></en-note>", &HashMap::new());
+        assert_eq!(md, "**From:** x **a **b** c**", "{md}");
+    }
+
+    /// HTML email lays everything out with tables: the cells become ordinary
+    /// lines, while a real data table inside stays a table.
+    #[test]
+    fn layout_tables_become_blocks() {
+        let (md, w) = conv(
+            r#"<en-note><table><tr><td><table><tr><td><b>Hotels.com</b></td></tr><tr><td><a href="https://h.example/r">Print receipt</a></td></tr></table></td></tr><tr><td><div>Dear guest,</div><table><tr><th>Night</th><th>Price</th></tr><tr><td>1</td><td>$90</td></tr></table></td></tr></table></en-note>"#,
+            &HashMap::new(),
+        );
+        assert_eq!(md, "**Hotels.com**\n[Print receipt](https://h.example/r)\nDear guest,\n\n| Night | Price |\n| --- | --- |\n| 1 | $90 |", "full:\n{md}");
+        assert!(w.count("layout_table") >= 1);
+        // Inside layout, a one-row "icon | text" table is layout too; an empty
+        // Outlook <a> adds nothing; empty quote lines collapse to one.
+        let (md, _) = conv(
+            r#"<en-note><blockquote><div><br/></div><div><br/></div><table><tr><td><table><tr><td><a href="https://x.example"></a><a href="https://x.example">Go</a></td><td>paperless</td></tr></table></td></tr></table><div><br/></div><div><br/></div><div>end</div></blockquote></en-note>"#,
+            &HashMap::new(),
+        );
+        assert_eq!(md, "> [Go](https://x.example)\n> paperless\n>\n> end", "full:\n{md}");
+        // Evernote's own table (div-wrapped cells, two columns) stays a table.
+        let (md, _) = conv("<en-note><table><tr><td><div>a</div></td><td><div>b</div></td></tr></table></en-note>", &HashMap::new());
+        assert_eq!(md, "| a | b |\n| --- | --- |", "{md}");
     }
 
     #[test]
