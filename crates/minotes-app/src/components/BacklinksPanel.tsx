@@ -2,6 +2,7 @@ import { useState, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import * as api from "../lib/api";
 import { renderBlockStatic, staticRootClass } from "../editor/staticRender";
 import { groupByPage, BACKLINK_PAGE_SIZE } from "../lib/backlinkGroups";
+import { openModeFrom, openInTab, preventMiddlePaste } from "../lib/openIntent";
 import Icon from "./Icon";
 
 interface Props {
@@ -113,7 +114,11 @@ export default function BacklinksPanel({ pageId, refreshKey, onPageClick, onBloc
               >
                 <Icon name={isFolded ? "chevron-right" : "chevron-down"} size={14} />
               </button>
-              <button type="button" className="backlink-page" title={`Open “${g.title}”`} onClick={() => onPageClick(g.pageId)}>
+              <button type="button" className="backlink-page" title={`Open “${g.title}”`}
+                onClick={(e) => { if (!openInTab({ notebook: "", kind: "page", pageId: g.pageId, title: g.title }, openModeFrom(e))) onPageClick(g.pageId); }}
+                onMouseDown={preventMiddlePaste}
+                onAuxClick={(e) => { if (e.button === 1) { e.preventDefault(); openInTab({ notebook: "", kind: "page", pageId: g.pageId, title: g.title }, "background"); } }}
+              >
                 {g.title}
               </button>
               <span className="backlink-count" aria-label={`${g.items.length} backlinks`}>{g.items.length}</span>
@@ -124,9 +129,17 @@ export default function BacklinksPanel({ pageId, refreshKey, onPageClick, onBloc
                 className="backlink-item"
                 role="link"
                 title={`Open “${entry.block!.page_title}” at this block`}
+                onMouseDown={preventMiddlePaste}
+                onAuxClick={(e) => {
+                  if (e.button !== 1) return;
+                  e.preventDefault();
+                  e.stopPropagation();
+                  openInTab({ notebook: "", kind: "page", pageId: entry.block!.page_id, title: entry.block!.page_title }, "background");
+                }}
                 onClick={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
+                  if (openInTab({ notebook: "", kind: "page", pageId: entry.block!.page_id, title: entry.block!.page_title }, openModeFrom(e))) return;
                   if (onBlockClick) onBlockClick(entry.block!.id);
                   else onPageClick(entry.block!.page_id);
                 }}

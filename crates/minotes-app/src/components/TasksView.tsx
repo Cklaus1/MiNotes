@@ -6,6 +6,7 @@ import { useEscapeToClose } from "../lib/escapeStack";
 import { showToast } from "../lib/toast";
 import { errorMessage } from "../lib/errors";
 import "./tasks.css";
+import { openModeFrom, openInTab, preventMiddlePaste } from "../lib/openIntent";
 import Icon from "./Icon";
 
 type Filter = "open" | "todo" | "doing" | "done" | "all";
@@ -141,7 +142,13 @@ export default function TasksView({ onOpenTask, onClose }: {
         )}
         {groups.map(g => (
           <section key={g.pageId} className="tasks-group" data-testid="tasks-group" data-page-id={g.pageId}>
-            <button className="tasks-group-title" onClick={() => onOpenTask(g.tasks[0])} title={`Open ${g.title}`}>
+            <button
+              className="tasks-group-title"
+              onClick={e => { if (!openInTab({ notebook: "", kind: "page", pageId: g.pageId, title: g.title }, openModeFrom(e))) onOpenTask(g.tasks[0]); }}
+              onMouseDown={preventMiddlePaste}
+              onAuxClick={e => { if (e.button === 1) { e.preventDefault(); openInTab({ notebook: "", kind: "page", pageId: g.pageId, title: g.title }, "background"); } }}
+              title={`Open ${g.title}`}
+            >
               {g.title} <span className="tasks-filter-count">{g.tasks.length}</span>
             </button>
             <ul className="tasks-list">

@@ -7,6 +7,7 @@ import { fuzzyMatch } from "../lib/fuzzy";
 import { plural } from "../lib/confirm";
 import { showToast, showUndoToast } from "../lib/toast";
 import { errorMessage } from "../lib/errors";
+import { openModeFrom, openInTab, preventMiddlePaste } from "../lib/openIntent";
 import Icon from "./Icon";
 import "./navigation.css";
 
@@ -25,6 +26,8 @@ type SortDir = "asc" | "desc";
 type Kind = "pages" | "journals" | "all";
 const KINDS: Array<[Kind, string]> = [["pages", "Pages"], ["journals", "Journals"], ["all", "All"]];
 const KIND_KEY = "minotes-all-pages-kind";
+
+const pageEntry = (p: Page) => ({ notebook: "", kind: "page" as const, pageId: p.id, title: p.title });
 
 function journalLabel(p: Page): string {
   const date = p.journal_date ?? (p.title.startsWith("Journal/") ? p.title.slice(8) : "");
@@ -248,7 +251,7 @@ export default function AllPagesView({ activePageId, onPageClick, onClose, onTra
     else if (e.key === "ArrowUp") { e.preventDefault(); go(i - 1); }
     else if (e.key === "Home") { e.preventDefault(); go(0); }
     else if (e.key === "End") { e.preventDefault(); go(filtered.length - 1); }
-    else if (e.key === "Enter") { e.preventDefault(); onPageClick(p.id); }
+    else if (e.key === "Enter") { e.preventDefault(); if (!openInTab(pageEntry(p), openModeFrom(e))) onPageClick(p.id); }
     else if (e.key === " ") { e.preventDefault(); toggle(p.id, false); }
     else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a") { e.preventDefault(); toggleAll(); }
     else if (e.key === "Delete") { e.preventDefault(); void trash(chosen.length ? chosen.map(c => c.id) : [p.id]); }
@@ -344,7 +347,10 @@ export default function AllPagesView({ activePageId, onPageClick, onClose, onTra
                   aria-selected={checked}
                   onFocus={() => setFocusId(page.id)}
                   onKeyDown={e => onRowKey(e, page)}
+                  onMouseDown={preventMiddlePaste}
+                  onAuxClick={e => { if (e.button === 1) { e.preventDefault(); openInTab(pageEntry(page), "background"); } }}
                   onClick={e => {
+                    if (openInTab(pageEntry(page), openModeFrom(e))) { e.preventDefault(); return; }
                     if (e.shiftKey || e.ctrlKey || e.metaKey) { e.preventDefault(); toggle(page.id, e.shiftKey); return; }
                     onPageClick(page.id);
                   }}
@@ -397,6 +403,19 @@ export default function AllPagesView({ activePageId, onPageClick, onClose, onTra
             <>
               <button className="sidebar-context-menu-item" onClick={() => { setMenu(null); onPageClick(menu.ids[0]); }} disabled={menu.ids.length !== 1}>
                 <Icon name="page" size={14} /> Open
+              </button>
+              <button
+                className="sidebar-context-menu-item"
+                onClick={() => {
+                  const id = menu.ids[0];
+                  setMenu(null);
+                  const pg = pages?.find(x => x.id === id);
+                  if (!openInTab({ notebook: "", kind: "page", pageId: id, title: pg?.title }, "foreground")) onPageClick(id);
+                }}
+                disabled={menu.ids.length !== 1}
+                data-testid="row-open-tab"
+              >
+                <Icon name="external" size={14} /> Open in new tab
               </button>
               <button
                 className="sidebar-context-menu-item"

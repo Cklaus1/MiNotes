@@ -6,6 +6,7 @@ import * as api from "../../lib/api";
 import { detectTodoState } from "../mindmap/blocksToFlow";
 import { inlineSegments, segmentsText, type Badge } from "../../lib/richText";
 import { useEscapeToClose } from "../../lib/escapeStack";
+import { openModeFrom, openInTab, preventMiddlePaste } from "../../lib/openIntent";
 import Icon from "../Icon";
 
 interface Props {
@@ -157,10 +158,17 @@ function KanbanCard({ block, subBlockCount, columnId, columns, onMoveTo, columnC
                   type="button"
                   className="kanban-wiki-link"
                   title={seg.notebook ? "Open the card" : `Open “${seg.target}”`}
+                  onMouseDown={preventMiddlePaste}
+                  onAuxClick={(e) => {
+                    if (e.button !== 1 || seg.notebook) return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    openInTab({ notebook: "", kind: "page", title: seg.target }, "background");
+                  }}
                   onClick={(e) => {
                     e.stopPropagation();
                     if (seg.notebook) onOpenSidePanel(block.id);
-                    else onOpenPage(seg.target);
+                    else if (!openInTab({ notebook: "", kind: "page", title: seg.target }, openModeFrom(e))) onOpenPage(seg.target);
                   }}
                 >
                   {seg.label}

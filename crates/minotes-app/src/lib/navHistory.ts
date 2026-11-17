@@ -85,7 +85,10 @@ export function noteLocation(loc: NavEntry | null): void {
     return; // on the way there: nothing in between is a place the user chose
   }
   if (index >= 0 && sameEntry(entries[index], loc)) {
-    entries[index] = { ...entries[index], ...loc };
+    const merged = { ...entries[index], ...loc };
+    const differs = JSON.stringify(merged) !== JSON.stringify(entries[index]);
+    entries[index] = merged;
+    if (differs) changed(); // a renamed page: the tab row and the saved tabs follow
     return;
   }
   entries = entries.slice(0, index + 1);
@@ -186,6 +189,44 @@ export function useNavHistory(): { canBack: boolean; canForward: boolean } {
     () => version,
   );
   return { canBack: canGoBack(), canForward: canGoForward() };
+}
+
+// ── Per-tab history (lib/tabs.ts): each tab owns an {entries, index}; the
+// ACTIVE tab's is the one this module works on. ──
+
+/** The live history (the active tab's), as plain data. */
+export function exportHistory(): { entries: NavEntry[]; index: number } {
+  return { entries: entries.map(e => ({ ...e })), index };
+}
+
+/**
+ * Make `h` the live history (switching tabs). A step under way is forgotten,
+ * unless `keepRestoring` (a notebook opened by a step: its arrival is still to come).
+ */
+export function importHistory(h: { entries: NavEntry[]; index: number }, opts: { keepRestoring?: boolean } = {}): void {
+  if (!opts.keepRestoring) clearRestoring();
+  entries = h.entries.map(e => ({ ...e }));
+  index = entries.length === 0 ? -1 : Math.max(0, Math.min(h.index, entries.length - 1));
+  changed();
+}
+
+/** Go to the live history's current entry (a tab switched to). False when it has none. */
+export const goToCurrent = () => step(0);
+
+/** Is a back / forward step on its way (its location not reached yet)? */
+export function isRestoring(): boolean {
+  return !!restoring;
+}
+
+/** The step waiting for its notebook to open, if any. */
+export function pendingNav(): NavEntry | null {
+  return pending;
+}
+
+/** Called after every history change (lib/tabs.ts). Returns the remover. */
+export function subscribeNavHistory(l: () => void): () => void {
+  listeners.add(l);
+  return () => { listeners.delete(l); };
 }
 
 /** Test hook (journeys): the history as plain data. */

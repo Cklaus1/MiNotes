@@ -1,6 +1,7 @@
 import { Node, mergeAttributes, InputRule } from "@tiptap/core";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import markdownItWikiLink from "./markdownItWikiLink";
+import { openModeFrom, openWikiLinkInTab } from "../lib/openIntent";
 import {
   splitNotebookLink, notebookLinkLabel, hydrateNotebookLinks, followNotebookLinkElement, NOTEBOOK_SEP,
 } from "../lib/crossNotebook";
@@ -89,6 +90,23 @@ export const WikiLinkNode = Node.create<WikiLinkOptions>({
           handleDOMEvents: {
             // Cross-notebook chips act on the DOM click (one per click, real or
             // synthetic), not ProseMirror's mousedown/up-derived handleClick.
+            // Ctrl/⌘-click and middle-click on a [[link]]: a new tab. Done on mousedown
+            // (and stopped there) so ProseMirror never moves the cursor or selects the
+            // chip, and the middle button never pastes the X primary selection.
+            mousedown(_view, event) {
+              const wiki = (event.target as HTMLElement).closest?.(".wiki-link") as HTMLElement | null;
+              if (!wiki) return false;
+              if (event.button === 1) { event.preventDefault(); return true; }
+              if (event.button === 0 && openWikiLinkInTab(wiki, openModeFrom(event))) { event.preventDefault(); return true; }
+              return false;
+            },
+            auxclick(_view, event) {
+              const wiki = (event.target as HTMLElement).closest?.(".wiki-link") as HTMLElement | null;
+              if (!wiki || event.button !== 1) return false;
+              event.preventDefault();
+              openWikiLinkInTab(wiki, "background");
+              return true;
+            },
             click(_view, event) {
               const xnb = (event.target as HTMLElement).closest?.(".xnb-link") as HTMLElement | null;
               if (!xnb) return false;

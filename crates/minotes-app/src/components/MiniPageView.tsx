@@ -1,11 +1,18 @@
 import { useState, useEffect } from "react";
 import type { PageTree } from "../lib/api";
 import * as api from "../lib/api";
+import { openModeFrom, openInTab, preventMiddlePaste } from "../lib/openIntent";
 import { followNotebookLink, notebookLinkLabel, splitNotebookLink } from "../lib/crossNotebook";
 
 interface Props {
   pageId: string;
   onPageClick: (id: string) => void;
+}
+
+/** `[[title]]` or `[[title|id]]` as a tab destination. */
+function linkEntry(inner: string) {
+  const [title, id] = inner.split("|");
+  return { notebook: "", kind: "page" as const, pageId: id || undefined, title };
 }
 
 function renderContent(text: string, onPageClick: (id: string) => void) {
@@ -29,7 +36,9 @@ function renderContent(text: string, onPageClick: (id: string) => void) {
         <span
           key={i}
           className="wiki-link"
-          onClick={(e) => { e.stopPropagation(); onPageClick(match[1]); }}
+          onMouseDown={preventMiddlePaste}
+          onAuxClick={(e) => { if (e.button === 1) { e.preventDefault(); e.stopPropagation(); openInTab(linkEntry(match[1]), "background"); } }}
+          onClick={(e) => { e.stopPropagation(); if (!openInTab(linkEntry(match[1]), openModeFrom(e))) onPageClick(match[1]); }}
         >
           {match[1]}
         </span>

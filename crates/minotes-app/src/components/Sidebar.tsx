@@ -10,6 +10,24 @@ import NotebookSwitcher from "./NotebookSwitcher";
 import { NOTEBOOK_SWITCHED } from "../lib/notebooks";
 import { useEscapeToClose } from "../lib/escapeStack";
 import { folderNameConflict } from "../lib/folderNames";
+import { openModeFrom, openInTab, preventMiddlePaste } from "../lib/openIntent";
+import type { NavView } from "../lib/navHistory";
+
+/** Ctrl/middle-click props for a button that opens a main view: a new tab when asked, else `open`. */
+function viewOpenProps(view: NavView, open?: () => void) {
+  return {
+    onClick: (e: React.MouseEvent) => {
+      if (openInTab({ notebook: "", kind: "view", view }, openModeFrom(e))) return;
+      open?.();
+    },
+    onMouseDown: preventMiddlePaste,
+    onAuxClick: (e: React.MouseEvent) => {
+      if (e.button !== 1) return;
+      e.preventDefault();
+      openInTab({ notebook: "", kind: "view", view }, "background");
+    },
+  };
+}
 import { errorMessage } from "../lib/errors";
 import { pageTitleConflict } from "../lib/pageNames";
 import { plural } from "../lib/confirm";
@@ -416,7 +434,13 @@ export default function Sidebar({
 
       {/* -- Journal + Calendar -- */}
       <div className="sidebar-journal-row">
-        <span className="sidebar-journal-text" onClick={() => onJournalClick()} title="Open today's journal (Ctrl+J)">
+        <span
+          className="sidebar-journal-text"
+          onClick={(e) => { if (openInTab({ notebook: "", kind: "journal-day", date: localDateKey() }, openModeFrom(e))) return; onJournalClick(); }}
+          onMouseDown={preventMiddlePaste}
+          onAuxClick={(e) => { if (e.button === 1) { e.preventDefault(); openInTab({ notebook: "", kind: "journal-day", date: localDateKey() }, "background"); } }}
+          title="Open today's journal (Ctrl+J)"
+        >
           <Icon name="calendar" size={14} /> <strong>Today</strong> &middot; {todayLabel}
         </span>
         <span
@@ -544,7 +568,7 @@ export default function Sidebar({
             role="button"
             tabIndex={0}
             aria-pressed={!!tasksOpen}
-            onClick={onTodoBadgeClick}
+            {...viewOpenProps("tasks", onTodoBadgeClick)}
             onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onTodoBadgeClick(); } }}
             title={`Tasks — ${pendingTodos} open`}
             data-testid="todo-badge"
@@ -699,7 +723,7 @@ export default function Sidebar({
             <button
               type="button"
               className={`sidebar-system-item${activeView === "archive" ? " active" : ""}`}
-              onClick={onArchiveClick}
+              {...viewOpenProps("archive", onArchiveClick)}
               aria-pressed={activeView === "archive"}
               title="Archive: archived pages and projects"
               data-testid="sidebar-archive"
@@ -710,7 +734,7 @@ export default function Sidebar({
           <button
             type="button"
             className={`sidebar-system-item${activeView === "trash" ? " active" : ""}`}
-            onClick={onTrashClick}
+            {...viewOpenProps("trash", onTrashClick)}
             aria-pressed={activeView === "trash"}
             title="Trash: restore or delete permanently"
             data-testid="sidebar-trash"
@@ -723,7 +747,7 @@ export default function Sidebar({
         <div className="stats-modes-divider" />
         <SyncChip onOpenSettings={onSettingsClick} />
         <div className="stats-modes-grid">
-          <button className={`stats-mode-btn ${activeMode === "graph" ? "active" : ""}`} onClick={onGraphClick} title="Graph (Ctrl+G)">
+          <button className={`stats-mode-btn ${activeMode === "graph" ? "active" : ""}`} {...viewOpenProps("graph", onGraphClick)} title="Graph (Ctrl+G)">
             <Icon name="graph" size={18} /><span>Graph</span>
           </button>
           <button className={`stats-mode-btn ${activeMode === "mindmap" ? "active" : ""}`} onClick={onMindmapClick} title="Mindmap (Ctrl+M)">
@@ -735,7 +759,7 @@ export default function Sidebar({
           <button className={`stats-mode-btn ${activeMode === "kanban" ? "active" : ""}`} onClick={onKanbanClick} title="Kanban (Ctrl+Shift+K)">
             <Icon name="kanban" size={18} /><span>Kanban</span>
           </button>
-          <button className={`stats-mode-btn ${activeMode === "pages" ? "active" : ""}`} onClick={onPagesClick} title="All Pages">
+          <button className={`stats-mode-btn ${activeMode === "pages" ? "active" : ""}`} {...viewOpenProps("pages", onPagesClick)} title="All Pages">
             <Icon name="pages" size={18} /><span>Pages</span>
           </button>
         </div>
@@ -770,6 +794,7 @@ function DraggablePage({
   const [renameError, setRenameError] = useState<string | null>(null);
   const [dropPos, setDropPos] = useState<"above" | "below" | null>(null);
   const rowRef = useRef<HTMLDivElement>(null);
+  const pageEntry = () => ({ notebook: "", kind: "page" as const, pageId: page.id, title: page.title });
 
   // `viaKeyboard`: focus the first menu item so arrows/Enter work right away.
   const openMenu = (x: number, y: number, viaKeyboard = false) => {
@@ -890,7 +915,7 @@ function DraggablePage({
       title={`${displayTitle(page)} — Shift+F10 or the menu key for actions`}
       onKeyDown={e => {
         if (renaming || e.target !== e.currentTarget) return;
-        if (e.key === "Enter") { e.preventDefault(); onPageClick(page.id); }
+        if (e.key === "Enter") { e.preventDefault(); if (!openInTab(pageEntry(), openModeFrom(e))) onPageClick(page.id); }
         if (e.key === "ContextMenu" || (e.key === "F10" && e.shiftKey)) {
           e.preventDefault();
           const r = e.currentTarget.getBoundingClientRect();
@@ -942,6 +967,7 @@ function DraggablePage({
         // Only a primary click on the row itself navigates: not right-click, not
         // the ⋮ button, and not clicks inside the menu (a portal, so React still
         // bubbles its events through this row).
+        preventMiddlePaste(e);
         const t = e.target as HTMLElement;
         const onRow = e.currentTarget.contains(t) && !t.closest(".page-more-btn");
         mouseStart.current = !renaming && e.button === 0 && onRow ? { x: e.clientX, y: e.clientY } : null;
@@ -953,10 +979,15 @@ function DraggablePage({
           const dx = Math.abs(e.clientX - start.x);
           const dy = Math.abs(e.clientY - start.y);
           if (dx < 5 && dy < 5) {
-            onPageClick(page.id);
+            if (!openInTab(pageEntry(), openModeFrom(e))) onPageClick(page.id);
           }
         }
         mouseStart.current = null;
+      }}
+      onAuxClick={e => {
+        if (renaming || e.button !== 1 || (e.target as HTMLElement).closest(".page-more-btn")) return;
+        e.preventDefault();
+        openInTab(pageEntry(), "background");
       }}
       onContextMenu={e => {
         e.preventDefault();
@@ -1000,6 +1031,12 @@ function DraggablePage({
       {/* Context menu — rendered via portal to avoid clipping */}
       {ctxMenu && (
         <ContextMenuPortal x={ctxMenu.x} y={ctxMenu.y} onClose={() => { closeMenu(); }}>
+          <button
+            className="sidebar-context-menu-item"
+            onClick={() => { closeMenu(); if (!openInTab(pageEntry(), "foreground")) onPageClick(page.id); }}
+          >
+            <Icon name="external" size={14} /> Open in new tab
+          </button>
           {!page.is_journal && (
             <button
               className="sidebar-context-menu-item"

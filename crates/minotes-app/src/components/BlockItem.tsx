@@ -26,6 +26,7 @@ import { showToast } from "../lib/toast";
 import LinkPreviewCard from "./LinkPreviewCard";
 import { getBlockRef, hydrateBlockRefs, requestBlockRefs, subscribeBlockRefs } from "../lib/blockRefs";
 import { copyCode } from "../editor/codeBlockView";
+import { openModeFrom, openWikiLinkInTab, preventMiddlePaste } from "../lib/openIntent";
 import "../editor/editor.css";
 
 // Lazy-load CM6 editor — only downloaded when obsidianEditorEnabled
@@ -110,6 +111,15 @@ function StaticBlockContent({ content, onPageLinkClick, onBlockRefClick, onToggl
     if (content.includes("::")) hydrateNotebookLinks(ref.current);
     if (content.includes("((") && ref.current) hydrateBlockRefs(ref.current);
   }, [content]);
+  /** Middle-click a [[link]]: a new background tab. */
+  const handleAuxClick = (e: React.MouseEvent) => {
+    if (e.button !== 1) return;
+    const wiki = (e.target as HTMLElement).closest(".wiki-link") as HTMLElement | null;
+    if (!wiki) return;
+    e.preventDefault();
+    e.stopPropagation();
+    openWikiLinkInTab(wiki, "background");
+  };
   const handleClick = (e: React.MouseEvent) => {
     const t = e.target as HTMLElement;
     // Code block header (editor/codeBlockView.ts): copy here, language in the editor.
@@ -136,6 +146,7 @@ function StaticBlockContent({ content, onPageLinkClick, onBlockRefClick, onToggl
     }
     const wiki = t.closest(".wiki-link") as HTMLElement | null;
     if (wiki) {
+      if (openWikiLinkInTab(wiki, openModeFrom(e))) { e.preventDefault(); e.stopPropagation(); return; }
       const name = wiki.getAttribute("data-page-id") || wiki.getAttribute("data-page-name") || wiki.textContent;
       if (name) { e.preventDefault(); e.stopPropagation(); onPageLinkClick(name, e.shiftKey); }
       return;
@@ -167,7 +178,7 @@ function StaticBlockContent({ content, onPageLinkClick, onBlockRefClick, onToggl
   };
   return (
     <div className="block-content">
-      <div ref={ref} className={`${staticRootClass()} block-static`} translate="no" onClick={handleClick} />
+      <div ref={ref} className={`${staticRootClass()} block-static`} translate="no" onClick={handleClick} onMouseDown={e => { if (e.button === 1 && (e.target as HTMLElement).closest(".wiki-link")) preventMiddlePaste(e); }} onAuxClick={handleAuxClick} />
     </div>
   );
 }

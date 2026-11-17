@@ -8,6 +8,7 @@ import { blockPlainText } from "../lib/plainText";
 import "./tasks.css";
 import "./navigation.css";
 import { useLayer } from "../lib/layers";
+import { openModeFrom, openInTab, preventMiddlePaste, type OpenMode } from "../lib/openIntent";
 import Icon from "./Icon";
 import { useDialogFocus } from "../lib/dialogFocus";
 import { highlightParts, rankByFuzzy, snippetAround, type Range } from "../lib/fuzzy";
@@ -49,6 +50,8 @@ interface Row {
   data?: Record<string, string>;
   disabled?: string;
   run: () => void;
+  /** Page rows: the page this row opens, so Ctrl/middle-click and Ctrl+Enter can open it in a tab. */
+  page?: { id: string; title: string };
 }
 interface Section {
   key: string;
@@ -190,6 +193,12 @@ export default function SearchPanel({ open, onClose, onPageClick, onCreatePage }
 
   const close = onClose;
   const openPage = (id: string) => { onPageClick(id); close(); };
+  /** Page rows and the Recent list: a new tab (Ctrl/middle-click, Ctrl+Enter) or, with no tab handler, as a plain open. */
+  const openPageIn = (pg: { id: string; title: string }, mode: OpenMode): boolean => {
+    if (!openInTab({ notebook: "", kind: "page", pageId: pg.id, title: pg.title }, mode)) return false;
+    close();
+    return true;
+  };
   const openBlock = (b: api.Block) => { setPendingReveal(b.id); onPageClick(b.page_id); close(); };
   const runCommand = (cmd: ListedCommand) => {
     noteCommandRun(cmd.id);
@@ -256,7 +265,7 @@ export default function SearchPanel({ open, onClose, onPageClick, onCreatePage }
         out.push({
           key: "recent", title: <><Icon name="clock" size={12} /> Recent</>, rows: recent.map(r => ({
             key: `recent:${r.id}`, className: "command-palette-item command-palette-recent",
-            content: formatTitle(r.title), run: () => openPage(r.id),
+            content: formatTitle(r.title), run: () => openPage(r.id), page: { id: r.id, title: r.title },
           })),
         });
       }
@@ -269,6 +278,7 @@ export default function SearchPanel({ open, onClose, onPageClick, onCreatePage }
         data: { pageId: p.id },
         content: <><Icon name="page" size={13} className="palette-icon" /><span className="palette-label"><Hl text={p.title} ranges={match.ranges} /></span></>,
         run: () => openPage(p.id),
+        page: { id: p.id, title: p.title },
       }))
       : [];
     const blockRow = (b: api.Block): Row => {
@@ -299,6 +309,7 @@ export default function SearchPanel({ open, onClose, onPageClick, onCreatePage }
             data: { pageId: p.id },
             content: <><Icon name="calendar" size={13} className="palette-icon" /><span className="palette-label"><Hl text={label} ranges={match.ranges.filter(([s]) => s < label.length)} /></span></>,
             run: () => openPage(p.id),
+            page: { id: p.id, title: p.title },
           };
         }),
         ...results.filter(isJournalBlock).slice(0, focused ? BLOCK_LIMIT.focused : 4).map(blockRow),
@@ -388,6 +399,8 @@ export default function SearchPanel({ open, onClose, onPageClick, onCreatePage }
       e.preventDefault();
       // Enter before the search for this query settled never creates a page.
       const row = rows[sel];
+      // Ctrl/⌘+Enter on a page result: a new tab, switched to.
+      if (row?.page && (e.ctrlKey || e.metaKey) && openPageIn(row.page, "foreground")) return;
       if (row && !(row.key === "create" && searchedQuery !== query)) row.run();
     } else if (e.key === "Tab" && !isCommandMode && !picker) {
       e.preventDefault();
@@ -480,8 +493,9 @@ export default function SearchPanel({ open, onClose, onPageClick, onCreatePage }
                     aria-selected={i === sel}
                     aria-disabled={r.disabled ? true : undefined}
                     className={`${r.className}${i === sel ? " selected" : ""}${r.disabled ? " disabled" : ""}`}
-                    onMouseDown={e => e.preventDefault()}
-                    onClick={r.run}
+                    onMouseDown={e => { e.preventDefault(); preventMiddlePaste(e); }}
+                    onClick={e => { if (r.page && openPageIn(r.page, openModeFrom(e))) return; r.run(); }}
+                    onAuxClick={e => { if (e.button === 1 && r.page) { e.preventDefault(); openPageIn(r.page, "background"); } }}
                     title={r.title}
                     data-testid={r.testId}
                     {...dataAttrs}
@@ -515,6 +529,7 @@ export default function SearchPanel({ open, onClose, onPageClick, onCreatePage }
         <div className="command-palette-hints" aria-hidden="true" data-testid="palette-hints">
           <span><kbd>↑</kbd><kbd>↓</kbd> select</span>
           <span><kbd>Enter</kbd> {isCommandMode ? "run" : "open"}</span>
+          {!isCommandMode && !picker && <span><kbd>Ctrl+Enter</kbd> new tab</span>}
           {!isCommandMode && !picker && <span><kbd>Tab</kbd> filter</span>}
           {!isCommandMode && !picker && <span><kbd>&gt;</kbd> commands</span>}
           {picker && <span><kbd>Backspace</kbd> back</span>}
