@@ -250,8 +250,12 @@ export function installNavHistory(): void {
   installed = true;
   window.addEventListener(LOCK_CHANGED, (ev) => {
     const s = (ev as CustomEvent<api.NotebookSession | null>).detail;
+    const wasLocked = locked;
     if (s) locked = !!s.locked;
-    if (s && !s.locked && pending && executor && (!pending.notebook || pending.notebook === s.key)) {
+    // Only an UNLOCK with App still mounted needs this: a plain switch reaches App
+    // as NOTEBOOK_SWITCHED, which takes the step itself — delivering it here too
+    // would run it twice (two "create page" calls for one link).
+    if (s && wasLocked && !s.locked && pending && executor && (!pending.notebook || pending.notebook === s.key)) {
       // Unlocked while App stayed mounted: nothing remounts to take the step.
       const p = pending;
       setTimeout(() => { if (pending === p && executor) deliver(p); }, 0);

@@ -267,8 +267,13 @@ export default function App() {
           try { tree = await api.getPageTree(title); } catch { /* create below */ }
         }
         if (!tree) {
-          const created = await api.createPage(title);
-          tree = await api.getPageTree(created.id);
+          try {
+            const created = await api.createPage(title);
+            tree = await api.getPageTree(created.id);
+          } catch (createErr) {
+            // Created meanwhile (two opens of one new link): open that page.
+            try { tree = await api.getPageTree(title); } catch { throw createErr; }
+          }
         }
       }
       console.log("[openPage] got tree:", tree.page.title, "blocks:", tree.blocks.length);
