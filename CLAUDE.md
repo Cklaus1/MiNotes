@@ -113,6 +113,7 @@ cargo run -p minotes-cli -- notebook list                     # notebook create|
 
 - **`ci.yml`** — every push to `main` and every PR (superseded runs cancelled): `rust` (`cargo check -p minotes-app -p minotes-cli`, `cargo test --workspace`, both `--locked`), `frontend` (`npm ci`, `tsc --noEmit`, `npm test`, `vite build`), `journeys` (vite on :1591 + `JOURNEY_URL=http://localhost:1591 bash tests/user-journey-test.sh` in headless Chrome via `agent-browser@0.22.1`; screenshots + logs uploaded on failure), `audit` (`cargo audit`, `npm audit --omit=dev --audit-level=high`).
 - **`nightly.yml`** — 03:17 UTC daily + manual: builds the debug app, then `tests/desktop-journey-test.sh` and `JOURNEY_BACKEND=desktop DESKTOP_NO_BUILD=1 bash tests/user-journey-test.sh` on Xvfb (tauri-driver + WebKitWebDriver); shots, logs and `results.tsv` uploaded on failure.
+- **`release.yml`** — `v*` tag or manual (tag input): Windows NSIS `setup.exe` + `.msi`, Linux `.AppImage`/`.deb`/`.rpm` (package name `mi-notes`) and the `minotes` CLI per OS, into a **draft** GitHub Release (published by hand). Unsigned (SmartScreen warning) — signing would be the only secret. `contents: write` on that job only.
 - **`release-android.yml`** — manual or `v*` tag: debug APK for x86_64 + aarch64 (NDK 27.0.12077973, JDK 17), uploaded as an artifact. No signing secrets.
 - Rules: `permissions: contents: read`, no secrets, `pull_request` only (never `pull_request_target`), third-party actions pinned to full commit SHAs (bump the SHA and its `# vX` comment together). Lint workflow edits with `actionlint`.
 - Reproduce a job locally by running its `run:` lines from the repo root (journeys: a free port, never 1420). Runners have no git identity, so the workflows set one system-wide; the journeys use `AGENT_BROWSER_ARGS=--disable-gpu,--disable-software-rasterizer` and their own `AGENT_BROWSER_SESSION`.
@@ -184,6 +185,7 @@ Without these flags, WebKit fails silently (MESA/Zink GPU errors) and no window 
 - `docs/PRD-notebooks.md` — notebooks: sidebar switcher, markdown mirror, notebook folders
 - `docs/PRD-import.md` — import from Obsidian, Evernote (.enex), markdown folders; attachment store
 - `docs/PRD-plugin-architecture.md` — sandboxed (Wasm + iframe) plugins and a free public marketplace
+- `docs/PRD-onboarding.md` — first-run screen: start fresh / import / join (spec, not started; 10 open questions)
 - `docs/PRD-tabs.md` — Evernote-style tabs: switch in place, Ctrl+click / + for new tabs, per-tab back/forward, per notebook
 - `docs/ARCH-findings.md` — architecture review (2026-10-12): ~60 findings by layer, P0/P1/P2 plan, target architecture
 - `docs/UX-review-2026-10.md` — hands-on UI review of every feature on the real app: 72 features rated 0–10, top bugs, plan by wave

@@ -52,10 +52,48 @@
         "frame-src": "'none'",
         "base-uri": "'self'"
       },
-      "dangerousDisableAssetCspModification": ["style-src"]
+      "dangerousDisableAssetCspModification": [
+        "style-src"
+      ]
     }
   },
   "bundle": {
+    "active": true,
+    "targets": [
+      "nsis",
+      "msi",
+      "appimage",
+      "deb",
+      "rpm"
+    ],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "publisher": "MiNotes contributors",
+    "copyright": "Copyright (c) 2026 MiNotes contributors",
+    "license": "MIT",
+    "category": "Productivity",
+    "shortDescription": "Local-first outliner and notes app",
+    "longDescription": "MiNotes is a local-first outliner and notes app: bidirectional links, a graph view, whiteboards, encrypted notebooks, Git sync, and import from Evernote and Obsidian. Your notes stay on your machine, in notebooks you choose.",
+    "linux": {
+      "deb": {
+        "section": "utils"
+      }
+    },
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "startMenuFolder": "MiNotes",
+        "displayLanguageSelector": false
+      }
+    },
     "iOS": {
       "minimumSystemVersion": "15.0"
     },

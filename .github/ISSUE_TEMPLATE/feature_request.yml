@@ -1,0 +1,32 @@
+name: Feature request
+description: Suggest something MiNotes should do.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: Describe the situation, not only the feature. What is hard or impossible today?
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like MiNotes to do?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Workarounds or other apps
+      description: How do you handle this today, or how does another app do it?
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Which system do you use?
+      multiple: true
+      options:
+        - Windows
+        - Linux
+        - macOS (built from source)
+        - Android

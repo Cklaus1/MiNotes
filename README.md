@@ -1,221 +1,86 @@
 # MiNotes
 
-A local-first knowledge management engine built with Rust and TypeScript. MiNotes combines block-based outlining, bidirectional linking, and graph-based knowledge organization in a fast, privacy-respecting desktop application. Think Logseq meets Obsidian — but built on Rust + Tauri for speed and portability.
+**A local-first outliner for notes you own.** Write in blocks, link pages with `[[double brackets]]`, keep a daily journal, and open as many tabs as you like. Your notes live in a folder on your own computer, not on someone else's server.
 
-## Features
+MiNotes can encrypt a notebook, sync it between your devices through a git remote you choose, and import your existing notes from Evernote, Obsidian or a folder of markdown files.
 
-### Core Editor
-- **Block-based outliner** — Hierarchical blocks with indent/outdent (Tab/Shift+Tab), collapse/expand, and inline editing
-- **Drag-to-reorder blocks** — Grab handle on hover, drag blocks up/down to reorder
-- **Rich text editing** — TipTap (ProseMirror) WYSIWYG with headings, bold, italic, strikethrough, code, highlights, blockquotes, task lists, tables
-- **Floating toolbar** — Bold, italic, strike, code, highlight, H1-H3 appear on text selection
-- **Slash commands** — Type `/` for headings, lists, todos, code blocks, dividers, whiteboards
-- **CodeMirror 6 source mode** — Optional Obsidian-style markdown source editor (toggle per block)
-- **URL-to-link paste** — Paste a URL over selected text → auto-creates `[text](url)` markdown link
-- **TODO cycling** — Ctrl+Enter cycles through TODO → DOING → DONE → plain text
+![MiNotes showing a page with links, open tabs and the sidebar](docs/images/screenshot-page.png)
 
-### Knowledge Graph
-- **Bidirectional linking** — `[[Wiki Links]]` with automatic backlink tracking
-- **Block references** — `((block-id))` inline references
-- **`[[` autocomplete** — Type `[[` to search and link pages inline
-- **Hover preview** — Hover over `[[links]]` to preview page content (300ms delay, instant on Ctrl)
-- **Backlinks panel** — See all pages that reference the current page
-- **Unlinked references** — Discover mentions that aren't linked yet
-- **Graph visualization** — Interactive force-directed graph of page connections
+## Download
 
-### Organization
-- **Folder hierarchy** — Nested project folders with drag-and-drop page organization
-- **Daily journal** — Auto-created journal pages with prev/next navigation (Ctrl+J)
-- **Favorites** — Pin frequently used pages (right-click to add/remove)
-- **Full-text search** — SQLite FTS5-powered search with command palette (Ctrl+K)
-- **Properties & metadata** — Typed key-value properties on blocks and pages
+Get the installer for your system from the **[latest release](https://github.com/Cklaus1/MiNotes/releases/latest)**.
 
-### Whiteboard
-- **Per-block whiteboards** — Create via `/whiteboard` slash command or Ctrl+W
-- **Drawing tools** — Freehand draw with color picker, sticky notes with text
-- **Inline thumbnail** — Whiteboard blocks show a live preview in the page
-- **Auto-save** — Saves every 10 seconds + on close
-- **Export PNG** — WSL-aware download (saves to Windows Downloads folder in Tauri)
+| System | Pick this file |
+|---|---|
+| Windows 10 / 11 | `MiNotes_…_x64-setup.exe` (or the `.msi`) |
+| Linux, any distribution | `MiNotes_….AppImage` |
+| Debian, Ubuntu, Mint | `MiNotes_….deb` |
+| Fedora, openSUSE | `MiNotes-….rpm` |
+| macOS | Not yet. You can [build it from source](CONTRIBUTING.md). |
 
-### Visual Modes
-- **Clean Document Mode** — Default minimal view with subtle bullets
-- **Full Tree Mode** — `├──`/`└──` connector lines showing block hierarchy (toggle in Settings)
-- **Light & Dark themes** — Catppuccin Mocha (dark) and Latte (light)
+**Windows:** the installers are not signed yet, so Windows SmartScreen may say "Windows protected your PC". Click **More info**, then **Run anyway**.
 
-### Developer & Power User
-- **CLI with 5 output formats** — JSON, text, markdown, CSV, OPML
-- **Event sourcing** — Append-only audit log tracking all mutations
-- **Markdown import/export** — Bidirectional filesystem sync
-- **Query engine** — SQL queries against the knowledge base
-- **Obsidian plugin compatibility** — Plugin loader for community plugins
-- **CSS snippet manager** — Custom styling via user CSS
-
-## Architecture
-
-```
-crates/
-├── minotes-core/     # Rust data engine — SQLite, models, repo layer, search, sync
-├── minotes-cli/      # CLI binary — Clap 4, 40+ subcommands, 5 output formats
-└── minotes-app/      # Desktop app — Tauri 2 backend + React 19 frontend
-```
-
-### Tech Stack
-
-| Layer | Technology |
-|-------|-----------|
-| Core engine | Rust, SQLite (rusqlite), WAL mode |
-| Full-text search | SQLite FTS5 |
-| Desktop shell | Tauri 2 (~20MB binary) |
-| Frontend | React 19, TypeScript, Vite |
-| Rich editor | TipTap (ProseMirror) + tiptap-markdown |
-| Source editor | CodeMirror 6 (optional) |
-| CLI | Clap 4 with 5 output formats |
-| IDs | UUID v7 (time-sortable) |
-| Serialization | Serde |
-
-## Getting Started
-
-### Prerequisites
-
-- [Rust](https://rustup.rs/) (stable)
-- [Node.js](https://nodejs.org/) (v18+)
-- [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) (system dependencies)
-
-### Build & Run
+**Linux:**
 
 ```bash
-# Clone the repository
-git clone https://github.com/Cklaus1/MiNotes.git
-cd MiNotes
-
-# Install frontend dependencies
-cd crates/minotes-app && npm install && cd ../..
-
-# Run the desktop app (dev mode)
-cd crates/minotes-app && npm run tauri dev
-
-# Or run the frontend only (browser dev mode with mock backend)
-cd crates/minotes-app && npx vite --port 1420
-
-# Or build the CLI
-cargo build --release -p minotes-cli
+chmod +x MiNotes_*.AppImage && ./MiNotes_*.AppImage     # AppImage
+sudo apt install ./MiNotes_*.deb                         # Debian / Ubuntu
+sudo dnf install ./MiNotes-*.rpm                         # Fedora
 ```
 
-### CLI Usage
+More detail, including where your notes are stored and how to uninstall: [Install guide](docs/guide/install.md).
 
-```bash
-# Page operations
-minotes page create "My Page"
-minotes page list
-minotes page get "My Page" --tree
+## Quick start
 
-# Output formats: json (default), text, md, csv, opml
-minotes -f text page list                        # Human-readable
-minotes -f md page get "Design Doc" --tree       # Markdown export
-minotes -f csv page list > pages.csv             # Spreadsheet
-minotes -f opml page get "Project" --tree        # Outliner import
+1. Install and start MiNotes. The first page you see is **Getting Started**; it shows the basics and you can delete it whenever you like.
+2. Click into a block and type. **Enter** starts a new block, **Tab** indents it under the one above, **Shift+Tab** moves it back out.
+3. Type `[[` to link to another page. Pick an existing page from the list, or create a new one from there.
+4. **Ctrl+K** searches everything; **Ctrl+J** opens today's journal; **Ctrl+T** opens a new tab; **Ctrl+/** lists every shortcut.
+5. Coming from another app? Press **Ctrl+Shift+I** to [import your Evernote, Obsidian or markdown notes](docs/guide/import.md).
 
-# Block operations
-minotes block create "My Page" "Block content with [[wiki links]]"
-minotes block update <block-id> --content "Updated content"
+## Highlights
 
-# Search
-minotes search "meeting" --limit 20
-minotes -f text search "TODO"
+**Writing and linking**
+- Block outliner with indent, collapse, drag to reorder, and slash (`/`) commands for headings, to-dos, tables, callouts, code and more.
+- `[[Page links]]` with backlinks and unlinked mentions, `((block references))` and embeds, tags and page properties.
+- To-dos (`TODO`, `DOING`, `DONE`) collected in a Tasks view; templates; per-day journal pages.
+- Images, PDFs and file attachments in your notes.
 
-# Journal
-minotes journal                    # Today's journal
-minotes journal 2026-03-24         # Specific date
-minotes journal create "Quick note"
+**Finding your way around**
+- Tabs, back and forward, a command palette (Ctrl+K) with typo-tolerant search across pages, blocks and journals, projects (folders) and pinned pages.
+- Light and dark themes.
 
-# Folders
-minotes folder create "Projects"
-minotes folder list
+**Other ways to see your notes**
+![The link graph, with the current page highlighted](docs/images/screenshot-graph.png)
 
-# Notebooks
-minotes notebook list
-minotes notebook create "Research"            # ~/MiNotes/Research
-minotes --notebook "Research" page list       # name, notebook folder or .db path
+- Link graph, kanban board (columns by status or by a property), mind map, and per-block whiteboards.
 
-# Stats & links
-minotes stats
-minotes -f text stats
-minotes backlinks "Project Alpha"
-minotes forward-links "Research Notes"
+**Keeping notes safe**
+- Encrypted notebooks (the whole database is encrypted, with a recovery key).
+- A readable markdown copy of each notebook (not for encrypted ones), and zip export of a whole notebook.
+- [Git sync](docs/guide/sync.md) between devices, with a conflict view that lets you keep either version or both.
 
-# Export/Import
-minotes export --format markdown
-minotes sync-dir ./my-notes/ --write-back
+**For power users**
+- A `minotes` command-line tool for scripting and a SQL query panel. See [CONTRIBUTING.md](CONTRIBUTING.md#the-minotes-command-line-tool).
 
-# Event log
-minotes events --limit 10
-minotes events --follow            # Real-time tail
-```
+## Privacy
 
-## Keyboard Shortcuts
+- **Local first.** Notebooks are files on your disk. There is no account and no MiNotes server.
+- **No telemetry.** The app contains no analytics or crash-reporting code, and no automatic update check.
+- **Sync goes only where you point it.** Git sync is off until you set it up, and it uses only the remote address you give it, with your own git credentials. Encrypted notebooks sync as encrypted files.
+- **Images from the web are blocked by default.** A web image in a note shows a placeholder until you allow it (Settings, Privacy).
+- **AI is off by default.** Nothing is sent anywhere unless you pick a provider and add your own key in Settings. Link preview cards fetch the title and image of a web address you put in a note.
 
-| Shortcut | Action |
-|----------|--------|
-| `Ctrl+K` | Open search / command palette |
-| `Ctrl+J` | Open today's journal |
-| `Ctrl+N` | Create new page |
-| `Ctrl+G` | Toggle graph view |
-| `Ctrl+W` | Create whiteboard block |
-| `Ctrl+M` | Toggle mind map view (planned) |
-| `Ctrl+,` | Open settings |
-| `Ctrl+Z` | Undo |
-| `Ctrl+Shift+Z` | Redo |
-| `Enter` | Create new block below |
-| `Tab` | Indent block |
-| `Shift+Tab` | Outdent block |
-| `Ctrl+Enter` | Cycle TODO state |
-| `/` | Slash commands menu |
-| `[[` | Wiki link autocomplete |
-| `((` | Block reference autocomplete |
-| `Escape` | Close panel / deselect |
+## Documentation
 
-## Testing
+[User guide](docs/guide/README.md): [install](docs/guide/install.md), [getting started](docs/guide/getting-started.md), [import](docs/guide/import.md), [sync](docs/guide/sync.md), [encryption](docs/guide/encryption.md), [FAQ](docs/guide/faq.md). Changes by version: [CHANGELOG](CHANGELOG.md).
 
-```bash
-# Full user journey tests (33 journeys, 127 tests)
-cd crates/minotes-app && npx vite --port 1420 &
-bash tests/user-journey-test.sh
-
-# Rust tests
-cargo test
-```
-
-## Data Storage
-
-All data is stored locally in SQLite at `~/.minotes/default.db`. No cloud services, no telemetry, no external API calls. Multiple notebooks (separate databases) are supported: switch from the sidebar header, or `minotes --notebook <name> …` / `minotes notebook list|create` on the CLI.
-
-## PRDs & Roadmap
-
-Detailed product requirements in `docs/`:
-
-| PRD | Status | Description |
-|-----|--------|-------------|
-| [Editor Improvements](docs/PRD-editor-improvements.md) | Planned | Table editor, templates, highlight colors, outline panel, kanban, queries, periodic notes |
-| [Mind Map](docs/PRD-mindmap.md) | Planned | ReactFlow + dagre mind map view with inline editing and drag-to-rearrange |
-| [Git Sync](docs/PRD-git-sync.md) | Planned | Git-based sync via markdown files, conflict resolution, Obsidian compatibility |
-| [Encryption](docs/PRD-encryption.md) | Planned | Per-folder AES-256-GCM encryption with Argon2id key derivation |
-
-## Mobile
-
-MiNotes uses Tauri 2, which supports iOS and Android from the same codebase. The mobile UI adapts automatically: sidebar collapses to a top panel on narrow screens with a bottom tab bar for Pages, Journal, Search, Graph, and Menu.
-
-```bash
-# Android
-cd crates/minotes-app
-npm run tauri android dev
-
-# iOS
-cd crates/minotes-app
-npm run tauri ios dev
-```
+Questions and ideas are welcome in [Discussions](https://github.com/Cklaus1/MiNotes/discussions); bugs go in [Issues](https://github.com/Cklaus1/MiNotes/issues/new/choose). To report a security problem privately, see [SECURITY.md](SECURITY.md).
 
 ## License
 
-This work is licensed under the [Creative Commons Attribution-NonCommercial 4.0 International License](https://creativecommons.org/licenses/by-nc/4.0/).
+[MIT](LICENSE).
 
-See [LICENSE](LICENSE) for details.
+## Contributing
+
+Build instructions, tests and project rules are in [CONTRIBUTING.md](CONTRIBUTING.md).

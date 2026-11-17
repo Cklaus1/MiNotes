@@ -88,6 +88,8 @@ function SyncStateBox({ syncDir }: { syncDir: string }) {
 }
 
 export default function SettingsPanel({ open, onClose, onOpenSync, onOpenCssSnippets }: Props) {
+  const [version, setVersion] = useState<string | null>(null);
+  useEffect(() => { api.appVersion().then(setVersion).catch(() => {}); }, []);
   const [settings, setSettings] = useState<MiNotesSettings>(getSettings);
   const [currentTheme, setCurrentTheme] = useState(getTheme);
   const [stats, setStats] = useState<api.GraphStats | null>(null);
@@ -469,6 +471,9 @@ export default function SettingsPanel({ open, onClose, onOpenSync, onOpenCssSnip
           <div className="settings-workspace">
             {stats.pages} pages · {stats.blocks} blocks · {stats.links} links
           </div>
+        )}
+        {version && (
+          <div className="settings-workspace" data-testid="app-version">MiNotes {version}</div>
         )}
       </div>
     </>

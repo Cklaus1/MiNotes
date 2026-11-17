@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2a2b3d"/>
+      <stop offset="1" stop-color="#181825"/>
+    </linearGradient>
+  </defs>
+  <rect x="64" y="64" width="896" height="896" rx="200" fill="#1e1e2e"/>
+  <rect x="64" y="64" width="896" height="896" rx="200" fill="none" stroke="#45475a" stroke-width="8"/>
+  <!-- an outline: three levels of bullets, the MiNotes block tree -->
+  <circle cx="262" cy="330" r="46" fill="#89b4fa"/>
+  <rect x="352" y="300" width="430" height="60" rx="30" fill="#cdd6f4"/>
+  <circle cx="392" cy="512" r="40" fill="#b4befe"/>
+  <rect x="472" y="486" width="310" height="52" rx="26" fill="#a6adc8"/>
+  <circle cx="392" cy="694" r="40" fill="#b4befe"/>
+  <rect x="472" y="668" width="230" height="52" rx="26" fill="#a6adc8"/>
+  <!-- the link between blocks -->
+  <path d="M262 380 V694 H340" fill="none" stroke="#89b4fa" stroke-width="14" stroke-linecap="round" stroke-linejoin="round" opacity=".55"/>
+  <path d="M262 512 H340" fill="none" stroke="#89b4fa" stroke-width="14" stroke-linecap="round" opacity=".55"/>
+</svg>

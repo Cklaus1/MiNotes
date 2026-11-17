@@ -1145,6 +1145,13 @@ export const listPendingTodosWithIds = () =>
 
 export { isTauri };
 
+/** The app's version ("0.1.0"), shown in Settings for bug reports; "dev" in the browser build. */
+export async function appVersion(): Promise<string> {
+  if (!isTauri) return "dev";
+  const { getVersion } = await import("@tauri-apps/api/app");
+  return getVersion();
+}
+
 // ── Whiteboards (DB-backed; keyed by the id in `{{whiteboard:<id>}}`) ──
 /** Returns the stored whiteboard JSON, or null if never saved. */
 export const getWhiteboard = (id: string) =>
