@@ -1,0 +1,22 @@
+[package]
+name = "minotes-cli"
+version = "0.1.0"
+license = "MIT"
+repository = "https://github.com/Cklaus1/MiNotes"
+edition = "2021"
+
+[[bin]]
+name = "minotes"
+path = "src/main.rs"
+
+[dependencies]
+minotes-core = { path = "../minotes-core" }
+clap = { version = "4", features = ["derive"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+rusqlite = { workspace = true }
+# Encrypted notebooks: read the passphrase from the terminal without echo.
+rpassword = "7"
+zeroize = "1"

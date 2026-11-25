@@ -1,0 +1,533 @@
+use chrono::{NaiveDate, Utc};
+use uuid::Uuid;
+
+use crate::db::Database;
+use crate::error::{Error, Result};
+use crate::models::Page;
+
+const PAGE_COLS: &str =
+    "id, title, icon, folder_id, position, is_journal, journal_date, created_at, updated_at";
+
+impl Database {
+    pub fn create_page(
+        &self,
+        title: &str,
+        icon: Option<&str>,
+        is_journal: bool,
+        journal_date: Option<NaiveDate>,
+        actor: &str,
+    ) -> Result<Page> {
+        self.create_page_with_id(Uuid::now_v7(), title, icon, is_journal, journal_date, actor)
+    }
+
+    /// Create a page with a caller-supplied id. Used by sync import to preserve the
+    /// stable page UUID from frontmatter so identity survives the round-trip (Bug #3),
+    /// and by the app to materialise a "virtual" journal under the id it showed.
+    pub fn create_page_with_id(
+        &self,
+        id: Uuid,
+        title: &str,
+        icon: Option<&str>,
+        is_journal: bool,
+        journal_date: Option<NaiveDate>,
+        actor: &str,
+    ) -> Result<Page> {
+        let title = normalize_title(title)?;
+        let title = title.as_str();
+        self.tx(|| {
+            let now = Utc::now();
+
+            // A trashed page doesn't keep its title from the user.
+            self.free_title_from_trash(title)?;
+            // Check for duplicate title (exact, as enforced by the UNIQUE column).
+            if self.get_page_by_title(title)?.is_some() {
+                return Err(Error::AlreadyExists(format!(
+                    "A page titled '{title}' already exists"
+                )));
+            }
+
+            // Auto-position at end of root pages
+            let max_pos: Option<f64> = self.conn.query_row(
+                "SELECT MAX(position) FROM pages WHERE folder_id IS NULL",
+                [],
+                |row| row.get(0),
+            )?;
+            let position = max_pos.unwrap_or(0.0) + 1.0;
+
+            self.conn.execute(
+                "INSERT INTO pages (id, title, icon, folder_id, position, is_journal, journal_date, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                rusqlite::params![
+                    id.to_string(),
+                    title,
+                    icon,
+                    Option::<String>::None,
+                    position,
+                    is_journal as i32,
+                    journal_date.map(|d| d.to_string()),
+                    now.to_rfc3339(),
+                    now.to_rfc3339(),
+                ],
+            )?;
+
+            let page = Page {
+                id,
+                title: title.to_string(),
+                icon: icon.map(String::from),
+                folder_id: None,
+                position,
+                is_journal,
+                journal_date,
+                created_at: now,
+                updated_at: now,
+            };
+
+            self.emit_event("page.created", &page.id, "page", &page, actor)?;
+            // Bug #32: backfill link rows for existing [[Title]] references that were
+            // skipped while this page didn't exist yet, so backlinks are immediately correct.
+            self.backfill_links_for_page(title, &page.id, actor)?;
+            Ok(page)
+        })
+    }
+
+    pub fn get_page(&self, id: &Uuid) -> Result<Option<Page>> {
+        let mut stmt = self
+            .conn
+            .prepare(&format!("SELECT {PAGE_COLS} FROM pages WHERE id = ?1"))?;
+        let mut rows = stmt.query(rusqlite::params![id.to_string()])?;
+        match rows.next()? {
+            Some(row) => Ok(Some(row_to_page(row)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Exact title lookup (falls back to an exact alias). Used for page identity
+    /// (creation uniqueness, CLI/app `title_or_id` lookups). For resolving
+    /// `[[wiki links]]` use [`Database::find_page_for_link`].
+    pub fn get_page_by_title(&self, title: &str) -> Result<Option<Page>> {
+        let mut stmt = self
+            .conn
+            .prepare(&format!("SELECT {PAGE_COLS} FROM pages WHERE title = ?1"))?;
+        let mut rows = stmt.query(rusqlite::params![title])?;
+        match rows.next()? {
+            Some(row) => Ok(Some(row_to_page(row)?)),
+            None => {
+                // Fall back to alias lookup
+                let page_id: Option<String> = self
+                    .conn
+                    .query_row(
+                        "SELECT page_id FROM page_aliases WHERE alias = ?1",
+                        rusqlite::params![title],
+                        |row| row.get(0),
+                    )
+                    .ok();
+                if let Some(pid) = page_id {
+                    if let Ok(uuid) = Uuid::parse_str(&pid) {
+                        return self.get_page(&uuid);
+                    }
+                }
+                Ok(None)
+            }
+        }
+    }
+
+    /// Resolve a `[[wiki link]]` target title to a page, case-insensitively
+    /// (ASCII, like SQLite NOCASE). Order: exact title, exact alias, NOCASE title,
+    /// NOCASE alias; ties broken by oldest page. Used by link sync AND backfill so
+    /// a link row, once created, is never dropped by the next edit.
+    pub fn find_page_for_link(&self, title: &str) -> Result<Option<Page>> {
+        if let Some(p) = self.get_page_by_title(title)? {
+            return Ok(Some(p));
+        }
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {PAGE_COLS} FROM pages WHERE title = ?1 COLLATE NOCASE
+             ORDER BY created_at, id LIMIT 1"
+        ))?;
+        let mut rows = stmt.query(rusqlite::params![title])?;
+        if let Some(row) = rows.next()? {
+            return Ok(Some(row_to_page(row)?));
+        }
+        let pid: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT page_id FROM page_aliases WHERE alias = ?1 COLLATE NOCASE
+                 ORDER BY created_at, id LIMIT 1",
+                rusqlite::params![title],
+                |row| row.get(0),
+            )
+            .map(Some)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(other),
+            })?;
+        match pid.and_then(|s| Uuid::parse_str(&s).ok()) {
+            Some(u) => self.get_page(&u),
+            None => Ok(None),
+        }
+    }
+
+    pub fn list_pages(&self, limit: Option<i64>) -> Result<Vec<Page>> {
+        let limit = limit.unwrap_or(100);
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {PAGE_COLS} FROM pages WHERE id NOT IN (SELECT page_id FROM trash) AND id NOT IN (SELECT page_id FROM archive) ORDER BY position, updated_at DESC LIMIT ?1"
+        ))?;
+        let rows = stmt.query_map(rusqlite::params![limit], |row| {
+            row_to_page_sqlite(row)
+        })?;
+        let mut pages = Vec::new();
+        for row in rows {
+            pages.push(row.map_err(Error::Database)?);
+        }
+        Ok(pages)
+    }
+
+    pub fn delete_page(&self, id: &Uuid, actor: &str) -> Result<bool> {
+        self.tx(|| {
+            let page = self.get_page(id)?;
+            // Bug #29: `properties` has no FK to pages/blocks, so deleting the page (and
+            // cascade-deleting its blocks) would orphan their property rows forever.
+            // Clean up the page's own properties and those of all its blocks explicitly.
+            self.conn.execute(
+                "DELETE FROM properties WHERE entity_id = ?1
+                    OR entity_id IN (SELECT id FROM blocks WHERE page_id = ?1)",
+                rusqlite::params![id.to_string()],
+            )?;
+            let count = self
+                .conn
+                .execute("DELETE FROM pages WHERE id = ?1", rusqlite::params![id.to_string()])?;
+            // Emit only after the DELETE succeeded (repo convention).
+            if let (Some(p), true) = (page, count > 0) {
+                self.emit_event("page.deleted", &p.id, "page", &p, actor)?;
+            }
+            Ok(count > 0)
+        })
+    }
+
+    /// Rename a page and rewrite `[[Old]]` / `[[Old|alias]]` references in the
+    /// blocks that link to it (found via the links table), atomically. Links inside
+    /// inline code spans / fenced code blocks are left untouched.
+    pub fn rename_page(&self, id: &Uuid, new_title: &str, actor: &str) -> Result<Page> {
+        let new_title = normalize_title(new_title)?;
+        let new_title = new_title.as_str();
+        self.tx(|| {
+            // A trashed page doesn't keep its title from the user.
+            if self.get_page_by_title(new_title)?.is_some_and(|p| p.id != *id) {
+                self.free_title_from_trash(new_title)?;
+            }
+            // Pre-check for conflict so we can return a friendly error rather than
+            // a raw SQLite UNIQUE constraint violation.
+            if let Some(existing) = self.get_page_by_title(new_title)? {
+                if existing.id != *id {
+                    return Err(Error::AlreadyExists(format!(
+                        "A page titled '{new_title}' already exists"
+                    )));
+                }
+            }
+            let old = self
+                .get_page(id)?
+                .ok_or_else(|| Error::NotFound(format!("Page {id}")))?;
+
+            let now = Utc::now();
+            self.conn.execute(
+                "UPDATE pages SET title = ?1, updated_at = ?2 WHERE id = ?3",
+                rusqlite::params![new_title, now.to_rfc3339(), id.to_string()],
+            )?;
+
+            if old.title != new_title {
+                let referencing: Vec<(String, String)> = {
+                    let mut stmt = self.conn.prepare(
+                        "SELECT DISTINCT b.id, b.content FROM links l
+                         JOIN blocks b ON b.id = l.from_block
+                         WHERE l.to_page = ?1",
+                    )?;
+                    let rows = stmt
+                        .query_map(rusqlite::params![id.to_string()], |row| {
+                            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                        })?
+                        .collect::<std::result::Result<Vec<_>, _>>()?;
+                    rows
+                };
+                for (bid, content) in referencing {
+                    let Ok(bid) = Uuid::parse_str(&bid) else { continue };
+                    if let Some(new_content) =
+                        crate::links::rewrite_page_links(&content, &old.title, new_title)
+                    {
+                        // update_block re-syncs the block's link rows.
+                        self.update_block(&bid, Some(&new_content), actor)?;
+                    }
+                }
+            }
+
+            let page = self
+                .get_page(id)?
+                .ok_or_else(|| Error::NotFound(format!("Page {id}")))?;
+            self.emit_event("page.renamed", &page.id, "page", &page, actor)?;
+            Ok(page)
+        })
+    }
+
+
+    /// Reorder a page to a new position within its folder.
+    pub fn reorder_page(&self, id: &Uuid, new_position: f64, actor: &str) -> Result<Page> {
+        let now = Utc::now();
+        let count = self.conn.execute(
+            "UPDATE pages SET position = ?1, updated_at = ?2 WHERE id = ?3",
+            rusqlite::params![new_position, now.to_rfc3339(), id.to_string()],
+        )?;
+        if count == 0 {
+            return Err(Error::NotFound(format!("Page {id}")));
+        }
+        let page = self
+            .get_page(id)?
+            .ok_or_else(|| Error::NotFound(format!("Page {id}")))?;
+        self.emit_event("page.reordered", &page.id, "page", &page, actor)?;
+        Ok(page)
+    }
+}
+
+/// Canonical form of a user-typed page/folder name: line breaks (and the
+/// whitespace around them) become a single space, and leading/trailing
+/// whitespace is dropped. `None` when nothing visible is left.
+pub fn normalize_name(name: &str) -> Option<String> {
+    let joined = name
+        .split(['\n', '\r', '\u{2028}', '\u{2029}'])
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let trimmed = joined.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+/// Page titles are stored normalised (see [`normalize_name`]) so `[[Title]]`
+/// resolves to what the user sees; a blank title is rejected.
+fn normalize_title(title: &str) -> Result<String> {
+    normalize_name(title)
+        .ok_or_else(|| Error::InvalidInput("Page title cannot be empty".to_string()))
+}
+
+/// Title of the journal page for a date: `Journal/YYYY-MM-DD`.
+pub fn journal_title(date: NaiveDate) -> String {
+    format!("Journal/{date}")
+}
+
+/// Date of a journal title (`Journal/YYYY-MM-DD`), if it is one.
+pub fn journal_date_of(title: &str) -> Option<NaiveDate> {
+    let d = title.strip_prefix("Journal/")?;
+    NaiveDate::parse_from_str(d, "%Y-%m-%d").ok().filter(|nd| nd.to_string() == d)
+}
+
+impl Database {
+    /// The live (not trashed) journal page for a date, if any.
+    pub fn find_journal(&self, date: NaiveDate) -> Result<Option<Page>> {
+        match self.get_page_by_title(&journal_title(date))? {
+            Some(p) if !self.is_trashed(&p.id)? => Ok(Some(p)),
+            _ => Ok(None),
+        }
+    }
+
+    /// Get the journal page for a date, creating it if needed (`id` lets a caller
+    /// materialise a page it already showed under that id). A trashed journal for
+    /// that date stays in the trash; a fresh page takes the title.
+    pub fn get_or_create_journal(&self, date: NaiveDate, id: Option<Uuid>, actor: &str) -> Result<Page> {
+        self.tx(|| {
+            if let Some(p) = self.find_journal(date)? {
+                return Ok(p);
+            }
+            self.create_page_with_id(
+                id.unwrap_or_else(Uuid::now_v7),
+                &journal_title(date),
+                None,
+                true,
+                Some(date),
+                actor,
+            )
+        })
+    }
+}
+
+fn row_to_page(row: &rusqlite::Row<'_>) -> Result<Page> {
+    Ok(row_to_page_sqlite(row)?)
+}
+
+pub fn row_to_page_sqlite(row: &rusqlite::Row<'_>) -> rusqlite::Result<Page> {
+    // Columns: id, title, icon, folder_id, position, is_journal, journal_date, created_at, updated_at
+    let id_str: String = row.get(0)?;
+    let folder_str: Option<String> = row.get(3)?;
+    let journal_date_str: Option<String> = row.get(6)?;
+    let created_str: String = row.get(7)?;
+    let updated_str: String = row.get(8)?;
+
+    Ok(Page {
+        id: Uuid::parse_str(&id_str).unwrap_or_default(),
+        title: row.get(1)?,
+        icon: row.get(2)?,
+        folder_id: folder_str.and_then(|s| Uuid::parse_str(&s).ok()),
+        position: row.get(4)?,
+        is_journal: row.get::<_, i32>(5)? != 0,
+        journal_date: journal_date_str.and_then(|s| NaiveDate::parse_from_str(&s, "%Y-%m-%d").ok()),
+        created_at: chrono::DateTime::parse_from_rfc3339(&created_str)
+            .map(|dt| dt.with_timezone(&Utc))
+            .unwrap_or_else(|_| Utc::now()),
+        updated_at: chrono::DateTime::parse_from_rfc3339(&updated_str)
+            .map(|dt| dt.with_timezone(&Utc))
+            .unwrap_or_else(|_| Utc::now()),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::db::Database;
+
+    #[test]
+    fn test_create_and_get_page() {
+        let db = Database::open_in_memory().unwrap();
+        let page = db.create_page("Test Page", None, false, None, "user").unwrap();
+        assert_eq!(page.title, "Test Page");
+
+        let fetched = db.get_page(&page.id).unwrap().unwrap();
+        assert_eq!(fetched.title, "Test Page");
+    }
+
+    #[test]
+    fn test_duplicate_page_title() {
+        let db = Database::open_in_memory().unwrap();
+        db.create_page("Dup", None, false, None, "user").unwrap();
+        let err = db.create_page("Dup", None, false, None, "user");
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn test_list_pages() {
+        let db = Database::open_in_memory().unwrap();
+        db.create_page("A", None, false, None, "user").unwrap();
+        db.create_page("B", None, false, None, "user").unwrap();
+        let pages = db.list_pages(None).unwrap();
+        assert_eq!(pages.len(), 2);
+    }
+
+    #[test]
+    fn test_delete_page() {
+        let db = Database::open_in_memory().unwrap();
+        let page = db.create_page("Del", None, false, None, "user").unwrap();
+        assert!(db.delete_page(&page.id, "user").unwrap());
+        assert!(db.get_page(&page.id).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_rename_page() {
+        let db = Database::open_in_memory().unwrap();
+        let page = db.create_page("Old", None, false, None, "user").unwrap();
+        let renamed = db.rename_page(&page.id, "New", "user").unwrap();
+        assert_eq!(renamed.title, "New");
+    }
+
+    // Renaming rewrites [[Old]] / [[Old|alias]] references so the backlink
+    // isn't silently dropped on the next edit of the source block.
+    #[test]
+    fn test_rename_page_rewrites_references() {
+        let db = Database::open_in_memory().unwrap();
+        let page = db.create_page("Old", None, false, None, "user").unwrap();
+        let src = db.create_page("Src", None, false, None, "user").unwrap();
+        let b1 = db.create_block(&src.id, "see [[Old]] and [[old|shown]]", None, None, "user").unwrap();
+        let b2 = db.create_block(&src.id, "code `[[Old]]` but [[Old]]", None, None, "user").unwrap();
+        let untouched = db.create_block(&src.id, "[[Older]]", None, None, "user").unwrap();
+
+        db.rename_page(&page.id, "Brand New", "user").unwrap();
+        assert_eq!(
+            db.get_block(&b1.id).unwrap().unwrap().content,
+            "see [[Brand New]] and [[Brand New|shown]]"
+        );
+        assert_eq!(db.get_block(&b2.id).unwrap().unwrap().content, "code `[[Old]]` but [[Brand New]]");
+        assert_eq!(db.get_block(&untouched.id).unwrap().unwrap().content, "[[Older]]");
+        // b1 has two links, b2 one (the code-span [[Old]] no longer resolves);
+        // backlinks are one per source block.
+        let n_links: i64 = db.conn.query_row(
+            "SELECT COUNT(*) FROM links WHERE to_page = ?1", [page.id.to_string()], |r| r.get(0)).unwrap();
+        assert_eq!(n_links, 3);
+        assert_eq!(db.get_backlinks(&page.id).unwrap().len(), 2);
+        // The next edit keeps the backlink (b1 now has one link, b2 still one).
+        db.update_block(&b1.id, Some("see [[Brand New]] edited"), "user").unwrap();
+        assert_eq!(db.get_backlinks(&page.id).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_rename_page_atomic() {
+        let db = Database::open_in_memory().unwrap();
+        let page = db.create_page("Old", None, false, None, "user").unwrap();
+        let src = db.create_page("Src", None, false, None, "user").unwrap();
+        let b = db.create_block(&src.id, "see [[Old]]", None, None, "user").unwrap();
+        db.conn
+            .execute_batch(
+                "CREATE TRIGGER boom BEFORE UPDATE OF content ON blocks BEGIN SELECT RAISE(ABORT, 'injected'); END;",
+            )
+            .unwrap();
+        assert!(db.rename_page(&page.id, "New", "user").is_err());
+        assert_eq!(db.get_page(&page.id).unwrap().unwrap().title, "Old", "title rolled back");
+        assert_eq!(db.get_block(&b.id).unwrap().unwrap().content, "see [[Old]]");
+    }
+
+    #[test]
+    fn test_create_page_atomic_with_backfill() {
+        let db = Database::open_in_memory().unwrap();
+        let src = db.create_page("Src", None, false, None, "user").unwrap();
+        db.create_block(&src.id, "see [[Target]]", None, None, "user").unwrap();
+        db.conn
+            .execute_batch(
+                "CREATE TRIGGER boom BEFORE INSERT ON links BEGIN SELECT RAISE(ABORT, 'injected'); END;",
+            )
+            .unwrap();
+        assert!(db.create_page("Target", None, false, None, "user").is_err());
+        assert!(db.get_page_by_title("Target").unwrap().is_none(), "no half-created page");
+    }
+
+    #[test]
+    fn test_delete_page_emits_after_delete() {
+        let db = Database::open_in_memory().unwrap();
+        let page = db.create_page("Del", None, false, None, "user").unwrap();
+        db.conn
+            .execute_batch(
+                "CREATE TRIGGER boom BEFORE DELETE ON pages BEGIN SELECT RAISE(ABORT, 'injected'); END;",
+            )
+            .unwrap();
+        assert!(db.delete_page(&page.id, "user").is_err());
+        let n: i64 = db
+            .conn
+            .query_row("SELECT COUNT(*) FROM events WHERE event_type = 'page.deleted'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0, "no page.deleted event for a failed delete");
+        assert!(db.get_page(&page.id).unwrap().is_some());
+    }
+
+    #[test]
+    fn test_titles_are_trimmed_and_single_line() {
+        let db = Database::open_in_memory().unwrap();
+        let p = db.create_page("  Padded  ", None, false, None, "user").unwrap();
+        assert_eq!(p.title, "Padded");
+        assert_eq!(db.get_page_by_title("Padded").unwrap().unwrap().id, p.id);
+        let q = db.create_page("Line1\nLine2\r\n  Line3\r", None, false, None, "user").unwrap();
+        assert_eq!(q.title, "Line1 Line2 Line3");
+        // Duplicate detection sees the normalised title.
+        assert!(db.create_page(" Padded\n", None, false, None, "user").is_err());
+        for blank in ["", "   ", "\n\t\n"] {
+            let e = db.create_page(blank, None, false, None, "user").unwrap_err().to_string();
+            assert_eq!(e, "Invalid input: Page title cannot be empty");
+            let e = db.rename_page(&p.id, blank, "user").unwrap_err().to_string();
+            assert_eq!(e, "Invalid input: Page title cannot be empty");
+        }
+        let r = db.rename_page(&p.id, "\n  New\nName  ", "user").unwrap();
+        assert_eq!(r.title, "New Name");
+        // Internal runs of spaces on one line are the user's business.
+        assert_eq!(db.rename_page(&p.id, "a  b", "user").unwrap().title, "a  b");
+    }
+
+    #[test]
+    fn test_rename_with_padding_rewrites_links_to_trimmed_title() {
+        let db = Database::open_in_memory().unwrap();
+        let target = db.create_page("Old", None, false, None, "user").unwrap();
+        let src = db.create_page("Src", None, false, None, "user").unwrap();
+        let b = db.create_block(&src.id, "see [[Old]]", None, None, "user").unwrap();
+        db.rename_page(&target.id, "  New  ", "user").unwrap();
+        assert_eq!(db.get_block(&b.id).unwrap().unwrap().content, "see [[New]]");
+    }
+}

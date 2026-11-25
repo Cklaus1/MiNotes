@@ -1,0 +1,801 @@
+import { useEditor } from "@tiptap/react";
+import { useRef, useCallback, useEffect } from "react";
+import { Selection } from "@tiptap/pm/state";
+import { isInTable, moveToCellBelow } from "./tables";
+import { setSlashCallbacks, slashPluginKey } from "./slashCommands";
+import { pageLinkPluginKey } from "./PageLinkSuggestion";
+import { blockRefPluginKey } from "./BlockRefSuggestion";
+import { createBlockExtensions } from "./blockExtensions";
+// ── Import / attachments ──
+import { attachmentHash, encodeName, isImage, openAttachment, storeFile } from "../lib/attachments";
+import { showToast } from "../lib/toast";
+import { errorMessage } from "../lib/errors";
+import { blobImageToFile, hasBlobImage, pastedFiles, withoutBlobImages } from "./pastedFiles";
+import { fenceToCodeBlock, parsePastedMarkdown, type PastedBlock } from "./pasteMarkdown";
+import { hasOpenLayer, yieldEscape } from "../lib/layers";
+import { isBlankBlock, isBlankDoc } from "./blankBlock";
+// ── End import ──
+
+
+/** True while a suggestion menu (/, [[, (( ) is open in this editor state. */
+function suggestionMenuOpen(state: any): boolean {
+  return [slashPluginKey, pageLinkPluginKey, blockRefPluginKey]
+    .some((key) => !!(key.getState(state) as any)?.active);
+}
+
+/** Tab, including WebKitGTK's Shift+Tab (GDK ISO_Left_Tab) which may not report key "Tab". */
+export function isTabKey(event: KeyboardEvent): boolean {
+  return event.key === "Tab" || event.key === "ISO_Left_Tab" || event.code === "Tab" || event.keyCode === 9;
+}
+
+interface UseBlockEditorOptions {
+  content: string;
+  onSave: (markdown: string) => void;
+  onPageLinkClick: (title: string, shiftKey?: boolean) => void;
+  onBlockRefClick?: (blockId: string) => void;
+  /** `boundarySpace`: the cut was at a space (trimmed from both halves). */
+  onEnter?: (contentAfterCursor: string, savedContent?: string, boundarySpace?: boolean) => void;
+  /** Checked BEFORE the editor mutates anything on Enter. Returning false makes the
+   *  Enter a no-op (e.g. a previous split is still being persisted). */
+  canEnter?: () => boolean;
+  onBackspaceAtStart?: (content: string) => void;
+  onArrowUp?: () => void;
+  onArrowDown?: () => void;
+  onToggleTodo?: () => void;
+  onPasteMultiline?: (lines: string[]) => void;
+  /** Pasted markdown with structure (C-6): the block tree to create. `intoEmpty`:
+   *  this block is empty, so the first pasted block replaces it. */
+  onPasteBlocks?: (blocks: PastedBlock[], intoEmpty: boolean) => void;
+  /** Tab / Shift+Tab. Return true when the block moved (Ctrl+Z can then undo it). */
+  onIndent?: () => boolean | void;
+  onOutdent?: () => boolean | void;
+  /**
+   * Enter on an empty block (no text, or only a list / task marker): a nested
+   * block outdents, a top-level one stays put (document-style indent, "option B").
+   * Return true when the block moved.
+   */
+  onEnterBlank?: () => boolean;
+  /** Backspace at the very start: a nested block outdents (true); false lets the merge run. */
+  onOutdentAtStart?: () => boolean;
+  /**
+   * Ctrl+Z right after this editor indented / outdented its block (no typing
+   * since): undo that move. Resolves false when there was none to undo — the
+   * editor's own undo runs instead.
+   */
+  onUndoMove?: () => Promise<boolean>;
+  /** Escape (no menu open): leave editing. */
+  onEscape?: () => void;
+  onSlashCommand?: (newMarkdown: string) => void;
+  onTagClick?: (tag: string) => void;
+  /** A template from the `/` menu: its text (lib/templates.ts); `intoEmpty`: replace this block. */
+  onInsertTemplate?: (text: string, intoEmpty: boolean) => void;
+  /** `/flashcard`: make this block a flashcard. */
+  onMakeFlashcard?: () => void;
+  /** Ctrl+Up folds this block's children, Ctrl+Down unfolds them. */
+  onSetCollapsed?: (collapsed: boolean) => void;
+  /**
+   * Last step before a save: may rewrite what is stored (typed `key:: value`
+   * lines become properties). When it changes the text, the editor is set to it.
+   */
+  transformSave?: (markdown: string) => string;
+}
+
+export function useBlockEditor({
+  content,
+  onSave,
+  onPageLinkClick,
+  onBlockRefClick,
+  onEnter,
+  canEnter,
+  onBackspaceAtStart,
+  onArrowUp,
+  onArrowDown,
+  onToggleTodo,
+  onPasteMultiline,
+  onPasteBlocks,
+  onIndent,
+  onOutdent,
+  onEnterBlank,
+  onOutdentAtStart,
+  onUndoMove,
+  onEscape,
+  onSlashCommand,
+  onTagClick,
+  onMakeFlashcard,
+  onSetCollapsed,
+  onInsertTemplate,
+  transformSave,
+}: UseBlockEditorOptions) {
+  const onSaveRef = useRef(onSave);
+  // NOT a mirror of the `content` prop — this tracks the last markdown the editor
+  // itself produced or applied, so the sync effect below can tell an echo of our own
+  // save apart from a genuine external change. Assigning `content` to it on every
+  // render (as the callback refs below do) makes the echo check always true and
+  // permanently disables setContent: external updates then never reach the DOM.
+  const contentRef = useRef(content);
+  const onPageLinkClickRef = useRef(onPageLinkClick);
+  const onBlockRefClickRef = useRef(onBlockRefClick);
+  const onEnterRef = useRef(onEnter);
+  const canEnterRef = useRef(canEnter);
+  const onBackspaceAtStartRef = useRef(onBackspaceAtStart);
+  const onArrowUpRef = useRef(onArrowUp);
+  const onArrowDownRef = useRef(onArrowDown);
+  const onToggleTodoRef = useRef(onToggleTodo);
+  const onPasteMultilineRef = useRef(onPasteMultiline);
+  const onPasteBlocksRef = useRef(onPasteBlocks);
+  const onIndentRef = useRef(onIndent);
+  const onOutdentRef = useRef(onOutdent);
+  const onEnterBlankRef = useRef(onEnterBlank);
+  const onOutdentAtStartRef = useRef(onOutdentAtStart);
+  const onUndoMoveRef = useRef(onUndoMove);
+  // Indents / outdents made from this editor since its last text edit: that many
+  // Ctrl+Z presses undo a move instead of typing (the text history has none).
+  const movesSinceEditRef = useRef(0);
+  const onEscapeRef = useRef(onEscape);
+  const onSlashCommandRef = useRef(onSlashCommand);
+  const onTagClickRef = useRef(onTagClick);
+  const onMakeFlashcardRef = useRef(onMakeFlashcard);
+  const onSetCollapsedRef = useRef(onSetCollapsed);
+  const onInsertTemplateRef = useRef(onInsertTemplate);
+  const transformSaveRef = useRef(transformSave);
+  const editorInstanceRef = useRef<any>(null);
+  const skipSyncRef = useRef(false);
+  const slashActiveRef = useRef(false);
+  // True only after a real user edit since the last save/external sync. Blur and
+  // unmount save ONLY when dirty: merely focusing a block must never rewrite its
+  // stored content with the serializer's normalization (`* x` -> `- x`, setext ->
+  // ATX, loose lists, entity-escaped HTML...).
+  const dirtyRef = useRef(false);
+  // Set while we apply external content ourselves, so it never counts as a user edit.
+  const applyingExternalRef = useRef(false);
+  onSaveRef.current = onSave;
+  onPageLinkClickRef.current = onPageLinkClick;
+  onBlockRefClickRef.current = onBlockRefClick;
+  onEnterRef.current = onEnter;
+  canEnterRef.current = canEnter;
+  onBackspaceAtStartRef.current = onBackspaceAtStart;
+  onArrowUpRef.current = onArrowUp;
+  onArrowDownRef.current = onArrowDown;
+  onToggleTodoRef.current = onToggleTodo;
+  onPasteMultilineRef.current = onPasteMultiline;
+  onPasteBlocksRef.current = onPasteBlocks;
+  onIndentRef.current = onIndent;
+  onOutdentRef.current = onOutdent;
+  onEnterBlankRef.current = onEnterBlank;
+  onOutdentAtStartRef.current = onOutdentAtStart;
+  onUndoMoveRef.current = onUndoMove;
+  onEscapeRef.current = onEscape;
+  onSlashCommandRef.current = onSlashCommand;
+  onTagClickRef.current = onTagClick;
+  onMakeFlashcardRef.current = onMakeFlashcard;
+  onSetCollapsedRef.current = onSetCollapsed;
+  onInsertTemplateRef.current = onInsertTemplate;
+  transformSaveRef.current = transformSave;
+
+  // Slash callbacks are set per-editor instance after creation (see useEffect below)
+
+  /** The ONE way to read the editor's current content as markdown (trimmed). */
+  const getMarkdown = useCallback((): string => {
+    const ed = editorInstanceRef.current;
+    if (!ed || ed.isDestroyed) return "";
+    return (((ed.storage as any).markdown?.getMarkdown?.() ?? "") as string).trim();
+  }, []);
+
+  /** Serialize an arbitrary doc node (e.g. a `doc.cut(...)` half) to markdown. */
+  const serializeDoc = (node: any): string => {
+    const ed = editorInstanceRef.current;
+    const serializer = (ed?.storage as any)?.markdown?.serializer;
+    if (!serializer) return node.textContent ?? "";
+    // A half with no text and no atoms (links/tags/images) is empty: don't let an
+    // empty heading/paragraph shell serialize to a stray "#".
+    let hasContent = node.textContent.length > 0;
+    if (!hasContent) node.descendants((n: any) => { if (n.isAtom || n.isLeaf && !n.isText) hasContent = true; return !hasContent; });
+    if (!hasContent) return "";
+    return serializer.serialize(node) as string;
+  };
+
+  // ── Never store a `blob:` image (C-2): it only lives as long as the page. An
+  // image that arrives as one (WebKitGTK's pasted HTML, a drop) is stored as an
+  // attachment right away; until then saves leave it out. ──
+  const adoptingRef = useRef(false);
+  const adoptBlobImages = async () => {
+    const ed = editorInstanceRef.current;
+    if (!ed || ed.isDestroyed || adoptingRef.current) return;
+    const srcs = new Set<string>();
+    ed.state.doc.descendants((n: any) => {
+      if (n.type.name === "image" && String(n.attrs.src ?? "").startsWith("blob:")) srcs.add(n.attrs.src);
+    });
+    if (srcs.size === 0) return;
+    adoptingRef.current = true;
+    const stored: string[] = [];
+    try {
+      for (const src of srcs) {
+        let ref: string | null = null;
+        let name = "";
+        try {
+          const att = await storeFile(await blobImageToFile(src));
+          ref = `attachment:${att.hash}/${encodeName(att.name)}`;
+          name = att.name;
+        } catch (e) {
+          showToast(`Couldn't keep a pasted image (${errorMessage(e)}) — it was removed. Paste it again.`);
+        }
+        const cur = editorInstanceRef.current;
+        if (!cur || cur.isDestroyed) {
+          // The block closed meanwhile (its saves left the image out): add it back at the end.
+          if (ref) stored.push(`![${name.replace(/[[\]]/g, "_")}](${ref})`);
+          continue;
+        }
+        const tr = cur.state.tr;
+        cur.state.doc.descendants((n: any, pos: number) => {
+          if (n.type.name !== "image" || n.attrs.src !== src) return;
+          const at = tr.mapping.map(pos);
+          if (ref) tr.setNodeMarkup(at, undefined, { ...n.attrs, src: ref, alt: n.attrs.alt || name });
+          else tr.delete(at, tr.mapping.map(pos + n.nodeSize));
+        });
+        if (tr.docChanged) cur.view.dispatch(tr);
+      }
+    } finally {
+      adoptingRef.current = false;
+    }
+    const cur = editorInstanceRef.current;
+    if (cur && !cur.isDestroyed) commitSave(getMarkdown());
+    else if (stored.length) {
+      const md = [contentRef.current.trim(), ...stored].filter(Boolean).join("\n");
+      contentRef.current = md;
+      onSaveRef.current(md);
+    }
+  };
+  /** What may be stored: never a `blob:` image (starts storing it as an attachment). */
+  const storable = (markdown: string): string => {
+    if (!hasBlobImage(markdown)) return markdown;
+    void adoptBlobImages();
+    return withoutBlobImages(markdown);
+  };
+
+  /** Record a save we performed ourselves: marks it as the last-produced markdown. */
+  const commitSave = (raw: string) => {
+    let markdown = storable(raw);
+    const transformed = transformSaveRef.current?.(markdown);
+    if (transformed !== undefined && transformed !== markdown) {
+      markdown = transformed;
+      // What is stored is what the editor shows (e.g. a `key:: value` line left
+      // the text and became a property chip).
+      const ed = editorInstanceRef.current;
+      if (ed && !ed.isDestroyed && getMarkdown() !== markdown) {
+        applyingExternalRef.current = true;
+        try { ed.commands.setContent(markdown, { emitUpdate: false }); } finally { applyingExternalRef.current = false; }
+      }
+    }
+    contentRef.current = markdown;
+    dirtyRef.current = false;
+    skipSyncRef.current = true;
+    onSaveRef.current(markdown);
+  };
+
+  /**
+   * Split the block at the current cursor. Both halves are serialized to markdown so
+   * marks (bold/italic/code) and atoms (wiki links, tags, block refs) survive.
+   * Shared by the Enter key handler and the test API: one code path.
+   * Returns false if the split was rejected (no handler, or an Enter is in flight).
+   */
+  const splitAtCursor = (view: any): boolean => {
+    if (!onEnterRef.current) return false;
+    // A rejected Enter must be a no-op. Check the guard BEFORE mutating the doc,
+    // otherwise the after-cursor text is deleted and never re-created.
+    if (canEnterRef.current && !canEnterRef.current()) return false;
+    const { state } = view;
+    const from = state.selection.from;
+    const docEnd = state.doc.content.size - 1;
+
+    const afterMarkdown = from < docEnd ? withoutBlobImages(serializeDoc(state.doc.cut(from)).trim()) : "";
+    const savedContent = serializeDoc(state.doc.cut(0, from)).trim();
+    // Whitespace at the cut is trimmed from both halves (stored markdown can't
+    // keep it): tell the merge, so Backspace can put it back (split→merge).
+    const around = state.doc.textBetween(Math.max(0, from - 1), Math.min(state.doc.content.size, from + 1), "\n", "\0");
+    const boundarySpace = / /.test(around);
+
+    // Delete text after cursor from the editor (our own edit; saved right below).
+    if (from < docEnd) {
+      view.dispatch(state.tr.delete(from, docEnd));
+    }
+
+    commitSave(savedContent);
+    // Pass both saved content and after-cursor so PageView can update local state
+    onEnterRef.current(afterMarkdown, savedContent, boundarySpace && !!afterMarkdown && !!savedContent);
+    return true;
+  };
+
+  /** Persist the editor's current content now (e.g. after a table structure change). */
+  const saveNow = () => {
+    const ed = editorInstanceRef.current;
+    if (!ed || ed.isDestroyed) return;
+    const md = getMarkdown();
+    if (md !== contentRef.current.trim()) commitSave(md);
+    else dirtyRef.current = false;
+  };
+
+  /** A move made from this editor: Ctrl+Z can take it back. */
+  const moved = (didMove: boolean | void) => { if (didMove) movesSinceEditRef.current++; };
+
+  /**
+   * Backspace at the very start: a nested block outdents (exactly Shift+Tab); a
+   * top-level one merges into the previous block.
+   */
+  const mergeWithPrevious = (): boolean => {
+    if (onOutdentAtStartRef.current?.()) { moved(true); return true; }
+    if (!onBackspaceAtStartRef.current) return false;
+    onBackspaceAtStartRef.current(getMarkdown());
+    return true;
+  };
+
+  const editor = useEditor({
+    extensions: createBlockExtensions({
+      onPageLinkClick: (title: string, shiftKey?: boolean) => onPageLinkClickRef.current(title, shiftKey),
+      onBlockRefClick: (blockId: string) => onBlockRefClickRef.current?.(blockId),
+      onTagClick: (tag: string) => onTagClickRef.current?.(tag),
+    }),
+    content,
+    editorProps: {
+      attributes: {
+        class: "block-editor-prosemirror",
+      },
+      handleKeyDown(view, event) {
+        if (event.key === "Escape" || event.key === "Esc") {
+          // An open /, [[ or (( menu gets the Escape: the suggestion plugin closes it
+          // and the cursor stays where it was. (These editorProps run BEFORE plugin
+          // key handlers, so swallowing Escape here kept the menus open.)
+          if (suggestionMenuOpen(view.state)) return false;
+          // Something open above the page (a menu, a dialog, a side panel) is
+          // the topmost layer: Escape closes that, not the editing (lib/layers.ts)
+          // — unless this editor is inside such a layer itself.
+          if (hasOpenLayer(["menu", "popover", "dialog", "panel"])
+              && (hasOpenLayer(["menu", "popover"]) || !view.dom.closest('[role="dialog"], .kanban-side-panel, .ask-panel'))) {
+            yieldEscape(event); // ProseMirror still calls preventDefault on Escape
+            return false;
+          }
+          // Otherwise Escape leaves editing ("Close"); outdenting is Shift+Tab's job.
+          if (onEscapeRef.current) {
+            event.preventDefault();
+            onEscapeRef.current();
+            return true;
+          }
+          return false;
+        }
+
+        // Ctrl+Z right after an indent / outdent made here: undo the move (one
+        // step per move). Any typing since hands Ctrl+Z back to the text history.
+        if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "z" &&
+            movesSinceEditRef.current > 0 && onUndoMoveRef.current) {
+          event.preventDefault();
+          movesSinceEditRef.current--;
+          onUndoMoveRef.current().then((undone) => {
+            const ed = editorInstanceRef.current;
+            if (!undone && ed && !ed.isDestroyed) ed.commands.undo();
+          }).catch(() => {});
+          return true;
+        }
+
+        // Ctrl+Up / Ctrl+Down — fold / unfold this block's children (C-11).
+        if ((event.key === "ArrowUp" || event.key === "ArrowDown") && (event.ctrlKey || event.metaKey) &&
+            !event.shiftKey && !event.altKey && onSetCollapsedRef.current && !suggestionMenuOpen(view.state)) {
+          event.preventDefault();
+          onSetCollapsedRef.current(event.key === "ArrowUp");
+          return true;
+        }
+
+        // Ctrl+Enter — cycle TODO state
+        if (event.key === "Enter" && (event.ctrlKey || event.metaKey) && onToggleTodoRef.current) {
+          event.preventDefault();
+          onToggleTodoRef.current();
+          return true;
+        }
+
+        // Table cells: Tab / Shift+Tab move between cells (Tab in the last cell adds a
+        // row), Enter moves to the cell below (adding a row at the bottom). Enter must
+        // never split a cell into two paragraphs: that isn't expressible as a pipe table.
+        if (isInTable(view.state) && !document.querySelector('.tippy-box') &&
+            (isTabKey(event) || (event.key === "Enter" && !event.shiftKey && !event.ctrlKey && !event.metaKey))) {
+          const ed = editorInstanceRef.current;
+          if (!ed) return false;
+          event.preventDefault();
+          if (event.key === "Enter") {
+            moveToCellBelow(ed);
+          } else if (event.shiftKey) {
+            ed.commands.goToPreviousCell();
+          } else if (!ed.commands.goToNextCell()) {
+            ed.chain().addRowAfter().goToNextCell().run();
+          }
+          // A row added at the end is a structural change: persist it now.
+          if (dirtyRef.current) saveNow();
+          return true;
+        }
+
+        // Enter — split block (unless Shift, inside list/code/table/blockquote, or popup open)
+        if (event.key === "Enter" && !event.shiftKey && onEnterRef.current && !document.querySelector('.tippy-box')) {
+          // An empty line (or only a list / task marker): a nested block steps out
+          // one level, a top-level one stays — never a stack of empty blocks. The
+          // DOM is checked too: text typed an instant ago may not be in the state yet.
+          if (onEnterBlankRef.current && isBlankDoc(view.state.doc) && isBlankBlock(view.dom.textContent ?? "")) {
+            event.preventDefault();
+            moved(onEnterBlankRef.current());
+            return true;
+          }
+          const { state } = view;
+          const { $from } = state.selection;
+          const parentNode = $from.node($from.depth);
+          const grandparent = $from.depth > 1 ? $from.node($from.depth - 1) : null;
+
+          // Check all ancestors, not just immediate parent
+          let isInsideSpecialNode = false;
+          for (let d = $from.depth; d >= 0; d--) {
+            const node = $from.node(d);
+            const name = node.type.name;
+            if (name === "listItem" || name === "taskItem" || name === "codeBlock" ||
+                name === "table" || name === "blockquote" || name === "callout" || name === "bulletList" ||
+                name === "orderedList" || name === "taskList") {
+              isInsideSpecialNode = true;
+              break;
+            }
+          }
+          if (isInsideSpecialNode) {
+            return false; // Let TipTap handle Enter natively (new list item, etc.)
+          }
+
+          // A line that is just ```lang: make it a code block (C-6), don't split.
+          const ed = editorInstanceRef.current;
+          if (ed && fenceToCodeBlock(ed)) {
+            event.preventDefault();
+            return true;
+          }
+
+          event.preventDefault();
+          splitAtCursor(view);
+          return true;
+        }
+
+        // Backspace at the very start of a nested block outdents it (also when its
+        // first line is a list / task item); at the top level it merges (below).
+        if (event.key === "Backspace" && view.state.selection.empty &&
+            view.state.selection.from === Selection.atStart(view.state.doc).from && onOutdentAtStartRef.current?.()) {
+          event.preventDefault();
+          moved(true);
+          return true;
+        }
+
+        // Backspace at position 0 — merge with previous block
+        if (event.key === "Backspace" && onBackspaceAtStartRef.current) {
+          const { state } = view;
+          const { from, empty } = state.selection;
+          if (empty && from <= 1) {
+            event.preventDefault();
+            // Previously read `__tiptapEditor` off the DOM (never set in TipTap v3) and
+            // fell back to plain textContent, dropping links/tags/formatting.
+            mergeWithPrevious();
+            return true;
+          }
+        }
+
+        // ArrowUp on first line — move to previous block
+        // Skip if a suggestion popup is open (slash commands, [[ links, etc.)
+        if (event.key === "ArrowUp" && onArrowUpRef.current && !document.querySelector('.tippy-box')) {
+          const { state } = view;
+          const { from } = state.selection;
+          try {
+            const coords = view.coordsAtPos(from);
+            const startCoords = view.coordsAtPos(1);
+            if (Math.abs(coords.top - startCoords.top) < 2) {
+              onArrowUpRef.current();
+              return true;
+            }
+          } catch {
+            // If coordsAtPos fails (empty doc), treat as first line
+            if (from <= 1) {
+              onArrowUpRef.current();
+              return true;
+            }
+          }
+        }
+
+        // Tab / Shift+Tab — indent / outdent the block. Inside a list in the block,
+        // first try to sink/lift the list item; when that isn't possible (first item,
+        // top level) fall back to the block. Tab must never fall through to the
+        // browser, whose default moves focus to another block.
+        if (isTabKey(event) && !document.querySelector('.tippy-box')) {
+          const ed = editorInstanceRef.current;
+          const { $from } = view.state.selection;
+          // Innermost list item around the cursor, and whether it is nested in another.
+          let itemType: string | null = null;
+          let itemDepth = -1;
+          let nested = false;
+          for (let d = $from.depth; d > 0; d--) {
+            const name = $from.node(d).type.name;
+            if (name !== "listItem" && name !== "taskItem") continue;
+            if (itemType === null) { itemType = name; itemDepth = d; } else { nested = true; break; }
+          }
+          event.preventDefault();
+          if (itemType && ed) {
+            // Sink needs a previous item to nest under; lift only un-nests (lifting a
+            // top-level item would turn "- [ ] task" into plain text instead of
+            // outdenting the block).
+            const hasPrevItem = $from.index(itemDepth - 1) > 0;
+            const handled = event.shiftKey
+              ? nested && ed.commands.liftListItem(itemType)
+              : hasPrevItem && ed.commands.sinkListItem(itemType);
+            if (handled) return true;
+          }
+          moved(event.shiftKey ? onOutdentRef.current?.() : onIndentRef.current?.());
+          return true;
+        }
+
+        // ArrowDown on last line — move to next block
+        // Skip if a suggestion popup is open
+        if (event.key === "ArrowDown" && onArrowDownRef.current && !document.querySelector('.tippy-box')) {
+          const { state } = view;
+          const { from } = state.selection;
+          const docEnd = state.doc.content.size - 1;
+          try {
+            const coords = view.coordsAtPos(from);
+            const endCoords = view.coordsAtPos(docEnd);
+            if (Math.abs(coords.top - endCoords.top) < 2) {
+              onArrowDownRef.current();
+              return true;
+            }
+          } catch {
+            // If coordsAtPos fails (empty doc), treat as last line
+            if (from >= docEnd || docEnd <= 1) {
+              onArrowDownRef.current();
+              return true;
+            }
+          }
+        }
+
+        return false;
+      },
+      // ── Import / attachments: a link to a stored file opens it with the OS ──
+      handleClick(_view, _pos, event) {
+        const a = (event.target as HTMLElement | null)?.closest?.("a[href]") as HTMLAnchorElement | null;
+        const hash = attachmentHash(a?.getAttribute("href"));
+        if (!hash) return false;
+        event.preventDefault();
+        openAttachment(hash).catch((e) => showToast(`Couldn't open the file: ${e}`));
+        return true;
+      },
+      handlePaste(view, event) {
+        // A pasted image or file is stored as an attachment (in the notebook,
+        // by content hash) and referenced from the block — not inlined as data.
+        // WebKitGTK puts a pasted image in clipboardData.items, not .files (C-2).
+        const list = pastedFiles(event.clipboardData);
+        if (list.length > 0) {
+          event.preventDefault();
+          (async () => {
+            for (const file of list) {
+              try {
+                const att = await storeFile(file);
+                const ed = editorInstanceRef.current;
+                if (!ed || ed.isDestroyed) return;
+                const ref = `attachment:${att.hash}/${encodeName(att.name)}`;
+                if (isImage(att)) {
+                  ed.chain().focus().setImage({ src: ref, alt: att.name }).run();
+                } else {
+                  ed.chain().focus().insertContent({ type: "text", text: att.name, marks: [{ type: "link", attrs: { href: ref } }] }).run();
+                }
+              } catch (e) {
+                showToast(`Couldn't attach ${file.name || "the file"}: ${e}`);
+              }
+            }
+            setTimeout(() => commitSave(getMarkdown()), 50);
+          })();
+          return true;
+        }
+        void view;
+        // ── End import ──
+
+        const text = event.clipboardData?.getData('text/plain') ?? '';
+
+        // Don't split if inside a code block
+        const { $from } = view.state.selection;
+        if ($from.node($from.depth).type.name === 'codeBlock') {
+          return false; // Let default handle it
+        }
+
+        // URL-to-link paste: if pasting a URL over selected text, wrap as [text](url)
+        const urlPattern = /^https?:\/\/\S+$/;
+        if (urlPattern.test(text.trim())) {
+          const { from, to, empty } = view.state.selection;
+          if (!empty) {
+            // Has selection — wrap as markdown link [selected text](url)
+            const selectedText = view.state.doc.textBetween(from, to);
+            event.preventDefault();
+            view.dispatch(view.state.tr.insertText(`[${selectedText}](${text.trim()})`, from, to));
+            return true;
+          }
+          // No selection on empty/near-empty block — create link preview card
+          const docText = view.state.doc.textContent.trim();
+          if (docText.length === 0 && onSlashCommandRef.current) {
+            event.preventDefault();
+            onSlashCommandRef.current(`{{link-preview:${text.trim()}}}`);
+            return true;
+          }
+          // Non-empty block — insert as markdown link
+          event.preventDefault();
+          view.dispatch(view.state.tr.insertText(`[${text.trim()}](${text.trim()})`));
+          return true;
+        }
+
+        // Check if multi-line
+        const lines = text.split('\n').filter(l => l.trim());
+        if (lines.length <= 1) {
+          return false; // Single line, let default handle
+        }
+
+        // Markdown with structure (headings, nested lists, indented lines, fences):
+        // the matching block tree (C-6) instead of one flat, escaped block per line.
+        const outline = onPasteBlocksRef.current ? parsePastedMarkdown(text) : null;
+        if (outline && outline.length > 0) {
+          event.preventDefault();
+          let atoms = false;
+          view.state.doc.descendants((n: any) => { if (n.isAtom || (n.isLeaf && !n.isText && n.type.name !== "hardBreak")) atoms = true; return !atoms; });
+          const intoEmpty = view.state.doc.textContent.trim() === "" && !atoms;
+          onPasteBlocksRef.current!(outline, intoEmpty);
+          return true;
+        }
+
+        // Check if it looks like a code block
+        if (text.trimStart().startsWith('```')) {
+          return false; // Let TipTap handle code fences
+        }
+
+        if (!onPasteMultilineRef.current) {
+          return false; // No handler, let default handle
+        }
+
+        event.preventDefault();
+
+        // Insert first line into current block
+        const firstLine = lines[0];
+        view.dispatch(view.state.tr.insertText(firstLine));
+
+        // Call the callback with remaining lines to create new blocks
+        onPasteMultilineRef.current(lines.slice(1));
+        return true;
+      },
+    },
+    onUpdate({ transaction }) {
+      // Only genuine document edits count, never our own external-sync setContent.
+      if (transaction.docChanged && !applyingExternalRef.current && !transaction.getMeta("preventUpdate")) {
+        dirtyRef.current = true;
+        movesSinceEditRef.current = 0;
+      }
+      if (transaction.docChanged && !adoptingRef.current) {
+        let blob = false;
+        transaction.doc.descendants((n: any) => {
+          if (n.type.name === "image" && String(n.attrs.src ?? "").startsWith("blob:")) blob = true;
+          return !blob;
+        });
+        if (blob) void adoptBlobImages();
+      }
+    },
+    onBlur() {
+      // Delay blur save to let slash commands set their flag first.
+      // Blur fires on mousedown (before click), but slash command fires on click.
+      // 50ms delay ensures the slash command's flag is checked after it's set.
+      setTimeout(() => {
+        if (slashActiveRef.current) return;
+        // Focus -> blur without an edit must leave stored content byte-identical.
+        if (!dirtyRef.current) return;
+        // Unmounted meanwhile (the block went back to static rendering): the unmount
+        // flush already saved; a destroyed editor would read as "" and wipe the block.
+        const ed = editorInstanceRef.current;
+        if (!ed || ed.isDestroyed) return;
+        const normalized = getMarkdown();
+        if (normalized !== contentRef.current.trim()) {
+          commitSave(normalized);
+        } else {
+          dirtyRef.current = false;
+        }
+      }, 50);
+    },
+  // IMPORTANT: empty deps — never recreate the editor. All callbacks use refs.
+  // Recreating destroys complex node state (task lists, tables) that can't round-trip through markdown.
+  }, []);
+
+  // Keep editorInstanceRef in sync so handleKeyDown can access storage
+  useEffect(() => {
+    editorInstanceRef.current = editor;
+    // Set per-editor slash command callbacks (avoids module-level singleton race)
+    if (editor) {
+      setSlashCallbacks(
+        editor,
+        (md: string) => {
+          slashActiveRef.current = true;
+          onSlashCommandRef.current?.(md);
+          setTimeout(() => { slashActiveRef.current = false; }, 100);
+        },
+        () => {
+          slashActiveRef.current = true;
+          setTimeout(() => {
+            if (editor) {
+              commitSave(getMarkdown());
+              // Refocus editor after slash command save
+              editor.commands.focus();
+            }
+            slashActiveRef.current = false;
+          }, 20);
+        },
+        // Template callback: PageView builds the blocks (placeholders, nesting, caret).
+        (text: string, intoEmpty: boolean) => {
+          slashActiveRef.current = true;
+          onInsertTemplateRef.current?.(text, intoEmpty);
+          setTimeout(() => { slashActiveRef.current = false; }, 100);
+        },
+        () => onMakeFlashcardRef.current?.(),
+      );
+    }
+  }, [editor]);
+
+  // Sync external content changes (e.g. after backend refresh)
+  useEffect(() => {
+    if (!editor) return;
+    const incoming = content.trim();
+    const currentMarkdown = ((editor.storage as any).markdown?.getMarkdown() ?? "").trim();
+    if (incoming === currentMarkdown) {
+      skipSyncRef.current = false;
+      return;
+    }
+    // Bug #21: skip echoes of our own save in a VALUE-based way, not via a one-shot
+    // boolean. If `content` changed twice before this effect ran, a single boolean
+    // would be cleared by the first run and the second (possibly stale) change would
+    // call setContent and wipe in-progress complex-node edits. Comparing against the
+    // last-saved value (contentRef) catches the echo regardless of timing.
+    if (skipSyncRef.current || incoming === contentRef.current.trim()) {
+      skipSyncRef.current = false;
+      contentRef.current = incoming;
+      return;
+    }
+    applyingExternalRef.current = true;
+    try {
+      editor.commands.setContent(content, { emitUpdate: false });
+    } finally {
+      applyingExternalRef.current = false;
+    }
+    contentRef.current = incoming;
+    dirtyRef.current = false;
+  }, [content, editor]);
+
+  // Bug #5: flush unsaved edits on unmount. Navigation swaps the active page and tears
+  // the editor down synchronously, before the 50ms blur-save timer can fire — silently
+  // dropping the user's last keystrokes. Save on cleanup if the content changed.
+  useEffect(() => {
+    return () => {
+      const ed = editorInstanceRef.current;
+      if (!ed || !dirtyRef.current) return;
+      try {
+        const raw = withoutBlobImages(((ed.storage as any).markdown?.getMarkdown() ?? "").trim());
+        const markdown = transformSaveRef.current?.(raw) ?? raw;
+        if (markdown !== contentRef.current.trim()) {
+          contentRef.current = markdown;
+          onSaveRef.current(markdown);
+        }
+        dirtyRef.current = false;
+      } catch {
+        // editor already destroyed — nothing we can do
+      }
+    };
+  }, []);
+
+  return {
+    editor,
+    getMarkdown,
+    /** True when the user edited since the last save / external sync. */
+    isDirty: (): boolean => dirtyRef.current,
+    /** Split at the editor's current selection: same path as the Enter key. */
+    splitAtCursor: (): boolean => {
+      const ed = editorInstanceRef.current;
+      return ed && !ed.isDestroyed ? splitAtCursor(ed.view) : false;
+    },
+    /** Merge into the previous block: same path as Backspace at start. */
+    mergeWithPrevious,
+    /** Save the current content immediately (structural edits that shouldn't wait for blur). */
+    saveNow,
+  };
+}

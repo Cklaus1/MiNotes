@@ -1,0 +1,347 @@
+use chrono::Utc;
+use uuid::Uuid;
+
+use crate::db::Database;
+use crate::error::{Error, Result};
+use crate::models::Link;
+
+impl Database {
+    pub fn create_link(
+        &self,
+        from_block: &Uuid,
+        to_page: Option<&Uuid>,
+        to_block: Option<&Uuid>,
+        link_type: &str,
+        actor: &str,
+    ) -> Result<Link> {
+        let now = Utc::now();
+        let id = Uuid::now_v7();
+
+        self.conn.execute(
+            "INSERT INTO links (id, from_block, to_page, to_block, link_type, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![
+                id.to_string(),
+                from_block.to_string(),
+                to_page.map(|p| p.to_string()),
+                to_block.map(|b| b.to_string()),
+                link_type,
+                now.to_rfc3339(),
+            ],
+        )?;
+
+        let link = Link {
+            id,
+            from_block: *from_block,
+            to_page: to_page.copied(),
+            to_block: to_block.copied(),
+            link_type: link_type.to_string(),
+            created_at: now,
+        };
+
+        // No event: link rows are derived from block content (re-derived on
+        // every content write), and the block's own event already records the
+        // change. Nothing reads `link.*` events (sync, GC and the app don't).
+        let _ = actor;
+        Ok(link)
+    }
+
+    /// Links into a page, ONE per source block (a block that links the page twice
+    /// is one backlink), newest first. Blocks on trashed/archived pages are left
+    /// out: the user can't see those pages, so they mustn't surface here.
+    pub fn get_backlinks(&self, page_id: &Uuid) -> Result<Vec<Link>> {
+        let mut stmt = self.conn.prepare(&format!(
+            "{}
+             SELECT l.id, l.from_block, l.to_page, l.to_block, l.link_type, l.created_at
+             FROM links l JOIN blocks b ON b.id = l.from_block
+             WHERE l.to_page = ?1
+               AND b.page_id NOT IN (SELECT id FROM hidden_pages)
+               AND l.rowid = (SELECT MIN(l2.rowid) FROM links l2
+                              WHERE l2.from_block = l.from_block AND l2.to_page = l.to_page)
+             ORDER BY l.created_at DESC, l.id",
+            crate::repo::trash::hidden_pages_cte()
+        ))?;
+        let rows = stmt.query_map(rusqlite::params![page_id.to_string()], |row| {
+            row_to_link(row)
+        })?;
+        let mut links = Vec::new();
+        for row in rows {
+            links.push(row.map_err(Error::Database)?);
+        }
+        Ok(links)
+    }
+
+    /// Most unlinked mentions returned (newest first); the app shows them 50 at a time.
+    pub const UNLINKED_LIMIT: usize = 200;
+
+    /// Find blocks that mention a page's title in their content but are NOT
+    /// already linked to it via [[wiki links]]. Returns blocks from other pages only.
+    /// Linked blocks are excluded in SQL, before the limit: a page with many
+    /// backlinks used to lose its older unlinked mentions behind them.
+    pub fn get_unlinked_references(&self, page_id: &Uuid) -> Result<Vec<crate::models::Block>> {
+        // Get the page title
+        let page = self.get_page(page_id)?
+            .ok_or_else(|| Error::NotFound(format!("Page {page_id}")))?;
+        let title = &page.title;
+
+        // Get block IDs that already link to this page
+        let backlinks = self.get_backlinks(page_id)?;
+        let linked_block_ids: std::collections::HashSet<Uuid> =
+            backlinks.iter().map(|l| l.from_block).collect();
+
+        // Search for blocks containing the page title (case-insensitive LIKE)
+        let pattern = format!(
+            "%{}%",
+            title.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+        );
+        // Mentions on trashed/archived pages are hidden like the pages themselves.
+        let mut stmt = self.conn.prepare(&format!(
+            "{}
+             SELECT id, page_id, parent_id, position, content, format, collapsed, created_at, updated_at
+             FROM blocks
+             WHERE content LIKE ?1 ESCAPE '\\'
+               AND page_id != ?2
+               AND page_id NOT IN (SELECT id FROM hidden_pages)
+               AND id NOT IN (SELECT from_block FROM links WHERE to_page = ?2)
+             ORDER BY created_at DESC, id",
+            crate::repo::trash::hidden_pages_cte()
+        ))?;
+        let rows = stmt.query_map(
+            rusqlite::params![pattern, page_id.to_string()],
+            |row| {
+                let id_str: String = row.get(0)?;
+                let page_id_str: String = row.get(1)?;
+                let parent_id_str: Option<String> = row.get(2)?;
+                let created_str: String = row.get(7)?;
+                let updated_str: String = row.get(8)?;
+                Ok(crate::models::Block {
+                    id: Uuid::parse_str(&id_str).unwrap_or_default(),
+                    page_id: Uuid::parse_str(&page_id_str).unwrap_or_default(),
+                    parent_id: parent_id_str.and_then(|s| Uuid::parse_str(&s).ok()),
+                    position: row.get(3)?,
+                    content: row.get(4)?,
+                    format: row.get(5)?,
+                    collapsed: row.get::<_, i32>(6)? != 0,
+                    created_at: chrono::DateTime::parse_from_rfc3339(&created_str)
+                        .map(|dt| dt.with_timezone(&chrono::Utc))
+                        .unwrap_or_else(|_| chrono::Utc::now()),
+                    updated_at: chrono::DateTime::parse_from_rfc3339(&updated_str)
+                        .map(|dt| dt.with_timezone(&chrono::Utc))
+                        .unwrap_or_else(|_| chrono::Utc::now()),
+                })
+            },
+        )?;
+
+        let mut results = Vec::new();
+        for row in rows {
+            let block = row.map_err(Error::Database)?;
+            // Exclude blocks that already have a [[link]] to this page
+            if !linked_block_ids.contains(&block.id) {
+                // Extra check: make sure it's not a [[Title]] link (which would already be tracked)
+                let bracket_link = format!("[[{}]]", title);
+                if !block.content.contains(&bracket_link)
+                    // Bug #31: the SQL LIKE is only a coarse pre-filter; require the
+                    // title to appear as a whole word so e.g. "AI" doesn't match
+                    // "RAID"/"maintain". This avoids flooding the panel with noise.
+                    && contains_word(&block.content, title)
+                {
+                    results.push(block);
+                    if results.len() >= Self::UNLINKED_LIMIT {
+                        break;
+                    }
+                }
+            }
+        }
+        Ok(results)
+    }
+
+    /// Backlinks with their source block and its page title, in ONE call (the
+    /// panel used to fetch every source block separately: N+1 IPC round trips).
+    pub fn get_backlink_blocks(&self, page_id: &Uuid) -> Result<Vec<(Link, crate::models::BlockWithPage)>> {
+        let links = self.get_backlinks(page_id)?;
+        let ids: Vec<Uuid> = links.iter().map(|l| l.from_block).collect();
+        let blocks = self.get_blocks_with_pages(&ids)?;
+        let by_id: std::collections::HashMap<Uuid, crate::models::BlockWithPage> =
+            blocks.into_iter().map(|b| (b.block.id, b)).collect();
+        Ok(links
+            .into_iter()
+            .filter_map(|l| by_id.get(&l.from_block).cloned().map(|b| (l, b)))
+            .collect())
+    }
+
+    /// Several blocks by id, each with its page title, in input order; unknown
+    /// ids are skipped. One query regardless of how many ids.
+    pub fn get_blocks_with_pages(&self, ids: &[Uuid]) -> Result<Vec<crate::models::BlockWithPage>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let json = serde_json::to_string(&ids.iter().map(Uuid::to_string).collect::<Vec<_>>())?;
+        let mut stmt = self.conn.prepare(
+            "SELECT b.id, b.page_id, b.parent_id, b.position, b.content, b.format, b.collapsed,
+                    b.created_at, b.updated_at, p.title
+             FROM blocks b JOIN pages p ON p.id = b.page_id
+             WHERE b.id IN (SELECT value FROM json_each(?1))",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![json], |row| {
+            let id_str: String = row.get(0)?;
+            let page_id_str: String = row.get(1)?;
+            let parent_id_str: Option<String> = row.get(2)?;
+            let created_str: String = row.get(7)?;
+            let updated_str: String = row.get(8)?;
+            let ts = |s: &str| {
+                chrono::DateTime::parse_from_rfc3339(s)
+                    .map(|dt| dt.with_timezone(&chrono::Utc))
+                    .unwrap_or_else(|_| chrono::Utc::now())
+            };
+            Ok(crate::models::BlockWithPage {
+                block: crate::models::Block {
+                    id: Uuid::parse_str(&id_str).unwrap_or_default(),
+                    page_id: Uuid::parse_str(&page_id_str).unwrap_or_default(),
+                    parent_id: parent_id_str.and_then(|s| Uuid::parse_str(&s).ok()),
+                    position: row.get(3)?,
+                    content: row.get(4)?,
+                    format: row.get(5)?,
+                    collapsed: row.get::<_, i32>(6)? != 0,
+                    created_at: ts(&created_str),
+                    updated_at: ts(&updated_str),
+                },
+                page_title: row.get(9)?,
+            })
+        })?;
+        let mut by_id = std::collections::HashMap::new();
+        for r in rows {
+            let b = r.map_err(Error::Database)?;
+            by_id.insert(b.block.id, b);
+        }
+        Ok(ids.iter().filter_map(|id| by_id.remove(id)).collect())
+    }
+
+    pub fn get_forward_links(&self, page_id: &Uuid) -> Result<Vec<Link>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT l.id, l.from_block, l.to_page, l.to_block, l.link_type, l.created_at
+             FROM links l JOIN blocks b ON l.from_block = b.id
+             WHERE b.page_id = ?1 ORDER BY l.created_at DESC",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![page_id.to_string()], |row| {
+            row_to_link(row)
+        })?;
+        let mut links = Vec::new();
+        for row in rows {
+            links.push(row.map_err(Error::Database)?);
+        }
+        Ok(links)
+    }
+}
+
+/// Case-insensitive whole-word containment: does `needle` appear in `haystack`
+/// bounded by non-alphanumeric characters (or string edges)? Used to filter
+/// unlinked references so short titles don't match arbitrary substrings (Bug #31).
+fn contains_word(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return false;
+    }
+    let hay = haystack.to_lowercase();
+    let need = needle.to_lowercase();
+    if need.is_empty() {
+        return false;
+    }
+    // Word boundaries are Unicode-aware; all slicing is on char boundaries
+    // (the old byte-wise `start = abs + 1` panicked on non-ASCII text).
+    let is_word = |c: char| c.is_alphanumeric() || c == '_';
+    let mut start = 0;
+    while let Some(pos) = hay[start..].find(&need) {
+        let abs = start + pos;
+        let end = abs + need.len();
+        let before_ok = hay[..abs].chars().next_back().is_none_or(|c| !is_word(c));
+        let after_ok = hay[end..].chars().next().is_none_or(|c| !is_word(c));
+        if before_ok && after_ok {
+            return true;
+        }
+        // Advance by one whole char past the match start.
+        start = abs + hay[abs..].chars().next().map_or(1, char::len_utf8);
+        if start >= hay.len() {
+            break;
+        }
+    }
+    false
+}
+
+fn row_to_link(row: &rusqlite::Row<'_>) -> rusqlite::Result<Link> {
+    let id_str: String = row.get(0)?;
+    let from_str: String = row.get(1)?;
+    let to_page_str: Option<String> = row.get(2)?;
+    let to_block_str: Option<String> = row.get(3)?;
+    let created_str: String = row.get(5)?;
+
+    Ok(Link {
+        id: Uuid::parse_str(&id_str).unwrap_or_default(),
+        from_block: Uuid::parse_str(&from_str).unwrap_or_default(),
+        to_page: to_page_str.and_then(|s| Uuid::parse_str(&s).ok()),
+        to_block: to_block_str.and_then(|s| Uuid::parse_str(&s).ok()),
+        link_type: row.get(4)?,
+        created_at: chrono::DateTime::parse_from_rfc3339(&created_str)
+            .map(|dt| dt.with_timezone(&chrono::Utc))
+            .unwrap_or_else(|_| chrono::Utc::now()),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::contains_word;
+    use crate::db::Database;
+
+    #[test]
+    fn test_contains_word_non_ascii_does_not_panic() {
+        // Used to panic: "byte index 2 is not a char boundary".
+        assert!(!contains_word("xémile rest", "émile"));
+        assert!(contains_word("ask émile today", "Émile"));
+        assert!(!contains_word("émiles", "émile"));
+    }
+
+    #[test]
+    fn test_contains_word_cjk_and_edges() {
+        assert!(contains_word("東京", "東京"));
+        assert!(contains_word("会議 東京 メモ", "東京"));
+        assert!(!contains_word("東京都", "東京"), "CJK letters are word chars");
+        assert!(contains_word("AI at start", "ai"));
+        assert!(contains_word("ends with AI", "AI"));
+        assert!(contains_word("(AI)", "AI"));
+    }
+
+    #[test]
+    fn test_contains_word_repeated_occurrences() {
+        // First two occurrences are embedded; the third is a whole word.
+        assert!(contains_word("RAID maintain AI", "ai"));
+        assert!(!contains_word("RAID maintain aid", "ai"));
+        assert!(contains_word("ééé é", "é"));
+        assert!(!contains_word("", "x"));
+        assert!(!contains_word("x", ""));
+    }
+
+    #[test]
+    fn test_unlinked_references_non_ascii_title() {
+        let db = Database::open_in_memory().unwrap();
+        let target = db.create_page("émile", None, false, None, "user").unwrap();
+        let other = db.create_page("Other", None, false, None, "user").unwrap();
+        db.create_block(&other.id, "xémile rest", None, None, "user").unwrap();
+        let hit = db.create_block(&other.id, "met émile here", None, None, "user").unwrap();
+        let refs = db.get_unlinked_references(&target.id).unwrap();
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].id, hit.id);
+    }
+
+    #[test]
+    fn test_unlinked_mention_not_hidden_behind_many_backlinks() {
+        // 60 blocks that already link to the page are newer than the one plain
+        // mention; the old LIMIT 50 (before dropping linked blocks) lost it.
+        let db = Database::open_in_memory().unwrap();
+        let target = db.create_page("Hub", None, false, None, "user").unwrap();
+        let other = db.create_page("Other", None, false, None, "user").unwrap();
+        let mention = db.create_block(&other.id, "ask the hub team", None, None, "user").unwrap();
+        for i in 0..60 {
+            db.create_block(&other.id, &format!("note {i} about [[Hub]]"), None, None, "user").unwrap();
+        }
+        let refs = db.get_unlinked_references(&target.id).unwrap();
+        assert_eq!(refs.iter().map(|b| b.id).collect::<Vec<_>>(), vec![mention.id]);
+    }
+}

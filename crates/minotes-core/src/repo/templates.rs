@@ -1,0 +1,340 @@
+use chrono::Utc;
+use uuid::Uuid;
+
+use crate::db::Database;
+use crate::error::{Error, Result};
+use crate::models::{Block, Template};
+
+impl Database {
+    /// Create a new template.
+    pub fn create_template(
+        &self,
+        name: &str,
+        description: Option<&str>,
+        content: &str,
+        actor: &str,
+    ) -> Result<Template> {
+        let now = Utc::now();
+        let id = Uuid::now_v7();
+
+        self.conn.execute(
+            "INSERT INTO templates (id, name, description, content, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![
+                id.to_string(),
+                name,
+                description,
+                content,
+                now.to_rfc3339(),
+                now.to_rfc3339(),
+            ],
+        ).map_err(|e| match e {
+            rusqlite::Error::SqliteFailure(_, _) => {
+                Error::AlreadyExists(format!("A template named '{name}' already exists"))
+            }
+            other => Error::Database(other),
+        })?;
+
+        let template = Template {
+            id,
+            name: name.to_string(),
+            description: description.map(String::from),
+            content: content.to_string(),
+            created_at: now,
+            updated_at: now,
+        };
+
+        self.emit_event("template.created", &template.id, "template", &template, actor)?;
+        Ok(template)
+    }
+
+    /// Get a template by name.
+    pub fn get_template(&self, name: &str) -> Result<Option<Template>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, description, content, created_at, updated_at FROM templates WHERE name = ?1",
+        )?;
+        let mut rows = stmt.query(rusqlite::params![name])?;
+        match rows.next()? {
+            Some(row) => Ok(Some(row_to_template(row)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// List all templates.
+    pub fn list_templates(&self) -> Result<Vec<Template>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, description, content, created_at, updated_at FROM templates ORDER BY name",
+        )?;
+        let rows = stmt.query_map([], |row| row_to_template_sqlite(row))?;
+
+        let mut templates = Vec::new();
+        for row in rows {
+            templates.push(row.map_err(Error::Database)?);
+        }
+        Ok(templates)
+    }
+
+    /// Delete a template by name. Returns true if found and deleted.
+    pub fn delete_template(&self, name: &str, actor: &str) -> Result<bool> {
+        self.tx(|| {
+            let template = self.get_template(name)?;
+            let count = self.conn.execute(
+                "DELETE FROM templates WHERE name = ?1",
+                rusqlite::params![name],
+            )?;
+            // Emit only after the DELETE succeeded (repo convention).
+            if let (Some(t), true) = (template, count > 0) {
+                self.emit_event("template.deleted", &t.id, "template", &t, actor)?;
+            }
+            Ok(count > 0)
+        })
+    }
+
+    /// Apply a template to a page: split template content by newlines, each line becomes a block.
+    pub fn apply_template(
+        &self,
+        page_id: &Uuid,
+        template_name: &str,
+        actor: &str,
+    ) -> Result<Vec<Block>> {
+        // All-or-nothing: a failure midway must not leave half a template applied.
+        self.tx(|| self.apply_template_inner(page_id, template_name, actor))
+    }
+
+    fn apply_template_inner(
+        &self,
+        page_id: &Uuid,
+        template_name: &str,
+        actor: &str,
+    ) -> Result<Vec<Block>> {
+        let template = self
+            .get_template(template_name)?
+            .ok_or_else(|| Error::NotFound(format!("Template '{template_name}'")))?;
+
+        // Walk lines but keep fenced code blocks (```...```) as a single block
+        // so multi-line code in templates is preserved intact.
+        // Leading indentation is outline nesting: a line indented deeper than the
+        // previous one becomes its child (any consistent unit: 2/4 spaces, tabs).
+        // A line starting with `\ ` continues the block above (a block with line
+        // breaks); `{{blank}}` is an empty block (the app's "Save as template"
+        // writes both, lib/templates.ts).
+        let lines: Vec<&str> = template.content.lines().collect();
+        let indent_of = |l: &str| -> usize {
+            l.chars()
+                .take_while(|c| *c == ' ' || *c == '\t')
+                .map(|c| if c == '\t' { 4 } else { 1 })
+                .sum()
+        };
+        // (indent width, content) per block, in order.
+        let mut parsed: Vec<(usize, String)> = Vec::new();
+        let mut i = 0;
+        while i < lines.len() {
+            let line = lines[i];
+            let trimmed = line.trim_start();
+            if line.trim().is_empty() {
+                i += 1;
+                continue;
+            }
+            let indent = indent_of(line);
+            if (trimmed == "\\" || trimmed.starts_with("\\ ")) && !parsed.is_empty() {
+                let last = parsed.last_mut().expect("checked");
+                last.1.push('\n');
+                last.1.push_str(trimmed.get(2..).unwrap_or("").trim_end());
+                i += 1;
+                continue;
+            }
+            if trimmed.starts_with("```") {
+                let mut buf = String::from(trimmed);
+                i += 1;
+                while i < lines.len() {
+                    buf.push('\n');
+                    buf.push_str(lines[i]);
+                    let closes = lines[i].trim_start().starts_with("```");
+                    i += 1;
+                    if closes { break; }
+                }
+                parsed.push((indent, buf));
+                continue;
+            }
+            let content = trimmed.trim_end();
+            parsed.push((indent, if content == "{{blank}}" { String::new() } else { content.to_string() }));
+            i += 1;
+        }
+
+        let mut blocks = Vec::new();
+        // (indent width, block id) of the open ancestors, innermost last.
+        let mut stack: Vec<(usize, Uuid)> = Vec::new();
+        for (indent, content) in parsed {
+            while stack.last().is_some_and(|(w, _)| *w >= indent) {
+                stack.pop();
+            }
+            let parent = stack.last().map(|(_, id)| *id);
+            let block = self.create_block(page_id, &content, parent.as_ref(), None, actor)?;
+            stack.push((indent, block.id));
+            blocks.push(block);
+        }
+
+        self.emit_event(
+            "template.applied",
+            page_id,
+            "page",
+            &serde_json::json!({ "template": template_name, "blocks_created": blocks.len() }),
+            actor,
+        )?;
+
+        Ok(blocks)
+    }
+}
+
+fn row_to_template(row: &rusqlite::Row<'_>) -> crate::error::Result<Template> {
+    Ok(row_to_template_sqlite(row)?)
+}
+
+fn row_to_template_sqlite(row: &rusqlite::Row<'_>) -> rusqlite::Result<Template> {
+    let id_str: String = row.get(0)?;
+    let created_str: String = row.get(4)?;
+    let updated_str: String = row.get(5)?;
+
+    Ok(Template {
+        id: Uuid::parse_str(&id_str).unwrap_or_default(),
+        name: row.get(1)?,
+        description: row.get(2)?,
+        content: row.get(3)?,
+        created_at: chrono::DateTime::parse_from_rfc3339(&created_str)
+            .map(|dt| dt.with_timezone(&Utc))
+            .unwrap_or_else(|_| Utc::now()),
+        updated_at: chrono::DateTime::parse_from_rfc3339(&updated_str)
+            .map(|dt| dt.with_timezone(&Utc))
+            .unwrap_or_else(|_| Utc::now()),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::db::Database;
+
+    #[test]
+    fn test_create_and_get_template() {
+        let db = Database::open_in_memory().unwrap();
+        let t = db
+            .create_template("Meeting", Some("Meeting notes"), "## Agenda\n## Notes\n## Actions", "user")
+            .unwrap();
+        assert_eq!(t.name, "Meeting");
+
+        let fetched = db.get_template("Meeting").unwrap().unwrap();
+        assert_eq!(fetched.name, "Meeting");
+        assert_eq!(fetched.description.as_deref(), Some("Meeting notes"));
+    }
+
+    #[test]
+    fn test_list_templates() {
+        let db = Database::open_in_memory().unwrap();
+        db.create_template("A", None, "content a", "user").unwrap();
+        db.create_template("B", None, "content b", "user").unwrap();
+        let list = db.list_templates().unwrap();
+        assert_eq!(list.len(), 2);
+    }
+
+    #[test]
+    fn test_delete_template() {
+        let db = Database::open_in_memory().unwrap();
+        db.create_template("Del", None, "x", "user").unwrap();
+        assert!(db.delete_template("Del", "user").unwrap());
+        assert!(db.get_template("Del").unwrap().is_none());
+    }
+
+    #[test]
+    fn test_apply_template() {
+        let db = Database::open_in_memory().unwrap();
+        db.create_template("T", None, "Line 1\nLine 2\nLine 3", "user")
+            .unwrap();
+        let page = db.create_page("P", None, false, None, "user").unwrap();
+        let blocks = db.apply_template(&page.id, "T", "user").unwrap();
+        assert_eq!(blocks.len(), 3);
+        assert_eq!(blocks[0].content, "Line 1");
+    }
+
+    #[test]
+    fn test_apply_template_continuation_lines_and_blank_blocks() {
+        // The app's "Save as template" format (lib/templates.ts templateFromBlocks).
+        let db = Database::open_in_memory().unwrap();
+        let content = "## Section\n  line one\n  \\ line two\n  {{blank}}\nEnd";
+        db.create_template("Multi", None, content, "user").unwrap();
+        let page = db.create_page("P", None, false, None, "user").unwrap();
+        let blocks = db.apply_template(&page.id, "Multi", "user").unwrap();
+        let got: Vec<(&str, bool)> = blocks.iter().map(|b| (b.content.as_str(), b.parent_id.is_some())).collect();
+        assert_eq!(got, vec![("## Section", false), ("line one\nline two", true), ("", true), ("End", false)]);
+        assert_eq!(blocks[1].parent_id, Some(blocks[0].id));
+        assert_eq!(blocks[2].parent_id, Some(blocks[0].id));
+    }
+
+    #[test]
+    fn test_apply_template_preserves_fenced_code_block() {
+        let db = Database::open_in_memory().unwrap();
+        let content = "Header\n```rust\nfn main() {\n    println!(\"hi\");\n}\n```\nFooter";
+        db.create_template("Code", None, content, "user").unwrap();
+        let page = db.create_page("P", None, false, None, "user").unwrap();
+        let blocks = db.apply_template(&page.id, "Code", "user").unwrap();
+        // Expect 3 blocks: Header, the entire fenced block, Footer
+        assert_eq!(blocks.len(), 3, "blocks: {:?}", blocks.iter().map(|b| &b.content).collect::<Vec<_>>());
+        assert_eq!(blocks[0].content, "Header");
+        assert!(blocks[1].content.starts_with("```rust"));
+        assert!(blocks[1].content.contains("fn main()"));
+        assert!(blocks[1].content.ends_with("```"));
+        assert_eq!(blocks[2].content, "Footer");
+    }
+
+    #[test]
+    fn test_duplicate_template_name() {
+        let db = Database::open_in_memory().unwrap();
+        db.create_template("Dup", None, "x", "user").unwrap();
+        assert!(db.create_template("Dup", None, "y", "user").is_err());
+    }
+
+    // A failure midway through apply_template rolls back every block it created.
+    #[test]
+    fn test_apply_template_is_atomic() {
+        let db = Database::open_in_memory().unwrap();
+        let page = db.create_page("P", None, false, None, "user").unwrap();
+        db.create_template("T", None, "one\ntwo\nBOOM\nfour", "user").unwrap();
+        db.conn
+            .execute_batch(
+                "CREATE TRIGGER boom BEFORE INSERT ON blocks WHEN new.content = 'BOOM'
+                 BEGIN SELECT RAISE(ABORT, 'injected'); END;",
+            )
+            .unwrap();
+        assert!(db.apply_template(&page.id, "T", "user").is_err());
+        assert!(db.get_page_blocks(&page.id).unwrap().is_empty(), "no partial template");
+        let ev: i64 = db
+            .conn
+            .query_row("SELECT COUNT(*) FROM events WHERE event_type = 'block.created'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(ev, 0, "no events for rolled-back work");
+        assert!(db.conn.is_autocommit());
+    }
+
+    // An indented template line is a CHILD block (no leading spaces in its text).
+    #[test]
+    fn test_apply_template_indentation_is_nesting() {
+        let db = Database::open_in_memory().unwrap();
+        db.create_template("T", None, "first\n  nested\n    deeper\n  nested two\nsecond\n\tTabbed", "user").unwrap();
+        let page = db.create_page("P", None, false, None, "user").unwrap();
+        let made = db.apply_template(&page.id, "T", "user").unwrap();
+        assert_eq!(made.len(), 6);
+        let tree = db.get_page_blocks(&page.id).unwrap();
+        let by_id: std::collections::HashMap<_, _> = tree.iter().map(|b| (b.id, b.content.clone())).collect();
+        let shape: Vec<(String, Option<String>)> = tree
+            .iter()
+            .map(|b| (b.content.clone(), b.parent_id.map(|p| by_id[&p].clone())))
+            .collect();
+        let s = |a: &str, p: Option<&str>| (a.to_string(), p.map(String::from));
+        assert_eq!(shape, vec![
+            s("first", None),
+            s("nested", Some("first")),
+            s("deeper", Some("nested")),
+            s("nested two", Some("first")),
+            s("second", None),
+            s("Tabbed", Some("second")),
+        ]);
+    }
+}

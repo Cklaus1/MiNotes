@@ -1,0 +1,170 @@
+use clap::Subcommand;
+use minotes_core::db::Database;
+use uuid::Uuid;
+
+use crate::output::{self, Format, print_error, print_json};
+
+#[derive(Subcommand)]
+pub enum PageCmd {
+    /// Create a new page
+    Create {
+        /// Page title
+        #[arg(allow_hyphen_values = true)]
+        title: String,
+        /// Optional icon
+        #[arg(long)]
+        icon: Option<String>,
+    },
+    /// Get a page by title or ID (includes blocks by default)
+    Get {
+        /// Page title or UUID
+        title_or_id: String,
+        /// Omit blocks, return page metadata only
+        #[arg(long)]
+        no_blocks: bool,
+    },
+    /// List all pages
+    List {
+        /// Max results
+        #[arg(long)]
+        limit: Option<i64>,
+    },
+    /// Move a page to the trash (restorable from the app). Use --permanent to hard-delete.
+    Delete {
+        /// Page title or UUID
+        title_or_id: String,
+        /// Permanently delete instead of moving to trash (irreversible)
+        #[arg(long)]
+        permanent: bool,
+        /// Skip the confirmation prompt for --permanent
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
+    /// Rename a page
+    Rename {
+        /// Current title
+        old: String,
+        /// New title
+        #[arg(allow_hyphen_values = true)]
+        new: String,
+    },
+}
+
+pub fn run(db: &Database, cmd: PageCmd, actor: &str, fmt: &Format) -> i32 {
+    match cmd {
+        PageCmd::Create { title, icon } => {
+            match db.create_page(&title, icon.as_deref(), false, None, actor) {
+                Ok(page) => { print_json(&page); 0 }
+                Err(e) => { print_error(&e.to_string()); 1 }
+            }
+        }
+        PageCmd::Get { title_or_id, no_blocks } => {
+            let page = if let Ok(uuid) = Uuid::parse_str(&title_or_id) {
+                db.get_page(&uuid)
+            } else {
+                db.get_page_by_title(&title_or_id)
+            };
+            match page {
+                Ok(Some(p)) => {
+                    if no_blocks {
+                        match fmt {
+                            Format::Text | Format::Md => output::print_page_text(&p),
+                            _ => print_json(&p),
+                        }
+                    } else {
+                        let blocks = db.get_page_blocks(&p.id).unwrap_or_default();
+                        let page_tree = minotes_core::models::PageTree { page: p, blocks };
+                        match fmt {
+                            Format::Text => output::print_page_tree_text(&page_tree),
+                            Format::Md => output::print_page_tree_md(&page_tree),
+                            Format::Csv => output::print_page_tree_csv(&page_tree),
+                            Format::Opml => output::print_page_tree_opml(&page_tree),
+                            Format::Json => print_json(&page_tree),
+                        }
+                    }
+                    0
+                }
+                Ok(None) => { print_error(&format!("Page not found: {title_or_id}")); 2 }
+                Err(e) => { print_error(&e.to_string()); 1 }
+            }
+        }
+        PageCmd::List { limit } => {
+            match db.list_pages(limit) {
+                Ok(pages) => {
+                    match fmt {
+                        Format::Text => output::print_page_list_text(&pages),
+                        Format::Md => output::print_page_list_md(&pages),
+                        Format::Csv => output::print_page_list_csv(&pages),
+                        Format::Opml => output::print_page_list_opml(&pages),
+                        Format::Json => print_json(&pages),
+                    }
+                    0
+                }
+                Err(e) => { print_error(&e.to_string()); 1 }
+            }
+        }
+        PageCmd::Delete { title_or_id, permanent, yes } => {
+            let Some(uuid) = resolve_page_id(db, &title_or_id) else {
+                print_error(&format!("Page not found: {title_or_id}"));
+                return 2;
+            };
+            match db.get_page(&uuid) {
+                Ok(Some(_)) => {}
+                Ok(None) => { print_error(&format!("Page not found: {title_or_id}")); return 2; }
+                Err(e) => { print_error(&e.to_string()); return 1; }
+            }
+            if permanent {
+                if !yes && !confirm(&format!("Permanently delete page '{title_or_id}'? This cannot be undone. [y/N] ")) {
+                    print_error("Refusing to permanently delete without confirmation (pass --yes)");
+                    return 1;
+                }
+                match db.permanently_delete_page(&uuid, actor) {
+                    Ok(()) => { output::print_message(&format!("Permanently deleted page: {title_or_id}")); 0 }
+                    Err(e) => { print_error(&e.to_string()); 1 }
+                }
+            } else {
+                match db.trash_page(&uuid) {
+                    Ok(()) => { output::print_message(&format!("Moved page to trash: {title_or_id}")); 0 }
+                    Err(e) => { print_error(&e.to_string()); 1 }
+                }
+            }
+        }
+        PageCmd::Rename { old, new } => {
+            let id = resolve_page_id(db, &old);
+            match id {
+                Some(uuid) => match db.rename_page(&uuid, &new, actor) {
+                    Ok(page) => { print_json(&page); 0 }
+                    Err(e) => { print_error(&e.to_string()); 1 }
+                },
+                None => { print_error(&format!("Page not found: {old}")); 2 }
+            }
+        }
+    }
+}
+
+fn resolve_page_id(db: &Database, title_or_id: &str) -> Option<Uuid> {
+    if let Ok(uuid) = Uuid::parse_str(title_or_id) {
+        return Some(uuid);
+    }
+    db.get_page_by_title(title_or_id)
+        .ok()
+        .flatten()
+        .map(|p| p.id)
+}
+
+/// Ask for y/N confirmation on an interactive terminal. Non-interactive stdin
+/// never confirms (callers must pass --yes).
+fn confirm(prompt: &str) -> bool {
+    use std::io::{IsTerminal, Write};
+    let stdin = std::io::stdin();
+    if !stdin.is_terminal() {
+        return false;
+    }
+    eprint!("{prompt}");
+    let _ = std::io::stderr().flush();
+    let mut line = String::new();
+    if stdin.read_line(&mut line).is_err() {
+        return false;
+    }
+    matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+}

@@ -1,0 +1,1917 @@
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Mutex;
+
+use minotes_core::db::Database;
+use minotes_core::models::{Block, BlockWithPage, Card, CssSnippet, Folder, Highlight, Page, PageTree, Plugin, Property, RestoreBlock, SrsStats, SyncStatus, Template, VersionInfo};
+use minotes_core::repo::graph::GraphStats;
+use minotes_core::repo::archive::ArchiveItem;
+use minotes_core::repo::trash::TrashItem;
+use minotes_core::sync_manager::{self, GitSyncResult, GitSyncStatus};
+use serde::Serialize;
+use tauri::State;
+
+mod notebook_transfer;
+mod notebooks;
+mod cross_notebook;
+mod platform;
+mod security;
+mod remote_images;
+mod encryption_commands;
+mod sync_commands;
+// ── Import / attachments ──
+mod import_commands;
+// ── End import ──
+
+pub(crate) struct AppState {
+    /// The open notebook's database — `None` while it is an encrypted notebook
+    /// that is locked (PRD-encryption §4.4). Commands go through
+    /// [`AppState::db_guard`], which turns that into a typed "locked" error.
+    pub(crate) db: Mutex<Option<Database>>,
+    /// Key of the open notebook (legacy notebook name, or a folder notebook's id).
+    pub(crate) current_notebook: Mutex<String>,
+    /// The open notebook: location, lock / read-only state, startup notice.
+    pub(crate) session: Mutex<notebooks::Session>,
+    /// Journal pages shown but not yet written ("virtual"): date -> the id the
+    /// frontend was given. `get_journal` hands out the same id for the same date,
+    /// and the first write (`create_block`, `create_page` by title) materialises
+    /// the page under that id. Lock order: `db` before this.
+    pub(crate) virtual_journals: Mutex<HashMap<chrono::NaiveDate, uuid::Uuid>>,
+}
+
+/// The open database, held for the life of the guard.
+pub(crate) struct DbGuard<'a>(std::sync::MutexGuard<'a, Option<Database>>);
+
+impl std::ops::Deref for DbGuard<'_> {
+    type Target = Database;
+    fn deref(&self) -> &Database {
+        // `db_guard` only hands out guards over `Some`.
+        self.0.as_ref().expect("DbGuard over an open database")
+    }
+}
+
+/// Prefix of the error every command returns while the open notebook is locked;
+/// the frontend shows the unlock screen when it sees it.
+pub(crate) const LOCKED_ERROR: &str = "NOTEBOOK_LOCKED";
+
+impl AppState {
+    /// Lock the open notebook's database for a command. A locked (encrypted)
+    /// notebook is `Err("NOTEBOOK_LOCKED: …")`.
+    pub(crate) fn db_guard(&self) -> Result<DbGuard<'_>, String> {
+        let g = self.db.lock().map_err(|e| e.to_string())?;
+        if g.is_none() {
+            let name = self.session.lock().map(|s| s.notebook.name.clone()).unwrap_or_default();
+            return Err(format!("{LOCKED_ERROR}: Notebook \u{201c}{name}\u{201d} is locked"));
+        }
+        Ok(DbGuard(g))
+    }
+}
+
+/// The date of a virtual journal id handed out by `get_journal`, if it is one.
+fn virtual_journal_date(state: &AppState, id: &uuid::Uuid) -> Option<chrono::NaiveDate> {
+    let v = state.virtual_journals.lock().ok()?;
+    v.iter().find(|(_, vid)| *vid == id).map(|(d, _)| *d)
+}
+
+fn virtual_journal_tree(id: uuid::Uuid, d: chrono::NaiveDate) -> PageTree {
+    let now = chrono::Utc::now();
+    let page = minotes_core::models::Page {
+        id,
+        title: minotes_core::repo::pages::journal_title(d),
+        icon: None,
+        folder_id: None,
+        position: 0.0,
+        is_journal: true,
+        journal_date: Some(d),
+        created_at: now,
+        updated_at: now,
+    };
+    PageTree { page, blocks: vec![] }
+}
+
+/// `~/.minotes` (app storage on Android) — decided in one place, minotes-core.
+fn base_dir() -> PathBuf {
+    minotes_core::notebook::base_dir()
+}
+
+// Bug #16: the active notebook selection must survive restarts. Persist its key to a
+// small file in the data dir; read it at startup so we reopen the correct DB.
+// The file keeps its historical name `active_graph` (the CLI reads it too).
+fn active_notebook_file() -> PathBuf {
+    base_dir().join("active_graph")
+}
+
+fn active_notebook_key() -> String {
+    std::fs::read_to_string(active_notebook_file())
+        .ok()
+        .map(|s| s.trim().to_string())
+        // A tampered active_graph file must not steer startup outside the data dir.
+        .filter(|s| security::validate_notebook_key(s).is_ok())
+        .unwrap_or_else(|| "default".to_string())
+}
+
+/// Persist the open notebook's key.
+pub(crate) fn set_active_notebook_key(key: &str) {
+    let _ = std::fs::write(active_notebook_file(), key);
+}
+
+/// The user's home (the app data dir in app storage), if known.
+fn dirs_next() -> Option<PathBuf> {
+    if let Some(dir) = minotes_core::notebook::app_storage() {
+        return Some(dir);
+    }
+    minotes_core::notebook::user_home()
+}
+
+#[derive(Debug, Serialize)]
+struct Link {
+    id: String,
+    from_block: String,
+    to_page: Option<String>,
+    link_type: String,
+    /// The source block with its page title, so the backlinks panel needs no
+    /// per-link `get_block` round trip.
+    block: Option<BlockWithPage>,
+}
+
+// ── Tauri Commands ──
+
+#[tauri::command]
+fn list_pages(state: State<'_, AppState>, limit: Option<i64>) -> Result<Vec<Page>, String> {
+    let db = state.db_guard()?;
+    db.list_pages(limit).map_err(|e| e.to_string())
+}
+
+// Page-title queries over every page, whatever the notebook's size (UX review
+// U-6; core `repo/page_titles.rs`). Never filter `list_pages(N)` for these.
+
+#[tauri::command]
+fn find_pages_by_title(state: State<'_, AppState>, query: String, limit: Option<usize>) -> Result<Vec<Page>, String> {
+    let db = state.db_guard()?;
+    db.find_pages_by_title(&query, limit.unwrap_or(20)).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn title_in_use(state: State<'_, AppState>, title: String, exclude_id: Option<String>) -> Result<bool, String> {
+    let db = state.db_guard()?;
+    let exclude = exclude_id.and_then(|s| uuid::Uuid::parse_str(&s).ok());
+    db.title_in_use(&title, exclude.as_ref()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn find_journal_page(state: State<'_, AppState>, date: String) -> Result<Option<Page>, String> {
+    let db = state.db_guard()?;
+    let d = chrono::NaiveDate::parse_from_str(&date, "%Y-%m-%d").map_err(|e| format!("Bad date {date}: {e}"))?;
+    db.find_journal_page(d).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_journal_pages(state: State<'_, AppState>, limit: Option<usize>) -> Result<Vec<Page>, String> {
+    let db = state.db_guard()?;
+    db.list_journal_pages(limit.unwrap_or(20)).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn link_candidates(state: State<'_, AppState>, text: String, exclude_id: Option<String>, limit: Option<usize>) -> Result<Vec<Page>, String> {
+    let db = state.db_guard()?;
+    let exclude = exclude_id.and_then(|s| uuid::Uuid::parse_str(&s).ok());
+    db.link_candidates(&text, exclude.as_ref(), limit.unwrap_or(500)).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_page_tree(state: State<'_, AppState>, title_or_id: String) -> Result<PageTree, String> {
+    let db = state.db_guard()?;
+
+    let page = if let Ok(uuid) = uuid::Uuid::parse_str(&title_or_id) {
+        let p = db.get_page(&uuid).map_err(|e| e.to_string())?;
+        if p.is_none() {
+            // A journal shown but not written yet: still openable by its id.
+            if let Some(d) = virtual_journal_date(&state, &uuid) {
+                return Ok(match db.find_journal(d).map_err(|e| e.to_string())? {
+                    Some(p) => {
+                        let blocks = db.get_page_blocks(&p.id).map_err(|e| e.to_string())?;
+                        PageTree { page: p, blocks }
+                    }
+                    None => virtual_journal_tree(uuid, d),
+                });
+            }
+        }
+        p
+    } else {
+        db.get_page_by_title(&title_or_id).map_err(|e| e.to_string())?
+    };
+
+    let page = page.ok_or_else(|| format!("Page not found: {title_or_id}"))?;
+    let blocks = db.get_page_blocks(&page.id).map_err(|e| e.to_string())?;
+    Ok(PageTree { page, blocks })
+}
+
+#[tauri::command]
+fn create_page(state: State<'_, AppState>, title: String) -> Result<Page, String> {
+    let db = state.db_guard()?;
+    // Auto-detect journal pages by title format "Journal/YYYY-MM-DD". A journal
+    // already shown as virtual keeps the id the frontend holds.
+    if let Some(date) = minotes_core::repo::pages::journal_date_of(&title) {
+        let id = state
+            .virtual_journals
+            .lock()
+            .map_err(|e| e.to_string())?
+            .get(&date)
+            .copied()
+            .unwrap_or_else(uuid::Uuid::now_v7);
+        let page = db
+            .create_page_with_id(id, &title, None, true, Some(date), "user")
+            .map_err(|e| e.to_string())?;
+        state.virtual_journals.lock().map_err(|e| e.to_string())?.remove(&date);
+        return Ok(page);
+    }
+    db.create_page(&title, None, false, None, "user")
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_page(state: State<'_, AppState>, id: String) -> Result<bool, String> {
+    // Soft delete: route to trash so the user can recover. Permanent delete is
+    // exposed separately via `permanently_delete`.
+    let db = state.db_guard()?;
+    let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+    db.trash_page(&uuid).map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+#[tauri::command]
+fn rename_page(state: State<'_, AppState>, id: String, new_title: String) -> Result<Page, String> {
+    let db = state.db_guard()?;
+    let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+    db.rename_page(&uuid, &new_title, "user")
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn create_block(
+    state: State<'_, AppState>,
+    page_id: String,
+    content: String,
+    parent_id: Option<String>,
+) -> Result<Block, String> {
+    let db = state.db_guard()?;
+    let page_uuid = uuid::Uuid::parse_str(&page_id).map_err(|e| e.to_string())?;
+    let parent_uuid = parent_id
+        .as_ref()
+        .map(|p| uuid::Uuid::parse_str(p))
+        .transpose()
+        .map_err(|e| e.to_string())?;
+    // First write to a virtual journal: create the page and the block atomically.
+    if db.get_page(&page_uuid).map_err(|e| e.to_string())?.is_none() {
+        if let Some(d) = virtual_journal_date(&state, &page_uuid) {
+            let block = db
+                .tx(|| {
+                    let page = db.get_or_create_journal(d, Some(page_uuid), "user")?;
+                    db.create_block(&page.id, &content, parent_uuid.as_ref(), None, "user")
+                })
+                .map_err(|e| e.to_string())?;
+            state.virtual_journals.lock().map_err(|e| e.to_string())?.remove(&d);
+            return Ok(block);
+        }
+    }
+    db.create_block(&page_uuid, &content, parent_uuid.as_ref(), None, "user")
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn update_block(state: State<'_, AppState>, id: String, content: String) -> Result<Block, String> {
+    let db = state.db_guard()?;
+    let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+    db.update_block(&uuid, Some(&content), "user")
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_block(state: State<'_, AppState>, id: String) -> Result<bool, String> {
+    let db = state.db_guard()?;
+    let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+    db.delete_block(&uuid, "user").map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn search_blocks(state: State<'_, AppState>, query: String, limit: Option<i64>) -> Result<Vec<Block>, String> {
+    let db = state.db_guard()?;
+    db.search(&query, limit).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_backlinks(state: State<'_, AppState>, page_id: String) -> Result<Vec<Link>, String> {
+    let db = state.db_guard()?;
+    let uuid = uuid::Uuid::parse_str(&page_id).map_err(|e| e.to_string())?;
+    let links = db.get_backlink_blocks(&uuid).map_err(|e| e.to_string())?;
+    Ok(links
+        .into_iter()
+        .map(|(l, b)| Link {
+            id: l.id.to_string(),
+            from_block: l.from_block.to_string(),
+            to_page: l.to_page.map(|p| p.to_string()),
+            link_type: l.link_type,
+            block: Some(b),
+        })
+        .collect())
+}
+
+#[tauri::command]
+fn get_unlinked_references(state: State<'_, AppState>, page_id: String) -> Result<Vec<Block>, String> {
+    let db = state.db_guard()?;
+    let uuid = uuid::Uuid::parse_str(&page_id).map_err(|e| e.to_string())?;
+    db.get_unlinked_references(&uuid).map_err(|e| e.to_string())
+}
+
+#[derive(Debug, Serialize)]
+struct FrontendGraphNode {
+    id: String,
+    title: String,
+    block_count: i64,
+    link_count: i64,
+    folder_id: Option<String>,
+    tags: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct FrontendGraphEdge {
+    source: String,
+    target: String,
+    weight: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct FrontendGraphData {
+    nodes: Vec<FrontendGraphNode>,
+    edges: Vec<FrontendGraphEdge>,
+}
+
+#[tauri::command]
+fn get_graph_data(state: State<'_, AppState>) -> Result<FrontendGraphData, String> {
+    let db = state.db_guard()?;
+    let data = db.get_graph_data().map_err(|e| e.to_string())?;
+    Ok(FrontendGraphData {
+        nodes: data.nodes.into_iter().map(|n| FrontendGraphNode {
+            id: n.id.to_string(),
+            title: n.title,
+            block_count: n.block_count,
+            link_count: n.link_count,
+            folder_id: n.folder_id.map(|f| f.to_string()),
+            tags: n.tags,
+        }).collect(),
+        edges: data.edges.into_iter().map(|e| FrontendGraphEdge {
+            source: e.from_page.to_string(),
+            target: e.to_page.to_string(),
+            weight: e.link_count,
+        }).collect(),
+    })
+}
+
+#[tauri::command]
+fn get_graph_stats(state: State<'_, AppState>) -> Result<GraphStats, String> {
+    let db = state.db_guard()?;
+    db.get_graph_stats().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn run_query(state: State<'_, AppState>, sql: String) -> Result<serde_json::Value, String> {
+    let db = state.db_guard()?;
+    db.run_query(&sql).map_err(|e| e.to_string())
+}
+
+/// Today's journal is created on read (it's where the app opens). Other dates
+/// are "soft": an existing journal is returned, otherwise a virtual page whose id
+/// stays the same for that date and that the first write materialises.
+#[tauri::command]
+fn get_journal(state: State<'_, AppState>, date: Option<String>) -> Result<PageTree, String> {
+    let db = state.db_guard()?;
+    let today = chrono::Local::now().date_naive();
+    let d = match date {
+        Some(ref s) => chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
+            .map_err(|e| format!("Invalid date: {e}"))?,
+        None => today,
+    };
+    let existing = db.find_journal(d).map_err(|e| e.to_string())?;
+    let page = match existing {
+        Some(p) => Some(p),
+        // A notebook open read-only (another instance has it) can't create it.
+        None if d == today && !db.is_read_only() => {
+            let id = state.virtual_journals.lock().map_err(|e| e.to_string())?.get(&d).copied();
+            let p = db.get_or_create_journal(d, id, "user").map_err(|e| e.to_string())?;
+            state.virtual_journals.lock().map_err(|e| e.to_string())?.remove(&d);
+            Some(p)
+        }
+        None => None,
+    };
+    match page {
+        Some(p) => {
+            let blocks = db.get_page_blocks(&p.id).map_err(|e| e.to_string())?;
+            Ok(PageTree { page: p, blocks })
+        }
+        None => {
+            let mut v = state.virtual_journals.lock().map_err(|e| e.to_string())?;
+            let id = *v.entry(d).or_insert_with(uuid::Uuid::now_v7);
+            Ok(virtual_journal_tree(id, d))
+        }
+    }
+}
+
+// ── Folder Commands ──
+
+#[tauri::command]
+fn get_folder_tree(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let db = state.db_guard()?;
+    let tree = db.get_folder_tree().map_err(|e| e.to_string())?;
+    let root_pages = db.get_pages_in_folder(None).map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({
+        "folders": tree,
+        "root_pages": root_pages,
+    }))
+}
+
+#[tauri::command]
+fn create_folder(
+    state: State<'_, AppState>,
+    name: String,
+    parent_id: Option<String>,
+) -> Result<minotes_core::models::Folder, String> {
+    let db = state.db_guard()?;
+    let parent_uuid = parent_id
+        .as_ref()
+        .map(|p| uuid::Uuid::parse_str(p))
+        .transpose()
+        .map_err(|e| e.to_string())?;
+    db.create_folder(&name, parent_uuid.as_ref(), None, None, "user")
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn move_page_to_folder(
+    state: State<'_, AppState>,
+    page_id: String,
+    folder_id: Option<String>,
+) -> Result<Page, String> {
+    let db = state.db_guard()?;
+    let page_uuid = uuid::Uuid::parse_str(&page_id).map_err(|e| e.to_string())?;
+    let folder_uuid = folder_id
+        .as_ref()
+        .map(|f| uuid::Uuid::parse_str(f))
+        .transpose()
+        .map_err(|e| e.to_string())?;
+    db.move_page_to_folder(&page_uuid, folder_uuid.as_ref(), "user")
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn reorder_page(state: State<'_, AppState>, id: String, new_position: f64) -> Result<Page, String> {
+    let db = state.db_guard()?;
+    let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+    db.reorder_page(&uuid, new_position, "user")
+        .map_err(|e| e.to_string())
+}
+
+// ── Property Commands ──
+
+#[tauri::command]
+fn set_property(
+    state: State<'_, AppState>,
+    entity_id: String,
+    entity_type: String,
+    key: String,
+    value: String,
+    value_type: Option<String>,
+) -> Result<Property, String> {
+    let db = state.db_guard()?;
+    let uuid = uuid::Uuid::parse_str(&entity_id).map_err(|e| e.to_string())?;
+    db.set_property(
+        &uuid,
+        &entity_type,
+        &key,
+        &value,
+        &value_type.unwrap_or_else(|| "text".to_string()),
+        "user",
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_properties(state: State<'_, AppState>, entity_id: String) -> Result<Vec<Property>, String> {
+    let db = state.db_guard()?;
+    let uuid = uuid::Uuid::parse_str(&entity_id).map_err(|e| e.to_string())?;
+    db.get_properties(&uuid).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_inherited_properties(state: State<'_, AppState>, block_id: String) -> Result<Vec<Property>, String> {
+    let db = state.db_guard()?;
+    let uuid = uuid::Uuid::parse_str(&block_id).map_err(|e| e.to_string())?;
+    db.get_inherited_properties(&uuid).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_property(
+    state: State<'_, AppState>,
+    entity_id: String,
+    key: String,
+) -> Result<bool, String> {
+    let db = state.db_guard()?;
+    let uuid = uuid::Uuid::parse_str(&entity_id).map_err(|e| e.to_string())?;
+    db.delete_property(&uuid, &key, "user")
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_folder(state: State<'_, AppState>, id: String) -> Result<bool, String> {
+    let db = state.db_guard()?;
+    let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+    db.delete_folder(&uuid, "user").map_err(|e| e.to_string())
+}
+
+/// Move a project into another project (`parent_id`), or to the top level (None).
+/// Moving it into itself or one of its own subprojects is refused.
+#[tauri::command]
+fn move_folder(state: State<'_, AppState>, id: String, parent_id: Option<String>) -> Result<Folder, String> {
+    let db = state.db_guard()?;
+    let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+    let parent = parent_id
+        .as_deref()
+        .map(uuid::Uuid::parse_str)
+        .transpose()
+        .map_err(|e| e.to_string())?;
+    db.move_folder(&uuid, parent.as_ref(), "user").map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn update_folder_appearance(state: State<'_, AppState>, id: String, icon: Option<String>, color: Option<String>) -> Result<Folder, String> {
+    let db = state.db_guard()?;
+    let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+    db.update_folder_appearance(&uuid, icon.as_deref(), color.as_deref(), "user").map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn rename_folder(state: State<'_, AppState>, id: String, new_name: String) -> Result<Folder, String> {
+    let db = state.db_guard()?;
+    let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+    db.rename_folder(&uuid, &new_name, "user").map_err(|e| e.to_string())
+}
+
+// ── SRS Card Commands ──
+
+#[tauri::command]
+fn create_card(state: State<'_, AppState>, block_id: String, card_type: String) -> Result<Card, String> {
+    let db = state.db_guard()?;
+    let uuid = uuid::Uuid::parse_str(&block_id).map_err(|e| e.to_string())?;
+    db.create_card(&uuid, &card_type, "user").map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_cards(state: State<'_, AppState>) -> Result<Vec<Card>, String> {
+    let db = state.db_guard()?;
+    db.list_cards().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_due_cards(state: State<'_, AppState>, limit: Option<i64>) -> Result<Vec<Card>, String> {
+    let db = state.db_guard()?;
+    db.get_due_cards(limit.unwrap_or(50)).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn review_card(state: State<'_, AppState>, card_id: String, rating: String) -> Result<Card, String> {
+    let db = state.db_guard()?;
+    let uuid = uuid::Uuid::parse_str(&card_id).map_err(|e| e.to_string())?;
+    db.review_card(&uuid, &rating, "user").map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_srs_stats(state: State<'_, AppState>) -> Result<SrsStats, String> {
+    let db = state.db_guard()?;
+    db.get_srs_stats().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_card(state: State<'_, AppState>, card_id: String) -> Result<bool, String> {
+    let db = state.db_guard()?;
+    let uuid = uuid::Uuid::parse_str(&card_id).map_err(|e| e.to_string())?;
+    db.delete_card(&uuid, "user").map_err(|e| e.to_string())
+}
+
+// ── Favorite Commands ──
+
+#[tauri::command]
+fn add_favorite(state: State<'_, AppState>, page_id: String) -> Result<(), String> {
+    let db = state.db_guard()?;
+    let uuid = uuid::Uuid::parse_str(&page_id).map_err(|e| e.to_string())?;
+    db.add_favorite(&uuid, "user").map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn remove_favorite(state: State<'_, AppState>, page_id: String) -> Result<bool, String> {
+    let db = state.db_guard()?;
+    let uuid = uuid::Uuid::parse_str(&page_id).map_err(|e| e.to_string())?;
+    db.remove_favorite(&uuid).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_favorites(state: State<'_, AppState>) -> Result<Vec<Page>, String> {
+    let db = state.db_guard()?;
+    db.list_favorites().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn reorder_favorite(state: State<'_, AppState>, page_id: String, new_position: f64) -> Result<(), String> {
+    let db = state.db_guard()?;
+    let uuid = uuid::Uuid::parse_str(&page_id).map_err(|e| e.to_string())?;
+    db.reorder_favorite(&uuid, new_position).map_err(|e| e.to_string())
+}
+
+// ── Alias Commands ──
+
+#[tauri::command]
+fn add_alias(state: State<'_, AppState>, page_id: String, alias: String) -> Result<(), String> {
+    let db = state.db_guard()?;
+    let uuid = uuid::Uuid::parse_str(&page_id).map_err(|e| e.to_string())?;
+    db.add_alias(&uuid, &alias, "user").map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn remove_alias(state: State<'_, AppState>, alias: String) -> Result<bool, String> {
+    let db = state.db_guard()?;
+    db.remove_alias(&alias, "user").map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_aliases(state: State<'_, AppState>, page_id: String) -> Result<Vec<String>, String> {
+    let db = state.db_guard()?;
+    let uuid = uuid::Uuid::parse_str(&page_id).map_err(|e| e.to_string())?;
+    db.get_aliases(&uuid).map_err(|e| e.to_string())
+}
+
+// ── Template Commands ──
+
+#[tauri::command]
+fn create_template(
+    state: State<'_, AppState>,
+    name: String,
+    description: Option<String>,
+    content: String,
+) -> Result<Template, String> {
+    let db = state.db_guard()?;
+    db.create_template(&name, description.as_deref(), &content, "user")
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_templates(state: State<'_, AppState>) -> Result<Vec<Template>, String> {
+    let db = state.db_guard()?;
+    db.list_templates().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn apply_template(
+    state: State<'_, AppState>,
+    page_id: String,
+    template_name: String,
+) -> Result<Vec<Block>, String> {
+    let db = state.db_guard()?;
+    let uuid = uuid::Uuid::parse_str(&page_id).map_err(|e| e.to_string())?;
+    db.apply_template(&uuid, &template_name, "user")
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_template(state: State<'_, AppState>, name: String) -> Result<bool, String> {
+    let db = state.db_guard()?;
+    db.delete_template(&name, "user").map_err(|e| e.to_string())
+}
+
+// ── Export/Import Commands ──
+
+#[tauri::command]
+fn export_opml(state: State<'_, AppState>) -> Result<String, String> {
+    let db = state.db_guard()?;
+    db.export_opml().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn export_json(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let db = state.db_guard()?;
+    db.export_json().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn publish_site(state: State<'_, AppState>, output_dir: String) -> Result<Vec<String>, String> {
+    // SECURITY: output_dir comes from the webview. Only allow (existing or creatable)
+    // folders inside the user's home (or, on WSL, a Windows profile), never a hidden
+    // top-level dir like ~/.ssh / ~/.minotes / ~/.config. Page files inside are named by
+    // minotes-core's sanitize_filename (path separators replaced), so they stay in dir.
+    let dir = security::validate_publish_dir(&output_dir, &publish_roots())?;
+    let db = state.db_guard()?;
+    db.publish_static_site(&dir).map_err(|e| e.to_string())
+}
+
+fn publish_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(home) = dirs_next() {
+        roots.push(home);
+    }
+    if let Some(win) = wsl_windows_profile() {
+        roots.push(win);
+    }
+    roots
+}
+
+/// On WSL, the Windows user profile that owns a Downloads folder (same heuristic the
+/// PNG export uses). None elsewhere.
+pub(crate) fn wsl_windows_profile() -> Option<PathBuf> {
+    let version = std::fs::read_to_string("/proc/version").ok()?;
+    if !version.to_lowercase().contains("microsoft") {
+        return None;
+    }
+    for entry in std::fs::read_dir("/mnt/c/Users").ok()?.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name != "Public" && name != "Default" && name != "Default User" && name != "All Users" && name != "desktop.ini" {
+            if entry.path().join("Downloads").exists() {
+                return Some(entry.path());
+            }
+        }
+    }
+    None
+}
+
+// ── Block Move Command ──
+
+#[tauri::command]
+fn move_block(
+    state: State<'_, AppState>,
+    id: String,
+    new_parent: String,
+    position: f64,
+) -> Result<Block, String> {
+    let db = state.db_guard()?;
+    let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+    let parent_uuid = uuid::Uuid::parse_str(&new_parent).map_err(|e| e.to_string())?;
+    db.move_block(&uuid, &parent_uuid, position, "user")
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn reorder_block(
+    state: State<'_, AppState>,
+    id: String,
+    parent_id: Option<String>,
+    position: f64,
+) -> Result<Block, String> {
+    let db = state.db_guard()?;
+    let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+    let parent_uuid = parent_id
+        .as_deref()
+        .map(|p| uuid::Uuid::parse_str(p))
+        .transpose()
+        .map_err(|e| e.to_string())?;
+    db.reorder_block(&uuid, parent_uuid.as_ref(), position, "user")
+        .map_err(|e| e.to_string())
+}
+
+// ── Reparent Block Command ──
+
+#[tauri::command]
+fn reparent_block(
+    state: State<'_, AppState>,
+    id: String,
+    parent_id: Option<String>,
+) -> Result<Block, String> {
+    let db = state.db_guard()?;
+    let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+    let parent_uuid = parent_id
+        .as_ref()
+        .map(|p| uuid::Uuid::parse_str(p))
+        .transpose()
+        .map_err(|e| e.to_string())?;
+    db.reparent_block(&uuid, parent_uuid.as_ref(), "user")
+        .map_err(|e| e.to_string())
+}
+
+// ── Plugin Commands ──
+
+#[tauri::command]
+fn list_plugins(state: State<'_, AppState>) -> Result<Vec<Plugin>, String> {
+    let db = state.db_guard()?;
+    db.list_plugins().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn register_plugin(
+    state: State<'_, AppState>,
+    name: String,
+    version: String,
+    description: Option<String>,
+    author: Option<String>,
+) -> Result<Plugin, String> {
+    let db = state.db_guard()?;
+    db.register_plugin(
+        &name,
+        &version,
+        description.as_deref(),
+        author.as_deref(),
+        None,
+        None,
+        "user",
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn enable_plugin(state: State<'_, AppState>, name: String) -> Result<Plugin, String> {
+    let db = state.db_guard()?;
+    db.enable_plugin(&name).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn disable_plugin(state: State<'_, AppState>, name: String) -> Result<Plugin, String> {
+    let db = state.db_guard()?;
+    db.disable_plugin(&name).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn uninstall_plugin(state: State<'_, AppState>, name: String) -> Result<bool, String> {
+    let db = state.db_guard()?;
+    db.uninstall_plugin(&name).map_err(|e| e.to_string())
+}
+
+// ── Switching notebooks (management commands live in notebooks.rs) ──
+
+#[tauri::command]
+fn switch_notebook(app: tauri::AppHandle, state: State<'_, AppState>, key: String) -> Result<bool, String> {
+    // SECURITY: `../../x` must not open/migrate an arbitrary .db outside the data
+    // dir. (Folder notebook keys are registry ids.)
+    security::validate_notebook_key(&key)?;
+    let nb = minotes_core::notebook::resolve(&key).map_err(|e| e.to_string())?;
+    if !nb.available() {
+        return Err(if nb.is_folder() {
+            format!("Notebook \u{201c}{}\u{201d} is unavailable: its folder was not found", nb.name)
+        } else {
+            format!("Notebook '{key}' does not exist")
+        });
+    }
+    // Bug #16: switch_to persists the selection so it survives a restart.
+    notebooks::switch_to(&app, &state, nb, false)?;
+    Ok(true)
+}
+
+#[tauri::command]
+fn get_current_notebook(state: State<'_, AppState>) -> Result<String, String> {
+    let current = state.current_notebook.lock().map_err(|e| e.to_string())?;
+    Ok(current.clone())
+}
+
+// ── PDF Highlight Commands (F-013) ──
+
+#[tauri::command]
+fn create_highlight(
+    state: State<'_, AppState>,
+    pdf_path: String,
+    page_num: i32,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    color: String,
+    text: Option<String>,
+    note: Option<String>,
+) -> Result<Highlight, String> {
+    let db = state.db_guard()?;
+    db.create_highlight(
+        &pdf_path,
+        page_num,
+        x, y, width, height,
+        &color,
+        text.as_deref(),
+        note.as_deref(),
+        "user",
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_highlights(state: State<'_, AppState>, pdf_path: String) -> Result<Vec<Highlight>, String> {
+    let db = state.db_guard()?;
+    db.get_highlights(&pdf_path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn update_highlight_note(state: State<'_, AppState>, id: String, note: String) -> Result<Highlight, String> {
+    let db = state.db_guard()?;
+    let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+    db.update_highlight_note(&uuid, &note, "user")
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_highlight(state: State<'_, AppState>, id: String) -> Result<bool, String> {
+    let db = state.db_guard()?;
+    let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+    db.delete_highlight(&uuid, "user").map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn search_highlights(state: State<'_, AppState>, query: String) -> Result<Vec<Highlight>, String> {
+    let db = state.db_guard()?;
+    db.search_highlights(&query).map_err(|e| e.to_string())
+}
+
+// ── CRDT Sync Commands (F-015) ──
+
+#[tauri::command]
+fn get_sync_status(state: State<'_, AppState>) -> Result<SyncStatus, String> {
+    let db = state.db_guard()?;
+    db.get_sync_status().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn sync_page(state: State<'_, AppState>, page_id: String) -> Result<Vec<u8>, String> {
+    let db = state.db_guard()?;
+    let uuid = uuid::Uuid::parse_str(&page_id).map_err(|e| e.to_string())?;
+    db.page_to_automerge(&uuid).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_version_history(
+    state: State<'_, AppState>,
+    page_id: String,
+    limit: Option<usize>,
+) -> Result<Vec<VersionInfo>, String> {
+    let db = state.db_guard()?;
+    let uuid = uuid::Uuid::parse_str(&page_id).map_err(|e| e.to_string())?;
+    db.get_version_history(&uuid, limit).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn restore_version(
+    state: State<'_, AppState>,
+    page_id: String,
+    version_hash: String,
+) -> Result<(), String> {
+    let db = state.db_guard()?;
+    let uuid = uuid::Uuid::parse_str(&page_id).map_err(|e| e.to_string())?;
+    db.restore_version(&uuid, &version_hash, "user")
+        .map_err(|e| e.to_string())
+}
+
+// ── Plugin Storage Commands ──
+
+#[tauri::command]
+fn plugin_storage_get(state: State<'_, AppState>, plugin_name: String, key: String) -> Result<Option<String>, String> {
+    let db = state.db_guard()?;
+    db.plugin_storage_get(&plugin_name, &key).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn plugin_storage_set(state: State<'_, AppState>, plugin_name: String, key: String, value: String) -> Result<(), String> {
+    let db = state.db_guard()?;
+    db.plugin_storage_set(&plugin_name, &key, &value).map_err(|e| e.to_string())
+}
+
+// ── CSS Snippet Commands ──
+
+#[tauri::command]
+fn add_css_snippet(state: State<'_, AppState>, name: String, css: String, source: String) -> Result<CssSnippet, String> {
+    let db = state.db_guard()?;
+    db.add_snippet(&name, &css, &source, "user").map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_css_snippets(state: State<'_, AppState>) -> Result<Vec<CssSnippet>, String> {
+    let db = state.db_guard()?;
+    db.list_snippets().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn toggle_css_snippet(state: State<'_, AppState>, name: String) -> Result<CssSnippet, String> {
+    let db = state.db_guard()?;
+    db.toggle_snippet(&name).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_css_snippet(state: State<'_, AppState>, name: String) -> Result<bool, String> {
+    let db = state.db_guard()?;
+    db.delete_snippet(&name).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_enabled_css_snippets(state: State<'_, AppState>) -> Result<Vec<CssSnippet>, String> {
+    let db = state.db_guard()?;
+    db.get_enabled_snippets().map_err(|e| e.to_string())
+}
+
+// Bug #34: atomic CSS snippet edit. Previously the UI did delete-then-re-add (data
+// loss if interrupted, lost id/created_at). This exposes the existing in-place update.
+#[tauri::command]
+fn update_css_snippet(state: State<'_, AppState>, name: String, css: String) -> Result<CssSnippet, String> {
+    let db = state.db_guard()?;
+    db.update_snippet_css(&name, &css).map_err(|e| e.to_string())
+}
+
+// ── Web Clipper API (F-021) ──
+
+#[tauri::command]
+fn clip_content(
+    state: State<'_, AppState>,
+    title: String,
+    content: String,
+    url: Option<String>,
+    tags: Option<Vec<String>>,
+) -> Result<Page, String> {
+    let db = state.db_guard()?;
+
+    // Create the page
+    let page = db
+        .create_page(&title, None, false, None, "clipper")
+        .map_err(|e| e.to_string())?;
+
+    // Add URL as a property if provided
+    if let Some(ref u) = url {
+        db.set_property(&page.id, "page", "url", u, "url", "clipper")
+            .map_err(|e| e.to_string())?;
+    }
+
+    // Add tags as properties
+    if let Some(ref tag_list) = tags {
+        for tag in tag_list {
+            db.set_property(&page.id, "page", &format!("tag:{tag}"), tag, "tag", "clipper")
+                .map_err(|e| e.to_string())?;
+        }
+    }
+
+    // Split content into blocks by double newlines (paragraphs)
+    let paragraphs: Vec<&str> = content
+        .split("\n\n")
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    for paragraph in &paragraphs {
+        db.create_block(&page.id, paragraph, None, None, "clipper")
+            .map_err(|e| e.to_string())?;
+    }
+
+    // If no paragraphs were found but content is non-empty, create a single block
+    if paragraphs.is_empty() && !content.trim().is_empty() {
+        db.create_block(&page.id, content.trim(), None, None, "clipper")
+            .map_err(|e| e.to_string())?;
+    }
+
+    Ok(page)
+}
+
+/// Save an export (SVG, Markdown, …) where the user chooses: a native "Save as"
+/// dialog, then the bytes are written to exactly that path. Nothing is written
+/// without the user picking the file, so the webview can't choose a location
+/// itself. Returns the saved path, or None if the dialog was cancelled.
+#[tauri::command(async)]
+fn save_export_file(app: tauri::AppHandle, filename: String, data: Vec<u8>) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    const MAX_EXPORT_BYTES: usize = 100 * 1024 * 1024;
+    if data.len() > MAX_EXPORT_BYTES {
+        return Err("Export too large".into());
+    }
+    // Only a plain file name is used as the suggestion (no directories).
+    let suggested = std::path::Path::new(&filename)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .filter(|n| !n.is_empty() && !n.starts_with('.'))
+        .unwrap_or_else(|| "export".to_string());
+    let mut dialog = app.dialog().file().set_file_name(&suggested);
+    if let Some(home) = dirs_next() {
+        dialog = dialog.set_directory(home);
+    }
+    let Some(chosen) = dialog.blocking_save_file() else { return Ok(None) };
+    let path = chosen.into_path().map_err(|e| e.to_string())?;
+    std::fs::write(&path, &data).map_err(|e| format!("Could not save {}: {e}", path.display()))?;
+    Ok(Some(path.to_string_lossy().to_string()))
+}
+
+/// Clipboard bridge: reads image via wl-paste (works with WSLg shared clipboard)
+#[tauri::command]
+fn paste_image_wsl() -> Result<String, String> {
+    // Try PNG first, then BMP, then any image type
+    let types = ["image/png", "image/bmp", "image/jpeg"];
+    let mut image_bytes: Option<Vec<u8>> = None;
+
+    for mime in &types {
+        if let Ok(output) = std::process::Command::new("wl-paste")
+            .args(["--type", mime, "--no-newline"])
+            .output()
+        {
+            if output.status.success() && !output.stdout.is_empty() {
+                image_bytes = Some(output.stdout);
+                break;
+            }
+        }
+    }
+
+    let bytes = image_bytes.ok_or_else(|| "No image in clipboard".to_string())?;
+    let base64 = base64_encode(&bytes);
+    Ok(base64)
+}
+
+fn base64_encode(data: &[u8]) -> String {
+    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut result = String::with_capacity(data.len() * 4 / 3 + 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
+        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        result.push(CHARS[(n >> 18 & 63) as usize] as char);
+        result.push(CHARS[(n >> 12 & 63) as usize] as char);
+        if chunk.len() > 1 { result.push(CHARS[(n >> 6 & 63) as usize] as char); } else { result.push('='); }
+        if chunk.len() > 2 { result.push(CHARS[(n & 63) as usize] as char); } else { result.push('='); }
+    }
+    result
+}
+
+/// PDF viewer: the webview cannot read local files by path (pdf.js would fetch the
+/// path relative to the app origin), so the bytes come through IPC as a binary
+/// response. Restricted to regular `.pdf` files (see `validate_pdf_path`).
+#[tauri::command]
+fn read_pdf_file(path: String) -> Result<tauri::ipc::Response, String> {
+    let home = dirs_next();
+    let canon = security::validate_pdf_path(&path, home.as_deref())?;
+    let bytes = std::fs::read(&canon).map_err(|e| format!("Cannot open PDF: {e}"))?;
+    if bytes.len() as u64 > security::MAX_PDF_BYTES {
+        return Err("PDF too large".into());
+    }
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
+#[tauri::command]
+fn read_file_base64(path: String) -> Result<String, String> {
+    // SECURITY: only used for OS drag-and-drop of images onto the whiteboard. Restrict
+    // to regular image files (extension checked after symlink resolution), max 20 MB.
+    let canon = security::validate_image_path(&path)?;
+    let bytes = std::fs::read(&canon).map_err(|e| format!("Read failed: {e}"))?;
+    if bytes.len() as u64 > security::MAX_IMAGE_BYTES {
+        return Err("Image too large".into());
+    }
+    Ok(base64_encode(&bytes))
+}
+
+// ── Feature 8: Fetch OpenGraph metadata for link preview cards ──
+
+#[derive(Debug, Serialize, Clone)]
+struct OgMetadata {
+    title: String,
+    description: String,
+    image: String,
+    /// The page's declared icon (`<link rel="icon" …>`), absolute; "" when none.
+    /// Read from the HTML already fetched — the card loads it, like the image,
+    /// only through `fetch_remote_image` and only when remote images are allowed.
+    favicon: String,
+}
+
+/// The first `<link rel="icon">` / `"shortcut icon"` / `"apple-touch-icon"`
+/// href in `html` (attributes in any order, either quote), resolved against
+/// `base`. Only http(s) results; data: and other schemes are dropped.
+fn extract_favicon(html: &str, base: &reqwest::Url) -> String {
+    let link_re = regex::Regex::new(r#"(?is)<link\b[^>]*>"#).unwrap();
+    let rel_re = regex::Regex::new(r#"(?is)\brel\s*=\s*["']([^"']*)["']"#).unwrap();
+    let href_re = regex::Regex::new(r#"(?is)\bhref\s*=\s*["']([^"']+)["']"#).unwrap();
+    for tag in link_re.find_iter(html) {
+        let tag = tag.as_str();
+        let Some(rel) = rel_re.captures(tag).map(|c| c[1].to_ascii_lowercase()) else { continue };
+        if !rel.split_whitespace().any(|r| r == "icon" || r == "apple-touch-icon") {
+            continue;
+        }
+        let Some(href) = href_re.captures(tag).map(|c| c[1].trim().to_string()) else { continue };
+        if let Ok(u) = base.join(&href) {
+            if u.scheme() == "https" || u.scheme() == "http" {
+                return u.to_string();
+            }
+        }
+    }
+    String::new()
+}
+
+#[cfg(test)]
+mod og_tests {
+    use super::extract_favicon;
+
+    #[test]
+    fn favicon_from_link_tags() {
+        let base = reqwest::Url::parse("https://example.com/a/b.html").unwrap();
+        assert_eq!(extract_favicon(r#"<link rel="icon" href="/fav.png">"#, &base), "https://example.com/fav.png");
+        assert_eq!(extract_favicon(r#"<link href='i.ico' rel='shortcut icon'>"#, &base), "https://example.com/a/i.ico");
+        assert_eq!(extract_favicon(r#"<link rel="stylesheet" href="x.css"><link rel="apple-touch-icon" href="https://cdn.x/t.png">"#, &base), "https://cdn.x/t.png");
+        assert_eq!(extract_favicon(r#"<link rel="icon" href="data:image/png;base64,AAA">"#, &base), "");
+        assert_eq!(extract_favicon("<html></html>", &base), "");
+    }
+}
+
+#[tauri::command]
+async fn fetch_og_metadata(url: String) -> Result<OgMetadata, String> {
+    // An error (unreachable, refused, not HTML…) is reported, so the card can say
+    // "Preview unavailable" instead of repeating the URL as if it were a title.
+    fetch_og_inner(&url).await.map_err(|e| e.to_string())
+}
+
+const OG_MAX_BODY_BYTES: usize = 1024 * 1024;
+const OG_MAX_REDIRECTS: usize = 3;
+
+async fn fetch_og_inner(url: &str) -> std::result::Result<OgMetadata, Box<dyn std::error::Error>> {
+    // SECURITY (SSRF): only http/https to public addresses, every redirect hop
+    // re-validated, no proxies — see `remote_images::safe_get`. Body capped at 1 MB.
+    let client = remote_images::safe_client(std::time::Duration::from_secs(5))?;
+    let mut resp = remote_images::safe_get(&client, url, OG_MAX_REDIRECTS, false, None).await?;
+    let resp_url = resp.url().clone();
+
+    let mut body: Vec<u8> = Vec::new();
+    while let Some(chunk) = resp.chunk().await? {
+        let room = OG_MAX_BODY_BYTES - body.len();
+        body.extend_from_slice(&chunk[..chunk.len().min(room)]);
+        if body.len() >= OG_MAX_BODY_BYTES {
+            break;
+        }
+    }
+    let html = String::from_utf8_lossy(&body).into_owned();
+
+    let og_re = regex::Regex::new(
+        r#"<meta\s+(?:[^>]*?\s+)?(?:property|name)\s*=\s*"og:(\w+)"[^>]*?\s+content\s*=\s*"([^"]*)"[^>]*/?\s*>"#,
+    ).unwrap();
+    let og_re2 = regex::Regex::new(
+        r#"<meta\s+(?:[^>]*?\s+)?content\s*=\s*"([^"]*)"[^>]*?\s+(?:property|name)\s*=\s*"og:(\w+)"[^>]*/?\s*>"#,
+    ).unwrap();
+
+    let mut title = String::new();
+    let mut description = String::new();
+    let mut image = String::new();
+
+    for cap in og_re.captures_iter(&html) {
+        let key = &cap[1];
+        let val = cap[2].to_string();
+        match key {
+            "title" => title = val,
+            "description" => description = val,
+            "image" => image = val,
+            _ => {}
+        }
+    }
+    // Also check reversed attribute order
+    for cap in og_re2.captures_iter(&html) {
+        let val = cap[1].to_string();
+        let key = &cap[2];
+        match key {
+            "title" if title.is_empty() => title = val,
+            "description" if description.is_empty() => description = val,
+            "image" if image.is_empty() => image = val,
+            _ => {}
+        }
+    }
+
+    // Fallback: use <title> tag if no og:title
+    if title.is_empty() {
+        let title_re = regex::Regex::new(r"<title[^>]*>([^<]+)</title>").unwrap();
+        if let Some(cap) = title_re.captures(&html) {
+            title = cap[1].trim().to_string();
+        }
+    }
+
+    // A relative og:image is relative to the page; the frontend loads it (only when
+    // remote images are allowed) through `fetch_remote_image`.
+    if !image.is_empty() {
+        image = resp_url.join(&image).map(|u| u.to_string()).unwrap_or_default();
+    }
+    let favicon = extract_favicon(&html, &resp_url);
+    Ok(OgMetadata { title, description, image, favicon })
+}
+
+// ── Feature 9: Get single block by ID ──
+
+#[tauri::command]
+fn get_block(state: State<'_, AppState>, id: String) -> Result<Option<BlockWithPage>, String> {
+    let db = state.db_guard()?;
+    let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+    Ok(db.get_blocks_with_pages(&[uuid]).map_err(|e| e.to_string())?.pop())
+}
+
+/// Several blocks (each with its page title) in one call; unknown ids skipped.
+#[tauri::command]
+fn get_blocks(state: State<'_, AppState>, ids: Vec<String>) -> Result<Vec<BlockWithPage>, String> {
+    let db = state.db_guard()?;
+    let uuids = ids
+        .iter()
+        .map(|i| uuid::Uuid::parse_str(i))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    db.get_blocks_with_pages(&uuids).map_err(|e| e.to_string())
+}
+
+// ── Archive ──
+
+#[tauri::command]
+fn archive_page(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let db = state.db_guard()?;
+    let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+    db.archive_page(&uuid).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn unarchive_page(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let db = state.db_guard()?;
+    let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+    db.unarchive_page(&uuid).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn archive_folder(state: State<'_, AppState>, id: String) -> Result<u32, String> {
+    let db = state.db_guard()?;
+    let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+    db.archive_folder(&uuid).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn unarchive_folder(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let db = state.db_guard()?;
+    let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+    db.unarchive_folder(&uuid).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_archived(state: State<'_, AppState>) -> Result<Vec<ArchiveItem>, String> {
+    let db = state.db_guard()?;
+    db.list_archived_items().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn archived_count(state: State<'_, AppState>) -> Result<u32, String> {
+    let db = state.db_guard()?;
+    db.archived_count().map_err(|e| e.to_string())
+}
+
+// ── Trash ──
+
+#[tauri::command]
+fn trash_page(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let db = state.db_guard()?;
+    let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+    db.trash_page(&uuid).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn trash_folder(state: State<'_, AppState>, id: String) -> Result<u32, String> {
+    let db = state.db_guard()?;
+    let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+    db.trash_folder(&uuid).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn restore_from_trash(state: State<'_, AppState>, id: String, item_type: String) -> Result<(), String> {
+    let db = state.db_guard()?;
+    let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+    if item_type == "folder" {
+        db.restore_folder(&uuid).map_err(|e| e.to_string())
+    } else {
+        db.restore_page(&uuid).map_err(|e| e.to_string())
+    }
+}
+
+#[tauri::command]
+fn permanently_delete(state: State<'_, AppState>, id: String, item_type: String) -> Result<(), String> {
+    let db = state.db_guard()?;
+    let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+    db.delete_from_trash(&uuid, &item_type, "user").map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_trash(state: State<'_, AppState>) -> Result<Vec<TrashItem>, String> {
+    let db = state.db_guard()?;
+    db.list_trash().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn empty_trash(state: State<'_, AppState>) -> Result<u32, String> {
+    let db = state.db_guard()?;
+    db.empty_trash("user").map_err(|e| e.to_string())
+}
+
+// ── Git Sync ──
+//
+// These commands run on Tauri's async pool (`#[tauri::command(async)]`), not the
+// main thread, so git network I/O never freezes the UI. The DB mutex is taken
+// only around the DB phases (export / import) — never across pull/push — and
+// every lock re-checks that the notebook being synced is still the active one, so a
+// notebook switch mid-sync can't import notebook A's files into notebook B.
+
+pub(crate) fn current_notebook_key(state: &AppState) -> Result<String, String> {
+    state.current_notebook.lock().map(|g| g.clone()).map_err(|e| e.to_string())
+}
+
+pub(crate) fn lock_db_for_notebook<'a>(
+    state: &'a AppState,
+    key: &str,
+) -> minotes_core::error::Result<DbGuard<'a>> {
+    let db = state.db_guard().map_err(minotes_core::error::Error::Git)?;
+    let current = state
+        .current_notebook
+        .lock()
+        .map_err(|e| minotes_core::error::Error::Git(format!("Notebook lock poisoned: {e}")))?
+        .clone();
+    if current != key {
+        return Err(minotes_core::error::Error::Git(format!(
+            "Active notebook changed from '{key}' to '{current}' during sync; aborted"
+        )));
+    }
+    Ok(db)
+}
+
+#[tauri::command]
+fn git_available() -> bool {
+    sync_manager::git_available()
+}
+
+#[tauri::command(async)]
+fn git_sync_enable(state: State<'_, AppState>) -> Result<GitSyncStatus, String> {
+    refuse_read_only(&state)?;
+    let key = current_notebook_key(&state)?;
+    sync_manager::enable_sync_with(&key, || lock_db_for_notebook(&state, &key))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command(async)]
+fn git_sync_disable(state: State<'_, AppState>) -> Result<(), String> {
+    let key = current_notebook_key(&state)?;
+    sync_manager::disable_sync(&key).map_err(|e| e.to_string())
+}
+
+pub(crate) fn refuse_read_only(state: &AppState) -> Result<(), String> {
+    if state.session.lock().map_err(|e| e.to_string())?.held_by.is_some() {
+        return Err("This notebook is open read-only in this window (another MiNotes window has it open)".into());
+    }
+    Ok(())
+}
+
+#[tauri::command(async)]
+fn git_sync(state: State<'_, AppState>) -> Result<GitSyncResult, String> {
+    refuse_read_only(&state)?;
+    let key = current_notebook_key(&state)?;
+    // Export (DB lock) → pull/push (no lock) → import only if the pull brought
+    // remote commits (DB lock; pages edited during the network phase are kept).
+    sync_manager::full_sync_with(&key, || lock_db_for_notebook(&state, &key))
+        .map_err(|e| e.to_string())
+}
+
+/// The user confirmed syncing a notebook folder whose sync was set up on another
+/// computer (copied here): strip command-running keys from its `.git/config`,
+/// record it as set up here. Returns the keys removed.
+#[tauri::command(async)]
+fn git_sync_confirm(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    refuse_read_only(&state)?;
+    let key = current_notebook_key(&state)?;
+    sync_manager::confirm_sync(&key).map_err(|e| e.to_string())
+}
+
+#[tauri::command(async)]
+fn git_sync_status(state: State<'_, AppState>) -> Result<GitSyncStatus, String> {
+    let key = current_notebook_key(&state)?;
+    sync_manager::get_sync_status(&key).map_err(|e| e.to_string())
+}
+
+/// Count pending TODOs across all pages.
+#[tauri::command]
+fn get_pending_todo_count(db: tauri::State<AppState>) -> Result<usize, String> {
+    let conn = db.db_guard()?;
+    conn.count_pending_todos().map_err(|e| e.to_string())
+}
+
+/// Every task line (TODO / DOING / DONE, checkboxes) for the Tasks view.
+#[tauri::command]
+fn list_tasks(state: State<'_, AppState>) -> Result<Vec<minotes_core::repo::ai_suggestions::TaskItem>, String> {
+    let db = state.db_guard()?;
+    db.list_tasks().map_err(|e| e.to_string())
+}
+
+/// Move the "All TODOs" pages the old TODO badge generated to the Trash
+/// (only that exact generated shape). Returns `[id, title]` of each one.
+#[tauri::command]
+fn cleanup_generated_todo_pages(state: State<'_, AppState>) -> Result<Vec<(String, String)>, String> {
+    let db = state.db_guard()?;
+    let removed = db.trash_generated_todo_pages().map_err(|e| e.to_string())?;
+    for (id, title) in &removed {
+        eprintln!("[minotes] moved the generated \"{title}\" page ({id}) to the Trash");
+    }
+    Ok(removed)
+}
+
+/// List all pending TODOs across all pages with source page titles.
+#[tauri::command]
+fn list_pending_todos(db: tauri::State<AppState>) -> Result<Vec<serde_json::Value>, String> {
+    let conn = db.db_guard()?;
+    let todos = conn.list_pending_todos().map_err(|e| e.to_string())?;
+    Ok(todos
+        .into_iter()
+        .map(|t| {
+            serde_json::json!({ "page_title": t.page_title, "text": t.text })
+        })
+        .collect())
+}
+
+/// List all pending TODOs with page IDs for navigation.
+#[tauri::command]
+fn list_pending_todos_with_page_ids(db: tauri::State<AppState>) -> Result<Vec<serde_json::Value>, String> {
+    let conn = db.db_guard()?;
+    let todos = conn.list_pending_todos_with_page_ids().map_err(|e| e.to_string())?;
+    Ok(todos
+        .into_iter()
+        .map(|t| {
+            serde_json::json!({ "page_id": t.page_id, "page_title": t.page_title, "text": t.text })
+        })
+        .collect())
+}
+
+// ── Whiteboards (DB-backed storage; keyed by the id in `{{whiteboard:<id>}}`) ──
+
+/// UI state that names content (recent pages), kept in the notebook's database
+/// for encrypted notebooks (PRD-encryption §4.5). Null when never set.
+#[tauri::command]
+fn get_ui_state(state: State<'_, AppState>, key: String) -> Result<Option<String>, String> {
+    let db = state.db_guard()?;
+    db.get_ui_state(&key).map_err(|e| e.to_string())
+}
+
+/// The onboarding page this device just created ("Getting Started"): if it is
+/// still untouched when a sync brings another device's page of that title,
+/// that page replaces it (UX review C-9).
+#[tauri::command]
+fn mark_onboarding_seed(state: State<'_, AppState>, page_id: String) -> Result<(), String> {
+    let id = uuid::Uuid::parse_str(&page_id).map_err(|e| e.to_string())?;
+    let db = state.db_guard()?;
+    db.mark_onboarding_seed(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_ui_state(state: State<'_, AppState>, key: String, value: String) -> Result<(), String> {
+    if state.session.lock().map_err(|e| e.to_string())?.held_by.is_some() {
+        return Ok(()); // read-only window: not remembered
+    }
+    let db = state.db_guard()?;
+    db.set_ui_state(&key, &value).map_err(|e| e.to_string())
+}
+
+/// Returns the whiteboard's JSON data, or null if it has never been saved.
+#[tauri::command]
+fn get_whiteboard(state: State<'_, AppState>, id: String) -> Result<Option<String>, String> {
+    let db = state.db_guard()?;
+    db.get_whiteboard(&id)
+        .map(|wb| wb.map(|w| w.data))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn save_whiteboard(state: State<'_, AppState>, id: String, data: String) -> Result<(), String> {
+    let db = state.db_guard()?;
+    db.save_whiteboard(&id, &data).map(|_| ()).map_err(|e| e.to_string())
+}
+
+/// Delete whiteboards no block, template or recent (in-horizon) block event references any
+/// more. Returns the deleted board ids. (Also runs after empty-trash and
+/// permanent deletes.)
+#[tauri::command]
+fn gc_whiteboards(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    let db = state.db_guard()?;
+    db.gc_whiteboards().map_err(|e| e.to_string())
+}
+
+// ── End whiteboards ──
+
+// ── Restore blocks (original ids) ──
+
+/// Recreate deleted blocks with their original id/page/parent/position/content
+/// and properties, in one transaction. Payload (snake_case):
+/// `{ blocks: [{ id, page_id, parent_id, content, position, properties: [["k","v"]] }] }`.
+/// Errors if an id already exists, a page is missing, or a parent is neither
+/// existing nor in the list. Returns the restored blocks in input order.
+#[tauri::command]
+fn restore_blocks(state: State<'_, AppState>, blocks: Vec<RestoreBlock>) -> Result<Vec<Block>, String> {
+    let db = state.db_guard()?;
+    db.restore_blocks(&blocks, "user").map_err(|e| e.to_string())
+}
+
+// ── AI platform ──
+// Commands (settings, keychain, model catalogue, streaming Ask) live in
+// ai_commands.rs; the logic is in minotes-core `ai`.
+mod ai_commands;
+// ── End AI platform ──
+
+// ── Perf: batched block properties ──
+/// Properties of many entities in one call (opening a page used to make one
+/// `get_properties` call per block). Only entities that have properties appear
+/// in the map; invalid ids are skipped.
+#[tauri::command]
+fn get_properties_batch(
+    state: State<'_, AppState>,
+    entity_ids: Vec<String>,
+) -> Result<HashMap<String, Vec<Property>>, String> {
+    let db = state.db_guard()?;
+    let mut out = HashMap::new();
+    for id in entity_ids {
+        let Ok(uuid) = uuid::Uuid::parse_str(&id) else { continue };
+        let props = db.get_properties(&uuid).map_err(|e| e.to_string())?;
+        if !props.is_empty() {
+            out.insert(id, props);
+        }
+    }
+    Ok(out)
+}
+// ── End perf ──
+
+/// Property keys in use, most used first (the property editor's key autocomplete).
+#[tauri::command]
+fn list_property_keys(state: State<'_, AppState>, prefix: Option<String>, limit: Option<usize>) -> Result<Vec<String>, String> {
+    let db = state.db_guard()?;
+    db.list_property_keys(prefix.as_deref(), limit.unwrap_or(50).min(500)).map_err(|e| e.to_string())
+}
+
+/// The notebook to open at startup: the active one, unless its folder is
+/// missing — then the default legacy notebook, with a notice (never an empty
+/// replacement in the missing folder's place).
+fn startup_notebook() -> (minotes_core::notebook::Notebook, Option<String>) {
+    use minotes_core::notebook::{self, Notebook};
+    let key = active_notebook_key();
+    match notebook::resolve(&key) {
+        Ok(nb) if !nb.is_folder() || nb.available() => (nb, None),
+        Ok(nb) => (
+            Notebook::legacy("default"),
+            Some(format!(
+                "Notebook \u{201c}{}\u{201d} is unavailable \u{2014} its folder {} was not found (unplugged drive or moved folder?). Use \u{201c}Locate\u{2026}\u{201d} in the notebook menu.",
+                nb.name,
+                nb.root().map(|r| r.display().to_string()).unwrap_or_default()
+            )),
+        ),
+        Err(_) => (Notebook::legacy("default"), None),
+    }
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    let builder = tauri::Builder::default();
+    // Android: read / write the content:// URIs the system picker hands out
+    // (notebook zip export / import).
+    #[cfg(target_os = "android")]
+    let builder = builder.plugin(tauri_plugin_fs::init());
+
+    let app = builder
+        .setup(move |app| {
+            use tauri::Manager;
+            // Mobile: the data dir is only known through the app's path API,
+            // so the notebook is opened here (desktop: same order, same paths).
+            #[cfg(mobile)]
+            platform::init_app_storage(app)?;
+            let (nb, notice) = startup_notebook();
+            let (db, held_by) = notebooks::open_for_session(&nb, false)
+                .map_err(|e| format!("Failed to open database: {e}"))?;
+            let startup_db_path = nb.db_path();
+            let startup_key = nb.key.clone();
+            minotes_core::notebook::touch_last_opened(&nb);
+            app.manage(AppState {
+                db: Mutex::new(db),
+                current_notebook: Mutex::new(startup_key),
+                session: Mutex::new(notebooks::Session { notebook: nb, held_by, notice }),
+                virtual_journals: Mutex::new(HashMap::new()),
+            });
+            // The window is created only now (`"create": false` in
+            // tauri.conf.json): no command can run before AppState exists.
+            for cfg in app.config().app.windows.clone() {
+                tauri::WebviewWindowBuilder::from_config(app.handle(), &cfg)?.build()?;
+            }
+            let handle = app.handle().clone();
+            let watch = notebooks::start_db_watch(&handle);
+            watch.watch(&startup_db_path);
+            app.manage(watch);
+            let worker = notebooks::start_mirror_worker(&handle);
+            // A full pass at startup: the copy is current from the first second.
+            worker.send(notebooks::MirrorMsg::Full);
+            app.manage(worker);
+            Ok(())
+        })
+        // ── Import / attachments ──
+        .register_asynchronous_uri_scheme_protocol("attachment", |ctx, request, responder| {
+            let app = ctx.app_handle().clone();
+            std::thread::spawn(move || responder.respond(import_commands::serve(&app, &request)));
+        })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) = event {
+                import_commands::remember_drop(tauri::Manager::app_handle(window), paths.clone());
+            }
+        })
+        .manage(import_commands::DroppedFiles::default())
+        .manage(import_commands::ImportState::default())
+        // ── End import ──
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_dialog::init())
+        .invoke_handler(tauri::generate_handler![
+            list_pages,
+            find_pages_by_title,
+            title_in_use,
+            find_journal_page,
+            list_journal_pages,
+            link_candidates,
+            get_page_tree,
+            create_page,
+            delete_page,
+            rename_page,
+            create_block,
+            update_block,
+            delete_block,
+            move_block,
+            reparent_block,
+            search_blocks,
+            get_backlinks,
+            get_unlinked_references,
+            get_graph_data,
+            get_graph_stats,
+            run_query,
+            get_journal,
+            get_folder_tree,
+            create_folder,
+            move_page_to_folder,
+            reorder_page,
+            delete_folder,
+            move_folder,
+            rename_folder,
+            update_folder_appearance,
+            set_property,
+            get_properties,
+            get_inherited_properties,
+            delete_property,
+            create_card,
+            list_cards,
+            get_due_cards,
+            review_card,
+            get_srs_stats,
+            delete_card,
+            add_favorite,
+            remove_favorite,
+            list_favorites,
+            reorder_favorite,
+            add_alias,
+            remove_alias,
+            get_aliases,
+            create_template,
+            list_templates,
+            apply_template,
+            delete_template,
+            export_opml,
+            export_json,
+            publish_site,
+            list_plugins,
+            register_plugin,
+            enable_plugin,
+            disable_plugin,
+            uninstall_plugin,
+            switch_notebook,
+            get_current_notebook,
+            clip_content,
+            create_highlight,
+            get_highlights,
+            update_highlight_note,
+            delete_highlight,
+            search_highlights,
+            get_sync_status,
+            sync_page,
+            get_version_history,
+            restore_version,
+            plugin_storage_get,
+            plugin_storage_set,
+            add_css_snippet,
+            list_css_snippets,
+            toggle_css_snippet,
+            delete_css_snippet,
+            get_enabled_css_snippets,
+            update_css_snippet,
+            save_export_file,
+            reorder_block,
+            paste_image_wsl,
+            read_file_base64,
+            read_pdf_file,
+            fetch_og_metadata,
+            remote_images::fetch_remote_image,
+            remote_images::save_remote_image,
+            get_block,
+            get_blocks,
+            archive_page,
+            unarchive_page,
+            archive_folder,
+            unarchive_folder,
+            list_archived,
+            archived_count,
+            trash_page,
+            trash_folder,
+            restore_from_trash,
+            permanently_delete,
+            list_trash,
+            empty_trash,
+            git_available,
+            git_sync_enable,
+            git_sync_disable,
+            git_sync,
+            git_sync_status,
+            git_sync_confirm,
+            sync_commands::git_sync_test_remote,
+            sync_commands::git_sync_setup,
+            sync_commands::git_sync_set_remote,
+            sync_commands::git_sync_remove_remote,
+            sync_commands::pick_sync_remote_folder,
+            sync_commands::join_notebook,
+            sync_commands::conflict_compare,
+            sync_commands::resolve_conflict,
+            sync_commands::set_conflict_resolution,
+            get_pending_todo_count,
+            list_pending_todos,
+            list_pending_todos_with_page_ids,
+            list_tasks,
+            cleanup_generated_todo_pages,
+            get_whiteboard,
+            get_ui_state,
+            set_ui_state,
+            mark_onboarding_seed,
+            save_whiteboard,
+            gc_whiteboards,
+            restore_blocks,
+            // ── AI platform ──
+            ai_commands::ai_get_status,
+            ai_commands::ai_save_settings,
+            ai_commands::ai_set_api_key,
+            ai_commands::ai_clear_api_key,
+            ai_commands::ai_list_models,
+            ai_commands::ai_ask,
+            ai_commands::ai_cancel,
+            ai_commands::ai_reset_conversation,
+            ai_commands::ai_list_runs,
+            // ── End AI platform ──
+            // ── Perf ──
+            get_properties_batch,
+            list_property_keys,
+            // ── End perf ──
+            // ── Notebooks ──
+            cross_notebook::search_other_notebooks,
+            cross_notebook::resolve_notebook_links,
+            cross_notebook::list_notebook_pages,
+            notebooks::list_notebooks,
+            notebooks::get_notebook_session,
+            notebooks::dismiss_notebook_notice,
+            notebooks::default_notebook_location,
+            notebooks::create_notebook,
+            notebooks::open_notebook_folder,
+            notebooks::locate_notebook,
+            notebooks::rename_notebook,
+            notebooks::delete_notebook,
+            notebooks::forget_notebook,
+            notebooks::take_over_notebook,
+            notebooks::move_notebook_to_folder,
+            notebooks::mirror_status,
+            notebooks::mirror_rebuild,
+            notebooks::mirror_open_folder,
+            notebooks::git_sync_resolve_deletions,
+            notebooks::outside_edit_set_blocks,
+            platform::get_platform_capabilities,
+            notebook_transfer::export_notebook_zip,
+            // ── Encryption ──
+            encryption_commands::create_encrypted_notebook,
+            encryption_commands::join_encrypted_notebook,
+            encryption_commands::unlock_notebook,
+            encryption_commands::lock_notebook,
+            encryption_commands::change_passphrase,
+            encryption_commands::recover_with_key,
+            encryption_commands::regenerate_recovery_key,
+            encryption_commands::set_remember_device,
+            encryption_commands::encryption_plan,
+            encryption_commands::encrypt_notebook,
+            encryption_commands::decrypt_notebook,
+            encryption_commands::rotate_notebook_key,
+            notebook_transfer::import_notebook_zip,
+            // ── Import / attachments ──
+            import_commands::store_attachment,
+            import_commands::store_dropped_files,
+            import_commands::open_attachment,
+            import_commands::reveal_attachment,
+            import_commands::get_attachment,
+            import_commands::import_detect,
+            import_commands::import_scan,
+            import_commands::import_preview,
+            import_commands::import_run,
+            import_commands::import_cancel,
+            import_commands::import_discard,
+            import_commands::import_undo,
+            import_commands::import_undo_preview,
+            import_commands::import_runs,
+            // ── End import ──
+        ])
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+    app.run(|handle, event| {
+        if let tauri::RunEvent::Exit = event {
+            notebooks::shutdown(handle);
+        }
+    });
+}

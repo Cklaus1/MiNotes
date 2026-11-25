@@ -1,0 +1,49 @@
+[package]
+name = "minotes-app"
+version = "0.1.0"
+license = "MIT"
+repository = "https://github.com/Cklaus1/MiNotes"
+edition = "2021"
+
+[lib]
+name = "minotes_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+minotes-core = { path = "../../minotes-core" }
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+tauri-plugin-clipboard-manager = "2"
+tauri-plugin-dialog = "2"
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+# reqwest 0.13's `rustls` feature means aws-lc-rs (a C/asm build — trouble for
+# the Android and MinGW cross builds) plus the OS-store verifier (needs a JNI
+# init on Android). `rustls-no-provider` + a preconfigured rustls config keeps
+# exactly what 0.12's `rustls-tls` shipped: rustls on ring, Mozilla's roots
+# (webpki-roots), no native-tls / OpenSSL for HTTP. See remote_images::tls_config.
+reqwest = { version = "0.13", features = ["rustls-no-provider"], default-features = false }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+webpki-roots = "1"
+regex = "1"
+notify = "8.2"
+
+# ── AI platform: OpenRouter key in the OS keychain ──
+# Not on Android: keyring has no Android store there (only an in-memory mock
+# that silently forgets the key), so the app reports "no keychain" instead.
+[target.'cfg(not(target_os = "android"))'.dependencies]
+# keyring 4's default `v1` store set = what 3.x's features gave: macOS Keychain,
+# Windows Credential Manager, Linux Secret Service (now over zbus, pure Rust —
+# no libdbus — with the same "crypto-rust" session encryption). Items written
+# by keyring 3 are found again (same service/user attributes and target names).
+keyring = "4.2"
+
+# Android: writing / reading the content:// URIs the system picker returns
+# (notebook zip export / import). Already in the tree via tauri-plugin-dialog.
+[target.'cfg(target_os = "android")'.dependencies]
+tauri-plugin-fs = "2"

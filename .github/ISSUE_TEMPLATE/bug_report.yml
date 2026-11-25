@@ -1,0 +1,64 @@
+name: Bug report
+description: Something in MiNotes does not work the way it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Please do not paste private notes, passphrases or recovery keys into this form. Blur or crop screenshots, and trim logs. Security problems go through [SECURITY.md](https://github.com/Cklaus1/MiNotes/blob/main/SECURITY.md), not here.
+  - type: input
+    id: version
+    attributes:
+      label: MiNotes version
+      description: Shown at the bottom of Settings (Ctrl+,), for example "MiNotes 0.1.0".
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system and version
+      placeholder: "Windows 11 23H2, Ubuntu 24.04, Fedora 41 ..."
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How did you install it?
+      options:
+        - Windows installer (.exe)
+        - Windows installer (.msi)
+        - Linux AppImage
+        - Linux .deb
+        - Linux .rpm
+        - Built from source
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open ...
+        2. Click ...
+        3. See ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected to happen
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened instead
+    validations:
+      required: true
+  - type: textarea
+    id: extra
+    attributes:
+      label: Screenshots or logs (optional)
+      description: Drag images here. Remove anything private first. Does it involve an encrypted notebook, sync or an import? Say so.

@@ -1,0 +1,778 @@
+/* TipTap / ProseMirror editor styles for MiNotes blocks */
+
+.block-content .ProseMirror {
+  outline: none;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--text-primary);
+  min-height: 1.4em;
+  word-break: break-word;
+}
+
+.block-content .ProseMirror p {
+  margin: 0;
+}
+
+/* ProseMirror adds a trailing <p><br></p> after block-level elements (lists, headings).
+   Hide it — each block is its own TipTap instance so the trailing cursor target is not needed. */
+.block-content .ProseMirror > p:last-child:not(:only-child):has(> br:only-child) {
+  display: none;
+}
+
+/* Placeholder */
+.block-content .ProseMirror p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  color: var(--text-muted);
+  pointer-events: none;
+  float: left;
+  height: 0;
+}
+
+/* Empty page: its only block is empty — show a starting hint even before focus
+   (the Placeholder extension only supplies text while the editor is focused). */
+.block-list > .block:only-child .block-content .ProseMirror > p.is-editor-empty:only-child::before {
+  content: "Type to start writing, / for commands, [[ to link, Tab / Shift+Tab to indent / outdent";
+  opacity: 0.8;
+}
+
+/* Inline formatting */
+.block-content .ProseMirror strong {
+  font-weight: 700;
+}
+
+.block-content .ProseMirror em {
+  font-style: italic;
+}
+
+.block-content .ProseMirror s {
+  text-decoration: line-through;
+  color: var(--text-muted);
+}
+
+.block-content .ProseMirror code {
+  background: var(--bg-surface);
+  border-radius: 3px;
+  padding: 0.1em 0.3em;
+  font-size: 0.9em;
+  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+}
+
+.block-content .ProseMirror mark {
+  background: rgba(249, 226, 175, 0.25);
+  color: var(--warning);
+  border-radius: 2px;
+  padding: 0 0.1em;
+}
+
+/* Headings */
+.block-content .ProseMirror h1 {
+  font-size: 2em;
+  font-weight: 700;
+  margin: 0.15em 0;
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+}
+
+.block-content .ProseMirror h2 {
+  font-size: 1.6em;
+  font-weight: 600;
+  margin: 0.12em 0;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+}
+
+.block-content .ProseMirror h3 {
+  font-size: 1.3em;
+  font-weight: 600;
+  margin: 0.1em 0;
+  line-height: 1.3;
+}
+
+.block-content .ProseMirror h4 {
+  font-size: 1em;
+  font-weight: 600;
+  margin: 0.1em 0;
+}
+
+/* Lists */
+.block-content .ProseMirror ul,
+.block-content .ProseMirror ol {
+  padding-left: 1.5em;
+  margin: 0.15em 0;
+}
+
+.block-content .ProseMirror li {
+  margin: 0.05em 0;
+}
+
+.block-content .ProseMirror li p {
+  margin: 0;
+}
+
+/* Task list */
+.block-content .ProseMirror ul[data-type="taskList"] {
+  list-style: none;
+  padding-left: 0;
+}
+
+.block-content .ProseMirror ul[data-type="taskList"] li {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4em;
+}
+
+.block-content .ProseMirror ul[data-type="taskList"] li > label {
+  flex-shrink: 0;
+  margin-top: 0.25em;
+}
+
+.block-content .ProseMirror ul[data-type="taskList"] li > label input[type="checkbox"] {
+  /* Drawn by the shared checkbox style (styles.css). */
+  min-height: 16px;
+}
+
+.block-content .ProseMirror ul[data-type="taskList"] li > div {
+  flex: 1;
+}
+
+.block-content .ProseMirror ul[data-type="taskList"] li[data-checked="true"] > div {
+  text-decoration: line-through;
+  color: var(--text-muted);
+}
+
+/* Blockquote */
+.block-content .ProseMirror blockquote {
+  border-left: 3px solid var(--border);
+  padding-left: 1em;
+  color: var(--text-secondary);
+  margin: 0.3em 0;
+}
+
+.block-content .ProseMirror blockquote p {
+  margin: 0;
+}
+
+/* Code block */
+.block-content .ProseMirror pre {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.75em 1em;
+  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+  font-size: 0.85em;
+  line-height: 1.5;
+  overflow-x: auto;
+  margin: 0.3em 0;
+}
+
+.block-content .ProseMirror pre code {
+  background: none;
+  border-radius: 0;
+  padding: 0;
+  font-size: inherit;
+}
+
+/* Horizontal rule */
+.block-content .ProseMirror hr {
+  border: none;
+  border-top: 2px solid var(--border);
+  margin: 0.8em 0;
+}
+
+/* Wiki link node */
+.block-content .ProseMirror .wiki-link {
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: none;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+.block-content .ProseMirror .wiki-link:hover {
+  text-decoration: underline;
+  color: var(--accent-hover);
+}
+
+/* Block reference node */
+.block-content .ProseMirror .block-ref {
+  color: var(--accent);
+  background: rgba(137, 180, 250, 0.1);
+  border-radius: 3px;
+  padding: 0 4px;
+  cursor: pointer;
+  font-style: italic;
+}
+
+.block-content .ProseMirror .block-ref:hover {
+  background: rgba(137, 180, 250, 0.2);
+}
+
+/* {{embed ((uuid))}}: a small marker in the text; the block itself is the card below. */
+.block-content .ProseMirror .block-embed-chip {
+  font-style: normal;
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  padding: 1px 6px;
+}
+
+/* A reference to a block that no longer exists. */
+.block-content .ProseMirror .block-ref.block-ref-missing {
+  color: var(--text-secondary);
+  background: rgba(243, 139, 168, 0.12);
+  text-decoration: line-through;
+}
+
+/* Syntax highlighting (lowlight / highlight.js compatible tokens). Theme
+   variables, each >= 4.5:1 (WCAG AA) against the code block background
+   (var(--bg-secondary): #181825 dark, #e6e9ef light). */
+:root, [data-theme="dark"] {
+  --syntax-keyword: #cba6f7;   /* 8.6:1 */
+  --syntax-string: #a6e3a1;    /* 11.8:1 */
+  --syntax-comment: #9399b2;   /* 6.2:1 (was #6c7086, 3.6:1) */
+  --syntax-number: #fab387;    /* 9.9:1 */
+  --syntax-function: #89b4fa;  /* 8.3:1 */
+  --syntax-type: #f9e2af;      /* 13.8:1 */
+  --syntax-variable: #f38ba8;  /* 7.6:1 */
+  --syntax-meta: #74c7ec;      /* 9.3:1 */
+  --syntax-tag: #89dceb;       /* 11.3:1 */
+}
+[data-theme="light"] {
+  --syntax-keyword: #7027c9;   /* 6.1:1 (was #cba6f7, 1.7:1) */
+  --syntax-string: #256b17;    /* 5.4:1 */
+  --syntax-comment: #545770;   /* 5.8:1 (was 4.0:1) */
+  --syntax-number: #9a3d00;    /* 5.7:1 (was #fab387, 1.5:1) */
+  --syntax-function: #134bbd;  /* 6.2:1 */
+  --syntax-type: #8a5300;      /* 5.2:1 */
+  --syntax-variable: #b80d32;  /* 5.5:1 */
+  --syntax-meta: #0f6575;      /* 5.5:1 */
+  --syntax-tag: #0b6185;       /* 5.6:1 */
+}
+.block-content .ProseMirror pre .hljs-keyword,
+.block-content .ProseMirror pre .hljs-selector-tag,
+.block-content .ProseMirror pre .hljs-built_in { color: var(--syntax-keyword); }
+.block-content .ProseMirror pre .hljs-string,
+.block-content .ProseMirror pre .hljs-attr { color: var(--syntax-string); }
+.block-content .ProseMirror pre .hljs-comment,
+.block-content .ProseMirror pre .hljs-quote { color: var(--syntax-comment); font-style: italic; }
+.block-content .ProseMirror pre .hljs-number,
+.block-content .ProseMirror pre .hljs-literal { color: var(--syntax-number); }
+.block-content .ProseMirror pre .hljs-function,
+.block-content .ProseMirror pre .hljs-title { color: var(--syntax-function); }
+.block-content .ProseMirror pre .hljs-type,
+.block-content .ProseMirror pre .hljs-class { color: var(--syntax-type); }
+.block-content .ProseMirror pre .hljs-variable { color: var(--syntax-variable); }
+.block-content .ProseMirror pre .hljs-meta { color: var(--syntax-meta); }
+.block-content .ProseMirror pre .hljs-tag { color: var(--syntax-tag); }
+.block-content .ProseMirror pre .hljs-name { color: var(--syntax-keyword); }
+
+/* Code block language label — a clean name from data-language-label (set in
+   useBlockEditor); blocks with no language have no attribute and no label. */
+.block-content .ProseMirror pre[data-language-label]::before {
+  content: attr(data-language-label);
+  display: block;
+  font-family: var(--font-interface, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
+  font-size: 11px;
+  line-height: 1.2;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+  letter-spacing: 0.03em;
+  user-select: none;
+}
+
+/* Code block header: language dropdown + copy (editor/codeBlockView.ts) replaces the ::before label */
+.block-content .ProseMirror pre.code-block-view::before { content: none; display: none; }
+.block-content .ProseMirror pre.code-block-view { position: relative; padding-top: 0.4em; }
+.code-block-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 -0.4em 4px -0.35em;
+  font-family: var(--font-interface, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
+  user-select: none;
+}
+.code-block-header button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 22px;
+  padding: 1px 6px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+}
+.code-block-header button:hover,
+.code-block-header button:focus-visible {
+  color: var(--text-primary);
+  border-color: var(--border);
+  background: var(--bg-primary);
+}
+.code-block-header .code-copy-btn { opacity: 0.55; }
+.block-content .ProseMirror pre:hover .code-copy-btn,
+.code-block-header .code-copy-btn:focus-visible { opacity: 1; }
+
+.code-lang-picker {
+  position: fixed;
+  z-index: 1200;
+  width: 220px;
+  padding: 4px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+}
+.code-lang-filter {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 5px 8px;
+  margin-bottom: 4px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 13px;
+}
+.code-lang-list { max-height: 220px; overflow-y: auto; }
+.code-lang-option {
+  display: block;
+  width: 100%;
+  padding: 4px 8px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.code-lang-option.current { font-weight: 600; }
+.code-lang-option.active,
+.code-lang-option:hover { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+
+/* Tables */
+.block-content .ProseMirror table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0.3em 0;
+  font-size: 0.9em;
+}
+
+.block-content .ProseMirror th,
+.block-content .ProseMirror td {
+  border: 1px solid var(--border);
+  padding: 6px 10px;
+  text-align: left;
+  min-width: 60px;
+  position: relative; /* anchors the column-resize handle */
+  vertical-align: top;
+}
+
+.block-content .ProseMirror th > p,
+.block-content .ProseMirror td > p {
+  margin: 0;
+}
+
+.block-content .ProseMirror th {
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.block-content .ProseMirror td {
+  background: var(--bg-primary);
+}
+
+.block-content .ProseMirror .selectedCell {
+  background: rgba(137, 180, 250, 0.15);
+}
+
+.block-content .ProseMirror .column-resize-handle {
+  position: absolute;
+  right: -2px;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  background: var(--accent);
+  cursor: col-resize;
+}
+
+.block-content .ProseMirror .tableWrapper {
+  overflow-x: auto;
+  margin: 0.3em 0;
+}
+
+/* Tag pills */
+.block-content .ProseMirror .tag-pill {
+  display: inline-block;
+  background: rgba(137, 180, 250, 0.12);
+  color: var(--accent);
+  border-radius: 10px;
+  padding: 0 8px;
+  font-size: 0.85em;
+  cursor: pointer;
+  border: 1px solid rgba(137, 180, 250, 0.2);
+  white-space: nowrap;
+}
+
+.block-content .ProseMirror .tag-pill:hover {
+  background: rgba(137, 180, 250, 0.25);
+}
+
+/* Inline images */
+.block-content .ProseMirror img {
+  max-width: 100%;
+  border-radius: 6px;
+  margin: 0.3em 0;
+  cursor: pointer;
+}
+
+/* Selection and focus */
+.block-content .ProseMirror ::selection {
+  background: rgba(137, 180, 250, 0.3);
+}
+
+/* Slash command menu: icon, title + one-line description, grouped (UX Wave 4) */
+.slash-menu {
+  background: var(--bg-secondary, #1e1e2e);
+  border: 1px solid var(--border, #45475a);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  padding: 4px;
+  width: 300px;
+  max-width: calc(100vw - 32px);
+  max-height: min(380px, 60vh);
+  overflow-y: auto;
+  z-index: 50;
+}
+
+.slash-menu-group {
+  padding: 8px 10px 3px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted, #6c7086);
+}
+.slash-menu-row:first-child .slash-menu-group { padding-top: 4px; }
+
+.slash-menu-item {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 5px 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-primary, #cdd6f4);
+  cursor: pointer;
+  text-align: left;
+  font-size: 13px;
+  line-height: 1.35;
+  gap: 10px;
+}
+
+.slash-menu-item-icon {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  border: 1px solid var(--border, #45475a);
+  background: var(--bg-primary, #1e1e2e);
+  color: var(--text-secondary, var(--text-primary));
+}
+
+.slash-menu-item-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.slash-menu-item:hover,
+.slash-menu-item.active {
+  background: color-mix(in srgb, var(--accent, #89b4fa) 16%, transparent);
+  color: var(--text-primary, #cdd6f4);
+}
+.slash-menu-item.active .slash-menu-item-icon {
+  border-color: var(--accent, #89b4fa);
+  color: var(--accent, #89b4fa);
+}
+
+.slash-menu-item-title {
+  font-weight: 600;
+}
+
+.slash-menu-item-description {
+  font-size: 11.5px;
+  color: var(--text-muted, #6c7086);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.slash-menu-empty {
+  padding: 8px 10px;
+  color: var(--text-muted, #6c7086);
+  font-size: 13px;
+}
+
+/* Tippy overrides for slash menu */
+.tippy-box[data-theme="slash-menu"] {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+
+.tippy-box {
+  max-width: none !important;
+}
+
+/* A block reached through a ((block ref)): flash it so the eye finds it. */
+.block.block-ref-highlight {
+  background: color-mix(in srgb, var(--accent, #6366f1) 18%, transparent);
+  border-radius: 4px;
+  transition: background 0.4s ease-out;
+}
+
+/* Callouts: `> [!note] …` (CalloutNode) */
+.block-content .ProseMirror .callout {
+  --callout: var(--accent, #89b4fa);
+  margin: 0.2em 0;
+  padding: 6px 10px 6px 12px;
+  border-left: 3px solid var(--callout);
+  border-radius: 4px 6px 6px 4px;
+  background: color-mix(in srgb, var(--callout) 10%, transparent);
+}
+.block-content .ProseMirror .callout-tip { --callout: var(--success, #a6e3a1); }
+.block-content .ProseMirror .callout-warning { --callout: var(--warning, #f9e2af); }
+.block-content .ProseMirror .callout::before {
+  content: attr(data-callout-label);
+  display: block;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--callout) 70%, var(--text-primary));
+  margin-bottom: 2px;
+  user-select: none;
+}
+.block-content .ProseMirror .callout > p { margin: 0; }
+
+/* Above the blocks that follow (they are positioned too). */
+.bubble-menu, div:has(> .bubble-toolbar) { z-index: 45; }
+.bubble-toolbar button .ui-icon { display: block; }
+
+/* Bullets centred on the first line (UX Wave 4): block padding-top 3px + half
+   the first line (14px × 1.6 = 22.4px; h1 28px × 1.2 + 0.15em margin; h2 22.4px
+   × 1.25 + 0.12em; h3 18.2px × 1.3 + 0.1em) − half the bullet. */
+.block::before { top: 12px; }
+.block:has(.ProseMirror > h1:first-child)::before { top: 21px; }
+.block:has(.ProseMirror > h2:first-child)::before { top: 17px; }
+.block:has(.ProseMirror > h3:first-child)::before { top: 14px; }
+/* Light theme: the bullets were a 40 % grey on white — barely visible. */
+[data-theme="light"] .block::before { background: color-mix(in srgb, var(--text-muted) 75%, transparent); }
+[data-theme="light"] .block:has(.ProseMirror > h1)::before { background: var(--accent); }
+[data-theme="light"] .block:has(.ProseMirror > h2)::before { background: color-mix(in srgb, var(--accent) 75%, transparent); }
+[data-theme="light"] .block:has(.ProseMirror > h3)::before { background: color-mix(in srgb, var(--accent) 60%, transparent); }
+[data-theme="light"] .block:hover::before,
+[data-theme="light"] .block:focus-within::before { background: var(--accent); }
+
+/* Property editor (components/PropertyEditor.tsx, UX Wave 4): real-sized fields,
+   key suggestions, page properties as a row under the title. */
+.prop-chip { font-size: 12px; padding: 1px 4px 1px 7px; }
+.prop-chip .prop-value {
+  border: none;
+  background: none;
+  padding: 0 2px;
+  font: inherit;
+  color: var(--text-secondary);
+  cursor: text;
+  text-align: left;
+}
+.prop-chip .prop-value:hover { color: var(--accent); }
+.prop-chip .prop-delete {
+  border: none;
+  background: none;
+  padding: 0 2px;
+  font-size: 14px;
+}
+.prop-chip .prop-delete:focus-visible { opacity: 1; }
+.prop-chip .prop-edit-input {
+  width: auto;
+  min-width: 8ch;
+  font-size: 12px;
+  padding: 2px 4px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-primary);
+}
+.prop-chip .prop-edit-input:focus { border-color: var(--accent); }
+.prop-chip-new { gap: 6px; padding: 3px 4px 3px 6px; position: relative; }
+.prop-key-field { position: relative; display: inline-flex; }
+.prop-key-suggestions {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  min-width: 100%;
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 4px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.3);
+}
+.prop-key-suggestion {
+  padding: 3px 8px;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: var(--text-primary);
+  font-size: 12px;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.prop-key-suggestion.active,
+.prop-key-suggestion:hover { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+.page-props-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 24px 6px;
+  max-width: 820px;
+}
+.page-props-row .prop-chip { font-size: 12.5px; padding: 2px 4px 2px 8px; }
+.page-prop-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border: 1px dashed var(--border);
+  border-radius: 4px;
+  background: none;
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+.page-prop-add:hover { color: var(--accent); border-color: var(--accent); }
+
+/* Image resize handle (editor/imageView.ts): only while the block is edited */
+.block-content .ProseMirror .img-resizable { position: relative; display: inline-block; max-width: 100%; line-height: 0; }
+.block-content .ProseMirror .img-resizable img { max-width: 100%; height: auto; }
+.img-resize-handle {
+  position: absolute;
+  right: -4px;
+  bottom: 2px;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--bg-primary);
+  border-radius: 3px;
+  background: var(--accent);
+  cursor: nwse-resize;
+  opacity: 0;
+  transition: opacity 0.12s;
+  touch-action: none;
+}
+.ProseMirror-focused .img-resizable:hover .img-resize-handle,
+.ProseMirror-focused .img-resize-handle:active { opacity: 1; }
+.block-static .img-resize-handle { display: none; }
+
+/* Windowed big pages (lib/blockWindow.ts): PageView corrects the scroll itself */
+.content.is-windowed { overflow-anchor: none; }
+.block-list > .block-gap { width: 100%; pointer-events: none; }
+
+/* Backlinks / unlinked mentions grouped by page (UX Wave 4) */
+.backlinks-sub { text-transform: none; letter-spacing: 0; font-weight: 400; }
+.backlink-group { margin: 2px 0 8px; }
+.backlink-group-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 0;
+}
+.backlink-group-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.backlink-group-toggle:hover { background: var(--bg-hover, rgba(127, 127, 127, 0.12)); color: var(--text-primary); }
+.backlink-group-header .backlink-page {
+  display: inline;
+  margin: 0;
+  padding: 0 2px;
+  border: none;
+  background: none;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  cursor: pointer;
+}
+.backlink-group-header .backlink-page:hover { text-decoration: underline; }
+.backlink-count {
+  min-width: 18px;
+  padding: 0 6px;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 18px;
+  text-align: center;
+}
+.backlink-group > .backlink-item { margin-left: 22px; }
+.backlinks-more { margin: 4px 0 0 22px; }
+.backlinks-missing { margin: 4px 0 0 22px; font-size: 12px; color: var(--text-muted); }
+.unlinked-refs-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.unlinked-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  border-radius: 6px;
+}
+.unlinked-item:hover { background: rgba(137, 180, 250, 0.08); }
+.unlinked-item .unlinked-highlight { flex: 1; min-width: 0; color: var(--text-primary); line-height: 1.5; }
+.unlinked-link-btn { flex: none; display: inline-flex; align-items: center; gap: 4px; }
+
+/* Settings → Templates (components/TemplatesSettings.tsx) */
+.template-row .settings-row-label { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.template-row-count { color: var(--text-muted); font-size: 12px; }
+.template-row-actions { display: inline-flex; gap: 6px; flex: none; }
+.templates-empty { color: var(--text-muted); }
+
+/* promptDialog's live hint (e.g. the day "next friday" means) */
+.confirm-dialog-hint {
+  display: block;
+  min-height: 1.4em;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+}

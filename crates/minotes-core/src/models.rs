@@ -1,0 +1,260 @@
+use chrono::{DateTime, NaiveDate, Utc};
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncStatus {
+    pub total_pages: i64,
+    pub synced_pages: i64,
+    pub pending_changes: i64,
+    pub last_sync: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VersionInfo {
+    pub hash: String,
+    pub timestamp: DateTime<Utc>,
+    pub actor: String,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Folder {
+    pub id: Uuid,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    pub position: f64,
+    pub collapsed: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Folder with its children (for tree rendering).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FolderTree {
+    #[serde(flatten)]
+    pub folder: Folder,
+    pub children: Vec<FolderTree>,
+    pub pages: Vec<Page>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Page {
+    pub id: Uuid,
+    pub title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub folder_id: Option<Uuid>,
+    pub position: f64,
+    pub is_journal: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub journal_date: Option<NaiveDate>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Block {
+    pub id: Uuid,
+    pub page_id: Uuid,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<Uuid>,
+    pub position: f64,
+    pub content: String,
+    pub format: String,
+    pub collapsed: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// A block to recreate with its ORIGINAL identity (see `Database::restore_blocks`).
+/// JSON shape (snake_case): `{ id, page_id, parent_id, content, position,
+/// properties: [["key", "value"], ...] }` — `properties` may be omitted.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RestoreBlock {
+    pub id: Uuid,
+    pub page_id: Uuid,
+    pub parent_id: Option<Uuid>,
+    pub content: String,
+    pub position: f64,
+    #[serde(default)]
+    pub properties: Vec<(String, String)>,
+}
+
+/// A block plus the title of the page it lives on — enough to show it and
+/// navigate to it in one round trip (block refs, backlinks, flashcards).
+#[derive(Debug, Clone, Serialize)]
+pub struct BlockWithPage {
+    #[serde(flatten)]
+    pub block: Block,
+    pub page_title: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Link {
+    pub id: Uuid,
+    pub from_block: Uuid,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub to_page: Option<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub to_block: Option<Uuid>,
+    pub link_type: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Property {
+    pub id: Uuid,
+    pub entity_id: Uuid,
+    pub entity_type: String,
+    pub key: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+    pub value_type: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Event {
+    pub id: i64,
+    pub event_type: String,
+    pub entity_id: Uuid,
+    pub entity_type: String,
+    pub payload: serde_json::Value,
+    pub actor: String,
+    pub created_at: DateTime<Utc>,
+}
+
+/// A page with its block tree (for --tree output).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PageTree {
+    pub page: Page,
+    pub blocks: Vec<Block>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Card {
+    pub id: Uuid,
+    pub block_id: Uuid,
+    pub card_type: String,
+    pub due: DateTime<Utc>,
+    pub stability: f64,
+    pub difficulty: f64,
+    pub reps: i32,
+    pub lapses: i32,
+    pub state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_review: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SrsStats {
+    pub due_count: i64,
+    pub reviewed_today: i64,
+    pub total_cards: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PropertySchema {
+    pub id: Uuid,
+    pub name: String,
+    pub value_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub options: Option<String>,
+    pub required: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_val: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub class_name: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Class {
+    pub id: Uuid,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_class: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Template {
+    pub id: Uuid,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub content: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// A legacy notebook database (`~/.minotes/<name>.db`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LegacyNotebookInfo {
+    pub name: String,
+    pub path: String,
+    pub size_bytes: u64,
+    pub modified_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Highlight {
+    pub id: Uuid,
+    pub pdf_path: String,
+    pub page_num: i32,
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+    pub color: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub block_id: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CssSnippet {
+    pub id: Uuid,
+    pub name: String,
+    pub css: String,
+    pub enabled: bool,
+    pub source: String, // "custom" | "obsidian"
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Plugin {
+    pub id: Uuid,
+    pub name: String,
+    pub version: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
+    pub enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permissions: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entry_point: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}

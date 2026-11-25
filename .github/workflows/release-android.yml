@@ -1,0 +1,121 @@
+# Debug Android APK (signed with Gradle's throwaway debug key) for x86_64 (emulator) and aarch64
+# (phones), on demand and for version tags. No signing secrets are used.
+name: Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  NDK_VERSION: "27.0.12077973"
+
+jobs:
+  apk:
+    name: Debug APK (x86_64 + aarch64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    # contents: write only to attach the APK to a tag's draft release.
+    permissions:
+      contents: write
+    steps:
+      - name: Free disk space
+        # Two debug Rust targets + Gradle need more than the runner's default free space.
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /usr/local/share/boost
+          df -h /
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Android NDK
+        # The runner image ships the Android SDK (ANDROID_HOME) with sdkmanager.
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;${NDK_VERSION}" >/dev/null
+          echo "NDK_HOME=$ANDROID_HOME/ndk/${NDK_VERSION}" >>"$GITHUB_ENV"
+          # SQLCipher's vendored OpenSSL needs a ranlib; the NDK only ships llvm-ranlib.
+          RANLIB="$ANDROID_HOME/ndk/${NDK_VERSION}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib"
+          echo "RANLIB_x86_64_linux_android=$RANLIB" >>"$GITHUB_ENV"
+          echo "RANLIB_aarch64_linux_android=$RANLIB" >>"$GITHUB_ENV"
+
+      - name: Rust toolchain + Android targets
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+          rustup target add x86_64-linux-android aarch64-linux-android
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: android
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: crates/minotes-app/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: crates/minotes-app
+        run: npm ci
+
+      - name: Build the APK
+        working-directory: crates/minotes-app
+        # A debug-signed APK (no signing secrets), but optimised and without debug
+        # symbols: an unoptimised debug build with symbols is ~550 MB and slow.
+        env:
+          CARGO_PROFILE_DEV_OPT_LEVEL: "s"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_DEV_STRIP: "symbols"
+          CARGO_PROFILE_DEV_DEBUG_ASSERTIONS: "false"
+          CARGO_PROFILE_DEV_OVERFLOW_CHECKS: "false"
+        run: npx tauri android build --debug --apk --target x86_64 aarch64
+
+      - name: Upload APK
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: minotes-android-debug-${{ github.run_number }}
+          path: crates/minotes-app/src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Attach the APK to the draft release (version tags)
+        # release.yml creates the draft for the same tag; wait for it, then upload.
+        # A debug build (Gradle's debug key): fine to sideload and try, not a store build.
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          apk=$(find crates/minotes-app/src-tauri/gen/android/app/build/outputs/apk -name '*.apk' | head -1)
+          [ -n "$apk" ] || { echo "::error::no APK built"; exit 1; }
+          name="MiNotes_${TAG#v}_android-debug.apk"
+          cp "$apk" "$name"
+          url=""
+          for _ in $(seq 1 60); do
+            url=$(gh api "repos/$REPO/releases?per_page=30" \
+              --jq ".[] | select(.tag_name == \"$TAG\") | .upload_url" | head -1)
+            [ -n "$url" ] && break
+            sleep 30
+          done
+          [ -n "$url" ] || { echo "::error::no release for $TAG after 30 minutes"; exit 1; }
+          curl --fail --silent --show-error -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Content-Type: application/vnd.android.package-archive" \
+            --data-binary "@$name" \
+            "${url%%\{*}?name=$name"

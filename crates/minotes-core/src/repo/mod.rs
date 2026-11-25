@@ -1,0 +1,30 @@
+pub mod aliases;
+pub mod archive;
+pub mod blocks;
+pub mod conflicts;
+pub mod cards;
+pub mod crdt;
+pub mod events;
+pub mod export;
+pub mod favorites;
+pub mod folders;
+pub mod graph;
+pub mod legacy_notebooks;
+pub mod links;
+pub mod pages;
+pub mod page_titles;
+pub mod properties;
+pub mod schemas;
+pub mod sync;
+pub mod highlights;
+pub mod plugins;
+pub mod snippets;
+pub mod templates;
+pub mod trash;
+pub mod ai_suggestions;
+pub mod whiteboards;
+pub mod ui_state;
+pub mod onboarding;
+// ── Import / attachments ──
+pub mod attachments;
+// ── End import ──

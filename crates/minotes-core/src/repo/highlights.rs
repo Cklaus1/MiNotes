@@ -1,0 +1,241 @@
+use chrono::Utc;
+use uuid::Uuid;
+
+use crate::db::Database;
+use crate::error::{Error, Result};
+use crate::models::Highlight;
+
+impl Database {
+    pub fn create_highlight(
+        &self,
+        pdf_path: &str,
+        page_num: i32,
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+        color: &str,
+        text: Option<&str>,
+        note: Option<&str>,
+        actor: &str,
+    ) -> Result<Highlight> {
+        let now = Utc::now();
+        let id = Uuid::now_v7();
+
+        let highlight = Highlight {
+            id,
+            pdf_path: pdf_path.to_string(),
+            page_num,
+            x,
+            y,
+            width,
+            height,
+            color: color.to_string(),
+            text: text.map(|s| s.to_string()),
+            note: note.map(|s| s.to_string()),
+            block_id: None,
+            created_at: now,
+            updated_at: now,
+        };
+
+        self.conn.execute(
+            "INSERT INTO highlights (id, pdf_path, page_num, x, y, width, height, color, text, note, block_id, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            rusqlite::params![
+                highlight.id.to_string(),
+                highlight.pdf_path,
+                highlight.page_num,
+                highlight.x,
+                highlight.y,
+                highlight.width,
+                highlight.height,
+                highlight.color,
+                highlight.text,
+                highlight.note,
+                highlight.block_id.map(|u| u.to_string()),
+                highlight.created_at.to_rfc3339(),
+                highlight.updated_at.to_rfc3339(),
+            ],
+        )?;
+
+        self.emit_event("highlight.created", &highlight.id, "highlight", &highlight, actor)?;
+        Ok(highlight)
+    }
+
+    pub fn get_highlights(&self, pdf_path: &str) -> Result<Vec<Highlight>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, pdf_path, page_num, x, y, width, height, color, text, note, block_id, created_at, updated_at
+             FROM highlights WHERE pdf_path = ?1 ORDER BY page_num, created_at",
+        )?;
+
+        let highlights = stmt
+            .query_map([pdf_path], |row| Self::row_to_highlight(row))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        Ok(highlights)
+    }
+
+    pub fn get_highlight(&self, id: &Uuid) -> Result<Option<Highlight>> {
+        let result = self.conn.query_row(
+            "SELECT id, pdf_path, page_num, x, y, width, height, color, text, note, block_id, created_at, updated_at
+             FROM highlights WHERE id = ?1",
+            [id.to_string()],
+            |row| Self::row_to_highlight(row),
+        );
+
+        match result {
+            Ok(h) => Ok(Some(h)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    pub fn update_highlight_note(&self, id: &Uuid, note: &str, actor: &str) -> Result<Highlight> {
+        let now = Utc::now();
+
+        let rows = self.conn.execute(
+            "UPDATE highlights SET note = ?1, updated_at = ?2 WHERE id = ?3",
+            rusqlite::params![note, now.to_rfc3339(), id.to_string()],
+        )?;
+
+        if rows == 0 {
+            return Err(Error::NotFound(format!("Highlight {id}")));
+        }
+
+        let highlight = self
+            .get_highlight(id)?
+            .ok_or_else(|| Error::NotFound(format!("Highlight {id}")))?;
+
+        self.emit_event("highlight.updated", &highlight.id, "highlight", &highlight, actor)?;
+        Ok(highlight)
+    }
+
+    pub fn delete_highlight(&self, id: &Uuid, actor: &str) -> Result<bool> {
+        let rows = self.conn.execute(
+            "DELETE FROM highlights WHERE id = ?1",
+            [id.to_string()],
+        )?;
+        // Emit after the delete succeeds, and only for a row that existed
+        // (same defect as delete_property).
+        if rows > 0 {
+            self.emit_event("highlight.deleted", id, "highlight", &serde_json::json!({"id": id.to_string()}), actor)?;
+        }
+        Ok(rows > 0)
+    }
+
+    pub fn search_highlights(&self, query: &str) -> Result<Vec<Highlight>> {
+        let pattern = format!("%{query}%");
+        let mut stmt = self.conn.prepare(
+            "SELECT id, pdf_path, page_num, x, y, width, height, color, text, note, block_id, created_at, updated_at
+             FROM highlights WHERE text LIKE ?1 OR note LIKE ?1 ORDER BY created_at DESC",
+        )?;
+
+        let highlights = stmt
+            .query_map([&pattern], |row| Self::row_to_highlight(row))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        Ok(highlights)
+    }
+
+    pub fn link_highlight_to_block(
+        &self,
+        highlight_id: &Uuid,
+        block_id: &Uuid,
+        actor: &str,
+    ) -> Result<Highlight> {
+        let now = Utc::now();
+
+        // Verify block exists
+        let exists: bool = self.conn.query_row(
+            "SELECT COUNT(*) > 0 FROM blocks WHERE id = ?1",
+            [block_id.to_string()],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            return Err(Error::NotFound(format!("Block {block_id}")));
+        }
+
+        let rows = self.conn.execute(
+            "UPDATE highlights SET block_id = ?1, updated_at = ?2 WHERE id = ?3",
+            rusqlite::params![block_id.to_string(), now.to_rfc3339(), highlight_id.to_string()],
+        )?;
+
+        if rows == 0 {
+            return Err(Error::NotFound(format!("Highlight {highlight_id}")));
+        }
+
+        let highlight = self
+            .get_highlight(highlight_id)?
+            .ok_or_else(|| Error::NotFound(format!("Highlight {highlight_id}")))?;
+
+        self.emit_event("highlight.linked", &highlight.id, "highlight", &highlight, actor)?;
+        Ok(highlight)
+    }
+
+    // Bug #8: return a Result and fall back gracefully instead of panicking on a
+    // malformed row, which would unwind across the Tauri FFI boundary and crash.
+    fn row_to_highlight(row: &rusqlite::Row) -> rusqlite::Result<Highlight> {
+        let id_str: String = row.get(0)?;
+        let block_id_str: Option<String> = row.get(10)?;
+        let created_str: String = row.get(11)?;
+        let updated_str: String = row.get(12)?;
+
+        let parse_ts = |s: &str| {
+            chrono::DateTime::parse_from_rfc3339(s)
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now())
+        };
+
+        Ok(Highlight {
+            id: Uuid::parse_str(&id_str).unwrap_or_default(),
+            pdf_path: row.get(1)?,
+            page_num: row.get(2)?,
+            x: row.get(3)?,
+            y: row.get(4)?,
+            width: row.get(5)?,
+            height: row.get(6)?,
+            color: row.get(7)?,
+            text: row.get(8)?,
+            note: row.get(9)?,
+            block_id: block_id_str.and_then(|s| Uuid::parse_str(&s).ok()),
+            created_at: parse_ts(&created_str),
+            updated_at: parse_ts(&updated_str),
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::db::Database;
+    use uuid::Uuid;
+
+    // Same defect as delete_property: emit came before the DELETE and fired
+    // even when the row did not exist.
+    #[test]
+    fn test_delete_missing_highlight_emits_no_event() {
+        let db = Database::open_in_memory().unwrap();
+
+        let deleted = db.delete_highlight(&Uuid::now_v7(), "user").unwrap();
+        assert!(!deleted);
+
+        let events = db
+            .get_events(None, Some(&["highlight.deleted"]), None)
+            .unwrap();
+        assert!(events.is_empty(), "no event for a delete that did nothing");
+    }
+
+    #[test]
+    fn test_delete_existing_highlight_emits_one_event() {
+        let db = Database::open_in_memory().unwrap();
+        let h = db
+            .create_highlight("/doc.pdf", 1, 0.0, 0.0, 10.0, 10.0, "yellow", Some("t"), None, "user")
+            .unwrap();
+
+        assert!(db.delete_highlight(&h.id, "user").unwrap());
+
+        let events = db
+            .get_events(None, Some(&["highlight.deleted"]), None)
+            .unwrap();
+        assert_eq!(events.len(), 1);
+    }
+}

@@ -1,0 +1,119 @@
+import { undoStack } from './undoStack';
+import type { RestoreBlock } from './api';
+import * as api from './api';
+
+/** Roots of a restore batch: blocks whose parent is not itself in the batch. */
+function restoreRoots(blocks: RestoreBlock[]): string[] {
+  const ids = new Set(blocks.map(b => b.id));
+  return blocks.filter(b => !b.parent_id || !ids.has(b.parent_id)).map(b => b.id);
+}
+
+/** A block under `parentId` (null: top level) at `position` — move_block needs a parent. */
+export function placeBlock(id: string, parentId: string | null, position: number) {
+  return parentId ? api.moveBlock(id, parentId, position) : api.reorderBlock(id, undefined, position);
+}
+
+/**
+ * Tell views that undo/redo rewrote these blocks server-side, so any optimistic
+ * "recently deleted/edited" bookkeeping for them is stale and the next fetched
+ * tree must win (PageView listens).
+ */
+function notifyTouched(action: { blockId: string; restore?: RestoreBlock[]; before?: RestoreBlock[]; after?: RestoreBlock[] }) {
+  const ids = [action.blockId, ...[...(action.restore ?? []), ...(action.before ?? []), ...(action.after ?? [])].map(b => b.id)];
+  window.dispatchEvent(new CustomEvent("minotes-undo-applied", { detail: { ids } }));
+}
+
+export async function executeUndo(): Promise<boolean> {
+  const action = undoStack.popUndo();
+  if (!action) return false;
+  notifyTouched(action);
+
+  switch (action.type) {
+    case 'create': {
+      // Snapshot the block (and anything since nested under it) first, so redo can
+      // bring it back with the SAME id — later undo entries refer to that id.
+      try {
+        const tree = await api.getPageTree(action.pageId);
+        const snap = await api.snapshotSubtrees([action.blockId], tree.blocks);
+        if (snap.length) action.restore = snap;
+      } catch (e) {
+        console.error("undo: could not snapshot created block", e);
+      }
+      await api.deleteBlock(action.blockId);
+      break;
+    }
+    case 'delete':
+      // Original ids, parents, positions and properties come back in one call.
+      if (action.restore?.length) await api.restoreBlocks(action.restore);
+      break;
+    case 'merge':
+      // blockId is the block that absorbed the merged one: un-merge its text,
+      // then bring the merged block (and its subtree) back.
+      if (action.oldContent !== undefined) await api.updateBlock(action.blockId, action.oldContent);
+      if (action.restore?.length) await api.restoreBlocks(action.restore);
+      for (const c of action.movedChildren ?? []) await api.moveBlock(c.id, c.fromParentId, c.fromPosition);
+      break;
+    case 'update':
+      if (action.oldContent !== undefined) {
+        await api.updateBlock(action.blockId, action.oldContent);
+      }
+      break;
+    case 'reparent':
+      await api.reparentBlock(action.blockId, action.oldParentId ?? undefined);
+      break;
+    case 'move':
+      for (const m of [...(action.moves ?? [])].reverse()) await placeBlock(m.id, m.fromParentId, m.fromPosition);
+      break;
+    case 'outside-import':
+      // Blocks the import added are dropped; removed ones come back from the Trash.
+      await api.outsideEditSetBlocks(action.pageId, action.before ?? [], undefined, action.parkedPageId);
+      action.parkedPageId = null;
+      break;
+    case 'conflict-resolve':
+      // One step: the page as it was, and the conflict copy back from the Trash.
+      await api.setConflictResolution(action.pageId, action.copyId ?? "", action.before ?? [], false);
+      break;
+  }
+  return true;
+}
+
+export async function executeRedo(): Promise<boolean> {
+  const action = undoStack.popRedo();
+  if (!action) return false;
+  notifyTouched(action);
+
+  switch (action.type) {
+    case 'create':
+      if (action.restore?.length) await api.restoreBlocks(action.restore);
+      else await api.createBlock(action.pageId, action.newContent ?? '', undefined);
+      break;
+    case 'delete':
+      for (const id of restoreRoots(action.restore ?? [])) await api.deleteBlock(id);
+      break;
+    case 'merge':
+      if (action.newContent !== undefined) await api.updateBlock(action.blockId, action.newContent);
+      // Re-home the children first: deleting the merged block cascades.
+      for (const c of action.movedChildren ?? []) await api.moveBlock(c.id, c.toParentId, c.toPosition);
+      for (const id of restoreRoots(action.restore ?? [])) await api.deleteBlock(id);
+      break;
+    case 'update':
+      if (action.newContent !== undefined) {
+        await api.updateBlock(action.blockId, action.newContent);
+      }
+      break;
+    case 'reparent':
+      await api.reparentBlock(action.blockId, action.newParentId ?? undefined);
+      break;
+    case 'move':
+      for (const m of action.moves ?? []) await placeBlock(m.id, m.toParentId, m.toPosition);
+      break;
+    case 'outside-import':
+      // Removed lines go to the Trash again (never a hard delete).
+      action.parkedPageId = await api.outsideEditSetBlocks(action.pageId, action.after ?? [], action.pageTitle ?? "Page");
+      break;
+    case 'conflict-resolve':
+      await api.setConflictResolution(action.pageId, action.copyId ?? "", action.after ?? [], true);
+      break;
+  }
+  return true;
+}
