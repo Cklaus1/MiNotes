@@ -68,6 +68,8 @@ interface Props {
   onRenamePage?: (newTitle: string) => void;
 }
 
+const NO_PROPS: Property[] = [];
+
 export default function PageView({
   pageTree, onUpdateBlock, onDeleteBlock, onPageLinkClick, onShiftClick, onJournalNav, onRefreshPage, onOpenWhiteboard, onRenamePage,
 }: Props) {
@@ -199,7 +201,11 @@ export default function PageView({
   // A (re)loaded tree may come with blocks changed elsewhere (another page, the
   // CLI, sync): re-read what the ((refs)) and embeds on screen show.
   useEffect(() => { refreshShownBlockRefs(); }, [pageTree]);
-  const [pageProps, setPageProps] = useState<Property[]>([]);
+  const [loadedProps, setPageProps] = useState<Property[]>([]);
+  // Which page `loadedProps` belong to: until the new page's load, the previous
+  // page's properties must not show (their row then vanished and the page jumped up).
+  const [propsPageId, setPropsPageId] = useState<string | null>(null);
+  const pageProps = propsPageId === page.id ? loadedProps : NO_PROPS;
   const [zoomedBlockId, setZoomedBlockId] = useState<string | null>(null);
   const [showProps, setShowProps] = useState(false);
   const [addingProp, setAddingProp] = useState(false);
@@ -292,6 +298,7 @@ export default function PageView({
     api.getProperties(page.id).then(props => {
       if (cancelled) return;
       setPageProps(props);
+      setPropsPageId(page.id);
     }).catch(() => {});
     return () => { cancelled = true; };
   }, [page.id]);
